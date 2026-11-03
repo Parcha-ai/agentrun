@@ -1,11 +1,11 @@
 {
-  "origin": "http://127.0.0.1:37839",
+  "origin": "http://127.0.0.1:43933",
   "build": {
-    "asset": "assets/index-bLQbTIIJ.js",
-    "sha256": "da22a54cff6a4641bc19504e649f146d987b816e3636ba7a5e26eca9f86e257c",
-    "sourceHash": "8ff5e87f9691422965089c986e9484025ec33f1bcaf59c31c170c9b6265a93c4",
-    "stylesheet": "assets/index-MZWl1iOl.css",
-    "cssSha256": "bf50c1d29c09f394dbd98026fef8f8c8cae60514718ac97b42d0ea5b6daf512f"
+    "asset": "assets/index-DUXjp8H7.js",
+    "sha256": "7a14028d5518ba3e5929420def5b4a8d8c9518155a74d76955f948afa73f94db",
+    "css": "assets/index-MZWl1iOl.css",
+    "cssSha256": "bf50c1d29c09f394dbd98026fef8f8c8cae60514718ac97b42d0ea5b6daf512f",
+    "sourceHash": "e563eb387a69af155a34773c0517a138422e739cf3c250b3356edc949ddebfa6"
   },
   "checks": [
     {
@@ -35,6 +35,34 @@
     {
       "row": "04-binary-preview-download",
       "status": "PASS"
+    },
+    {
+      "row": "04a-audio-preview-playback",
+      "status": "PASS",
+      "path": "tone.wav",
+      "mime": "audio/wav",
+      "playback": {
+        "duration": 1,
+        "currentTime": 0.011715,
+        "readyState": 4,
+        "blobSource": true
+      },
+      "downloadBytes": "exact"
+    },
+    {
+      "row": "04b-video-preview-playback",
+      "status": "PASS",
+      "path": "clip.webm",
+      "mime": "video/webm",
+      "playback": {
+        "duration": 1,
+        "currentTime": 0.0059,
+        "readyState": 4,
+        "width": 320,
+        "height": 180,
+        "blobSource": true
+      },
+      "downloadBytes": "exact"
     },
     {
       "row": "05-sandboxed-html",
@@ -67,9 +95,9 @@
     {
       "row": "12-mission-desktop",
       "status": "PASS",
-      "waiting": "01a19ee7-181c-7890-8c5b-1983fd9bb2ed",
-      "active": "01a19ee7-2ed0-7111-9398-77398b2a361c",
-      "failed": "01a19ee7-2d0f-71b3-a635-bf3120b8840e",
+      "waiting": "01a19f01-9bec-7839-8ad1-d98305e632a0",
+      "active": "01a19f01-b283-797a-8f95-ac2eb42e204a",
+      "failed": "01a19f01-b0c6-778c-b692-5904951a314e",
       "metricCardRadius": "12px"
     },
     {
@@ -79,6 +107,24 @@
     {
       "row": "13-mission-pagination",
       "status": "PASS"
+    },
+    {
+      "row": "13a-mission-refresh-retained",
+      "status": "PASS",
+      "totalRuns": 19,
+      "loadedRows": 19,
+      "refetchedOlderCursor": true
+    },
+    {
+      "row": "13b-mission-slow-refresh-poll",
+      "status": "PASS",
+      "heldAtLeastMs": 16000,
+      "observedMs": 30023,
+      "skippedPollWhileHeld": true,
+      "resumedNextPoll": true,
+      "statsReads": 2,
+      "olderReads": 2,
+      "loadedRows": 19
     },
     {
       "row": "14-mission-narrow",
@@ -108,88 +154,88 @@
   ],
   "resources": [
     {
-      "agent": "01a19ee6-a360-75fd-8156-ffd355732421"
+      "agent": "01a19f01-2603-7d55-8a8d-89b00e0935d5"
     },
     {
-      "run": "01a19ee6-a47a-79f4-a4a7-f2da59346cb6",
-      "agent": "01a19ee6-a360-75fd-8156-ffd355732421"
+      "run": "01a19f01-2730-7dea-9979-2c0509457117",
+      "agent": "01a19f01-2603-7d55-8a8d-89b00e0935d5"
     },
     {
       "agent": "browser-regions"
     },
     {
-      "run": "01a19ee6-a8f5-7266-a2e4-67864870c109",
+      "run": "01a19f01-2cd5-78b8-a9e6-8b15ad6cf08b",
       "agent": "browser-regions"
     },
     {
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee6-ac92-79fa-ae97-c85b0fdc3155",
+      "run": "01a19f01-3074-7103-9d80-1037e7e99855",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-1779-7d3d-adf4-8ef11892a5ff",
+      "run": "01a19f01-9b46-7903-8f77-5f8590fff3c4",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-181c-7890-8c5b-1983fd9bb2ed",
+      "run": "01a19f01-9bec-7839-8ad1-d98305e632a0",
       "agent": "browser-regions"
     },
     {
-      "run": "01a19ee7-1827-7200-a7e5-04982b2869d8",
+      "run": "01a19f01-9bf6-7324-b274-48ccb1f281d9",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-19e7-7824-a4a3-ec30c9ea0fca",
+      "run": "01a19f01-9db1-7dee-9b6e-36c366c30edc",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-1ba9-7487-a1aa-7e1b12e934dd",
+      "run": "01a19f01-9f6e-74ef-88b5-5d97bd13c19f",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-1d67-784b-a6a0-b564ea01dcca",
+      "run": "01a19f01-a12a-7582-87af-3d7cd4985c0f",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-1f27-70d1-8b64-49a9e1f33f99",
+      "run": "01a19f01-a2e8-7257-8447-ba2aeb5958bb",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-20e3-7e8f-8580-44b2e49eb78d",
+      "run": "01a19f01-a4a5-7b37-b0c7-7b4c12351ef9",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-22a0-77c6-ada7-6f23cb5a8b08",
+      "run": "01a19f01-a661-750e-a026-909da29cedbc",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-245e-7152-ac90-cf74466a3988",
+      "run": "01a19f01-a81b-7041-ae49-0ceb0cab4ee3",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-261b-7490-bdf0-2739b30707e2",
+      "run": "01a19f01-a9d6-7f69-b329-50d2410d80ed",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-27d9-7576-b150-a18a179862d3",
+      "run": "01a19f01-ab95-7b41-b3ae-a9f39dff4103",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-2995-7ff5-87fb-d2ddab536923",
+      "run": "01a19f01-ad50-72f8-9447-f9d1dc01f010",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-2b52-7317-8e62-0967e3bea870",
+      "run": "01a19f01-af0a-7d07-a7c8-0dc3e2c37d3e",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-2d0f-71b3-a635-bf3120b8840e",
+      "run": "01a19f01-b0c6-778c-b692-5904951a314e",
       "agent": "browser-slow"
     },
     {
-      "run": "01a19ee7-2ed0-7111-9398-77398b2a361c",
+      "run": "01a19f01-b283-797a-8f95-ac2eb42e204a",
       "agent": "browser-slow"
     }
   ],
@@ -197,18 +243,10 @@
     "Failed to load resource: the server responded with a status of 404 (Not Found)",
     "Executing inline event handler violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. The action has been blocked.",
     "Executing inline event handler violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. The action has been blocked.",
-    "Loading the image 'http://127.0.0.1:37839/x' violates the following Content Security Policy directive: \"img-src data:\". The action has been blocked.",
+    "Loading the image 'http://127.0.0.1:43933/x' violates the following Content Security Policy directive: \"img-src data:\". The action has been blocked.",
     "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
     "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
     "Failed to load resource: net::ERR_FAILED"
   ],
-  "cleanup": "Final browser and server exited; all final synthetic data removed. Aborted loading-only attempt data moved to trash reversibly; no orphan processes.",
-  "consoleErrorTriage": {
-    "benignFavicon404": 1,
-    "expectedUnsafeHtmlCspRefusals": 3,
-    "expectedInjectedFile503": 1,
-    "expectedOfflineDisconnect": 1,
-    "expectedMissionNetworkFailure": 1,
-    "unexpectedPageExceptions": 0
-  }
+  "cleanup": "Browser/server closed; synthetic directory removed in finally."
 }

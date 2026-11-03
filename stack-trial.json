@@ -1,0 +1,1414 @@
+{
+  "checkedAt": "2026-11-03T01:02:51.752629+00:00",
+  "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+  "ours": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+  "oursMergeBase": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+  "mainNewFiles": [],
+  "mainOverlap": [],
+  "approved": [
+    1321,
+    1323,
+    1358,
+    1376,
+    1387,
+    1399,
+    1400,
+    1401,
+    1402,
+    1403,
+    1404,
+    1406
+  ],
+  "queue": [
+    {
+      "position": 1,
+      "state": "AWAITING_CHECKS",
+      "pullRequest": {
+        "number": 1400,
+        "headRefOid": "bcecd9010d717cea1fdcddbef173dcd4bf1b70b4"
+      }
+    },
+    {
+      "position": 2,
+      "state": "MERGEABLE",
+      "pullRequest": {
+        "number": 1399,
+        "headRefOid": "c3da329e96fd6c0ffab5f2265a382f573a7654d8"
+      }
+    },
+    {
+      "position": 3,
+      "state": "AWAITING_CHECKS",
+      "pullRequest": {
+        "number": 1387,
+        "headRefOid": "d8f0bfa63f750623e2760b02b18ac9521d4ce04a"
+      }
+    },
+    {
+      "position": 4,
+      "state": "MERGEABLE",
+      "pullRequest": {
+        "number": 1358,
+        "headRefOid": "ca4cc5b3f10855de032e3327795faca8bec18e1f"
+      }
+    },
+    {
+      "position": 5,
+      "state": "UNMERGEABLE",
+      "pullRequest": {
+        "number": 1401,
+        "headRefOid": "9b843648fa95a411c209276d7b862c4443ef369c"
+      }
+    },
+    {
+      "position": 6,
+      "state": "AWAITING_CHECKS",
+      "pullRequest": {
+        "number": 1376,
+        "headRefOid": "d79e4b099cc5e5683a2a5ff353cb6178c1cbf8fe"
+      }
+    },
+    {
+      "position": 7,
+      "state": "AWAITING_CHECKS",
+      "pullRequest": {
+        "number": 1403,
+        "headRefOid": "efbcfcc36acd5ed71858aebabd1419db17000d7f"
+      }
+    },
+    {
+      "position": 8,
+      "state": "AWAITING_CHECKS",
+      "pullRequest": {
+        "number": 1406,
+        "headRefOid": "f5d12649e9599f1b462b93e803b724ddfc5b6c65"
+      }
+    },
+    {
+      "position": 9,
+      "state": "QUEUED",
+      "pullRequest": {
+        "number": 1404,
+        "headRefOid": "485debedf3928a189cdecebe95d06adef0984210"
+      }
+    },
+    {
+      "position": 10,
+      "state": "QUEUED",
+      "pullRequest": {
+        "number": 1323,
+        "headRefOid": "ffd4037845fff8b971a7f4d27b7693365ab6858b"
+      }
+    },
+    {
+      "position": 11,
+      "state": "QUEUED",
+      "pullRequest": {
+        "number": 1321,
+        "headRefOid": "06c9af5a797767bf5f3a5902d3e9eb9cf304227b"
+      }
+    },
+    {
+      "position": 12,
+      "state": "QUEUED",
+      "pullRequest": {
+        "number": 1402,
+        "headRefOid": "d42565b7185efdf50ef1bde8156792de9e7ede26"
+      }
+    }
+  ],
+  "prs": {
+    "1400": {
+      "number": 1400,
+      "title": "fix(console): an agent made here shows its name at once",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1400",
+      "headRefName": "console/agent-name-at-once",
+      "headRefOid": "bcecd9010d717cea1fdcddbef173dcd4bf1b70b4",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "apps/console/src/App.test.tsx"
+          },
+          {
+            "path": "apps/console/src/App.tsx"
+          },
+          {
+            "path": "changes/console-agent-name-at-once.md"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "Mw"
+        }
+      },
+      "overlap": [
+        "apps/console/src/App.test.tsx",
+        "apps/console/src/App.tsx"
+      ]
+    },
+    "1399": {
+      "number": 1399,
+      "title": "docs(serve): the console's build is the root build's, and a webhook may reach your own machine or network",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1399",
+      "headRefName": "docs/serve-console-build-and-webhook-hosts",
+      "headRefOid": "c3da329e96fd6c0ffab5f2265a382f573a7654d8",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/serve-console-build-text.md"
+          },
+          {
+            "path": "packages/serve/README.md"
+          },
+          {
+            "path": "packages/serve/src/page.ts"
+          },
+          {
+            "path": "packages/serve/test/files.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "NA"
+        }
+      },
+      "overlap": [
+        "packages/serve/src/page.ts"
+      ]
+    },
+    "1387": {
+      "number": 1387,
+      "title": "fix(scripts): a script's command line refuses, loudly, on a Node with no import.meta.main",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1387",
+      "headRefName": "scripts/main-guard-loud",
+      "headRefOid": "d8f0bfa63f750623e2760b02b18ac9521d4ce04a",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "AGENTS.md"
+          },
+          {
+            "path": "changes/scripts-refuse-without-import-meta-main.md"
+          },
+          {
+            "path": "scripts/build-console.mjs"
+          },
+          {
+            "path": "scripts/changes.mjs"
+          },
+          {
+            "path": "scripts/changes.test.mjs"
+          },
+          {
+            "path": "scripts/check-package-imports.mjs"
+          },
+          {
+            "path": "scripts/check-reference-chrome.mjs"
+          },
+          {
+            "path": "scripts/check-setup-prompts.mjs"
+          },
+          {
+            "path": "scripts/check-undici.mjs"
+          },
+          {
+            "path": "scripts/check-workflows.mjs"
+          },
+          {
+            "path": "scripts/entry-points.test.mjs"
+          },
+          {
+            "path": "scripts/is-main.mjs"
+          },
+          {
+            "path": "scripts/is-main.test.mjs"
+          },
+          {
+            "path": "scripts/pages-workflow.test.mjs"
+          },
+          {
+            "path": "scripts/pi-cross-version.mjs"
+          },
+          {
+            "path": "scripts/pi-leg.mjs"
+          },
+          {
+            "path": "scripts/port-durable-harness.mjs"
+          },
+          {
+            "path": "scripts/recording/fold.mjs"
+          },
+          {
+            "path": "scripts/recording/gallery.mjs"
+          },
+          {
+            "path": "scripts/recording/gate.mjs"
+          },
+          {
+            "path": "scripts/recording/validate.mjs"
+          },
+          {
+            "path": "scripts/release-ci-gate.mjs"
+          },
+          {
+            "path": "scripts/release-preflight.mjs"
+          },
+          {
+            "path": "scripts/stranger.mjs"
+          },
+          {
+            "path": "scripts/vendor-durable-harness.mjs"
+          },
+          {
+            "path": "scripts/verify-published.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "MjY"
+        }
+      },
+      "overlap": [
+        "scripts/build-console.mjs"
+      ]
+    },
+    "1358": {
+      "number": 1358,
+      "title": "fix(pi-durable-agent, serve): a workflow's decision requests count in its run metrics",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1358",
+      "headRefName": "store/decision-tokens",
+      "headRefOid": "ca4cc5b3f10855de032e3327795faca8bec18e1f",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/decision-tokens-in-metrics.md"
+          },
+          {
+            "path": "packages/pi-durable-agent/README.md"
+          },
+          {
+            "path": "packages/pi-durable-agent/src/timeline/index.ts"
+          },
+          {
+            "path": "packages/pi-durable-agent/src/timeline/timeline.ts"
+          },
+          {
+            "path": "packages/pi-durable-agent/test/run-metrics.types.ts"
+          },
+          {
+            "path": "packages/pi-durable-agent/test/timeline-metrics.test.mjs"
+          },
+          {
+            "path": "packages/serve/src/runs.ts"
+          },
+          {
+            "path": "packages/serve/test/run-metrics.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "OA"
+        }
+      },
+      "overlap": []
+    },
+    "1401": {
+      "number": 1401,
+      "title": "test(serve): an adopted run's wait counts webhook-ids, not receipts",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1401",
+      "headRefName": "test/webhook-adoption-counts-ids",
+      "headRefOid": "9b843648fa95a411c209276d7b862c4443ef369c",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "packages/serve/test/webhooks.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "MQ"
+        }
+      },
+      "overlap": []
+    },
+    "1376": {
+      "number": 1376,
+      "title": "fix(serve): one number per imported run, every subagent request counted once",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1376",
+      "headRefName": "serve/import-one-number",
+      "headRefOid": "d79e4b099cc5e5683a2a5ff353cb6178c1cbf8fe",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/serve-import-one-number.md"
+          },
+          {
+            "path": "packages/pi-durable-agent/src/timeline/timeline.ts"
+          },
+          {
+            "path": "packages/serve/src/import-sources.ts"
+          },
+          {
+            "path": "packages/serve/src/import.ts"
+          },
+          {
+            "path": "packages/serve/test/import.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "NQ"
+        }
+      },
+      "overlap": []
+    },
+    "1403": {
+      "number": 1403,
+      "title": "fix(adapters, serve): the Claude and Codex CLIs run in the run's workspace, and tool errors name paths relative to it",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1403",
+      "headRefName": "claude/work-cwd",
+      "headRefOid": "efbcfcc36acd5ed71858aebabd1419db17000d7f",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/harness-cwd-workspace.md"
+          },
+          {
+            "path": "packages/run-adapters-claude-agent/README.md"
+          },
+          {
+            "path": "packages/run-adapters-claude-agent/src/adapter.ts"
+          },
+          {
+            "path": "packages/run-adapters-claude-agent/src/host/machine.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/README.md"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/adapter.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/host/machine.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/test/developer-messages.test.mjs"
+          },
+          {
+            "path": "packages/run-adapters/src/types.ts"
+          },
+          {
+            "path": "packages/serve/src/app.ts"
+          },
+          {
+            "path": "packages/serve/src/harness-app.ts"
+          },
+          {
+            "path": "packages/serve/src/host-tools.ts"
+          },
+          {
+            "path": "packages/serve/test/claude-run.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/codex-run.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/fixtures/faux-harness.mjs"
+          },
+          {
+            "path": "packages/serve/test/harness-run.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/host-tools.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "MTc"
+        }
+      },
+      "overlap": []
+    },
+    "1406": {
+      "number": 1406,
+      "title": "fix(serve): a stop works on a run that is working but still reads queued",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1406",
+      "headRefName": "serve/stop-follow-up-deflake",
+      "headRefOid": "f5d12649e9599f1b462b93e803b724ddfc5b6c65",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/serve-stop-while-queued.md"
+          },
+          {
+            "path": "packages/serve/README.md"
+          },
+          {
+            "path": "packages/serve/src/runs.ts"
+          },
+          {
+            "path": "packages/serve/test/fixtures/faux-gated-start.mjs"
+          },
+          {
+            "path": "packages/serve/test/stop-follow-up.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "NQ"
+        }
+      },
+      "overlap": []
+    },
+    "1404": {
+      "number": 1404,
+      "title": "feat(serve): web_search on pi with no key, through Exa's keyless endpoint",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1404",
+      "headRefName": "tools-web-search-keyless",
+      "headRefOid": "485debedf3928a189cdecebe95d06adef0984210",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/serve-web-search-keyless.md"
+          },
+          {
+            "path": "docs/AUTOQA.md"
+          },
+          {
+            "path": "packages/serve/README.md"
+          },
+          {
+            "path": "packages/serve/src/exa-keyless.ts"
+          },
+          {
+            "path": "packages/serve/src/runs.ts"
+          },
+          {
+            "path": "packages/serve/src/server.ts"
+          },
+          {
+            "path": "packages/serve/src/tool-keys.ts"
+          },
+          {
+            "path": "packages/serve/src/tools.ts"
+          },
+          {
+            "path": "packages/serve/src/web-search.ts"
+          },
+          {
+            "path": "packages/serve/test/api.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/fixtures/faux-exa.mjs"
+          },
+          {
+            "path": "packages/serve/test/fixtures/faux-model.mjs"
+          },
+          {
+            "path": "packages/serve/test/runnable.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/tool-keys.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/web-search.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "MTU"
+        }
+      },
+      "overlap": []
+    },
+    "1323": {
+      "number": 1323,
+      "title": "feat(serve): uploads: a file reserved and sent through the API, and a run's file_ids copied into its workspace",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1323",
+      "headRefName": "serve/uploads",
+      "headRefOid": "ffd4037845fff8b971a7f4d27b7693365ab6858b",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/serve-uploads.md"
+          },
+          {
+            "path": "packages/serve/README.md"
+          },
+          {
+            "path": "packages/serve/src/openapi.ts"
+          },
+          {
+            "path": "packages/serve/src/page.ts"
+          },
+          {
+            "path": "packages/serve/src/runs.ts"
+          },
+          {
+            "path": "packages/serve/src/server.ts"
+          },
+          {
+            "path": "packages/serve/src/uploads.ts"
+          },
+          {
+            "path": "packages/serve/test/api.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/openapi.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/uploads.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "MTA"
+        }
+      },
+      "overlap": [
+        "packages/serve/src/openapi.ts",
+        "packages/serve/src/page.ts",
+        "packages/serve/test/openapi.test.mjs"
+      ]
+    },
+    "1321": {
+      "number": 1321,
+      "title": "feat(codex): an option turns on Codex's own web search, live, admitted by the model proxy and booked per search",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1321",
+      "headRefName": "codex-native-websearch",
+      "headRefOid": "06c9af5a797767bf5f3a5902d3e9eb9cf304227b",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/codex-web-search-live.md"
+          },
+          {
+            "path": "packages/run-adapters-codex/README.md"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/adapter.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/harness.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/host/machine.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/host/policy.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/host/process.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/src/index.ts"
+          },
+          {
+            "path": "packages/run-adapters-codex/test/fixtures/responses-request-web-search-live.json"
+          },
+          {
+            "path": "packages/run-adapters-codex/test/policy.test.mjs"
+          },
+          {
+            "path": "packages/run-adapters-codex/test/web-search.test.mjs"
+          },
+          {
+            "path": "packages/run-adapters-codex/vendor/durable-harness/port/patches/harness-codex/011-web-search-live.patch"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "MTI"
+        }
+      },
+      "overlap": []
+    },
+    "1402": {
+      "number": 1402,
+      "title": "fix(timeline): an interrupted call sits after its call, so a relaunched run that answered ends",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1402",
+      "headRefName": "serve/relaunched-run-ends",
+      "headRefOid": "d42565b7185efdf50ef1bde8156792de9e7ede26",
+      "baseRefName": "main",
+      "reviewDecision": "APPROVED",
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": "changes/relaunched-run-ends.md"
+          },
+          {
+            "path": "packages/pi-durable-agent/src/timeline/timeline.ts"
+          },
+          {
+            "path": "packages/pi-durable-agent/test/timeline.test.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "Mw"
+        }
+      },
+      "overlap": []
+    },
+    "1408": {
+      "number": 1408,
+      "title": "feat(console): complete standalone AgentRun administration",
+      "url": "https://github.com/Parcha-ai/agentrun/pull/1408",
+      "headRefName": "codex/gre-4118-standalone-console",
+      "headRefOid": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+      "baseRefName": "main",
+      "reviewDecision": null,
+      "isDraft": false,
+      "state": "OPEN",
+      "files": {
+        "nodes": [
+          {
+            "path": ".github/workflows/ci.yml"
+          },
+          {
+            "path": "apps/console/.storybook/main.ts"
+          },
+          {
+            "path": "apps/console/LICENSE"
+          },
+          {
+            "path": "apps/console/NOTICE"
+          },
+          {
+            "path": "apps/console/README.md"
+          },
+          {
+            "path": "apps/console/build-boundary.d.mts"
+          },
+          {
+            "path": "apps/console/build-boundary.mjs"
+          },
+          {
+            "path": "apps/console/build-library.mjs"
+          },
+          {
+            "path": "apps/console/package-lock.json"
+          },
+          {
+            "path": "apps/console/package.json"
+          },
+          {
+            "path": "apps/console/scripts/generate-contract.mjs"
+          },
+          {
+            "path": "apps/console/src/AgentRunProvider.test.tsx"
+          },
+          {
+            "path": "apps/console/src/AgentRunProvider.tsx"
+          },
+          {
+            "path": "apps/console/src/App.test.tsx"
+          },
+          {
+            "path": "apps/console/src/App.tsx"
+          },
+          {
+            "path": "apps/console/src/components/AgentEditor.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/AgentEditor.tsx"
+          },
+          {
+            "path": "apps/console/src/components/AgentPage.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/AgentPage.tsx"
+          },
+          {
+            "path": "apps/console/src/components/AgentsList.tsx"
+          },
+          {
+            "path": "apps/console/src/components/AgentsPage.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/AgentsPage.tsx"
+          },
+          {
+            "path": "apps/console/src/components/CodingAgentHandoff.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/CodingAgentHandoff.tsx"
+          },
+          {
+            "path": "apps/console/src/components/LiveRun.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/LiveRun.tsx"
+          },
+          {
+            "path": "apps/console/src/components/MissionControl.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/MissionControl.tsx"
+          },
+          {
+            "path": "apps/console/src/components/Playground.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/Playground.tsx"
+          },
+          {
+            "path": "apps/console/src/components/RunBar.tsx"
+          },
+          {
+            "path": "apps/console/src/components/RunDetail.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/RunDetail.tsx"
+          },
+          {
+            "path": "apps/console/src/components/RunFiles.tsx"
+          },
+          {
+            "path": "apps/console/src/components/RunGraphView.tsx"
+          },
+          {
+            "path": "apps/console/src/components/RunHeader.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/RunHeader.tsx"
+          },
+          {
+            "path": "apps/console/src/components/SettingsPage.test.tsx"
+          },
+          {
+            "path": "apps/console/src/components/SettingsPage.tsx"
+          },
+          {
+            "path": "apps/console/src/components/Shell.tsx"
+          },
+          {
+            "path": "apps/console/src/components/ui/button.tsx"
+          },
+          {
+            "path": "apps/console/src/index.ts"
+          },
+          {
+            "path": "apps/console/src/lib/agentForm.test.ts"
+          },
+          {
+            "path": "apps/console/src/lib/agentForm.ts"
+          },
+          {
+            "path": "apps/console/src/lib/client.test.ts"
+          },
+          {
+            "path": "apps/console/src/lib/client.ts"
+          },
+          {
+            "path": "apps/console/src/lib/codingAgentHandoff.ts"
+          },
+          {
+            "path": "apps/console/src/lib/contract.generated.ts"
+          },
+          {
+            "path": "apps/console/src/lib/mission.ts"
+          },
+          {
+            "path": "apps/console/src/lib/runGraph.test.ts"
+          },
+          {
+            "path": "apps/console/src/lib/runGraph.ts"
+          },
+          {
+            "path": "apps/console/src/lib/utils.ts"
+          },
+          {
+            "path": "apps/console/src/lib/viewing.test.ts"
+          },
+          {
+            "path": "apps/console/src/lib/viewing.ts"
+          },
+          {
+            "path": "apps/console/src/styles.css"
+          },
+          {
+            "path": "apps/console/tailwind.config.ts"
+          },
+          {
+            "path": "apps/console/tsconfig.library.json"
+          },
+          {
+            "path": "apps/console/vite.config.ts"
+          },
+          {
+            "path": "apps/console/vite.library.config.ts"
+          },
+          {
+            "path": "changes/console-administration.md"
+          },
+          {
+            "path": "docs/console-architecture.md"
+          },
+          {
+            "path": "docs/dependencies.md"
+          },
+          {
+            "path": "packages/serve/NOTICE"
+          },
+          {
+            "path": "packages/serve/scripts/copy-page.mjs"
+          },
+          {
+            "path": "packages/serve/src/openapi.ts"
+          },
+          {
+            "path": "packages/serve/src/page.ts"
+          },
+          {
+            "path": "packages/serve/test/console-contract.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/console-route.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/openapi.test.mjs"
+          },
+          {
+            "path": "packages/serve/test/support.mjs"
+          },
+          {
+            "path": "scripts/build-console.mjs"
+          },
+          {
+            "path": "scripts/console-boundary.test.mjs"
+          },
+          {
+            "path": "scripts/export-source.mjs"
+          },
+          {
+            "path": "scripts/export-source.test.mjs"
+          },
+          {
+            "path": "scripts/verify-packages.mjs"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "NzU"
+        }
+      },
+      "overlap": []
+    }
+  },
+  "ownAgainstMain": {
+    "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+    "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+    "exit": 0,
+    "stdout": "8bb7f908c755158250e3508bbd051e0085e1e4e2",
+    "stderr": "",
+    "tree": "8bb7f908c755158250e3508bbd051e0085e1e4e2"
+  },
+  "pairwise": {
+    "1400": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "bcecd9010d717cea1fdcddbef173dcd4bf1b70b4",
+        "exit": 0,
+        "stdout": "c12f3dff44be6ae7d606d77f5d8f767d49330052",
+        "stderr": "",
+        "tree": "c12f3dff44be6ae7d606d77f5d8f767d49330052"
+      },
+      "trialCommit": "a2f9f043e66854a335652b0f385a77c2e7f57c79",
+      "oursAfterEarlier": {
+        "base": "a2f9f043e66854a335652b0f385a77c2e7f57c79",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 1,
+        "stdout": "2df89b2ecf537f861d3e140c44950f1973639ba8\n100644 cea99ee023b672ed61c94160c4e18ea8b6cdd711 1\tapps/console/src/App.tsx\n100644 997fea3dd29ac092a8e3e99b1cbdeca7cf84fe01 2\tapps/console/src/App.tsx\n100644 847a8773858c631a3b5a92594e0403c08c5a00a7 3\tapps/console/src/App.tsx\n\nAuto-merging apps/console/src/App.test.tsx\nAuto-merging apps/console/src/App.tsx\nCONFLICT (content): Merge conflict in apps/console/src/App.tsx",
+        "stderr": ""
+      }
+    },
+    "1399": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "c3da329e96fd6c0ffab5f2265a382f573a7654d8",
+        "exit": 0,
+        "stdout": "a1d04cf4e06c7ef50c2121c15803bc02937628f2",
+        "stderr": "",
+        "tree": "a1d04cf4e06c7ef50c2121c15803bc02937628f2"
+      },
+      "trialCommit": "c00a23c9943f2d972926ee5c4f4cc4297158b706",
+      "oursAfterEarlier": {
+        "base": "c00a23c9943f2d972926ee5c4f4cc4297158b706",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "63f3c846b6a9030ba7666678a3b8face7bde467f",
+        "stderr": "",
+        "tree": "63f3c846b6a9030ba7666678a3b8face7bde467f"
+      }
+    },
+    "1387": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "d8f0bfa63f750623e2760b02b18ac9521d4ce04a",
+        "exit": 0,
+        "stdout": "641c60be5f417fbd250277e445149cc9ac6451e2",
+        "stderr": "",
+        "tree": "641c60be5f417fbd250277e445149cc9ac6451e2"
+      },
+      "trialCommit": "94e7b431d4a43f34fcf89bb0fb1635876d277ae0",
+      "oursAfterEarlier": {
+        "base": "94e7b431d4a43f34fcf89bb0fb1635876d277ae0",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "b8885460d3f596ac5e9a87bde00f437138e8a65b",
+        "stderr": "",
+        "tree": "b8885460d3f596ac5e9a87bde00f437138e8a65b"
+      }
+    },
+    "1358": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "ca4cc5b3f10855de032e3327795faca8bec18e1f",
+        "exit": 0,
+        "stdout": "5a8d8a4529fbb7535ee2ffee9fa577473bac1100",
+        "stderr": "",
+        "tree": "5a8d8a4529fbb7535ee2ffee9fa577473bac1100"
+      },
+      "trialCommit": "bab6876c1a52b6a5b10b946670d9644f5c1b52e4",
+      "oursAfterEarlier": {
+        "base": "bab6876c1a52b6a5b10b946670d9644f5c1b52e4",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "16e27fb662448648cedab2ed2c69337bcd6913af",
+        "stderr": "",
+        "tree": "16e27fb662448648cedab2ed2c69337bcd6913af"
+      }
+    },
+    "1401": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "9b843648fa95a411c209276d7b862c4443ef369c",
+        "exit": 0,
+        "stdout": "ab4c2096dff6dc9f161b6d608f03275d2c6c57f2",
+        "stderr": "",
+        "tree": "ab4c2096dff6dc9f161b6d608f03275d2c6c57f2"
+      },
+      "trialCommit": "d1a6b8b1e69a06ebd765f02c8b652efe7dc732e4",
+      "oursAfterEarlier": {
+        "base": "d1a6b8b1e69a06ebd765f02c8b652efe7dc732e4",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "031f1faa281b8e1a2ca6a4ab7f1ea45e1acf3128",
+        "stderr": "",
+        "tree": "031f1faa281b8e1a2ca6a4ab7f1ea45e1acf3128"
+      }
+    },
+    "1376": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "d79e4b099cc5e5683a2a5ff353cb6178c1cbf8fe",
+        "exit": 0,
+        "stdout": "bf6f187d553d5db3b01a56a7537bb2bd39e3ceed",
+        "stderr": "",
+        "tree": "bf6f187d553d5db3b01a56a7537bb2bd39e3ceed"
+      },
+      "trialCommit": "1942cfbf3fa99d7a2ed0405c9be0f90be5c6c99d",
+      "oursAfterEarlier": {
+        "base": "1942cfbf3fa99d7a2ed0405c9be0f90be5c6c99d",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "7061e2cd53105d4377da8ea93418b9095b614616",
+        "stderr": "",
+        "tree": "7061e2cd53105d4377da8ea93418b9095b614616"
+      }
+    },
+    "1403": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "efbcfcc36acd5ed71858aebabd1419db17000d7f",
+        "exit": 0,
+        "stdout": "c348717c916b90dcb107fcb8c1cc14c1536c8bf6",
+        "stderr": "",
+        "tree": "c348717c916b90dcb107fcb8c1cc14c1536c8bf6"
+      },
+      "trialCommit": "2b4463e0894e2fe340b247f196ab9627587b96c0",
+      "oursAfterEarlier": {
+        "base": "2b4463e0894e2fe340b247f196ab9627587b96c0",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "e025a8c10f41f70241d8dce9904c08128f968d35",
+        "stderr": "",
+        "tree": "e025a8c10f41f70241d8dce9904c08128f968d35"
+      }
+    },
+    "1406": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "f5d12649e9599f1b462b93e803b724ddfc5b6c65",
+        "exit": 0,
+        "stdout": "40c7e73a10eed2d9e482bfe5e5f973e7f56a6653",
+        "stderr": "",
+        "tree": "40c7e73a10eed2d9e482bfe5e5f973e7f56a6653"
+      },
+      "trialCommit": "a3353f6bd222e92448293f57ffc5a154e52a9e94",
+      "oursAfterEarlier": {
+        "base": "a3353f6bd222e92448293f57ffc5a154e52a9e94",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "b8a13bba5d78fea8dd3dd7890cc0960c75d83b9b",
+        "stderr": "",
+        "tree": "b8a13bba5d78fea8dd3dd7890cc0960c75d83b9b"
+      }
+    },
+    "1404": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "485debedf3928a189cdecebe95d06adef0984210",
+        "exit": 0,
+        "stdout": "bd13c3ed9d9ae924e4e9561541f50207c9387716",
+        "stderr": "",
+        "tree": "bd13c3ed9d9ae924e4e9561541f50207c9387716"
+      },
+      "trialCommit": "df848bb6b0f437bc1bdfa40618eda5744065e15f",
+      "oursAfterEarlier": {
+        "base": "df848bb6b0f437bc1bdfa40618eda5744065e15f",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "63ec226e0631ad4cca70fd27bbd8bcbaf21120fc",
+        "stderr": "",
+        "tree": "63ec226e0631ad4cca70fd27bbd8bcbaf21120fc"
+      }
+    },
+    "1323": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "ffd4037845fff8b971a7f4d27b7693365ab6858b",
+        "exit": 0,
+        "stdout": "f18c3545608d10239a671a03219a45d85d73321e",
+        "stderr": "",
+        "tree": "f18c3545608d10239a671a03219a45d85d73321e"
+      },
+      "trialCommit": "5e04239a7631f080a16688af421f8b2c136566e3",
+      "oursAfterEarlier": {
+        "base": "5e04239a7631f080a16688af421f8b2c136566e3",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "249dc8d695d7c1bbc19e3ba1a41735c55a338d43",
+        "stderr": "",
+        "tree": "249dc8d695d7c1bbc19e3ba1a41735c55a338d43"
+      }
+    },
+    "1321": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "06c9af5a797767bf5f3a5902d3e9eb9cf304227b",
+        "exit": 0,
+        "stdout": "a7871dc053d891a027c7deb8bdc108349168c398",
+        "stderr": "",
+        "tree": "a7871dc053d891a027c7deb8bdc108349168c398"
+      },
+      "trialCommit": "62d5d649ed1085c1d11370d2d919e433ce26ac84",
+      "oursAfterEarlier": {
+        "base": "62d5d649ed1085c1d11370d2d919e433ce26ac84",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "1e05685a12d416697543add3fecaf020c8e07506",
+        "stderr": "",
+        "tree": "1e05685a12d416697543add3fecaf020c8e07506"
+      }
+    },
+    "1402": {
+      "earlierAgainstMain": {
+        "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+        "head": "d42565b7185efdf50ef1bde8156792de9e7ede26",
+        "exit": 0,
+        "stdout": "b054367681193c6138fdd2eb202d6d4e368364c2",
+        "stderr": "",
+        "tree": "b054367681193c6138fdd2eb202d6d4e368364c2"
+      },
+      "trialCommit": "81df4ea7014d8520f4cd35e9667a8978c1713320",
+      "oursAfterEarlier": {
+        "base": "81df4ea7014d8520f4cd35e9667a8978c1713320",
+        "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+        "exit": 0,
+        "stdout": "36efcb5e0cc50ddd31ab93f1e86d0294f5335496",
+        "stderr": "",
+        "tree": "36efcb5e0cc50ddd31ab93f1e86d0294f5335496"
+      }
+    }
+  },
+  "fullStack": [
+    {
+      "number": 1400,
+      "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+      "head": "bcecd9010d717cea1fdcddbef173dcd4bf1b70b4",
+      "exit": 0,
+      "stdout": "c12f3dff44be6ae7d606d77f5d8f767d49330052",
+      "stderr": "",
+      "tree": "c12f3dff44be6ae7d606d77f5d8f767d49330052",
+      "trialCommit": "a2f9f043e66854a335652b0f385a77c2e7f57c79"
+    },
+    {
+      "number": 1399,
+      "base": "a2f9f043e66854a335652b0f385a77c2e7f57c79",
+      "head": "c3da329e96fd6c0ffab5f2265a382f573a7654d8",
+      "exit": 0,
+      "stdout": "549dc0e242467fb6d8f1029b31aa39a07017b0a2",
+      "stderr": "",
+      "tree": "549dc0e242467fb6d8f1029b31aa39a07017b0a2",
+      "trialCommit": "c963679515d149417c1d65c25767f3e2a1603a60"
+    },
+    {
+      "number": 1387,
+      "base": "c963679515d149417c1d65c25767f3e2a1603a60",
+      "head": "d8f0bfa63f750623e2760b02b18ac9521d4ce04a",
+      "exit": 0,
+      "stdout": "ed4e4c99f9a5a0e44d72d1b33d048e2746b6be44",
+      "stderr": "",
+      "tree": "ed4e4c99f9a5a0e44d72d1b33d048e2746b6be44",
+      "trialCommit": "ea1982bf341103710fdf1575697bf61ee4ba1f15"
+    },
+    {
+      "number": 1358,
+      "base": "ea1982bf341103710fdf1575697bf61ee4ba1f15",
+      "head": "ca4cc5b3f10855de032e3327795faca8bec18e1f",
+      "exit": 0,
+      "stdout": "76014340f699913c88a93dbc15ab7a52d1b3b925",
+      "stderr": "",
+      "tree": "76014340f699913c88a93dbc15ab7a52d1b3b925",
+      "trialCommit": "c9112484f046e38a4aa7ed70860c649f8029dfdc"
+    },
+    {
+      "number": 1401,
+      "base": "c9112484f046e38a4aa7ed70860c649f8029dfdc",
+      "head": "9b843648fa95a411c209276d7b862c4443ef369c",
+      "exit": 0,
+      "stdout": "784d277056f60d5fa72ee50e386dfe9a024d8323",
+      "stderr": "",
+      "tree": "784d277056f60d5fa72ee50e386dfe9a024d8323",
+      "trialCommit": "dc31cdf4bce754dc02ec1933b5963fc815ef3f89"
+    },
+    {
+      "number": 1376,
+      "base": "dc31cdf4bce754dc02ec1933b5963fc815ef3f89",
+      "head": "d79e4b099cc5e5683a2a5ff353cb6178c1cbf8fe",
+      "exit": 0,
+      "stdout": "e69a0e40643b6a96c3910ec7e2fc9117210e69b1",
+      "stderr": "",
+      "tree": "e69a0e40643b6a96c3910ec7e2fc9117210e69b1",
+      "trialCommit": "b8ab7239b70e7f0e170a759af007ba24de222d5a"
+    },
+    {
+      "number": 1403,
+      "base": "b8ab7239b70e7f0e170a759af007ba24de222d5a",
+      "head": "efbcfcc36acd5ed71858aebabd1419db17000d7f",
+      "exit": 0,
+      "stdout": "e7790cb517d0b3cb4372a1fd6bbcaf7917de52bb",
+      "stderr": "",
+      "tree": "e7790cb517d0b3cb4372a1fd6bbcaf7917de52bb",
+      "trialCommit": "3dd5cffcdddbd03c104a485d4dd39620b08c2931"
+    },
+    {
+      "number": 1406,
+      "base": "3dd5cffcdddbd03c104a485d4dd39620b08c2931",
+      "head": "f5d12649e9599f1b462b93e803b724ddfc5b6c65",
+      "exit": 0,
+      "stdout": "958ae5230b90e01de4ed9072b7cbb1a4cc4a422f",
+      "stderr": "",
+      "tree": "958ae5230b90e01de4ed9072b7cbb1a4cc4a422f",
+      "trialCommit": "91b5626a4f225b63df6be7edf1cef1c84e50f2e5"
+    },
+    {
+      "number": 1404,
+      "base": "91b5626a4f225b63df6be7edf1cef1c84e50f2e5",
+      "head": "485debedf3928a189cdecebe95d06adef0984210",
+      "exit": 0,
+      "stdout": "92caddc6904ad17ce14fdc7cb18a0398d2f8d23d",
+      "stderr": "",
+      "tree": "92caddc6904ad17ce14fdc7cb18a0398d2f8d23d",
+      "trialCommit": "70e2da1c2c3eb8ce94d58688c52e5f73fb3428a3"
+    },
+    {
+      "number": 1323,
+      "base": "70e2da1c2c3eb8ce94d58688c52e5f73fb3428a3",
+      "head": "ffd4037845fff8b971a7f4d27b7693365ab6858b",
+      "exit": 0,
+      "stdout": "951e28162ef9a6338a2b904ff7539369dd6b76de",
+      "stderr": "",
+      "tree": "951e28162ef9a6338a2b904ff7539369dd6b76de",
+      "trialCommit": "0529c48b9fc0254f1cbf70b0843c29094d2a4c30"
+    },
+    {
+      "number": 1321,
+      "base": "0529c48b9fc0254f1cbf70b0843c29094d2a4c30",
+      "head": "06c9af5a797767bf5f3a5902d3e9eb9cf304227b",
+      "exit": 1,
+      "stdout": "05d101f1d8cc9352059957d45e9db50fb12efe5c\n100644 73ed07f4ed9b2d7c021dc09c4556f39668a4236b 1\tpackages/run-adapters-codex/README.md\n100644 acf1dbb331869e8f1db76ffcb1ac20b8546da2eb 2\tpackages/run-adapters-codex/README.md\n100644 344ab1091cbae78c70fdadf9be492b8936d490c3 3\tpackages/run-adapters-codex/README.md\n\nAuto-merging packages/run-adapters-codex/README.md\nCONFLICT (content): Merge conflict in packages/run-adapters-codex/README.md\nAuto-merging packages/run-adapters-codex/src/adapter.ts\nAuto-merging packages/run-adapters-codex/src/host/machine.ts",
+      "stderr": ""
+    }
+  ],
+  "fullStackStoppedAt": 1321,
+  "headAfter": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+  "trackedStatusUnchanged": true,
+  "overlapStack": [
+    {
+      "number": 1400,
+      "base": "1961a96fcbbfbe89d5b5e0de9704289d2538037d",
+      "head": "bcecd9010d717cea1fdcddbef173dcd4bf1b70b4",
+      "exit": 0,
+      "stdout": "c12f3dff44be6ae7d606d77f5d8f767d49330052",
+      "stderr": "",
+      "tree": "c12f3dff44be6ae7d606d77f5d8f767d49330052",
+      "trialCommit": "9e49c10cd3b910b21a57318b35e05640c4e06289"
+    },
+    {
+      "number": 1399,
+      "base": "9e49c10cd3b910b21a57318b35e05640c4e06289",
+      "head": "c3da329e96fd6c0ffab5f2265a382f573a7654d8",
+      "exit": 0,
+      "stdout": "549dc0e242467fb6d8f1029b31aa39a07017b0a2",
+      "stderr": "",
+      "tree": "549dc0e242467fb6d8f1029b31aa39a07017b0a2",
+      "trialCommit": "48f21f020b5ba64a594f8c8b62c34096516f5a2c"
+    },
+    {
+      "number": 1387,
+      "base": "48f21f020b5ba64a594f8c8b62c34096516f5a2c",
+      "head": "d8f0bfa63f750623e2760b02b18ac9521d4ce04a",
+      "exit": 0,
+      "stdout": "ed4e4c99f9a5a0e44d72d1b33d048e2746b6be44",
+      "stderr": "",
+      "tree": "ed4e4c99f9a5a0e44d72d1b33d048e2746b6be44",
+      "trialCommit": "94af376aa4192547955805e992926364b6fd9a06"
+    },
+    {
+      "number": 1323,
+      "base": "94af376aa4192547955805e992926364b6fd9a06",
+      "head": "ffd4037845fff8b971a7f4d27b7693365ab6858b",
+      "exit": 0,
+      "stdout": "c2368743f626c8fc34a484a4fa44cb73a43388b0",
+      "stderr": "",
+      "tree": "c2368743f626c8fc34a484a4fa44cb73a43388b0",
+      "trialCommit": "ec2024766d95a1f0ca728cfc85ef77640f8e1e99"
+    }
+  ],
+  "oursAfterOverlapStack": {
+    "base": "ec2024766d95a1f0ca728cfc85ef77640f8e1e99",
+    "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+    "exit": 1,
+    "stdout": "3e120c907d9a4b116acb7579eb207523497f1d17\n100644 cea99ee023b672ed61c94160c4e18ea8b6cdd711 1\tapps/console/src/App.tsx\n100644 997fea3dd29ac092a8e3e99b1cbdeca7cf84fe01 2\tapps/console/src/App.tsx\n100644 847a8773858c631a3b5a92594e0403c08c5a00a7 3\tapps/console/src/App.tsx\n\nAuto-merging apps/console/src/App.test.tsx\nAuto-merging apps/console/src/App.tsx\nCONFLICT (content): Merge conflict in apps/console/src/App.tsx\nAuto-merging packages/serve/src/openapi.ts\nAuto-merging packages/serve/src/page.ts\nAuto-merging packages/serve/test/openapi.test.mjs\nAuto-merging scripts/build-console.mjs",
+    "stderr": ""
+  },
+  "oursAfterFullCleanPrefix": {
+    "base": "0529c48b9fc0254f1cbf70b0843c29094d2a4c30",
+    "head": "0d1fb055e1263e0bce99af1fc87bbca6415c941e",
+    "exit": 1,
+    "stdout": "df503d372487a6c42f8a2b6024631c2004e67579\n100644 cea99ee023b672ed61c94160c4e18ea8b6cdd711 1\tapps/console/src/App.tsx\n100644 997fea3dd29ac092a8e3e99b1cbdeca7cf84fe01 2\tapps/console/src/App.tsx\n100644 847a8773858c631a3b5a92594e0403c08c5a00a7 3\tapps/console/src/App.tsx\n\nAuto-merging apps/console/src/App.test.tsx\nAuto-merging apps/console/src/App.tsx\nCONFLICT (content): Merge conflict in apps/console/src/App.tsx\nAuto-merging packages/serve/src/openapi.ts\nAuto-merging packages/serve/src/page.ts\nAuto-merging packages/serve/test/openapi.test.mjs\nAuto-merging scripts/build-console.mjs",
+    "stderr": ""
+  },
+  "appConflictHunks": [
+    {
+      "start": 140,
+      "end": 179,
+      "lines": [
+        "<<<<<<< a2f9f043e66854a335652b0f385a77c2e7f57c79",
+        "  const go = (hash: string) => { location.hash = hash; };",
+        "  useEffect(() => { const on = () => setWhere(route()); window.addEventListener(\"hashchange\", on); return () => window.removeEventListener(\"hashchange\", on); }, []);",
+        "  useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);",
+        "  // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs",
+        "  // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once.",
+        "  // Only the newest read lands.",
+        "  useEffect(() => {",
+        "    if (namesAsked.current && where.section !== \"runs\") return;",
+        "    const n = ++namesAsked.current;",
+        "    setNamesRead(false);",
+        "    void Promise.allSettled([false, true].map((archived) => allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents))).then((reads) => {",
+        "      if (n !== namesAsked.current) return;",
+        "      const fresh = Object.fromEntries(reads.flatMap((r) => (r.status === \"fulfilled\" ? r.value : [])).map((x) => [x.agent_id, x.definition.name ?? x.agent_id]));",
+        "      // Each read's answer is kept. Both landed: the names are theirs. One failed: what came back goes over the names",
+        "      // held, and the lookup is not complete, so a name it lacks (an agent the failed read would have named) shows as",
+        "      // nothing yet, never as an id read as gone; the next runs view reads again.",
+        "      const whole = reads.every((r) => r.status === \"fulfilled\");",
+        "      setNames((held) => (whole ? fresh : { ...held, ...fresh }));",
+        "      setNamesRead(whole);",
+        "    });",
+        "  }, [v2, where]);",
+        "=======",
+        "  const go = (hash: string) => { location.hash = hash; setAddress(hash); };",
+        "  useEffect(() => { const on = () => setAddress(location.hash); window.addEventListener(\"hashchange\", on); return () => window.removeEventListener(\"hashchange\", on); }, []);",
+        "  useEffect(() => {",
+        "    if (!caps || caps.features.agents?.list === false) return;",
+        "    // Every page of agents, for their names.",
+        "    (async () => {",
+        "      const all: Record<string, string> = {};",
+        "      for (let c: string | null | undefined = undefined, i = 0; i < 50; i++) {",
+        "        const page = await v2.listAgents({ cursor: c });",
+        "        for (const x of page.agents) all[x.agent_id] = x.definition.name ?? x.agent_id;",
+        "        if (!page.next_cursor) break;",
+        "        c = page.next_cursor;",
+        "      }",
+        "      setNames(all);",
+        "    })().catch(() => {});",
+        "  }, [v2, caps, where.section, where.agent, where.run]);",
+        ">>>>>>> 0d1fb055e1263e0bce99af1fc87bbca6415c941e"
+      ]
+    },
+    {
+      "start": 189,
+      "end": 197,
+      "lines": [
+        "<<<<<<< a2f9f043e66854a335652b0f385a77c2e7f57c79",
+        "  }, [v2, where]);",
+        "  // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.",
+        "  const agentName = (id: string) => names[id] ?? (namesRead ? id : \"\");",
+        "  const c = caps as unknown as { harnesses: EditorCaps[\"harnesses\"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string } } | null;",
+        "=======",
+        "  }, [v2, where, caps]);",
+        "  const agentName = (id: string) => names[id] ?? id;",
+        ">>>>>>> 0d1fb055e1263e0bce99af1fc87bbca6415c941e"
+      ]
+    }
+  ]
+}

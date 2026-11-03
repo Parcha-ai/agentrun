@@ -1,0 +1,261 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 3.16kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 636B done
+#3 DONE 0.0s
+
+#4 [build 1/4] FROM docker.io/library/node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6
+#4 resolve docker.io/library/node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 26.22MB 0.1s done
+#5 DONE 0.1s
+
+#6 [build 2/4] WORKDIR /src
+#6 CACHED
+
+#7 [build 3/4] COPY . .
+#7 DONE 0.4s
+
+#8 [build 4/4] RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && npm run build)  && npm run build && test -f packages/serve/dist/console/index.html && rm -rf apps  && rm -rf packages/harness node_modules/@parcha/agentrun-harness  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-*       node_modules/@anthropic-ai/claude-code node_modules/.bin/claude  && chmod -R a+rX,go-w /src
+#8 1.626 npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+#8 5.743 
+#8 5.743 added 402 packages, and audited 420 packages in 6s
+#8 5.743 
+#8 5.743 94 packages are looking for funding
+#8 5.743   run `npm fund` for details
+#8 5.747 
+#8 5.747 7 moderate severity vulnerabilities
+#8 5.747 
+#8 5.747 To address issues that do not require attention, run:
+#8 5.747   npm audit fix
+#8 5.747 
+#8 5.747 To address all issues (including breaking changes), run:
+#8 5.747   npm audit fix --force
+#8 5.747 
+#8 5.747 Run `npm audit` for details.
+#8 5.748 npm notice
+#8 5.748 npm notice New major version of npm available! 10.9.8 -> 12.2.1
+#8 5.748 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+#8 5.748 npm notice To update run: npm install -g npm@12.2.1
+#8 5.748 npm notice
+#8 6.294 npm warn deprecated whatwg-encoding@3.1.1: Use @exodus/bytes instead for a more spec-conformant and faster implementation
+#8 7.128 npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+#8 12.93 
+#8 12.93 added 353 packages, and audited 354 packages in 7s
+#8 12.93 
+#8 12.93 95 packages are looking for funding
+#8 12.93   run `npm fund` for details
+#8 12.98 
+#8 12.98 14 vulnerabilities (7 moderate, 3 high, 4 critical)
+#8 12.98 
+#8 12.98 To address all issues (including breaking changes), run:
+#8 12.98   npm audit fix --force
+#8 12.98 
+#8 12.98 Run `npm audit` for details.
+#8 13.06 
+#8 13.06 > @parcha/agentrun-ui@0.1.0-beta.28 build
+#8 13.06 > tsc -p tsconfig.json && vite build && npm run build:library && node ../../scripts/build-console.mjs --stamp
+#8 13.06 
+#8 15.80 vite v5.4.21 building for production...
+#8 15.82 transforming...
+#8 17.38 ✓ 1637 modules transformed.
+#8 17.49 rendering chunks...
+#8 17.50 computing gzip size...
+#8 17.51 dist/index.html                                                      0.41 kB │ gzip:   0.27 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-ext-400-normal-C_uLvvQ5.woff2    1.16 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-ext-600-normal-Dj6eZy5f.woff2    1.16 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-ext-600-normal-DpeVePZf.woff     1.73 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-ext-400-normal-BHyURHCj.woff     1.75 kB
+#8 17.51 dist/asset-manifest.json                                             2.17 kB │ gzip:   0.52 kB
+#8 17.51 dist/assets/jetbrains-mono-vietnamese-400-normal-ByoDsISC.woff2      3.92 kB
+#8 17.51 dist/assets/jetbrains-mono-vietnamese-600-normal-Dtizs43-.woff2      4.00 kB
+#8 17.51 dist/assets/jetbrains-mono-greek-400-normal-C190GLew.woff2           4.23 kB
+#8 17.51 dist/assets/jetbrains-mono-greek-600-normal-H7WoG9Et.woff2           4.31 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-400-normal-BEIGL1Tu.woff2        5.33 kB
+#8 17.51 dist/assets/jetbrains-mono-vietnamese-400-normal-BeU3T8wf.woff       5.37 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-600-normal-EVf6-Yzo.woff2        5.38 kB
+#8 17.51 dist/assets/jetbrains-mono-vietnamese-600-normal-CSpzN4cI.woff       5.47 kB
+#8 17.51 dist/assets/jetbrains-mono-greek-400-normal-CNojz0t3.woff            5.67 kB
+#8 17.51 dist/assets/jetbrains-mono-greek-600-normal-3KAm9r92.woff            5.70 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-400-normal-CIEtRijs.woff         6.98 kB
+#8 17.51 dist/assets/jetbrains-mono-cyrillic-600-normal-BB5xRk30.woff         7.03 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-ext-400-normal-Bc8Ftmh3.woff2       7.34 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-ext-600-normal-BfB_LPfz.woff2       7.51 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-ext-400-normal-DHMOLxAi.woff       10.12 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-ext-600-normal-DiQlUoE6.woff       10.31 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-ext-400-normal-4l4lq8zr.woff2   11.44 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-ext-600-normal-8_E36CQj.woff2   11.62 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-ext-400-normal-BGzXWJeR.woff    15.72 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-ext-600-normal-C27an7Zc.woff    16.02 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-400-normal-V6pRDFza.woff2          21.17 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-600-normal-C8RAYTDA.woff2          21.86 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-400-normal-Cph9ettZ.woff2       24.46 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-600-normal-BGBUNdzT.woff2       25.31 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-400-normal-B11XCQ5g.woff           27.85 kB
+#8 17.51 dist/assets/jetbrains-mono-latin-600-normal-DXv3JcnD.woff           28.53 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-400-normal-DfGZKnlb.woff        30.18 kB
+#8 17.51 dist/assets/schibsted-grotesk-latin-600-normal-COje25QW.woff        31.23 kB
+#8 17.51 dist/THIRD-PARTY-NOTICES.txt                                        45.01 kB │ gzip:  11.73 kB
+#8 17.51 dist/assets/index-MZWl1iOl.css                                      47.34 kB │ gzip:   9.40 kB
+#8 17.51 dist/assets/index-DUXjp8H7.js                                      458.77 kB │ gzip: 141.88 kB
+#8 17.51 ✓ built in 1.70s
+#8 17.60 
+#8 17.60 > @parcha/agentrun-ui@0.1.0-beta.28 build:library
+#8 17.60 > vite build --config vite.library.config.ts && tsc -p tsconfig.library.json && node build-library.mjs
+#8 17.60 
+#8 17.71 vite v5.4.21 building for production...
+#8 17.85 transforming...
+#8 19.04 ✓ 1609 modules transformed.
+#8 19.11 rendering chunks...
+#8 19.14 computing gzip size...
+#8 19.15 dist/library/asset-manifest.json        0.07 kB │ gzip:   0.08 kB
+#8 19.15 dist/library/THIRD-PARTY-NOTICES.txt   41.66 kB │ gzip:  11.62 kB
+#8 19.15 dist/library/style.css                539.64 kB │ gzip: 378.91 kB
+#8 19.15 dist/library/index.js                 417.45 kB │ gzip: 108.18 kB
+#8 19.15 ✓ built in 1.42s
+#8 21.17 
+#8 21.17 > agentrun-dsl-workspace@0.1.0-beta.28 build
+#8 21.17 > node scripts/check-node.mjs && node scripts/build-console.mjs && npm run build --workspaces --if-present
+#8 21.17 
+#8 21.21 The console is current (apps/console/dist matches its sources): not built again.
+#8 21.28 
+#8 21.28 > @parcha/agentrun-decisions@0.1.0-beta.28 build
+#8 21.28 > rm -rf dist && (test -f ../dsl/dist/index.d.ts || npm --prefix ../dsl run build) && tsc -p tsconfig.json
+#8 21.28 
+#8 21.34 
+#8 21.34 > @parcha/agentrun-dsl@0.1.0-beta.28 build
+#8 21.34 > tsc -p tsconfig.json
+#8 21.34 
+#8 23.49 
+#8 23.49 > @parcha/agentrun-dsl@0.1.0-beta.28 build
+#8 23.49 > tsc -p tsconfig.json
+#8 23.49 
+#8 25.07 
+#8 25.07 > @parcha/agentrun-harness@0.1.0-beta.28 build
+#8 25.07 > rm -rf dist && for p in dsl jev pi pi-browser pi-durable-disk pi-transport pi-vision; do test -f ../$p/dist/index.d.ts || npm --prefix ../$p run build || exit 1; done && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist
+#8 25.07 
+#8 25.13 
+#8 25.13 > @parcha/agentrun-jev@0.1.0-beta.28 build
+#8 25.13 > tsc -p tsconfig.json
+#8 25.13 
+#8 25.70 
+#8 25.70 > @parcha/agentrun-pi@0.1.0-beta.28 build
+#8 25.70 > node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json && node ../../scripts/render-pi-skill.mjs
+#8 25.70 
+#8 29.43 Rendered the Pi author skill into packages/pi/dist/skills/author
+#8 29.49 
+#8 29.49 > @parcha/pi-browser@0.1.0-beta.28 build
+#8 29.49 > rm -rf dist && tsc -p tsconfig.json
+#8 29.49 
+#8 33.21 
+#8 33.21 > @parcha/pi-durable-disk@0.1.0-beta.28 build
+#8 33.21 > rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist
+#8 33.21 
+#8 35.05 
+#8 35.05 > @parcha/pi-transport@0.1.0-beta.28 build
+#8 35.05 > rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist
+#8 35.05 
+#8 38.42 
+#8 38.42 > @parcha/pi-vision@0.1.0-beta.28 build
+#8 38.42 > rm -rf dist && tsc -p tsconfig.json
+#8 38.42 
+#8 43.06 
+#8 43.06 > @parcha/agentrun-jev@0.1.0-beta.28 build
+#8 43.06 > tsc -p tsconfig.json
+#8 43.06 
+#8 43.59 
+#8 43.59 > @parcha/agentrun-learn@0.1.0-beta.28 build
+#8 43.59 > rm -rf dist && (test -f ../dsl/dist/index.d.ts || npm --prefix ../dsl run build) && tsc -p tsconfig.json
+#8 43.59 
+#8 44.19 
+#8 44.19 > @parcha/agentrun-pi@0.1.0-beta.28 build
+#8 44.19 > node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json && node ../../scripts/render-pi-skill.mjs
+#8 44.19 
+#8 47.80 Rendered the Pi author skill into packages/pi/dist/skills/author
+#8 47.81 
+#8 47.81 > @parcha/pi-agent-learn@0.1.0-beta.28 build
+#8 47.81 > rm -rf dist && (test -f ../pi-git-remote/dist/index.d.ts || npm --prefix ../pi-git-remote run build) && (test -f ../dsl/dist/index.d.ts || npm --prefix ../dsl run build) && (test -f ../pi/dist/workflows.d.ts || npm --prefix ../pi run build) && tsc -p tsconfig.json
+#8 47.81 
+#8 47.86 
+#8 47.86 > @parcha/pi-git-remote@0.1.0-beta.28 build
+#8 47.86 > rm -rf dist && tsc -p tsconfig.json
+#8 47.86 
+#8 51.98 
+#8 51.98 > @parcha/pi-browser@0.1.0-beta.28 build
+#8 51.98 > rm -rf dist && tsc -p tsconfig.json
+#8 51.98 
+#8 55.73 
+#8 55.73 > @parcha/pi-durable-agent@0.1.0-beta.28 build
+#8 55.73 > rm -rf dist && tsc -p tsconfig.json && node scripts/copy-page.mjs
+#8 55.73 
+#8 57.41 
+#8 57.41 > @parcha/pi-durable-disk@0.1.0-beta.28 build
+#8 57.41 > rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist
+#8 57.41 
+#8 59.26 
+#8 59.26 > @parcha/pi-git-remote@0.1.0-beta.28 build
+#8 59.26 > rm -rf dist && tsc -p tsconfig.json
+#8 59.26 
+#8 60.61 
+#8 60.61 > @parcha/pi-transport@0.1.0-beta.28 build
+#8 60.61 > rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist
+#8 60.61 
+#8 64.13 
+#8 64.13 > @parcha/pi-vision@0.1.0-beta.28 build
+#8 64.13 > rm -rf dist && tsc -p tsconfig.json
+#8 64.13 
+#8 66.02 
+#8 66.02 > @parcha/agentrun-kernel@0.1.0-beta.28 build
+#8 66.02 > rm -rf dist && tsc -p tsconfig.json
+#8 66.02 
+#8 67.08 
+#8 67.08 > @parcha/agentrun-harness-claude@0.1.0-beta.28 build
+#8 67.08 > rm -rf dist && tsc -p tsconfig.json
+#8 67.08 
+#8 68.21 
+#8 68.21 > @parcha/agentrun-harness-codex@0.1.0-beta.28 build
+#8 68.21 > rm -rf dist && tsc -p tsconfig.json
+#8 68.21 
+#8 68.98 
+#8 68.98 > @parcha/agentrun-serve@0.1.0-beta.28 build
+#8 68.98 > rm -rf dist && tsc -p tsconfig.json && node scripts/copy-page.mjs
+#8 68.98 
+#8 DONE 73.8s
+
+#9 [stage-1 2/6] RUN apt-get update -qq  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tini git >/dev/null  && rm -rf /var/lib/apt/lists/*  && install -d -o node -g node -m 0700 /data
+#9 CACHED
+
+#10 [stage-1 3/6] RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40  || { echo "git $v is older than 2.40" >&2; exit 1; }
+#10 CACHED
+
+#11 [stage-1 4/6] COPY --from=build --chown=root:root /src /opt/agentrun
+#11 DONE 4.5s
+
+#12 [stage-1 5/6] RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
+#12 0.406 image check: no Claude Agent SDK or Claude CLI under /opt/agentrun
+#12 0.686 image check: Codex 0.164.0 at /opt/agentrun/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex is the pinned build
+#12 DONE 0.7s
+
+#13 [stage-1 6/6] WORKDIR /opt/agentrun
+#13 DONE 0.0s
+
+#14 exporting to image
+#14 exporting layers
+#14 exporting layers 18.0s done
+#14 exporting manifest sha256:8510d697464a36fa615e2272e9c52e7bb2b4b2367d9d3f6f1ed1b2afa93dca7a done
+#14 exporting config sha256:a1bfe7e2347ac5a70fcd4646882ecf100e5bb8ffb44d598428138674672ab885 done
+#14 exporting attestation manifest sha256:74ef4e860a60831ae22fc30e5ce46ca44cb3868212f2e99b1071dfd30a123c46 done
+#14 exporting manifest list sha256:4aeb477a07fadc42a85a586237dbf403d29b109bfc160425aa8e264736980e27 done
+#14 naming to docker.io/library/gre4118-console-proof:3573f4a6-3d710450 done
+#14 unpacking to docker.io/library/gre4118-console-proof:3573f4a6-3d710450
+#14 unpacking to docker.io/library/gre4118-console-proof:3573f4a6-3d710450 4.6s done
+#14 DONE 22.6s

@@ -1,0 +1,173 @@
+{
+  "commit": "3573f4a6f4f1a68b2a1c52161b0a363d2802315f",
+  "tag": "gre4118-console-proof:3573f4a6-3d710450",
+  "container": "gre4118-console-proof-3d710450",
+  "volume": "gre4118-console-proof-3d710450-data",
+  "checks": [
+    {
+      "name": "loopback-only publication and isolated data",
+      "verdict": "PASS",
+      "binding": [
+        {
+          "HostIp": "127.0.0.1",
+          "HostPort": "32783"
+        }
+      ],
+      "imageUser": "node",
+      "dataVolume": "gre4118-console-proof-3d710450-data"
+    },
+    {
+      "name": "health",
+      "verdict": "PASS",
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "checks": {
+          "store": "ok",
+          "disk": "ok"
+        }
+      }
+    },
+    {
+      "name": "unauthorized data denied",
+      "verdict": "PASS",
+      "missing": {
+        "status": 401,
+        "body": {
+          "error": {
+            "code": "unauthenticated",
+            "message": "this route needs Authorization: Bearer <the token in the data directory>",
+            "retryable": false,
+            "request_id": "req_40cae410b67dab3f"
+          }
+        }
+      },
+      "wrong": {
+        "status": 401,
+        "code": "unauthenticated"
+      }
+    },
+    {
+      "name": "native capabilities",
+      "verdict": "PASS",
+      "status": 200,
+      "contract": "agentrun.v2/0",
+      "server": {
+        "name": "@parcha/agentrun-serve",
+        "version": "0.1.0-beta.28",
+        "platform": "linux"
+      },
+      "harnesses": [
+        {
+          "id": "pi",
+          "available": true
+        },
+        {
+          "id": "claude-agent",
+          "available": false
+        },
+        {
+          "id": "codex",
+          "available": false
+        }
+      ]
+    },
+    {
+      "name": "standalone console index and exact built assets",
+      "verdict": "PASS",
+      "indexStatus": 200,
+      "script": {
+        "path": "assets/index-DUXjp8H7.js",
+        "status": 200,
+        "bytes": 458857,
+        "sha256": "7a14028d5518ba3e5929420def5b4a8d8c9518155a74d76955f948afa73f94db"
+      },
+      "css": {
+        "path": "assets/index-MZWl1iOl.css",
+        "status": 200,
+        "sha256": "bf50c1d29c09f394dbd98026fef8f8c8cae60514718ac97b42d0ea5b6daf512f"
+      },
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "unlistedStatus": 404
+    },
+    {
+      "name": "owner bootstrap and cookie same-origin protection",
+      "verdict": "PASS",
+      "setupStatus": 201,
+      "signedIn": true,
+      "cookieReadStatus": 200,
+      "cookieHttpOnly": true,
+      "cookieSameSiteStrict": true,
+      "crossOriginStatus": 401
+    },
+    {
+      "name": "real faux child process, persisted result and native media MIME",
+      "verdict": "PASS",
+      "createStatus": 201,
+      "startStatus": 202,
+      "agentId": "container-proof",
+      "revision": "bd1e004e5ba9f1ff00143fe063b5121d8db825dbafd27c0d6b212e90acff9910",
+      "runId": "01a19f04-86a8-7a62-9af9-b9deadd5ec9b",
+      "timelineFinal": true,
+      "status": "completed",
+      "result": {
+        "output": null,
+        "final_answer": "The answer is 42."
+      },
+      "rowKinds": [
+        "user_message",
+        "thinking",
+        "final_answer",
+        "usage"
+      ],
+      "media": [
+        {
+          "path": "tone.wav",
+          "type": "audio/wav",
+          "status": 200,
+          "exactBytes": true,
+          "nosniff": true
+        },
+        {
+          "path": "clip.webm",
+          "type": "video/webm",
+          "status": 200,
+          "exactBytes": true,
+          "nosniff": true
+        }
+      ]
+    },
+    {
+      "name": "native image redistributable-dependency gate",
+      "verdict": "PASS",
+      "output": "image check: no Claude Agent SDK or Claude CLI under /opt/agentrun\nimage check: Codex 0.164.0 at /opt/agentrun/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex is the pinned build"
+    }
+  ],
+  "resources": [
+    {
+      "agentId": "container-proof",
+      "revision": "bd1e004e5ba9f1ff00143fe063b5121d8db825dbafd27c0d6b212e90acff9910"
+    },
+    {
+      "runId": "01a19f04-86a8-7a62-9af9-b9deadd5ec9b"
+    }
+  ],
+  "cleanup": {
+    "containerStopped": true,
+    "containerRemoved": true,
+    "volumeRemoved": true,
+    "containerAbsentReadback": true,
+    "volumeAbsentReadback": true,
+    "imagePresentReadback": true,
+    "imageRetained": "gre4118-console-proof:3573f4a6-3d710450"
+  },
+  "image": {
+    "id": "sha256:4aeb477a07fadc42a85a586237dbf403d29b109bfc160425aa8e264736980e27",
+    "sizeBytes": 388757306,
+    "user": "node",
+    "created": "2026-11-03T01:26:47.391613986Z"
+  },
+  "containerId": "4d7817ec0a6906d43eb33cbed661ef4dc32674987337d969ada06714bc050c7e",
+  "origin": "http://127.0.0.1:32783",
+  "status": "PASS"
+}

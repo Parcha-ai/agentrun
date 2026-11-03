@@ -1,53 +1,53 @@
 TAP version 13
-# (node:2049648) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (node:2512090) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: the exported console client preserves native revisions, request identity, input and file bytes across restart
     # Subtest: capabilities and unauthorized reads use the real server contract
     ok 1 - capabilities and unauthorized reads use the real server contract
       ---
-      duration_ms: 13.134846
+      duration_ms: 12.508756
       type: 'test'
       ...
     # Subtest: skills survive an edit, equivalent saves do not duplicate revisions, stale edits are refused
     ok 2 - skills survive an edit, equivalent saves do not duplicate revisions, stale edits are refused
       ---
-      duration_ms: 25.497194
+      duration_ms: 24.725599
       type: 'test'
       ...
     # Subtest: a selected old revision is pinned and duplicate submissions return the same run
     ok 3 - a selected old revision is pinned and duplicate submissions return the same run
       ---
-      duration_ms: 492.600075
+      duration_ms: 489.072432
       type: 'test'
       ...
     # Subtest: a real ask_person request is answered once and returns its final result
     ok 4 - a real ask_person request is answered once and returns its final result
       ---
-      duration_ms: 471.981448
+      duration_ms: 467.03144
       type: 'test'
       ...
     # Subtest: stop keeps a run continuable; cancellation makes a different run terminal
     ok 5 - stop keeps a run continuable; cancellation makes a different run terminal
       ---
-      duration_ms: 492.085586
+      duration_ms: 490.996243
       type: 'test'
       ...
     # Subtest: workflow capabilities and failures remain distinct from agentic continuation
     ok 6 - workflow capabilities and failures remain distinct from agentic continuation
       ---
-      duration_ms: 965.327502
+      duration_ms: 934.128744
       type: 'test'
       ...
     # Subtest: restart reopens completed and cancelled runs and resets an old cursor
     ok 7 - restart reopens completed and cancelled runs and resets an old cursor
       ---
-      duration_ms: 878.918517
+      duration_ms: 813.696712
       type: 'test'
       ...
     1..7
 ok 1 - the exported console client preserves native revisions, request identity, input and file bytes across restart
   ---
-  duration_ms: 4199.607091
+  duration_ms: 4039.370526
   type: 'test'
   ...
 1..1
@@ -58,4 +58,4 @@ ok 1 - the exported console client preserves native revisions, request identity,
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 4582.028856
+# duration_ms 4405.66592

@@ -1,0 +1,31 @@
+at=2026-11-03T01:27:15.977Z event=boxes available=none unavailable=bwrap,docker,modal,daytona
+agentrun-serve on http://127.0.0.1:7340/v2 (agent store in /data, listening on 0.0.0.0)
+AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
+AGENTRUN_API_KEY=<redacted-local-token>
+Open http://127.0.0.1:7340/
+Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
+at=2026-11-03T01:27:16.254Z event=request method=GET path=/v2/health status=200 ms=3
+at=2026-11-03T01:27:16.302Z event=auth_failed route=/v2/agents reason=no_credential
+at=2026-11-03T01:27:16.303Z event=request method=GET path=/v2/agents status=401 ms=1
+at=2026-11-03T01:27:16.304Z event=auth_failed route=/v2/agents reason=wrong_token
+at=2026-11-03T01:27:16.304Z event=request method=GET path=/v2/agents status=401 ms=0
+at=2026-11-03T01:27:16.306Z event=request method=GET path=/v2/capabilities status=200 ms=0
+at=2026-11-03T01:27:16.308Z event=request method=GET path=/ status=200 ms=1
+at=2026-11-03T01:27:16.311Z event=request method=GET path=/assets/index-DUXjp8H7.js status=200 ms=1
+at=2026-11-03T01:27:16.316Z event=request method=GET path=/assets/index-MZWl1iOl.css status=200 ms=1
+at=2026-11-03T01:27:16.317Z event=request method=GET path=/assets/not-in-this-build.js status=404 ms=0
+at=2026-11-03T01:27:16.379Z event=request method=POST path=/v2/setup status=201 ms=60
+at=2026-11-03T01:27:16.382Z event=request method=GET path=/v2/agents status=200 ms=1
+at=2026-11-03T01:27:16.384Z event=auth_failed route=/v2/agents reason=no_credential
+at=2026-11-03T01:27:16.384Z event=request method=POST path=/v2/agents status=401 ms=0
+at=2026-11-03T01:27:16.389Z event=request method=POST path=/v2/agents status=201 ms=3
+at=2026-11-03T01:27:16.398Z event=run_started run=01a19f04-86a8-7a62-9af9-b9deadd5ec9b agent=container-proof kind=agentic
+at=2026-11-03T01:27:16.406Z event=request method=POST path=/v2/agents/container-proof/runs status=202 ms=15
+at=2026-11-03T01:27:16.408Z event=request method=GET path=/v2/runs/01a19f04-86a8-7a62-9af9-b9deadd5ec9b/timeline status=200 ms=1
+at=2026-11-03T01:27:16.832Z event=request method=GET path=/v2/runs/01a19f04-86a8-7a62-9af9-b9deadd5ec9b/timeline status=200 ms=422
+at=2026-11-03T01:27:16.847Z event=run_ended run=01a19f04-86a8-7a62-9af9-b9deadd5ec9b agent=container-proof status=completed cost_usd=0
+at=2026-11-03T01:27:16.848Z event=request method=GET path=/v2/runs/01a19f04-86a8-7a62-9af9-b9deadd5ec9b/timeline status=200 ms=13
+at=2026-11-03T01:27:16.850Z event=request method=GET path=/v2/runs/01a19f04-86a8-7a62-9af9-b9deadd5ec9b status=200 ms=0
+at=2026-11-03T01:27:16.924Z event=request method=GET path=/v2/runs/01a19f04-86a8-7a62-9af9-b9deadd5ec9b/files status=200 ms=5
+at=2026-11-03T01:27:16.928Z event=request method=GET path=/v2/runs/01a19f04-86a8-7a62-9af9-b9deadd5ec9b/files/tone.wav status=200 ms=2
+at=2026-11-03T01:27:16.931Z event=request method=GET path=/v2/runs/01a19f04-86a8-7a62-9af9-b9deadd5ec9b/files/clip.webm status=200 ms=1
