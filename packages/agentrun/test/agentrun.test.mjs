@@ -143,57 +143,6 @@ test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 bef
 // `npm exec`, naming the package with --package and running its bin after `--`: without --package, npm takes the bin from
 // the package spec and hands the server "agentrun-serve" as an argument, which it refuses. A fake npm first on PATH
 // records its argv and, as npm would, runs a stub server that prints its "Open " line.
-test("with no server beside it, the command runs npm exec --package=<server> -- agentrun-serve, and the server gets only its own arguments", { timeout: 60_000 }, async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-fetch-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  // This package alone, outside the workspace, so no installed server resolves from it.
-  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
-  mkdirSync(join(dir, "fake"));
-  const record = join(dir, "argv.json");
-  writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
-const fs = require("node:fs");
-const argv = process.argv.slice(2);
-fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(argv));
-fs.writeFileSync(${JSON.stringify(record)} + ".env", JSON.stringify(Object.keys(process.env).filter((name) => /^npm_config_(call|workspaces?|include_workspace_root)$/i.test(name))));
-fs.writeFileSync(${JSON.stringify(record)} + ".command", String(process.env.AGENTRUN_COMMAND));
-const at = argv.indexOf("--");
-const [bin, ...args] = at < 0 ? [] : argv.slice(at + 1);
-const named = argv.slice(0, at < 0 ? argv.length : at).some((arg) => arg === "--package" || arg.startsWith("--package="));
-// npm runs the bin it names: refuse the old form, as the server refuses a stray argument.
-if (!named || bin !== "agentrun-serve" || args.includes("agentrun-serve")) { console.error("agentrun-serve: unexpected argument"); process.exit(2); }
-const port = args[args.indexOf("--port") + 1];
-console.log("agentrun-serve on http://127.0.0.1:" + port + "/v2 (stub)");
-console.log("Open http://127.0.0.1:" + port + "/");
-// Stopped, it ends as the server does, 0; npm exec passes the code on.
-process.on("SIGTERM", () => process.exit(0));
-setInterval(() => {}, 1000);
-`);
-  chmodSync(join(dir, "fake", "npm"), 0o755);
-  const { env } = bare(t);
-  // Started from inside another npm command (`npm exec -c …`, a workspace), whose settings npm hands down in its environment.
-  const outer = { npm_config_call: "node --test", npm_config_workspace: "@parcha/agentrun", npm_config_workspaces: "true" };
-  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...env, ...outer, PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
-  const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(async () => { child.kill("SIGTERM"); await exited; });
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !out.includes("\n") && i < 300; i++) {
-    if (child.exitCode !== null) break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const argv = existsSync(record) ? JSON.parse(readFileSync(record, "utf8")) : [];
-  assert.ok(argv.indexOf("--package=@parcha/agentrun-serve@latest") >= 0 && argv.indexOf("--package=@parcha/agentrun-serve@latest") < argv.indexOf("--"), `--package names the server before --: ${JSON.stringify(argv)}`);
-  assert.equal(argv[argv.indexOf("--") + 1], "agentrun-serve", "the server's own bin runs");
-  assert.ok(!argv.slice(argv.indexOf("--") + 2).includes("agentrun-serve"), "the server gets no stray argument");
-  assert.deepEqual(existsSync(`${record}.env`) ? JSON.parse(readFileSync(`${record}.env`, "utf8")) : null, [], "an outer npm's -c command and workspace do not reach this npm exec");
-  assert.equal(existsSync(`${record}.command`) ? readFileSync(`${record}.command`, "utf8") : null, "agentrun", "the server is told this command started it, for the install line it gives");
-  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, `${out}${err}`);
-  child.kill("SIGTERM");
-  assert.equal(await exited, 0, err);
-});
-
 // docs/SKILL.md's start step, as a coding agent runs it: when the command fails, the step ends and says why, never waits.
 test("the setup skill's start step ends with the command's error when it fails, and does not wait forever", { timeout: 30_000 }, () => {
   const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
@@ -264,45 +213,95 @@ test("started directly by a shell that backgrounds it and exits, the command kee
   assert.ok(await healthUntil(base, false, 300), "and stops when its command is stopped");
 });
 
-// With no server beside it, the command's child is another `npm exec`, which ends on a SIGTERM or a SIGHUP and leaves the
-// server it started. A stop (the command's own SIGTERM, a terminal's SIGHUP, or its npm watch) goes to that child's whole
-// process group, so it reaches the fetched server too.
-test("with no server beside it, a SIGTERM or a SIGHUP to the command stops the fetched server, though the npm exec between them leaves it", { timeout: 90_000 }, async (t) => {
-  for (const signal of ["SIGTERM", "SIGHUP"]) {
-    const dir = mkdtempSync(join(tmpdir(), "agentrun-fetched-"));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
-    for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
-    mkdirSync(join(dir, "fake"));
-    const pidFile = join(dir, "server.pid");
-    writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
+// With no server beside it, the command has npm exec install the server's latest release, as npx does, and name its bin.
+// The command then runs that server itself, so nothing stands between them: a stop (its own signal, or its npm watch)
+// reaches the server, which drains each running agent once.
+/** This package alone (no installed server resolves from it), an `npm` on PATH that installs nothing but names a stub
+ *  server's path, and the stub: it records its arguments, environment and parent, prints the server's lines, runs one
+ *  agent child that counts the SIGTERMs it gets, and on a SIGTERM stops that agent once and waits for it, as the server's
+ *  own close drains its runs. */
+function fetchedSetup(t) {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-fetch-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
+  mkdirSync(join(dir, "fake"));
+  const files = { npm: join(dir, "npm.json"), server: join(dir, "server.json"), terms: join(dir, "agent.terms"), agentPid: join(dir, "agent.pid") };
+  const stub = join(dir, "agentrun-serve");
+  writeFileSync(stub, `#!${process.execPath}
+const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const argv = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(files.server)}, JSON.stringify({ argv, command: process.env.AGENTRUN_COMMAND, pid: process.pid, ppid: process.ppid }));
+const agent = spawn(process.execPath, ["-e", ${JSON.stringify(`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(files.agentPid)}, String(process.pid)); process.on("SIGTERM", () => { fs.appendFileSync(${JSON.stringify(files.terms)}, "TERM\\n"); setTimeout(() => process.exit(0), 500); }); setInterval(() => {}, 1000);`)}], { stdio: "ignore" });
 const port = argv[argv.indexOf("--port") + 1];
-// The server npm exec starts, its child, with the default signal handling.
-spawn(process.execPath, ["-e", ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); console.log("Open http://127.0.0.1:" + process.argv[1] + "/"); setInterval(() => {}, 1000);`)}, port], { stdio: "inherit" });
-// As npm does: a SIGTERM or a SIGHUP ends it, and leaves what it started.
-for (const signal of ["SIGTERM", "SIGHUP"]) process.on(signal, () => process.exit(1));
+console.log("agentrun-serve on http://127.0.0.1:" + port + "/v2 (stub)");
+console.log("Open http://127.0.0.1:" + port + "/");
+process.on("SIGTERM", () => { agent.kill("SIGTERM"); agent.on("exit", () => process.exit(0)); });
 setInterval(() => {}, 1000);
 `);
-    chmodSync(join(dir, "fake", "npm"), 0o755);
-    const { env } = bare(t);
-    const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...strip(env), PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
-    const exited = new Promise((resolve) => child.on("exit", resolve));
-    // Whatever the test ends with, nothing it started is left: the command, and the server by its pid.
-    t.after(() => { try { child.kill("SIGKILL"); } catch {} });
-    let out = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    for (let i = 0; !out.includes("\n") && i < 300; i++) await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, out);
-    const pid = Number(readFileSync(pidFile, "utf8"));
-    t.after(() => { try { process.kill(pid, "SIGKILL"); } catch {} });
-    child.kill(signal);
-    // A server left running holds the command's pipe open, so the command may not end: wait a bounded time.
-    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
-    let alive = true;
-    for (let i = 0; alive && i < 100; i++) {
-      try { process.kill(pid, 0); await new Promise((resolve) => setTimeout(resolve, 100)); } catch { alive = false; }
-    }
-    assert.equal(alive, false, `${signal}: the fetched server stopped`);
+  chmodSync(stub, 0o755);
+  writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(files.npm)}, JSON.stringify({ argv: process.argv.slice(2), leaked: Object.keys(process.env).filter((name) => /^npm_config_(call|workspaces?|include_workspace_root)$/i.test(name)) }));
+console.log(${JSON.stringify(stub)});
+`);
+  chmodSync(join(dir, "fake", "npm"), 0o755);
+  return { dir, files, bin: join(dir, "pkg", "bin", "agentrun.mjs"), path: join(dir, "fake") };
+}
+async function startFetched(t, setup, extraEnv = {}) {
+  const { env } = bare(t);
+  const child = spawn(process.execPath, [setup.bin, "--no-open"], { env: { ...strip(env), ...extraEnv, PATH: `${setup.path}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => { try { child.kill("SIGKILL"); } catch {} });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !out.includes("\n") && i < 300 && child.exitCode === null; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const server = existsSync(setup.files.server) ? JSON.parse(readFileSync(setup.files.server, "utf8")) : null;
+  for (const pid of [server?.pid, existsSync(setup.files.agentPid) ? Number(readFileSync(setup.files.agentPid, "utf8")) : undefined]) {
+    if (pid) t.after(() => { try { process.kill(pid, "SIGKILL"); } catch {} });
+  }
+  return { child, exited, out: () => out, err: () => err, server };
+}
+const gone = async (pid) => {
+  for (let i = 0; i < 100; i++) {
+    try { process.kill(pid, 0); } catch { return true; }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+};
+
+test("with no server beside it, npm exec installs the server's latest release and names its bin; the command runs that server itself, with only its own arguments", { timeout: 60_000 }, async (t) => {
+  const setup = fetchedSetup(t);
+  // Started from inside another npm command (`npm exec -c …`, a workspace), whose settings npm hands down in its environment.
+  const outer = { npm_config_call: "node --test", npm_config_workspace: "@parcha/agentrun", npm_config_workspaces: "true" };
+  const run = await startFetched(t, setup, outer);
+  const npm = JSON.parse(readFileSync(setup.files.npm, "utf8"));
+  const at = npm.argv.indexOf("--");
+  assert.ok(npm.argv.indexOf("--package=@parcha/agentrun-serve@latest") >= 0 && npm.argv.indexOf("--package=@parcha/agentrun-serve@latest") < at, `--package names the server before --: ${JSON.stringify(npm.argv)}`);
+  assert.deepEqual(npm.argv.slice(at + 1), ["sh", "-c", "command -v agentrun-serve"], "npm exec names the server's bin, and runs nothing else");
+  assert.deepEqual(npm.leaked, [], "an outer npm's -c command and workspace do not reach this npm exec");
+  assert.ok(run.server, `the server ran: ${run.out()}${run.err()}`);
+  assert.equal(run.server.argv[0], "--data");
+  assert.ok(!run.server.argv.includes("agentrun-serve"), `the server gets no stray argument: ${JSON.stringify(run.server.argv)}`);
+  assert.equal(run.server.command, "agentrun", "the server is told this command started it, for the install line it gives");
+  assert.equal(run.server.ppid, run.child.pid, "the server is this command's own child: no npm between them");
+  assert.match(run.out(), /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, `${run.out()}${run.err()}`);
+  run.child.kill("SIGTERM");
+  assert.equal(await run.exited, 0, run.err());
+});
+
+test("with no server beside it, a SIGTERM or a SIGHUP to the command stops the server, which stops each running agent once", { timeout: 90_000 }, async (t) => {
+  for (const signal of ["SIGTERM", "SIGHUP"]) {
+    const setup = fetchedSetup(t);
+    const run = await startFetched(t, setup);
+    assert.ok(run.server, `the server ran: ${run.out()}${run.err()}`);
+    for (let i = 0; !existsSync(setup.files.agentPid) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    run.child.kill(signal);
+    await Promise.race([run.exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+    assert.ok(await gone(run.server.pid), `${signal}: the server stopped`);
+    assert.ok(await gone(Number(readFileSync(setup.files.agentPid, "utf8"))), `${signal}: its agent stopped`);
+    if (signal === "SIGTERM") assert.equal(readFileSync(setup.files.terms, "utf8"), "TERM\n", "the agent got one SIGTERM, the server's, and drained");
   }
 });
