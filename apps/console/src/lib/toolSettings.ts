@@ -5,9 +5,8 @@ export const HARNESS_ORDER = ["pi", "claude-agent", "codex"] as const;
 
 /** A capability with a provider choice (`capabilities.tools`, providers/1): the providers offered, the built-in default
  *  first; the server's pick (`provider`); the built-in default; what it resolves to on each harness under the server's
- *  settings, with the server's one sentence on why per harness when it gives one (`why`); and whether it runs here at all,
- *  with the server's reason when not (a provider of `off`, say). */
-export type ToolChoice = { name: string; providers: string[]; provider: string; default_provider: string; resolves: Record<string, string>; why?: Record<string, string>; available: boolean; reason?: string };
+ *  settings; and whether it runs here at all, with the server's reason when not (a provider of `off`, say). */
+export type ToolChoice = { name: string; providers: string[]; provider: string; default_provider: string; resolves: Record<string, string>; available: boolean; reason?: string };
 
 /** The capabilities that have a provider choice, in the server's order: `capabilities.tools` entries that carry one. */
 export function toolChoices(raw: unknown): ToolChoice[] {
@@ -16,7 +15,6 @@ export function toolChoices(raw: unknown): ToolChoice[] {
     if (!e || typeof e.name !== "string" || !Array.isArray(e.providers) || !e.providers.length) return [];
     return [{
       name: e.name, providers: e.providers, provider: e.provider ?? e.providers[0], default_provider: e.default_provider ?? e.providers[0], resolves: e.resolves && typeof e.resolves === "object" ? e.resolves : {},
-      ...(e.why && typeof e.why === "object" ? { why: Object.fromEntries(Object.entries(e.why).filter(([, v]) => typeof v === "string" && v)) } : {}),
       available: e.available !== false, ...(typeof e.reason === "string" && e.reason ? { reason: e.reason } : {}),
     }];
   });

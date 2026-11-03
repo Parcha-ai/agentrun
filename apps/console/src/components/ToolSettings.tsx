@@ -57,15 +57,14 @@ export function ToolTable({ label, rows, settings, fallbackOf, resolvesOf, issue
   );
 }
 
-/** A resolution, said plainly: an unavailable one in the warning colour with the server's reason; with the server's
- *  sentence on why (`why`) beside it, as given, when it gives one. */
-export function Resolves({ value, prefix, why }: { value: string | undefined; prefix?: string; why?: string }) {
+/** A resolution, said plainly: an unavailable one in the warning colour with the server's reason. */
+export function Resolves({ value, prefix }: { value: string | undefined; prefix?: string }) {
   const r = resolution(value);
-  return <span className={cn("block font-mono text-[12px]", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>{prefix}{r.text}{why && <span className="font-sans"> · {why}</span>}</span>;
+  return <span className={cn("block font-mono text-[12px]", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>{prefix}{r.text}</span>;
 }
 
-/** What a capability resolves to on each harness, one line each, with the server's why. */
-export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORDER.map((h) => <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} why={choice.why?.[h]} />)}</>;
+/** What a capability resolves to on each harness, one line each. */
+export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORDER.map((h) => <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} />)}</>;
 
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
@@ -103,7 +102,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, value
           const known = read && read.provider === (value[t.name]?.provider ?? t.provider) ? read.resolved : undefined;
           const savedModel = (model ?? "") === ((agent?.definition.model as string | undefined) ?? "");
           if (!own && harness === (agent?.definition.harness ?? "pi") && savedModel && known) return <Resolves value={known} prefix={`${harness}: `} />;
-          if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} why={t.why?.[harness]} />;
+          if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} />;
           return <span className="block font-mono text-[12px] text-muted-foreground">once saved</span>;
         }} />
       {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}

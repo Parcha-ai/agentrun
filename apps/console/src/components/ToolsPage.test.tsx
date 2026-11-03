@@ -130,26 +130,6 @@ describe("Settings → Tools, capabilities older than the settings", () => {
   });
 });
 
-// What each harness resolves to, with the server's own sentence for why when it gives one (capabilities' `why`), and
-// the provider alone when it gives none (an older server).
-describe("Settings → Tools, the server's why", () => {
-  it("shows why[harness] verbatim beside the provider, and the provider alone without it", async () => {
-    const withWhy = toolChoices([{ name: "web_search", providers: ["auto", "parallel"], provider: "auto", default_provider: "auto", available: true,
-      resolves: { pi: "parallel", "claude-agent": "native", codex: "native" }, why: { pi: "fixture: your Parallel key (saved)", "claude-agent": "fixture: Claude's own search" } }]);
-    expect(withWhy[0]!.why).toEqual({ pi: "fixture: your Parallel key (saved)", "claude-agent": "fixture: Claude's own search" });
-    const v2 = { toolSettings: async () => ({ web_search: { provider: "auto" } }), saveToolSettings: async (b: ToolSettings) => b };
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: withWhy, onSaved: () => {} })));
-    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    const text = host.querySelector('tr[data-tool="web_search"]')!.textContent!;
-    expect(text).toContain("pi: Parallel · fixture: your Parallel key (saved)");
-    expect(text).toContain("claude-agent: native · fixture: Claude's own search");
-    // codex has no why: its provider alone.
-    expect(text).toMatch(/codex: native(?! ·)/);
-  });
-});
-
 describe("Settings → Tools, a capabilities read that fails", () => {
   it("never looks busy for ever: a failed read says so with a retry, which reads again", async () => {
     const stale = toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
