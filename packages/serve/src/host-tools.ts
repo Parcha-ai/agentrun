@@ -10,6 +10,7 @@
 // to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
 // refusal, an error and a write's or edit's result name a path in the workspace relative to it (`hello.md`), never by
 // the server's data directory (`workspaceRelative`); in a box they name the box's paths.
+import { StringDecoder } from "node:string_decoder";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -33,24 +34,44 @@ export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "
 const MAX_BYTES = 50 * 1024;
 const MAX_LINES = 2000;
 
+/** Whether `byte` continues a UTF-8 character (0b10xxxxxx), so a cut before it would split one. */
+const continues = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
+
+/** `bytes` (UTF-8) cut to at most `max` bytes, its tail or its head, at a character boundary: a character the limit
+ *  would split is left out whole, so the text never ends or starts in a U+FFFD. */
+export function cutUtf8(bytes: Uint8Array, max: number, tail: boolean): Uint8Array {
+  if (bytes.length <= max) return bytes;
+  if (tail) {
+    let start = bytes.length - max;
+    while (continues(bytes[start])) start++;
+    return bytes.subarray(start);
+  }
+  // The byte at `end` is the first one left out: while it continues a character, that character goes too.
+  let end = max;
+  while (end > 0 && continues(bytes[end])) end--;
+  return bytes.subarray(0, end);
+}
+
 /** A call's output, held within the tool's limits as it arrives: its tail (bash's) or its head. */
 function bounded(limits: ToolRegistration["outputLimits"]) {
   const maxBytes = limits?.maxBytes ?? MAX_BYTES;
   const maxLines = limits?.maxLines ?? MAX_LINES;
   const tail = limits?.retain === "tail";
+  // Bytes are decoded as one stream: a character whose bytes arrive in two chunks is one character.
+  const decoder = new StringDecoder("utf8");
   let kept = "";
   let cut = false;
   const trim = (text: string): string => {
     const lines = text.split("\n");
     let out = lines.length > maxLines ? (tail ? lines.slice(-maxLines) : lines.slice(0, maxLines)).join("\n") : text;
     const bytes = Buffer.from(out, "utf8");
-    if (bytes.length > maxBytes) out = (tail ? bytes.subarray(bytes.length - maxBytes) : bytes.subarray(0, maxBytes)).toString("utf8");
+    if (bytes.length > maxBytes) out = Buffer.from(cutUtf8(bytes, maxBytes, tail)).toString("utf8");
     if (out !== text) cut = true;
     return out;
   };
   return {
     push(chunk: string | Uint8Array) {
-      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      const text = typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
       if (!tail && cut) return;
       kept += text;
       // Trimmed once it is twice the limit, so a long output costs a bounded amount of memory and work.
