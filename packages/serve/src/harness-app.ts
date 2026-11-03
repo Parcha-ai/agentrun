@@ -241,7 +241,7 @@ export function adapterRun(
       // It carries the request's worst case (what a cap holds; with no cap, only measured), as a pi run's mark does: the
       // timeline bounds the run's cost by it when the request's own cost is never known. A cap reads the runner's records,
       // never this mark.
-      const held = event.heldUsd === undefined ? {} : { [HELD_FIELD]: event.heldUsd };
+      const held: Record<string, number> = event.heldUsd === undefined ? {} : { [HELD_FIELD]: event.heldUsd };
       later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn, ...held } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
