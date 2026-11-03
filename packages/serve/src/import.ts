@@ -65,7 +65,7 @@ export type ProjectPlan = {
  *  session's subagents, whose usage is its run's: Claude Code's by the session file beside them, Codex's by `source:thread`; `untied`, those of subagents whose file names
  *  no parent, counted in a summary's totals alone. `found`: each other planned session measured,
  *  when the plan was made to (`measure`). */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[] };
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[]; secretsFound?: number };
 export type ImportReport = {
   agents: {
     id: string;
@@ -79,6 +79,8 @@ export type ImportReport = {
   }[];
   skipped: Skipped[];
   already: number;
+  /** Keys and tokens cut out of what it wrote (secret-cut.ts): the environment's values, and any of a known shape. */
+  secretsRemoved?: number;
 };
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -207,6 +209,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   ownRuns(projects, rank);
   const plan: Plan = { projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied };
   if (!measure) return plan;
+  const counting = secretCut(env, SECRET_NAMES);
   // Measured in the import's own order, a record or response counted once across files, each session with its
   // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
   const heldBy = store ? importedIn(store) : undefined;
@@ -228,11 +231,14 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       const parts = read.filter((part) => !ownless(part));
       if (!parts.length) continue;
       const session = merged(parts);
+      // What the import's cut would take out of it (its turns, its first message): the dry run's count.
+      counting.json(session.turns);
+      if (session.firstPrompt) counting.text(session.firstPrompt);
       const subagents = await readChildren(plan, session, read, seen(session.source));
       found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents) });
     }
   }
-  return { ...plan, found };
+  return { ...plan, found, secretsFound: counting.text.removed };
 }
 
 /** The subagents tied to no session: each one's tokens and tool calls, for a summary's totals, each response once. */
@@ -714,7 +720,7 @@ async function revisionFor(
   const revision: NewRevision = {
     kind: "agentic",
     instructions: cut(instructions),
-    skills: Object.fromEntries(Object.entries(files.skills).map(([path, text]) => [path, cut(text)])),
+    skills: Object.fromEntries(Object.entries(files.skills).map(([path, text]) => [cut(path), cut(text)])),
     tools: [],
     ...(model ? { model } : {}),
     ...(harness !== "pi" ? { harness } : {}),
@@ -726,7 +732,8 @@ async function revisionFor(
 /** A run's serve.json: its title and input, and the session file it was read from, as read. */
 async function writeMeta(dir: string, session: Session, read: SourceFile, json: (value: unknown) => unknown): Promise<void> {
   const meta = json({
-    title: clip(session.firstPrompt ?? `${session.source} session`, 120),
+    // Cut before it is clipped: a key the clip cut short would match no rule.
+    title: clip(json(session.firstPrompt ?? `${session.source} session`) as string, 120),
     created_at: session.startedAt ?? new Date(0).toISOString(),
     input: { content: session.firstPrompt ?? "" },
   }) as Record<string, unknown>;
@@ -836,6 +843,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     }
     report.agents.push(line);
   }
+  report.secretsRemoved = text.removed;
   return report;
 }
 
@@ -918,6 +926,7 @@ export async function importCommand(
       reader?.close();
     }
     out(`${plan.projects.length} projects, ${sessionsOf(plan.projects.flatMap((p) => p.sessions)).length} sessions; nothing was written (dry run)`);
+    if (plan.secretsFound !== undefined) out(`${plan.secretsFound} secret${plan.secretsFound === 1 ? "" : "s"} would be removed`);
     for (const line of summaryLines(found, open, { dryRun: true })) out(line);
     return 0;
   }
@@ -929,6 +938,7 @@ export async function importCommand(
     if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
     for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
     out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
+    out(`${report.secretsRemoved ?? 0} secret${report.secretsRemoved === 1 ? "" : "s"} removed`);
     // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
     const held = importedIn(store);
     const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];

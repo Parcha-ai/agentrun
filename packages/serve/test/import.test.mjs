@@ -5,7 +5,7 @@
 // are left out by name; an imported run takes no message, and a stop, a cancel or a restart moves nothing of it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -348,6 +348,90 @@ test("the CLI's import cuts the server's own keys out of what it keeps, wherever
   const after = openStoreReader(data);
   t.after(() => after.close());
   assert.equal(after.listRuns().length, runs.length, "no run made twice");
+});
+
+/** Keys and tokens of every shape the import cuts though no environment holds them: each made here, random, so no
+ *  scanner reads this file as holding one, and none is anyone's. */
+function shapedKeys() {
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const B64 = `${ALNUM}/+`;
+  const lines = [pick(64, B64), pick(64, B64), pick(40, B64)];
+  return {
+    anthropic: ["sk", "ant", "api03", pick(80, ALNUM)].join("-") + "AA",
+    openaiProject: ["sk", "proj", pick(64, ALNUM)].join("-"),
+    openai: ["sk", `${pick(47, ALNUM)}7`].join("-"),
+    github: `${["gh", "p"].join("")}_${pick(36, ALNUM)}`,
+    githubFine: ["github", "pat", pick(22, ALNUM), pick(59, ALNUM)].join("_"),
+    awsId: `${["AK", "IA"].join("")}${pick(16, UPPER)}`,
+    awsSecret: pick(40, B64),
+    slack: [["xo", "xb"].join(""), pick(12, "0123456789"), pick(13, "0123456789"), pick(24, ALNUM)].join("-"),
+    stripe: ["sk", "live", pick(24, ALNUM)].join("_"),
+    pem: { block: [`-----BEGIN RSA ${"PRIVATE"} KEY-----`, ...lines, `-----END RSA ${"PRIVATE"} KEY-----`].join("\n"), lines },
+    assigned: `${pick(26, ALNUM)}9z`,
+  };
+}
+
+test("an import cuts every key or token of a known shape that no environment holds, wherever a session or project holds one, and says how many it removed", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "payments");
+  const k = shapedKeys();
+  // The project's instructions and a skill, its content and its folder's name.
+  mkdirSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`), { recursive: true });
+  writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${k.stripe}.\n${k.pem.block}\n`);
+  writeFileSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`, "SKILL.md"), `---\nname: rotate\n---\nThe old id was ${k.awsId}, aws_secret_access_key = ${k.awsSecret}\n`);
+  // A session's text (a .env an agent printed), its first message (the run's title), a subagent's answer, and a
+  // session file named after a key (its records carry no session id, so the import names the session after its file).
+  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nDATABASE_PASSWORD=${k.assigned}\nSLACK=${k.slack}` });
+  claudeSubagent(at, site, 1, 1, { answer: `The colleague's key is ${k.openai} and the bot's ${k.slack}.` });
+  const named = claudeSession(at, site, 2, { prompt: "Check the logs.", output: `Found ${k.openaiProject} in the logs.` });
+  const records = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
+  rmSync(named);
+  writeFileSync(join(dirname(named), `${k.openaiProject}.jsonl`), `${records.join("\n")}\n`);
+  utimesSync(join(dirname(named), `${k.openaiProject}.jsonl`), new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  // No environment holds any of them.
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  const dry = await run("--dry-run");
+  const lines = await run();
+  const values = { ...k, pem: k.pem.lines };
+  const kinds = Object.keys(values).length;
+  // Every byte the import kept, and every name under the data directory.
+  const kept = [];
+  const walk = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); kept.push([path, entry.isDirectory() ? Buffer.alloc(0) : readFileSync(path)]); if (entry.isDirectory()) walk(path); } };
+  walk(data);
+  const left = Object.entries(values).flatMap(([kind, value]) => (Array.isArray(value) ? value : [value]).flatMap((v) => kept.filter(([path, bytes]) => bytes.includes(v) || path.includes(v)).map(([path]) => `${kind} in ${path.slice(data.length + 1)}`)));
+  assert.deepEqual(left, [], "no key or token is anywhere in what the import kept");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
+  assert.match(dry.find((l) => / would be removed$/.test(l)) ?? "", /^[1-9]\d* secrets? would be removed$/, "the dry run says what it would remove");
+  // Each is counted once, however many places held it: the 11 values (the PEM block one of them).
+  assert.ok(lines.includes(`${kinds} secrets removed`), `the import says it removed ${kinds}: ${lines.filter((l) => /removed/.test(l))}`);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.equal(reader.listRuns().length, 2, "both sessions are in, the one named after a key under its id as kept");
+  assert.ok(reader.listRuns().some((r) => /^redacted-[0-9a-f]{16}$/.test(r.importedFrom.session)));
+});
+
+test("the shape rules leave ordinary text alone: ids, hashes, an image, a placeholder, prose", async () => {
+  const { shapedCut } = await import("../dist/secret-cut.js");
+  const ordinary = [
+    "00000000-0000-4000-8000-000000000001 and 3f2a9c1e-7b4d-4e8f-9a01-23456789abcd",
+    "commit 9fe2d9110a1b2c3d4e5f60718293a4b5c6d7e8f9 merged; tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    `<img src="data:image/png;base64,${"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".repeat(3)}">`,
+    "Set PASSWORD=<your password> and API_KEY=${API_KEY} in .env, then TOKEN_FILE=/run/secrets/token.",
+    'const cacheKey = "a1"; config.token_url = "https://auth.example.com/oauth/token";',
+    // A word ending in "sk" before a long hyphenated name (made here, so the source holds no such run of characters).
+    `The task-runner and the ${"desk"}-lamp-controller-module-v2 ship with scikit-learn; ask the risk-assessment team.`,
+    "Our AWS account is in us-east-1; the key rotation runbook lives in docs/aws-secret-rotation.md.",
+    "passwords should be long: a passphrase like correct horse battery staple",
+  ];
+  for (const text of ordinary) assert.deepEqual(shapedCut(text), { text, cut: [] }, text.slice(0, 60));
 });
 
 /** The server's own key names: the launcher's SECRETS list, read as secrets.ts reads it (loading secrets.ts here would take
