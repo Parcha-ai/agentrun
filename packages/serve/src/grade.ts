@@ -16,7 +16,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "@parcha/agentrun-learn";
 import type { PageJudge } from "@parcha/pi-browser";
-import { claudeModel } from "./adapters.js";
+import { claudeModel, claudeProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
 import { homeOf } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
@@ -140,15 +140,20 @@ const tokensOf = (usage: PiUsage | undefined): Tokens | null =>
 type PiModels = { getModel(provider: string, id: string): unknown; completeSimple(...args: unknown[]): Promise<{ usage?: PiUsage }> };
 
 /** One completion on the agent's own model, as its run's process picks it (app.ts): claude-agent's from pi-ai's catalog,
- *  any other harness's by runModels (the gateway, pi-ai's providers, or the faux module), at its revision's thinking;
- *  counted in `cost` (a call that fails has an unknown cost). */
+ *  sent where the run's own requests go (claudeProvider), any other harness's by runModels (the gateway, pi-ai's
+ *  providers, or the faux module), at its revision's thinking; counted in `cost` (a call that fails has an unknown cost). */
 async function agentModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost): Promise<Complete> {
   let chosen;
   if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
     const choice = claudeModel(env, agent.model);
     if ("why" in choice) throw new Error(choice.why);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    chosen = { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model };
+    // The catalog prices the model; its address is ANTHROPIC_BASE_URL's when set, as the run's, never the catalog's
+    // api.anthropic.com, so a gateway's key goes to that gateway alone.
+    const { origin } = claudeProvider(env, choice.model);
+    const catalog = builtinModels({ authContext: authContextOf(env) }) as unknown as PiModels;
+    const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: origin } : found);
+    chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: choice.model };
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
   const { model } = chosen;
