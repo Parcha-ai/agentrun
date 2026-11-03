@@ -1,7 +1,7 @@
 // A key saved through /v2/settings/tool-keys is checked against its provider before it is kept, with one call that costs
-// nothing: a key the provider refuses (401 or 403) is not kept, and the PUT says so in the provider's words, never the
-// key's; one it accepts is kept, and GET says when it was checked; one that could not be checked (no answer, no free
-// call, no fake for it under faux) is kept, and GET says why. On faux monid and recording fetches: no network, no real key.
+// nothing: a key the provider refuses (401) is not kept, and the PUT says so in the provider's words, never the key's;
+// one it accepts is kept, and GET says when it was checked; one that could not be checked (a 403, which a key scoped
+// away from the check's call gets, no answer, no free call, no fake for it under faux) is kept, and GET says why. On faux monid and recording fetches: no network, no real key.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { schemaProblems } from "./schema-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
-const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN"];
+const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_MONID_CALLS", "AGENTRUN_TEST_FAUX_MONID_KEY", "AGENTRUN_TEST_FAUX_MONID_DOWN", "AGENTRUN_TEST_FAUX_MONID_STATUS"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value shaped like the one a QA pass saved: built here, never a real key. */
 const fake = () => ["mk", "qa7", "fake", randomBytes(8).toString("hex")].join("_");
@@ -110,6 +110,21 @@ test("a key whose provider can't be reached, or has no fake under faux, is kept 
   await meetsDocument(api, before);
 });
 
+test("a key monid answers 403 for is kept as not checked: a key scoped away from the check's call may still work for its tools, so it is never refused", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_TEST_FAUX_MONID_STATUS: "403" }, KEYS);
+  const { api } = await serve(t, { fauxMonid: FAUX_MONID });
+  const scoped = fake();
+  const saved = await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: scoped } });
+  assert.equal(saved.status, 204, `a 403 is no refusal: ${JSON.stringify(saved.body)}`);
+  const view = (await api("GET", "/settings/tool-keys")).body;
+  const row = rowOf(view, "monid");
+  assert.deepEqual(row.fields, [{ name: "MONID_API_KEY", set: true, source: "stored" }]);
+  assert.deepEqual([row.check?.state, row.check?.reason], ["not_checked", "Monid would not answer the check (403: This key may not use this endpoint); the key may still work for its tools"], JSON.stringify(row.check));
+  assert.match(row.check.at, ISO);
+  holdsNone(JSON.stringify(view), scoped, "GET's answer");
+  await meetsDocument(api, view);
+});
+
 /** A fetch that files each request and answers with `answer(request, init)`: a Response, or a throw. */
 function recorder(answer) {
   const sent = [];
@@ -156,7 +171,7 @@ test("each provider's check is one documented call that costs nothing, on the ke
   }
 });
 
-test("a check reads the provider's answer: 2xx accepted, 401 and 403 refused in its first sentence, anything else or no answer not checked, and no message ever holds the key", async () => {
+test("a check reads the provider's answer: 2xx accepted, 401 refused in its first sentence, a 403, any other answer or none not checked, and no message ever holds the key", async () => {
   const { checkKey } = await import("../dist/key-check.js");
   const key = fake();
   const row = { id: "monid", label: "Monid" };
@@ -170,9 +185,11 @@ test("a check reads the provider's answer: 2xx accepted, 401 and 403 refused in 
   assert.deepEqual(await outcome(json(200, { results: [] })), { state: "accepted" });
   assert.deepEqual(await outcome(json(204, null)), { state: "accepted" });
   assert.deepEqual(await outcome(json(401, { code: 401, message: "Invalid API key format. Keys start with monid_live_." })), { state: "refused", message: "Monid refused this key (401: Invalid API key format)" });
-  assert.deepEqual(await outcome(json(403, { error: { type: "permission_error", message: "This key may not do that." } })), { state: "refused", message: "Monid refused this key (403: This key may not do that)" });
+  // A 403 is the provider knowing the key and not answering this call: a key scoped away from it may still work.
+  assert.deepEqual(await outcome(json(403, { error: { type: "permission_error", message: "This key may not do that." } })), { state: "not_checked", reason: "Monid would not answer the check (403: This key may not do that); the key may still work for its tools" });
   assert.deepEqual(await outcome(json(401, { detail: "invalid key" })), { state: "refused", message: "Monid refused this key (401: invalid key)" });
-  assert.deepEqual(await outcome(json(403, "Forbidden")), { state: "refused", message: "Monid refused this key (403: Forbidden)" });
+  assert.deepEqual(await outcome(json(403, "Forbidden")), { state: "not_checked", reason: "Monid would not answer the check (403: Forbidden); the key may still work for its tools" });
+  assert.deepEqual(await outcome(json(401, "Unauthorized")), { state: "refused", message: "Monid refused this key (401: Unauthorized)" });
   assert.deepEqual(await outcome(json(401, "<html><body>401</body></html>")), { state: "refused", message: "Monid refused this key (401)" }, "a page is not words");
   assert.deepEqual(await outcome(json(401, { message: `x`.repeat(400) })), { state: "refused", message: `Monid refused this key (401: ${"x".repeat(200)})` }, "at most 200 characters");
   // A provider that echoes the key, or a piece of it, is never quoted.
