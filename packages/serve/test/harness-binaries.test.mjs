@@ -38,7 +38,7 @@ test("the start's probe of the harnesses, a save and a run check of a codex revi
   assert.deepEqual(Object.fromEntries(asked), { codex: 1, ...(claude.available || asked.has("claude") ? { claude: 1 } : {}) }, `each binary checked once (${JSON.stringify(offers.map((offer) => [offer.id, offer.available, offer.reason ?? null]))})`);
 });
 
-test("a harness whose binary is missing or off its pins at the start says to install it, then restart AgentRun; one a setting fixes does not", { timeout: 120_000 }, async (t) => {
+test("a harness whose binary is missing or off its pins at the start says to restart AgentRun once it is installed; one a setting fixes does not", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   // A codex and a claude that are not the pinned build: their sha256 is not the pin's.
   const unpinned = join(dir, "unpinned");
@@ -52,21 +52,21 @@ test("a harness whose binary is missing or off its pins at the start says to ins
     const { api } = await serve(t, { faux: undefined });
     return Object.fromEntries((await api("GET", "/capabilities")).body.harnesses.map((offer) => [offer.id, offer]));
   };
-  const INSTALL = /; install it, then restart AgentRun to pick it up\.$/;
-  const PINS = /; install the pinned build, then restart AgentRun\.$/;
+  const INSTALL = /; once it is installed, restart AgentRun to pick it up\.$/;
+  const PINS = /; once the pinned build is installed, restart AgentRun\.$/;
   // claude-agent's reason is its CLI's, or its SDK's where the SDK here is missing or off its pin.
   const restartOf = (reason) => (/not installed/.test(reason) ? INSTALL : PINS);
   // Not installed: no file where each binary is named.
   const missing = await offers({ CODEX_BIN: join(dir, "nothing"), AGENTRUN_CLAUDE_AGENT_EXECUTABLE: join(dir, "nothing") });
   assert.equal(missing.codex.available, false, JSON.stringify(missing.codex));
   assert.match(missing.codex.reason, /is not installed/);
-  assert.match(missing.codex.reason, INSTALL, "codex not installed: install it, then restart");
+  assert.match(missing.codex.reason, INSTALL, "codex not installed: restart once it is installed");
   assert.equal(missing["claude-agent"].available, false, JSON.stringify(missing["claude-agent"]));
   assert.match(missing["claude-agent"].reason, restartOf(missing["claude-agent"].reason), "claude-agent not installed: the restart is named");
   // Off its pins: a binary that is not the pinned build.
   const off = await offers({ CODEX_BIN: unpinned, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: unpinned });
   assert.match(off.codex.reason, /is not the pinned build/);
-  assert.match(off.codex.reason, PINS, "codex off its pins: install the pinned build, then restart");
+  assert.match(off.codex.reason, PINS, "codex off its pins: restart once the pinned build is installed");
   assert.equal(off["claude-agent"].available, false, JSON.stringify(off["claude-agent"]));
   assert.match(off["claude-agent"].reason, restartOf(off["claude-agent"].reason), "claude-agent off its pins: the restart is named");
   // A setting fixes it, and a save of a key checks the harnesses again (server.ts): no restart named.

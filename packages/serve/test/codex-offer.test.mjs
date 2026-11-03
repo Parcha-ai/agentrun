@@ -43,5 +43,5 @@ test("a Codex that is not the pinned build is unavailable as that, with the inst
   assert.equal(offer.available, false, JSON.stringify(offer));
   assert.match(offer.reason, /is not the pinned build: its binary sha256 is [0-9a-f]{64}, not [0-9a-f]{64}/);
   // The offers are the start's, so the reason ends saying to restart AgentRun once the pinned build is installed.
-  assert.match(offer.reason, /\(npm install @parcha\/agentrun-harness-codex @openai\/codex@0\.164\.0\); install the pinned build, then restart AgentRun\.$/);
+  assert.match(offer.reason, /\(npm install @parcha\/agentrun-harness-codex @openai\/codex@0\.164\.0\); once the pinned build is installed, restart AgentRun\.$/);
 });
