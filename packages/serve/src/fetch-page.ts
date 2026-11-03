@@ -18,8 +18,11 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
  *  `original_chars` the whole text's length in characters, when it is known and this part is not all of it;
  *  `beyond_read` on the last part a read reaches of a page that goes on past PAGE_READ_MAX_CHARS; `links_omitted`, with the
- *  first part, how many of the page's links its caps left out. */
-export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; links: string[]; links_omitted?: number; refused?: string; error?: string };
+ *  first part, how many of the page's links its caps left out. `html_chars`, on every part of a page whose HTML readPage
+ *  cut before it was read: the page's whole length in characters. Its text, all its parts together, is then the start of
+ *  the page's, so no part gives original_chars, and the last part (no truncated: no part follows) still says the page was
+ *  cut. `converted: "text"` when the text is the page's plain text, its conversion to markdown having run out of time. */
+export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; html_chars?: number; converted?: "text"; links: string[]; links_omitted?: number; refused?: string; error?: string };
 
 /** web_fetch's legacy name: a revision or a call node naming it runs web_fetch under it (tools.ts). */
 export const FETCH_PAGE_TOOL = "fetch_page";
@@ -141,8 +144,10 @@ export async function fetchPage(url: unknown, { offset, maxChars, ...options }: 
     const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
     const answer = await publicFetch(url, { ...options, signal });
     if (answer.body === null) return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error: `the page answered ${answer.status}` });
-    const page = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url) : { title: "", text: answer.body, links: [] };
-    return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...pageText(page.text, part), ...linksWithin(page.links, part) };
+    // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
+    const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
+    const page = read ?? { title: "", text: answer.body, links: [] };
+    return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...pageText(page.text, part, !read?.truncated), ...(read?.truncated ? { html_chars: read.html_chars! } : {}), ...(read?.converted === "text" ? { converted: "text" as const } : {}), ...linksWithin(page.links, part) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });
     return failed({ error: (error as Error)?.message ?? String(error) });
