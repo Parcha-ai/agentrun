@@ -7,7 +7,7 @@
 // answer is read. Over the free limit Exa answers 429, which is said as such with its Retry-After; a 403 is a connection keyless use refuses (Exa takes it over IPv4,
 // straight to the endpoint). Nothing is retried, and each exchange ends at 60 s. No key is sent, ever.
 import { clip, TITLE_CAP } from "./fetch-page.js";
-import { type Hit, RESULTS_MAX, type Search, snippetOf } from "./web-search.js";
+import { type Hit, type Search, snippetOf } from "./web-search.js";
 
 export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 export const EXA_SEARCH_TOOL = "web_search_exa";
@@ -17,6 +17,9 @@ export const FAUX_EXA_ENV = "AGENTRUN_SERVE_FAUX_EXA";
 /** The MCP revision this client speaks; the server answers the one it takes. */
 const PROTOCOL = "2025-06-18";
 const TIMEOUT_MS = 60_000;
+/** The most results Exa's free endpoint is asked for (its default is 10). Its own cap on purpose, not web search's
+ *  RESULTS_MAX: the hosted providers take more, and Exa's keyless limit is per request. */
+const RESULTS_MAX = 8;
 const ACCEPT = "application/json, text/event-stream";
 /** The most of an answer read: a search's text is a few kilobytes; past this the rest is never read. */
 const MAX_BYTES = 1 << 20;

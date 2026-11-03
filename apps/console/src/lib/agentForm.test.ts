@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -269,5 +269,24 @@ describe("call-only tools", () => {
   it("no harness runs one, so no agent starts with one ticked", () => {
     expect(toolsFor("pi", offers).map((t) => t.name)).toEqual(["read"]);
     expect(defaultTools("pi", offers)).toEqual(["read"]);
+  });
+});
+
+describe("sandbox-only tools", () => {
+  const offers = toolOffers([
+    { name: "read", nodes: true, available: true, harnesses: ["pi", "codex"] },
+    { name: "bash", nodes: false, sandbox_only: true, available: true, harnesses: ["pi", "codex"] },
+  ]);
+  it("keeps what capabilities say of a tool: sandbox_only", () => {
+    expect(offers[1]).toEqual({ name: "bash", available: true, harnesses: ["pi", "codex"], sandbox_only: true, nodes: false });
+  });
+  it("lists one for an agent to name, and starts no new agent with it ticked: a new agent's place is the runner", () => {
+    expect(toolsFor("codex", offers).map((t) => t.name)).toEqual(["read", "bash"]);
+    expect(defaultTools("pi", offers)).toEqual(["read"]);
+  });
+  it("can be ticked only on an agent whose place is a sandbox: a new agent, or a runner one, says why not", () => {
+    for (const place of [undefined, { mode: "runner" }]) expect(sandboxReason(offers[1], place)).toMatch(/^Sandbox-only: it runs in a box/);
+    expect(sandboxReason(offers[1], { mode: "sandbox", box: "docker" })).toBeUndefined();
+    expect(sandboxReason(offers[0], undefined)).toBeUndefined();
   });
 });

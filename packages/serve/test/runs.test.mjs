@@ -57,6 +57,17 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   assert.equal(storeRun(data, started.run_id).state, "completed");
 });
 
+test("a model that answers one empty text block (a stop, no tool call) answered: the run completes with an empty final_answer, and its timeline ends final", async (t) => {
+  const { api } = await serve(t);
+  const { run_id } = await startRun(api, "quiet", "Answer with nothing.");
+  const { rows, last } = await follow(api, run_id, ["completed"]);
+  assert.equal(last.final, true);
+  assert.deepEqual(rows.map((r) => r.kind), ["user_message", "final_answer", "usage"]);
+  assert.equal(rows.find((r) => r.kind === "final_answer").text, "");
+  const run = (await api("GET", `/runs/${run_id}`)).body;
+  assert.deepEqual([run.status, run.state, run.result], ["completed", "idle", { output: null, final_answer: "" }]);
+});
+
 test("the change cursor: a saved cursor resumes onto the rows held, 0 resets, and the final cursor answers unchanged", async (t) => {
   const { api } = await serve(t);
   const { run_id } = await startRun(api, "calc", "What is six times seven?");

@@ -45,9 +45,9 @@ export function startTimeOf(pid: number): string | undefined {
 }
 
 /** The record's writer is gone: no process has its pid, or the one that has it started at another time (a reused pid). */
-export function writerGone(writer: BoxRecord["writer"] | undefined, startOf: (pid: number) => string | undefined = startTimeOf): boolean {
+function writerGone(writer: BoxRecord["writer"] | undefined): boolean {
   if (!writer || !Number.isSafeInteger(writer.pid) || writer.pid <= 0) return true;
-  return startOf(writer.pid) !== writer.startTime;
+  return startTimeOf(writer.pid) !== writer.startTime;
 }
 
 /** A box record on disk, and whether a reap already let it go. */
@@ -114,11 +114,11 @@ const left = (verdict: Reaped) => `its reap left ${verdict.left} process${verdic
  * the run process, still alive, so the box is that process's (`owned`); else reaped. Empty: marked, its cgroup removed
  * (`reaped`). Nothing to count, with its writer gone: marked (`cleared`). Anything else: quarantined, its record kept.
  */
-export async function settleBox(host: BoxHost, quarantine: Quarantine, runId: string, runDir: string, startOf?: (pid: number) => string | undefined): Promise<Settled> {
+export async function settleBox(host: BoxHost, quarantine: Quarantine, runId: string, runDir: string): Promise<Settled> {
   const path = join(runDir, BOX_RECORD);
   const stored = (await readJson(path)) as Stored | null;
   if (!stored || typeof stored.id !== "string" || stored.reaped) return "none";
-  if (!writerGone(stored.writer, startOf)) return "owned";
+  if (!writerGone(stored.writer)) return "owned";
   const { reaped: _, ...record } = stored;
   let verdict: Reaped;
   try {
@@ -146,11 +146,11 @@ export async function settleBox(host: BoxHost, quarantine: Quarantine, runId: st
 /** At start, before any run opens a box: every run's box let go that nothing owns; then every box the quarantine still
  *  holds that is no longer its run's current one (the run opened another since), tried again by its own record; then
  *  every run cgroup no record names, reaped by the cgroup and removed when empty. */
-export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: ReadonlyArray<{ id: string; dir: string }>, startOf?: (pid: number) => string | undefined): Promise<Record<string, Settled>> {
+export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: ReadonlyArray<{ id: string; dir: string }>): Promise<Record<string, Settled>> {
   const settled: Record<string, Settled> = {};
   const named = new Set<string>();
   for (const run of runs) {
-    settled[run.id] = await settleBox(host, quarantine, run.id, run.dir, startOf);
+    settled[run.id] = await settleBox(host, quarantine, run.id, run.dir);
     if (settled[run.id] === "owned" || settled[run.id] === "quarantined") {
       const cgroup = ((await readJson(join(run.dir, BOX_RECORD))) as Stored | null)?.cgroup;
       if (cgroup) named.add(cgroup);
@@ -167,7 +167,7 @@ export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: Re
       continue;
     }
     let verdict: Reaped | undefined;
-    if (!writerGone(entry.record.writer, startOf)) verdict = undefined;
+    if (!writerGone(entry.record.writer)) verdict = undefined;
     else verdict = await host.reap(entry.record).catch(() => undefined);
     if (verdict && (verdict.empty || verdict.by === "none")) {
       const cgroup = entry.record.cgroup;

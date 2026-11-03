@@ -1,19 +1,28 @@
 // monid (monid.ai): one key, and a catalog of paid data endpoints from many providers behind three calls. An agent finds
 // an endpoint in plain words (discover), reads its input schemas and price (inspect), and runs it (run), paid per call
-// from the key's workspace wallet. Three table tools here (tools.ts), on pi only; pi registers each under its wire name
-// (catalog.ts: `monid.run` is `monid_run`), as a model API takes no dot in a tool's name.
+// from the key's workspace wallet. Three table tools here (tools.ts), on every harness: pi binds each, another harness
+// runs each as a host tool (host-tools.ts), both under its wire name (catalog.ts: `monid.run` is `monid_run`), as a
+// model API takes no dot in a tool's name.
 //
 // A run is sent once and never again: it spends money, and a request that failed after it left may have run. An async
 // provider answers 202 with a run id, read again every POLL_MS until it ends, for at most WAIT_MS in all; a run the
 // caller stops, or one that outlasts the wait, is asked to stop. Every answer reaches the model as JSON, cut at CLIP
 // characters, the whole of it then filed under the run's work/evidence/monid/.
+//
+// What a run charged is the run's spend (cap.ts): marked before it is sent at the price an inspect quoted (else an
+// allowance), then booked once in the run's records as a TOOL_COST (`monid.run`, charged by monid), its cost if monid
+// reports one, else unknown unless monid says it charged nothing; and under a cap a run is refused before it is sent
+// unless the run's spend plus what it is held at fits. discover and inspect cost nothing, and are never refused.
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
+import { writeInWork } from "./workspace.js";
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { registerLabel } from "@parcha/pi-durable-agent/timeline";
+import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord";
+import { registerLabel, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
@@ -33,6 +42,10 @@ const MIN_READ_MS = 100;
 
 /** monid's answer, or `error` saying why there is none, with the HTTP `status` when one came. */
 export type MonidAnswer = Json & { error?: string };
+/** On an answer monid charged nothing for: the run never ran (refused as sent), was blocked or stopped, or the provider
+ *  failed. A symbol, so the model never reads it. */
+const UNCHARGED = Symbol("monid.uncharged");
+const uncharged = (answer: MonidAnswer): MonidAnswer => Object.assign(answer, { [UNCHARGED]: true });
 export type MonidOptions = {
   key: string;
   fetch?: typeof fetch;
@@ -72,14 +85,26 @@ function outcome(status: number, record: Json): MonidAnswer {
   const code = Number(provider.httpStatus ?? 200);
   if (state === "COMPLETED" && code >= 400) {
     const said = isObject(provider.error) && typeof provider.error.message === "string" ? provider.error.message : "no message";
-    return { error: `the provider answered ${code}: ${said} (monid charges nothing for a provider's error)`, status: code, ...at };
+    return uncharged({ error: `the provider answered ${code}: ${said} (monid charges nothing for a provider's error)`, status: code, ...at });
   }
   if (state === "COMPLETED") return { ...record, ...at };
-  if (state === "BLOCKED") return { error: `a control gate of the monid workspace, such as its budget, refused the run (BLOCKED): ${typeof record.reason === "string" ? record.reason : "no reason given"}`, ...(record.controls !== undefined ? { controls: record.controls } : {}), ...at };
+  if (state === "BLOCKED") return uncharged({ error: `a control gate of the monid workspace, such as its budget, refused the run (BLOCKED): ${typeof record.reason === "string" ? record.reason : "no reason given"}`, ...(record.controls !== undefined ? { controls: record.controls } : {}), ...at });
   if (state === "FAILED") return { error: "the run failed inside monid (FAILED); it is not sent again", ...at };
   if (state === "TIMED_OUT") return { error: "the run went past monid's time budget (TIMED_OUT)", status: 408, ...at };
-  if (state === "STOPPED") return { error: "the run was stopped before it completed (STOPPED); a stopped run is not billed", ...at };
-  return { ...failure(status, record), ...at };
+  if (state === "STOPPED") return uncharged({ error: "the run was stopped before it completed (STOPPED); a stopped run is not billed", ...at });
+  // Refused as it was sent (a 4xx other than a timeout): it never ran. Any other answer with no state may have run.
+  const refused = { ...failure(status, record), ...at };
+  return status >= 400 && status < 500 && status !== 408 ? uncharged(refused) : refused;
+}
+
+/** What a run's answer says monid charged, in USD: its cost; else undefined when monid charged nothing (UNCHARGED), and
+ *  null for every other answer, which may have been charged (one with no cost, FAILED, TIMED_OUT, a run stopped by its
+ *  caller or the wait, a run whose sending failed): never $0 for a charge no one knows. A cost in another currency is
+ *  unknown too. */
+export function chargeOf(answer: MonidAnswer): number | null | undefined {
+  const cost = money(answer.cost);
+  if (cost) return cost.currency === "USD" ? cost.value : null;
+  return (answer as { [UNCHARGED]?: true })[UNCHARGED] ? undefined : null;
 }
 
 /** monid's three calls on `key`, each answering what the model reads, never throwing. */
@@ -140,8 +165,11 @@ export async function monidText(answer: MonidAnswer, work: string, label: string
   const name = `${runId ?? `${label}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`}.json`;
   const cut = `${text.slice(0, CLIP)}\n[cut at ${CLIP} of ${text.length} characters; `;
   try {
-    await mkdir(join(work, "evidence", "monid"), { recursive: true });
-    await writeFile(join(work, "evidence", "monid", name), text);
+    // Never through a link a box's command planted in work/ (workspace.ts). An answer filed already keeps its file;
+    // anything else in its place (a planted link) is no filing, and the answer says it could not be saved.
+    await writeInWork(work, ["evidence", "monid"], name, text).catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST" || !(await lstat(join(work, "evidence", "monid", name)).then((held) => held.isFile(), () => false))) throw error;
+    });
   } catch (error) {
     // The error's code only (ENOSPC, ENOTDIR): its message names the server's paths.
     return `${cut}the whole answer could not be saved (${(error as NodeJS.ErrnoException)?.code ?? "write failed"})]`;
@@ -149,8 +177,9 @@ export async function monidText(answer: MonidAnswer, work: string, label: string
   return `${cut}the whole answer is in the run's files at evidence/monid/${name}]`;
 }
 
-type Kind = "discover" | "inspect" | "run";
-const [DISCOVER, INSPECT, RUN] = (["discover", "inspect", "run"] as const).map((kind) => wireName(`monid.${kind}`));
+const KINDS = ["discover", "inspect", "run"] as const;
+type Kind = (typeof KINDS)[number];
+const [DISCOVER, INSPECT, RUN] = KINDS.map((kind) => wireName(`monid.${kind}`));
 // What a person reads for each call, in a run's timeline, and what each tool is called where calls are counted.
 const endpointOf = (a: Record<string, unknown>) => (typeof a.provider === "string" && typeof a.endpoint === "string" ? ` ${a.provider} ${a.endpoint}` : "");
 registerLabel(DISCOVER, (a) => (typeof a.query === "string" ? `Searched monid's catalog for "${a.query.slice(0, 60)}"` : "Searched monid's catalog"), undefined, { name: "Search monid's catalog" });
@@ -177,24 +206,70 @@ const SPECS: Record<Kind, { summary: string; description: string; properties: Js
   },
 };
 
+/** What a run is held at when no inspect in this run's process quoted its price: an allowance, not a price, set high on
+ *  purpose. A crash between sending a run and recording its charge leaves the cap counting it, so a cap errs toward
+ *  refusing sooner, never toward passing unseen. */
+export const MONID_RUN_ALLOWANCE_USD = 1;
+/** Each endpoint's per-call price in USD, as an inspect in this run's process quoted it. */
+const quoted = new Map<string, number>();
+const quoteKey = (args: unknown) => JSON.stringify([(args as Json).provider, (args as Json).endpoint]);
+/** A record on the run's root, where its spend is read on every harness (cap.ts, harness-app.ts). */
+const record = (api: ToolExecutionApi, kind: string, data: Record<string, string | number | null>, context: Context) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context);
+
+/** monid's tool `kind` for a run, under its wire name: the key and the faux hook read from `env` (the run's process's,
+ *  with its secrets) at each call, an answer too long for the model filed under `work()`, read at the call. A run goes
+ *  through the run's cap (paidCall), is marked before it is sent (TOOL_STARTED, held at its quoted price or the
+ *  allowance) and settled by its charge (TOOL_COST): a crash between the two leaves the cap counting the held figure
+ *  and the run's cost unknown, never $0. pi binds it (monidTool); another harness runs it as a host tool
+ *  (host-tools.ts), whose `api` commits to the run's store as pi's does. */
+export function monidRegistration(kind: Kind, env: NodeJS.ProcessEnv, work: () => string): ToolRegistration {
+  const { description, properties, required, replay } = SPECS[kind];
+  return defineTool({
+    name: wireName(`monid.${kind}`), description, replay,
+    parameters: { type: "object", additionalProperties: false, properties, required } as unknown as TSchema,
+    execute: async (args, api, context) => {
+      const faux = env[FAUX_ENV] && env[FAUX_MONID_ENV] ? ((await import(pathToFileURL(env[FAUX_MONID_ENV]).href)) as { default: typeof fetch }).default : undefined;
+      const client = monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
+      const call = () => client[kind](args as never, context?.abortSignal);
+      const label = { tool: "monid.run", charged_by: "monid", call: api.callId };
+      // What the run is held at, under the cap and on its mark: the price an inspect quoted, else the allowance.
+      const quote = quoted.get(quoteKey(args));
+      const held = quote ?? MONID_RUN_ALLOWANCE_USD;
+      const basis = quote !== undefined ? `the price ${INSPECT} quoted` : `no ${INSPECT} in this run quoted its price, so it is held at the $${MONID_RUN_ALLOWANCE_USD} allowance; ${INSPECT} gives its quote`;
+      const send = async (): Promise<MonidAnswer> => {
+        try {
+          await record(api, TOOL_STARTED, { ...label, heldUsd: held }, context);
+        } catch (error) {
+          return uncharged({ error: `${RUN} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` });
+        }
+        const answer = await call();
+        // Settled at what it charged: $0 only when monid charged nothing, null (unknown) when it may have and did not say.
+        // Paid for, it answers even when this cannot be written, never a failure the model would retry.
+        const usd = chargeOf(answer);
+        await record(api, TOOL_COST, { ...label, usd: usd === undefined ? 0 : usd }, context).catch(() => undefined);
+        return answer;
+      };
+      const paid = kind === "run" ? await paidCall(RUN, send, chargeOf, { usd: held, basis }) : { result: await call() };
+      if ("refused" in paid) return forModel(JSON.stringify({ error: paid.refused }), { isError: true });
+      const answer = paid.result;
+      const price = kind === "inspect" && isObject(answer.price) && answer.price.type === "PER_CALL" ? money(answer.price.amount) : undefined;
+      if (price?.currency === "USD") quoted.set(quoteKey(args), price.value);
+      const cost = money(answer.cost);
+      return forModel(await monidText(answer, work(), kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
+    },
+  }) as unknown as ToolRegistration;
+}
+
+/** The three, as another harness's host tools. */
+export const monidTools = (env: NodeJS.ProcessEnv, work: () => string): ToolRegistration[] => KINDS.map((kind) => monidRegistration(kind, env, work));
+
 /** The table's entry for `monid.<kind>`: it needs MONID_API_KEY, and no workflow node names it yet. */
 export const monidTool = (kind: Kind): ToolEntry => ({
   summary: SPECS[kind].summary,
   needs: [MONID_KEY_ENV],
   nodes: false,
   bind: async (host) => {
-    const faux = host.env[FAUX_ENV] && host.env[FAUX_MONID_ENV] ? ((await import(pathToFileURL(host.env[FAUX_MONID_ENV]).href)) as { default: typeof fetch }).default : undefined;
-    const client = monidClient({ key: host.env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
-    const { description, properties, required, replay } = SPECS[kind];
-    const tool = defineTool({
-      name: wireName(`monid.${kind}`), description, replay,
-      parameters: { type: "object", additionalProperties: false, properties, required } as unknown as TSchema,
-      execute: async (args, _api, context) => {
-        const answer = await client[kind](args as never, context?.abortSignal);
-        const cost = money(answer.cost);
-        return forModel(await monidText(answer, host.where.work, kind), { isError: answer.error !== undefined, ...(cost ? { details: { cost } } : {}) });
-      },
-    }) as unknown as ToolRegistration;
+    const tool = monidRegistration(kind, host.env, () => host.where.work);
     const extension = defineExtension({ name: `monid-${kind}`, tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };

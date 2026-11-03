@@ -5,7 +5,9 @@
 // not open, and carries a check of the key it was sealed under (an HMAC of a fixed label, neither the key nor a hash of
 // it), so a value sealed under another key reads as that, told apart from a damaged one. Only this process opens a
 // value, when it is asked for. One that does not open is never a crash and never a clear fallback: it reads as not
-// set, to be entered again, and the log says why once, naming the file, never a value.
+// set, to be entered again, and the log says why once, naming the file, never a value. The server reads a saved value by
+// name as it reads a launcher's secret (secrets.ts' `secret`), the launcher's winning: a run gets it over its pipe (a
+// decision key on its decision descriptor) at its launch, and capabilities and checks see it once it is saved.
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,16 +25,22 @@ const FORMAT = "tool-keys/1";
 const MAX_VALUE_BYTES = 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
-/** Each key a person may save, fixed here: the fields it is entered as (BROWSERBASE_PROJECT_ID is no secret, and is
- *  kept the same way), and what it may unlock: tools by name, and `decisions.<id>`, a workflow's decision provider.
- *  GET lists only those this server binds (unlockedBy), so a name here the server does not bind is never promised, and
- *  one shows by itself once the server binds it. */
+/** Each key a person may save, fixed here: its kind, the fields it is entered as (BROWSERBASE_PROJECT_ID is no secret,
+ *  and is kept the same way), and what it may unlock: tools by name, and `decisions.<id>`, a workflow's decision
+ *  provider. GET lists only those this server binds (unlockedBy), so a name here the server does not bind is never
+ *  promised, and one shows by itself once the server binds it. A `tool` key's fields reach only the runs that name a
+ *  tool it unlocks (runs.ts' secretsFor); a key of any other kind (a model's) reaches every run. */
 export const TOOL_KEYS = [
-  { id: "parallel", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "decisions.parallel"] },
-  { id: "monid", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
-  { id: "browserbase", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
+  { id: "parallel", kind: "tool", label: "Parallel", fields: ["PARALLEL_API_KEY"], unlocks: ["web_fetch", "web_search", "decisions.parallel"] },
+  { id: "monid", kind: "tool", label: "Monid", fields: ["MONID_API_KEY"], unlocks: ["monid.discover", "monid.inspect", "monid.run"] },
+  { id: "browserbase", kind: "tool", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
+  // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
+  { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
+/** The fields of the `tool` rows: keys a tool or a decision provider reads, and no harness (the harnesses read their
+ *  packages, their pins and their models' keys). A row of another kind (a model's) is outside them. */
+export const TOOL_FIELDS: readonly string[] = TOOL_KEYS.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
 
 /** What `candidates` unlock here, as capabilities show it: the tools of `tools` (capabilities' `tools`, available or
  *  not) and the providers of `providers` (its `workflows.decisions.providers`) named among them, and the harnesses
@@ -43,6 +51,16 @@ export function unlockedBy(candidates: readonly string[], tools: readonly { name
   const run = new Set(tools.filter((tool) => unlocks.includes(tool.name)).flatMap((tool) => tool.harnesses));
   return { unlocks, harnesses: HARNESSES.filter((harness) => run.has(harness)) };
 }
+
+/** What a row unlocks here: a `tool` row's, its tools and providers as capabilities bind them (unlockedBy); any other
+ *  kind's (a model's), no tool, on the harnesses this server offers (`offers`, capabilities' `harnesses`). */
+export function rowUnlocks(row: { kind: string; unlocks: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean }[]) {
+  if (row.kind === "tool") return unlockedBy(row.unlocks, tools, providers);
+  return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => offers.some((offer) => offer.id === harness && offer.available)) };
+}
+
+/** The key that unlocks the tool `name` (capabilities' `tools[].key`, so a page links "needs the X key" to it), if any. */
+export const keyOf = (name: string): string | undefined => TOOL_KEYS.find((row) => (row.unlocks as readonly string[]).includes(name))?.id;
 
 /** Why a stored value does not open, in the order a re-entry names one: no seal key now, another than it was sealed
  *  under, or the file (or its entry) damaged. */
@@ -64,7 +82,8 @@ export class ToolKeys {
   private readonly check: string | undefined;
   private said = "";
 
-  /** `env` is the server's own (withSecrets): a field it sets is the server's, and wins. `say` takes a log line's fields. */
+  /** `env` is what the server is started with (withSecrets' `"own"`, never a saved key, or each would read as the
+   *  server's and could not be deleted): a field it sets is the server's, and wins. `say` takes a log line's fields. */
   constructor(data: string, private readonly env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string>) => void) {
     this.file = join(data, TOOL_KEYS_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
@@ -93,15 +112,32 @@ export class ToolKeys {
     }
   }
 
+  /** The stored value of the field `name`, opened now (secrets.ts reads a saved key by name through this); undefined
+   *  with none, or one that does not open, which view() asks for again: never a clear fallback. */
+  value(name: string): string | undefined {
+    if (!FIELDS.includes(name)) return undefined;
+    const kept = this.kept();
+    const opened = kept !== "unreadable" && kept[name] !== undefined ? this.open(name, kept[name]) : undefined;
+    return opened && "value" in opened ? opened.value : undefined;
+  }
+
+  /** Every stored value that opens, by field name. */
+  values(): Record<string, string> {
+    return Object.fromEntries(FIELDS.flatMap((name) => {
+      const value = this.value(name);
+      return value === undefined ? [] : [[name, value] as const];
+    }));
+  }
+
   /** GET: each key's fields, whether set and where from (never a value), what it unlocks of what capabilities shows
-   *  here, and what to enter again, with why. */
-  view() {
+   *  here (a model key: the harnesses `offers` says this server runs), and what to enter again, with why. */
+  view(offers: readonly { id: string; available: boolean }[] = []) {
     const kept = this.kept();
     const again: { name: string; why: Unreadable }[] = [];
     const tools = toolsView(this.env);
     const providers = decisionsOf(this.env);
     const keys = TOOL_KEYS.map((row) => ({
-      id: row.id, label: row.label, ...unlockedBy(row.unlocks, tools, providers),
+      id: row.id, label: row.label, ...rowUnlocks(row, tools, providers, offers),
       fields: row.fields.map((name) => {
         if (this.env[name]) return { name, set: true, source: "server" as const };
         const opened = kept !== "unreadable" && kept[name] !== undefined ? this.open(name, kept[name]) : undefined;

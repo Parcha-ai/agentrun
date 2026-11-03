@@ -6,10 +6,11 @@
 // file with a second hard link is refused, since it could be one of this server's own files linked in.
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
-import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
+import { access, type FileHandle, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
-import { syncDir, writeDurable } from "./files.js";
+import { RUN_META, syncDir, writeDurable } from "./files.js";
+import { storedPlace } from "./place.js";
 
 /** The type a file is served as, by its extension: a run's files, a home's, and an upload whose reservation names none.
  *  A Map, so only its own extensions resolve: an object's would also give its prototype's (`.constructor`, `.__proto__`). */
@@ -292,4 +293,49 @@ export function assertHardlinkProtection(read = () => readFileSync("/proc/sys/fs
     throw new Error(`agentrun-serve: fs.protected_hardlinks cannot be read (${(error as Error).message}); a run's workspace could hold a link to this server's files`);
   }
   if (value !== "1") throw new Error(`agentrun-serve: fs.protected_hardlinks is ${value}, not 1; a run's workspace could hold a link to this server's files`);
+}
+
+const NO_LINK_DIR = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+const NEW_FILE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+
+/** Whether the run whose work/ is `work` runs in a box, by the place its start kept (serve.json beside work/). */
+function boxedRun(work: string): boolean {
+  try {
+    return storedPlace((JSON.parse(readFileSync(join(dirname(work), RUN_META), "utf8")) as { place?: unknown }).place).mode === "sandbox";
+  } catch {
+    return false;
+  }
+}
+
+/** Writes `data` as a new file `name` in `dirs` below a run's `work`, never through a link: a box's command can plant one
+ *  there, and this process writes with the server's rights. Each directory is made when missing and opened without
+ *  following a link, the next reached through the one held before it (/proc/self/fd), and the file is created, never
+ *  replaced: a link in the way refuses the write (ELOOP, ENOTDIR or EEXIST). Where no handle is held (writesHeld: macOS
+ *  and any host without /proc/self/fd) each step is reached by its path, which a link swapped in between two steps could
+ *  turn: there a run whose place is a box gets no write (ENOTSUP), and a runner run, whose tools make no link, still
+ *  writes by path. */
+export async function writeInWork(work: string, dirs: readonly string[], name: string, data: string | Uint8Array): Promise<void> {
+  const byHandle = writesHeld();
+  if (!byHandle && boxedRun(work)) throw Object.assign(new Error("this host reaches a run's directories by path, which a box's command could turn through a link"), { code: "ENOTSUP" });
+  let dir = await open(work, NO_LINK_DIR);
+  let path = work;
+  const below = (part: string) => (byHandle ? `/proc/self/fd/${dir.fd}/${part}` : join(path, part));
+  try {
+    for (const part of dirs) {
+      await mkdir(below(part)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+      const next = await open(below(part), NO_LINK_DIR);
+      await dir.close();
+      [dir, path] = [next, join(path, part)];
+    }
+    const file = await open(below(name), NEW_FILE, 0o644);
+    try {
+      await file.writeFile(data);
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await dir.close();
+  }
 }
