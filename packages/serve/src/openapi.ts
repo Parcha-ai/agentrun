@@ -693,21 +693,41 @@ const REVIEW: Json = {
   "x-agentrun-serve": "review/1",
 };
 const LEARNING_NULL = "Null for a run that does not learn: its agent's `learning` is not true, the server's learning was off when it started (`capabilities.features.learning`), or it is a workflow's or an imported run.";
+/** A note's file name, as a run's learning names one. */
+const NOTE_NAME_FILE = { type: "string", description: "The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now." };
+/** The notes a run read and learned, on its learning block (runs.ts, learning.ts notesView): each present only when it
+ *  holds a note. */
+const LEARNING_NOTES: Record<string, Json> = {
+  used: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
+    description: "The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none.",
+    "x-agentrun-serve": "learning/2",
+  },
+  learned: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." }, supersedes: { type: "array", items: NOTE_NAME_FILE, description: "The older notes it replaced, each now `superseded` by it; empty when it replaced none." } }),
+    description: "The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise.",
+    "x-agentrun-serve": "learning/2",
+  },
+};
+/** `properties` as a closed object, its `optional` ones left out of `required`. */
+const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 /** A run's learning (runs.ts): whether it started from what its agent learned. */
 const LEARNING = {
   oneOf: [
-    closed({
+    closedWith({
       state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run turn runs, and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `proposed` once the new notes passed the checks, while they are graded; `merged` once they are on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
       reason: LEARNING_REASON,
-      detail: { type: ["string", "null"], description: "One plain sentence: never a secret or a value from the input." },
+      detail: { type: ["string", "null"], description: "Where the run's learning stands, in one sentence in a person's words, the same as its timeline row says: \"Started from 2 notes.\", \"Looking back on this run…\", \"Checking 1 new note…\", \"Learned: <note's name> (replaces 1 older note)\", \"Nothing new to remember from this run.\", \"Not kept: <the grader's reason, its first sentence>\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
       at: { type: "string", format: "date-time", description: "When the state last changed." },
-    }),
+    }, LEARNING_NOTES),
     { type: "null" },
   ],
   description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, to add notes there; what it adds is checked, graded by one grader on the agent's own model, and merged into the folder, or dropped. ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };
-const LEARNING_SHORT = { oneOf: [closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON }), { type: "null" }], description: `The run's learning, in short (GET /runs/{run_id} has it whole). ${LEARNING_NULL}`, "x-agentrun-serve": "learning/1" };
+const LEARNING_SHORT = { oneOf: [closedWith({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON }, LEARNING_NOTES), { type: "null" }], description: `The run's learning, in short (GET /runs/{run_id} has it whole, with its detail and time). ${LEARNING_NULL}`, "x-agentrun-serve": "learning/1" };
 
 /** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
  *  `serve/1`. */
@@ -777,7 +797,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   TimelineRow: {
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
-      description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
+      description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. Its \`summary\` and \`text\` are its \`detail\` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
       "x-agentrun-serve": "learning/1",
     },
   },
