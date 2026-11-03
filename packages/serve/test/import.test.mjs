@@ -338,9 +338,10 @@ test("the CLI's import cuts the server's own keys out of what it keeps, wherever
   assert.ok(kept.some(([path, bytes]) => path.endsWith("serve.json") && bytes.includes("Rotate the key [redacted]")), "the run titled with the key is in, its title cut");
   assert.ok(kept.some(([, bytes]) => bytes.includes("deploy-[redacted]")), "the project named with the key is in, its name cut");
   assert.ok(runs.some((run) => run.importedFrom?.source === "claude-code" && !/^0{8}-/.test(run.importedFrom.session)), "the session named after its file is in");
-  // The file named with the key grows, and a second import finds the run the first made of it under the id as kept: no
-  // second run of it.
-  appendFileSync(join(dirname(named), `${CANARY}.jsonl`), "\n");
+  // The file named with the key grows by a turn, and a second import finds the run the first made of it under the id as
+  // kept: no second run of it.
+  const last = JSON.parse(lines.at(-1));
+  appendFileSync(join(dirname(named), `${CANARY}.jsonl`), `${JSON.stringify({ ...last, type: "user", uuid: "u9-13", parentUuid: last.uuid ?? null, timestamp: minute(9), message: { role: "user", content: "One more thing." } })}\n`);
   utimesSync(join(dirname(named), `${CANARY}.jsonl`), new Date(minute(20)), new Date(minute(20)));
   const again = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env, encoding: "utf8" });
   assert.equal(again.status, 0, again.stderr);

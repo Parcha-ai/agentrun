@@ -107,7 +107,10 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+  // A session's id is cut as its text is: one named after its file can hold a key. Every lookup of an earlier import's
+  // run then goes by the id as kept.
+  const { text } = secretCut(env);
   const skipped: Skipped[] = [];
   const seen = store ? await filesIn(store) : new Map<string, SourceFile & { run: string }>();
   let already = 0;
@@ -142,6 +145,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
       const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
       if (!session) continue;
+      session.id = text(session.id);
+      if (session.parent) session.parent = text(session.parent);
       // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent (a Codex
       // thread's, whichever of its files); else it counts in the totals alone, where its project would.
       if (session.child && session.parent) {
@@ -745,9 +750,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     const seen = await seenIn(store, project.agentId);
     for (const files of byRun(project.sessions)) {
       const listed = files[0]!;
-      // A session's id is cut as its text is (one named after its file can hold a key): the run an earlier import made of
-      // it is found under the id as kept.
-      const heldRun = held.get(`${listed.source}:${text(listed.id)}`);
+      const heldRun = held.get(`${listed.source}:${listed.id}`);
       if (heldRun !== undefined && existsSync(store.runStorePath(heldRun))) {
         line.already += 1;
         continue;
@@ -773,6 +776,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       }
       if (!read) continue;
       const session = merged(parts);
+      // Its id as the plan has it: cut, as the plan cuts it.
+      session.id = text(session.id);
       const subagents = await readChildren(plan, session, searched, seen(listed.source));
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
@@ -799,7 +804,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
             ...(session.costUsd !== undefined ? { costUsd: session.costUsd } : {}),
             ...((answer ?? session.firstPrompt) ? { summary: text(answer ?? session.firstPrompt!) } : {}),
             source: session.source,
-            session: text(session.id),
+            session: session.id,
             metrics,
           });
         }
