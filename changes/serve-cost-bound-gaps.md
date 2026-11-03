@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-durable-agent
+kind: fix
+---
+Two more unknown costs now say the most they can be. On claude-agent and codex, an answer whose cost was still on its way when its turn ended (written pending) reads `usd: null` with `at_most_usd`: the known costs plus what was held for that request. That holds live, and after the run ends before the cost comes. Before, it read unknown with no bound. A request a crash cut before its start mark reached the run is now marked by the next open from its runner record, with what was held for it. Its cut answer then counts at its own worst case. Before, it counted at another request's, which could be far smaller.
+- `REQUEST_COST_PENDING` may carry `heldUsd`, and a `REQUEST_COST_LATE` of unknown cost may too. The timeline counts each at that figure, or else at one of its kind's start figures.
+- A cost that is unknown because a model's answer came back with no price, with nothing to bound it, now says so on the timeline's usage row: "Cost so far: unknown: <model> has no price here, over N model requests".

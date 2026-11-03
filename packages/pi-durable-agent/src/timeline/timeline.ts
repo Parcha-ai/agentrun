@@ -63,10 +63,12 @@ export const REQUEST_COST = "agentrun.request_cost";
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
 export const REQUEST_REFUSED = "agentrun.request_refused";
 /** Written right after an answer whose cost was not in when it was written (a harness's proxy books a response after
- *  answering it): that answer's cost is still to come, as a REQUEST_COST_LATE. Until it comes the cost is unknown. */
+ *  answering it): that answer's cost is still to come, as a REQUEST_COST_LATE. Until it comes the cost is unknown, and
+ *  bounded by what the host held for that request (`heldUsd` here, else its kind's start figures). */
 export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 /** The cost (`usd`, or null when unknown) of an answer written earlier with its cost pending: it closes one pending cost
- *  and adds to the run's cost. It is not a request of its own: the answer already counted that. */
+ *  and adds to the run's cost. It is not a request of its own: the answer already counted that. One of unknown cost
+ *  counts at `heldUsd`, what the host held for the request, when it says, else at one of its kind's start figures. */
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
 /** Written right before a `pi.assistant` that continues the answer before it: a call that answer asked for, written once
  *  the answer's own entry was already in (a harness reports each call as it runs it, and its host writes an answer at its
@@ -160,7 +162,7 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
-  const pending: boolean[] = [];
+  const pending: { unmetered: boolean; figure: number | undefined }[] = [];
   // For the bound on a cost no one knows: each request's worst case, by kind, as its start mark
   // says (undefined: it says none; a cap's refusal marks no request and holds nothing), and as the end mark of one stopped
   // before its end says. Each cost unknown after the first mark is one request's, by kind; one before it (a run from
@@ -197,6 +199,10 @@ function createMeter() {
     for (const key of ["input", "cacheRead", "cacheWrite", "output"] as const) tokens[key] += counted[key];
   };
   const models = new Map<string, number>();
+  // The model of the latest answer that came back with no price (content or tokens, and no total): when nothing bounds
+  // the cost, the usage row names it.
+  let unpriced: string | undefined;
+  let unpricedBefore: string | undefined;
 
   function push(entry: EntryLike): "answer" | "continued" | "mark" | undefined {
     const message = entry.model?.[0];
@@ -227,18 +233,23 @@ function createMeter() {
       addCost(data?.usd, "compaction");
       addTokens(tokensOf(data?.usage, data?.failed === true));
     } else if (entry.kind === REQUEST_COST_PENDING) {
-      // The answer just before it was counted as a cost unknown: it is one still to come.
+      // The answer just before it was counted as a cost unknown: it is one still to come, bounded by what its host held
+      // for it (on this mark), else by its start's figure.
       if (unknown > 0) {
         unknown -= 1;
-        pending.push(lastUnmetered);
+        pending.push({ unmetered: lastUnmetered, figure: everMarked ? heldOf(entry) : undefined });
+        // Its cost is on its way, not missing: no price named for it.
+        unpriced = unpricedBefore;
         if (unknownOf.generation > 0) unknownOf.generation -= 1;
         else if (unknownUnmarked > 0) unknownUnmarked -= 1;
       }
     } else if (entry.kind === REQUEST_COST_LATE) {
       // The answer it prices was written before its usage came in: its usage, when it has one, is that answer's tokens.
       const late = tokensOf(data?.usage);
-      if (pending.shift() && late) (unmetered -= 1), addTokens(late);
+      if (pending.shift()?.unmetered && late) (unmetered -= 1), addTokens(late);
       addCost(data?.usd);
+      // Of unknown cost after all: at what its host held for it, when it says, as a stopped request's end counts.
+      if (!(typeof data?.usd === "number" && Number.isFinite(data.usd)) && everMarked && heldOf(entry) !== undefined) figures.generation.ends.push(heldOf(entry)!);
     } else if (entry.kind === REQUEST_STARTED) {
       marked += 1;
       inFlight = true;
@@ -259,7 +270,11 @@ function createMeter() {
       // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
       // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
       const aborted = message.stopReason === "aborted";
-      addCost(aborted ? undefined : obj(obj(message.usage)?.cost)?.total);
+      const total = obj(obj(message.usage)?.cost)?.total;
+      addCost(aborted ? undefined : total);
+      const returned = (Array.isArray(message.content) && message.content.length > 0) || Number(obj(message.usage)?.input) > 0 || Number(obj(message.usage)?.output) > 0;
+      unpricedBefore = unpriced;
+      if (name && !aborted && message.stopReason !== "error" && returned && !(typeof total === "number" && Number.isFinite(total))) unpriced = name;
       const counted = aborted ? undefined : tokensOf(message.usage, message.stopReason === "error");
       lastUnmetered = !counted;
       addTokens(counted);
@@ -268,8 +283,9 @@ function createMeter() {
     return "mark";
   }
 
-  /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. */
-  function usage(settled: boolean): { usd: number | null; requests: number; at_most_usd?: number } | undefined {
+  /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running.
+   *  `unpriced`: the model an answer with no price came from, when that cost is unknown and nothing bounds it. */
+  function usage(settled: boolean): { usd: number | null; requests: number; at_most_usd?: number; unpriced?: string } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
@@ -280,19 +296,22 @@ function createMeter() {
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut ? null : Math.round(known * 1e6) / 1e6;
     const atMost = usd === null ? bound(open(inFlight), open(compactionOpen)) : undefined;
-    return { usd, requests: count, ...(atMost === undefined ? {} : { at_most_usd: Math.round(atMost * 1e6) / 1e6 }) };
+    return { usd, requests: count, ...(atMost === undefined ? {} : { at_most_usd: Math.round(atMost * 1e6) / 1e6 }), ...(usd === null && atMost === undefined && unpriced ? { unpriced } : {}) };
   }
 
   /** The most an unknown cost can be, when each request whose cost is unknown had a worst case held for it by its host's
    *  cap: the known costs, each request stopped before its end at the figure its end mark holds, and every other request of
    *  unknown cost (an answer with none, as a harness writes a request a crash cut; one with no answer, as pi leaves it) at
    *  one of the largest figures its kind's start marks hold, since the marks do not say which start an answer closed. This
-   *  is a cap's own reading of the same marks. Undefined when a cost is still pending, one is unknown from before the first
-   *  mark, or a start of a kind with such a request holds no figure. `flying`, `summarizing`: in flight, not cut. */
+   *  is a cap's own reading of the same marks. A cost still pending counts the same way, at what its host held for it (its
+   *  pending mark's figure, else one of its kind's start figures), until it comes. Undefined when one is unknown from before
+   *  the first mark, or a start of a kind with such a request holds no figure. `flying`, `summarizing`: in flight, not cut. */
   function bound(flying: number, summarizing: number): number | undefined {
-    if (unknownUnmarked > 0 || pending.length > 0) return undefined;
+    if (unknownUnmarked > 0) return undefined;
     let sum = known;
-    for (const part of [requestPart("generation", flying), requestPart("compaction", summarizing)]) {
+    for (const { figure } of pending) if (figure !== undefined) sum += figure;
+    const unheld = pending.filter(({ figure }) => figure === undefined).length;
+    for (const part of [requestPart("generation", flying, unheld), requestPart("compaction", summarizing)]) {
       if (part === undefined) return undefined;
       sum += part;
     }
@@ -303,11 +322,11 @@ function createMeter() {
    *  own beside these): each request of that kind stopped before its end at the figure its end mark holds, and every other
    *  one of unknown cost (an answer with none, or a request with no answer and not in flight) at one of the largest figures
    *  the kind's start marks hold. Undefined when one of those has no figure to count at. */
-  function requestPart(kind: Kind, flying: number): number | undefined {
+  function requestPart(kind: Kind, flying: number, pendingUnheld = 0): number | undefined {
     const { starts, ends } = figures[kind];
     const answeredOf = kind === "generation" ? answered : compactions;
     const startedOf = kind === "generation" ? marked : compacting;
-    const uncounted = unknownOf[kind] + Math.max(0, startedOf - flying - answeredOf) - ends.length;
+    const uncounted = unknownOf[kind] + pendingUnheld + Math.max(0, startedOf - flying - answeredOf) - ends.length;
     let part = ends.reduce((x, y) => x + y, 0);
     if (uncounted <= 0) return part;
     if (starts.length < uncounted || starts.some((figure) => figure === undefined)) return undefined;
@@ -584,9 +603,9 @@ function createProjector(options: TimelineOptions) {
   function usage(): TimelineEvent | undefined {
     const counted = meter.usage(options.settled === true);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests, at_most_usd } = counted;
+    const { usd, requests, at_most_usd, unpriced } = counted;
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}`,
+      summary: `Cost so far: ${usd === null ? (unpriced ? `unknown: ${unpriced} has no price here,` : "unknown") : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}`,
       // The row is exactly the contract's TimelineUsage and its costbound/1 field: no other of the meter's reaches it.
       usage: { usd, requests, ...(at_most_usd !== undefined ? { at_most_usd } : {}) },
     });
