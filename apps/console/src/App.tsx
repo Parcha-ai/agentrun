@@ -3,6 +3,8 @@ import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { KeysPage } from "@/components/KeysPage";
+import { Settings, type SettingsPage } from "@/components/Settings";
+import { ToolsPage } from "@/components/ToolsPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
@@ -12,13 +14,14 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, type RunsFilter } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
+import { toolChoices } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: "keys" };
+type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -28,9 +31,9 @@ export function route(h: string = location.hash): Where {
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
-  // Settings, a page per address: #/settings/keys (and #/settings) for now; a later one is one more name here.
-  m = h.match(/^#\/settings(?:\/(keys))?$/);
-  if (m) return { section: "settings", settings: (m[1] ?? "keys") as "keys" };
+  // Settings, a page per address: #/settings/keys (and #/settings) and #/settings/tools; a later one is one more name here.
+  m = h.match(/^#\/settings(?:\/(keys|tools))?$/);
+  if (m) return { section: "settings", settings: (m[1] ?? "keys") as SettingsPage };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
   if (!h.startsWith("#/runs?")) return { section: "runs" };
@@ -205,7 +208,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     return () => { live = false; };
   }, [v2]);
   useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
-  useEffect(() => { v2.capabilities().then(setCaps).catch(() => {}); }, [v2]);
+  // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
+  // earlier read (two saves in a row) never puts back what an earlier save left.
+  const capsAsked = useRef(0);
+  const readCaps = () => { const n = ++capsAsked.current; v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); }).catch(() => {}); };
+  useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once, and
   // again when an import at setup ends while this page watches (`refreshed`), and with a runs view's list while it runs
@@ -250,7 +257,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
   // The server lists its tools as objects (name, available, missing).
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: "#/settings/keys" }[s]);
+  // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
+  const choices = toolChoices(c?.tools);
+  // The settings pages this server has: tool keys (their routes), and tools (a capability with a choice of provider).
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length ? ["tools" as const] : [])];
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
@@ -271,7 +282,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         const active = a.filter((x) => !x.archived_at);
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
-      .catch((e) => { if (n === agentsAsked.current) setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)); });
+      .catch((e) => { if (n === agentsAsked.current) setStartError(problemOf(e)); });
   }, [v2, where.section, retry, refreshed]);
   // Only the newest of Mission Control's reads lands: one for an earlier range, or a tick's begun before it, never
   // replaces it.
@@ -318,7 +329,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   return (
-    <Shell active={where.section} settings={!!caps?.features?.tool_keys?.routes} onNavigate={nav} onSignOut={() => {
+    <Shell active={where.section} settings={settingsOffered.length > 0} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }}>
@@ -343,7 +354,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "settings"
-        ? <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={() => { v2.capabilities().then(setCaps).catch(() => {}); }} />
+        ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} onSaved={readCaps} />
+              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
+          </Settings>
         : where.section === "mission"
         ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
             scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
@@ -354,7 +368,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} refresh={tick} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
-          : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
+          : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
