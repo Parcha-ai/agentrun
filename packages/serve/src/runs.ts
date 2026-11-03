@@ -163,6 +163,8 @@ export type Run = {
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
+  /** A stop in flight: from its mark to its abort's answer. A message meanwhile waits for it (stopAnswered). */
+  stopping?: true;
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
@@ -1257,6 +1259,9 @@ export class Runs {
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
+    // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go to
+    // the turn the abort is cutting, and be dropped with it, its row never coming.
+    if (run.stopping) await this.stopAnswered(run);
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
     // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
     if (run.finishing && !run.outcome) await this.endWritten(run);
@@ -1278,6 +1283,13 @@ export class Runs {
       throw error;
     }
     return { mode, messageId };
+  }
+
+  /** Waits, up to a request's deadline, for a stop in flight to answer. */
+  private async stopAnswered(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.stopping; await sleep(50)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", "The run is being stopped; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
   }
 
   /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
@@ -1327,6 +1339,16 @@ export class Runs {
     if (run.imported) return false;
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    run.stopping = true;
+    try {
+      return await this.stopTurn(run);
+    } finally {
+      run.stopping = undefined;
+    }
+  }
+
+  /** stop()'s mark and abort, once it took the stop. */
+  private async stopTurn(run: Run): Promise<boolean> {
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
     const before = { stopped_at: run.meta.stopped_at, stopped_after: run.meta.stopped_after };
     delete run.meta.stopped_at;
