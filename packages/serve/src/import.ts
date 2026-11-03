@@ -58,7 +58,9 @@ export type ImportOptions = {
 };
 /** Why a session file or a project's file is left out, by kind, as the left-out counts group them (leftOutLines). */
 export type LeftOut = "gone" | "temp" | "live" | "large" | "unread" | "no-project" | "no-words" | "copies" | "vanished" | "file";
-export type Skipped = { what: string; why: string; kind: LeftOut };
+/** `session`, when the file was read: the session it holds (`<source>:<id>`), so a session of two files (a resumed Codex
+ *  thread) is counted once. */
+export type Skipped = { what: string; why: string; kind: LeftOut; session?: string };
 export type ProjectPlan = {
   cwd: string;
   agentId: string;
@@ -172,22 +174,24 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         continue;
       }
       if (!all && session.users === 0 && !session.child) {
-        skipped.push({ what: file, why: "no message of the person's", kind: "no-words" });
+        skipped.push({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` });
         continue;
       }
       const cwd = session.cwd;
       if (!all) {
-        const there = await lstat(cwd).catch(() => null);
-        if (!there?.isDirectory() && !deleted) {
-          skipped.push({ what: file, why: `its project ${cwd} is gone`, kind: "gone" });
-          continue;
-        }
+        // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
         if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
           skipped.push({
             what: file,
             why: `its project ${cwd} is a temp directory`,
             kind: "temp",
+            session: `${source}:${session.id}`,
           });
+          continue;
+        }
+        const there = await lstat(cwd).catch(() => null);
+        if (!there?.isDirectory() && !deleted) {
+          skipped.push({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` });
           continue;
         }
       }
@@ -866,10 +870,12 @@ const LEFT_OUT: Record<LeftOut, (n: number) => string> = {
   file: (n) => `${counted(n, "project file")} not copied (a link, not text, over its size cap, or a folder with no SKILL.md)`,
 };
 /** What an import left out, by why: one group per kind, the most first (a project's files last), each counted in words
- *  ("84 sessions from folders that no longer exist"). */
-export function leftOutOf(skipped: readonly Pick<Skipped, "kind">[]): { kind: LeftOut; count: number; label: string }[] {
-  const by = new Map<LeftOut, number>();
-  for (const { kind } of skipped) by.set(kind, (by.get(kind) ?? 0) + 1);
+ *  ("84 sessions from folders that no longer exist"): a session by its id where the file was read, so one of two files
+ *  counts once, else each file. */
+export function leftOutOf(skipped: readonly Pick<Skipped, "kind" | "what" | "session">[]): { kind: LeftOut; count: number; label: string }[] {
+  const seen = new Map<LeftOut, Set<string>>();
+  for (const { kind, what, session } of skipped) seen.set(kind, (seen.get(kind) ?? new Set()).add(session ?? `file:${what}`));
+  const by = new Map([...seen].map(([kind, ids]) => [kind, ids.size] as const));
   const order = Object.keys(LEFT_OUT) as LeftOut[];
   return [...by]
     .sort(([a, x], [b, y]) => Number(a === "file") - Number(b === "file") || y - x || order.indexOf(a) - order.indexOf(b))

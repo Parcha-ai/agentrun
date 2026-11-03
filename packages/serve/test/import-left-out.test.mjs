@@ -2,12 +2,12 @@
 // a kind in; --include-deleted brings in the sessions of folders that no longer exist (a deleted worktree's), each folder
 // its own agent, and nothing else the import leaves out.
 import assert from "node:assert/strict";
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
 import * as importing from "../dist/import.js";
-import { claudeSession, piSession } from "./fixtures/import-sessions.mjs";
+import { claudeSession, piSession, sessionId } from "./fixtures/import-sessions.mjs";
 import { scratch } from "./support.mjs";
 
 const ENV = { PATH: "/usr/bin" };
@@ -81,4 +81,28 @@ test("the CLI's dry run and import count what they leave out by why, with the fl
   // The import above took the deleted folders' sessions: three files left out are left, each named.
   await run("--dry-run", "--verbose");
   assert.equal(all.at(-1).filter((line) => line.startsWith("skipped ")).length, 3, "--verbose names each one");
+});
+
+test("a session of two files is one session left out, and a deleted folder under the temp directory is a temp folder's, which only --all brings in", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const temp = join(root, "tmp");
+  mkdirSync(temp, { recursive: true });
+  const file = claudeSession(at, join(at, "worktrees", "billing-api-retries"), 21);
+  // The same session moved to another projects folder: two files, one session.
+  const copy = join(at, ".claude", "projects", "-moved", `${sessionId(21)}.jsonl`);
+  mkdirSync(join(at, ".claude", "projects", "-moved"), { recursive: true });
+  copyFileSync(file, copy);
+  const old = new Date(Date.now() - 60 * 60_000);
+  utimesSync(copy, old, old);
+  claudeSession(at, join(temp, "deleted-scratch"), 22);
+  const plan = await importing.planImport({ home: at, env: ENV, temp });
+  assert.deepEqual(plan.skipped.map((s) => s.kind).sort(), ["gone", "gone", "temp"], "two files of the gone session, one of the temp one");
+  assert.deepEqual(importing.leftOutOf(plan.skipped), [
+    { kind: "gone", count: 1, label: "1 session from folders that no longer exist" },
+    { kind: "temp", count: 1, label: "1 session from temp folders" },
+  ]);
+  const deleted = await importing.planImport({ home: at, env: ENV, temp, deleted: true });
+  assert.deepEqual(deleted.projects.map((p) => p.name), ["billing-api-retries"]);
+  assert.deepEqual(deleted.skipped.map((s) => s.kind), ["temp"], "--include-deleted leaves the temp folder's session out, as its line said");
 });
