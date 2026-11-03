@@ -310,6 +310,7 @@ test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) en
 });
 
 const FAUX_WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
+const FAUX_HARNESS_SLOW_START = new URL("./fixtures/faux-harness-slow-start.mjs", import.meta.url).pathname;
 
 /** Follows a run to completed, then checks it never read completed before `answer` was on its timeline: the rows of every
  *  page up to the first completed one. */
@@ -411,14 +412,16 @@ const admitted = async (signal) => {
 };
 
 test("a run relaunched after a crash cut its turn's first request completes only once the recovered turn answers, never while the new process opens", { timeout: 90_000 }, async (t) => {
-  // Review F1: the reopen writes the cut request as an empty entry and then opens the session (2 s here) before the
-  // recovered turn starts, with the door idle; that entry must not read as the turn's end.
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  // Review F1: the reopen writes the cut request as an empty entry, then opens the session and starts the recovered
+  // turn. With the harness slow to start (2 s, as claude-agent's checks its CLI), serve follows the new process's door,
+  // idle, when that entry lands: it must not read as the turn's end.
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS_SLOW_START });
   const dir = await scratch(t);
   const [go, signal] = [join(dir, "go"), join(dir, "admitted")];
-  const runId = await started(api, "relaunch-slow", `Cut the first request (signal ${signal}); open slowly once ${go} exists.`);
+  const runId = await started(api, "relaunch-slow", `Cut the first request (signal ${signal}); recover once ${go} exists.`);
   await admitted(signal);
   await writeFile(go, "");
+  await writeFile(join(data, "runs", runId, "slow-start"), "");
   await killRun(data, runId);
   await completesOnlyAfter(api, runId, "Recovered.");
   assert.equal(await answer(api, runId), "Recovered.");
@@ -437,7 +440,9 @@ test("a cancel of a turn that has shown nothing reads working, then cancelled: n
   const { pages } = await follow(api, runId, ["cancelled"], { deadlineMs: 55_000 });
   assert.deepEqual(pages.filter((page) => page.status === "completed").map((page) => page.status), [], `statuses: ${pages.map((page) => page.status).join(", ")}`);
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "cancelled");
-  assert.ok(emptyAfterMessage(storeEntries(data, runId)), "the case: the interrupted request's empty entry is in the store after the person's message");
+  const entries = storeEntries(data, runId);
+  const user = entries.findLastIndex((e) => e.kind === "pi.user");
+  assert.ok(user >= 0 && entries.slice(user + 1).some((e) => e.kind === "agentrun.request_started"), "the case: the request was admitted after the person's message (its start mark is in the store)");
 });
 
 test("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is the earlier answer, never the commentary, on this server and the next", { timeout: 120_000 }, async (t) => {

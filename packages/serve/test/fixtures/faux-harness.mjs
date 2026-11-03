@@ -29,15 +29,11 @@ export function script(spec) {
   // A chat whose second turn has a request of unknown price.
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message.
-  // F1 (adversarial review of #1424): the turn's first request is admitted and cut before any content; the test kills the
-  // process once the signal file says the request is admitted. The next process's open holds 2 s (after its booked but
-  // unwritten request is written, empty, and before the recovered turn starts), then the recovered turn answers.
-  const relaunch = /Cut the first request \(signal (\S+)\); open slowly once (\S+) exists\./.exec(text);
-  if (relaunch) {
-    if (!existsSync(relaunch[2])) return [cutSignalled(relaunch[1])];
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
-    return [{ say: "Recovered.", usd: 0.001 }];
-  }
+  // F1 (adversarial review of #1424): the turn's first request is admitted (the signal file says so) and cut before any
+  // content; the test kills the process. On the relaunch (go exists) the recovered turn answers. Its slow start is
+  // faux-harness-slow-start.mjs's.
+  const relaunch = /Cut the first request \(signal (\S+)\); recover once (\S+) exists\./.exec(text);
+  if (relaunch) return existsSync(relaunch[2]) ? [{ say: "Recovered.", usd: 0.001 }] : [cutSignalled(relaunch[1])];
   // F2: a request admitted (the signal file says so) and never answered: the turn holds until it is cancelled.
   const unanswered = /Hold a request unanswered \(signal (\S+)\)\./.exec(text)?.[1];
   if (unanswered) return [cutSignalled(unanswered)];
