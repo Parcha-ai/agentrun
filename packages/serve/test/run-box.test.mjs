@@ -11,7 +11,7 @@ import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxMounts, mountSource } from "../dist/run-box.js";
+import { BOX_MADE_FILE, boxMounts, mountSource } from "../dist/run-box.js";
 import { startServe } from "../dist/index.js";
 import { client, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -153,6 +153,8 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
   await mkdir(join(docker.state, "containers"), { recursive: true });
   await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
+  // And the mark that process wrote before its create: a box of this run may exist, so this one looks for it.
+  await writeFile(join(data, "runs", runId, BOX_MADE_FILE), "");
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
@@ -161,6 +163,46 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   const execs = docker.calls().filter((args) => args[0] === "exec");
   assert.ok(execs[0].join(" ").includes(".pi-transport") && execs[0].join(" ").includes("kill -KILL"), "the first command kills what the earlier process left");
   await until(() => docker.removed().includes(id), "the destroy at the run's end");
+});
+
+test("fake docker: a fresh run's first box is made without looking for one: no `docker ps` for its label and no inspect before its create, which leaves the mark a later process looks by", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  await boxedAgent(api);
+  const runId = await probe(api, [{ tool: "bash", args: { command: "printf fresh > out.txt" } }]);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
+  const calls = docker.calls();
+  const create = calls.findIndex((args) => args[0] === "run");
+  assert.ok(create >= 0, "a box was made");
+  const before = calls.slice(0, create);
+  assert.deepEqual(before.filter((args) => args[0] === "ps" && args.includes(`label=agentrun.run=${runId}`)), [], "no listing by the run's label");
+  assert.deepEqual(before.filter((args) => args[0] === "inspect"), [], "no inspect");
+  assert.equal(existsSync(join(data, "runs", runId, BOX_MADE_FILE)), true, "the mark is in the run's directory");
+  assert.equal(docker.runs().length, 1);
+});
+
+test("fake docker: archiving a run that waits answers before its box is destroyed; the destroy follows, and the server's close waits for it", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  const made = await api("POST", "/agents", { definition: { id: "asking", name: "asking", instructions: "Probe.", place: SANDBOX, tools: ["bash", "ask_person"] } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const run = await api("POST", "/agents/asking/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "true" } }, { tool: "ask_person", args: { question: "Go on?" } }] }) } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
+  const [box] = await docker.containers();
+  assert.ok(box, "the run holds its box while it waits");
+  await writeFile(join(docker.state, "rm-hold"), "");
+  const started = Date.now();
+  const archived = await api("POST", `/runs/${runId}/archive`);
+  assert.equal(archived.status, 200, JSON.stringify(archived.body));
+  assert.ok(archived.body.archived_at, "the answer is the archived run");
+  assert.ok((await docker.containers()).some((c) => c.Id === box.Id), "answered while the box's destroy is still held");
+  assert.ok(Date.now() - started < 5_000, `answered in ${Date.now() - started} ms, not after the destroy`);
+  await until(() => docker.removed().includes(box.Id), "the destroy's call");
+  await rm(join(docker.state, "rm-hold"));
+  await until(async () => !(await docker.containers()).some((c) => c.Id === box.Id), "the box gone");
 });
 
 test("fake docker: a bash timeout kills the command's group in the box, though the killed docker exec client left it running", { timeout: 90_000 }, async (t) => {

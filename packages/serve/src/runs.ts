@@ -779,7 +779,9 @@ export class Runs {
       if (!run) continue;
       // A run's box goes at its archive, its process live or not (an ended run's went at its end): an archived run takes
       // no message, and a call it still makes gets a fresh box, which its end or the next start's sweep destroys.
-      if (!run.outcome) await this.dropBox(run);
+      // Destroyed on the run's settle chain, never in the archive's answer: a settle after it, and the server's close, wait
+      // for it.
+      if (!run.outcome) run.settling = (run.settling ?? Promise.resolve()).then(() => this.dropBox(run));
       await this.teardown(run);
     }
   }
