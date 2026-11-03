@@ -56,6 +56,23 @@ test("prose before calls is a text_block; a final stop answer is the final_answe
   assert.deepEqual(rows.filter((r) => /text|final/.test(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "Opening the portal."], ["final_answer", "Done."]]);
 });
 
+test("a host may name a call's file path its own way (path option): the tool rows and the Saved row use it, the input preview and the entries keep the call's own", () => {
+  const work = "/data/runs/r1/work";
+  const entries = () => [assistant([call("w", "write", { path: `${work}/hello.md`, content: "hi" })]), result("w", "write", "Successfully wrote to hello.md"), assistant([{ type: "text", text: "Done." }])];
+  const path = (p) => (p.startsWith(`${work}/`) ? p.slice(work.length + 1) : p);
+  const given = entries();
+  const rows = timelineOf(given, { path });
+  assert.deepEqual(rows.filter((r) => ["tool_use", "tool_result", "phase"].includes(r.kind)).map((r) => [r.kind, r.summary, r.path ?? null]), [["tool_use", "Wrote hello.md", null], ["tool_result", "Wrote hello.md: ok", null], ["phase", "Saved hello.md", "hello.md"]]);
+  assert.match(rows.find((r) => r.kind === "tool_use").tool_input_preview, /\/data\/runs\/r1\/work\/hello\.md/, "the preview is the call's own input");
+  assert.equal(given[0].model[0].content[0].arguments.path, `${work}/hello.md`, "the entry is not changed");
+  // The live view takes the same option.
+  const reducer = timelineReducer({ path });
+  reducer.apply(entries().map((entry) => ({ type: "entry_appended", entry })));
+  assert.deepEqual(reducer.rows().filter((r) => r.kind === "phase").map((r) => r.summary), ["Saved hello.md"]);
+  // Without it, rows name the path as the call gave it.
+  assert.deepEqual(timelineOf(entries()).filter((r) => r.kind === "tool_use").map((r) => r.summary), [`Wrote ${work}/hello.md`]);
+});
+
 test("a round of three browser_read folds to one line and shows its failure", () => {
   const rows = timelineOf([
     assistant([call("a", "browser_read"), call("b", "browser_read"), call("c", "browser_read")], 0),
