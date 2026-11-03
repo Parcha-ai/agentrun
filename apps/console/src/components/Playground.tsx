@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
-import { capHint, curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { capHint, curlFor, exampleInput, keeper, previewBody, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -65,11 +65,18 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, minCapUsd });
-  // A cap the server refused as too low says why under the field, as the server says it.
-  const capRefused = result?.status === 422 ? (result.body as { error?: { fields?: { field?: string; message?: string }[] } } | null)?.error?.fields?.find((f) => f.field === "max_cost_usd")?.message : undefined;
-  const hint = capHint(minCapUsd, effort !== "");
-  const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text };
+  // The least cap is the current revision's: an older revision may run another model, so its start is left to the server.
+  const atCurrent = !revision || revisions.some((r) => r.revision === revision && r.current);
+  const least = atCurrent ? minCapUsd : undefined;
+  const form = { text, revision, effort, maxCostUsd: cap };
+  const built = startBody(kind, { ...form, minCapUsd: least });
+  // A cap the server refused as too low says why under the field, as the server says it, while the form is still the
+  // request it refused: a change of agent, revision, effort or cap takes it away.
+  const asked = JSON.stringify([agentId, revision, effort, cap]);
+  const [sentAs, setSentAs] = useState(asked);
+  const capRefused = result?.status === 422 && sentAs === asked ? (result.body as { error?: { fields?: { field?: string; message?: string }[] } } | null)?.error?.fields?.find((f) => f.field === "max_cost_usd")?.message : undefined;
+  const hint = capHint(least, effort !== "");
+  const body = previewBody(kind, form);
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
@@ -77,7 +84,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     if (!built.ok || !onSend) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
-    setSending(false); setResult(r); setPane("response");
+    setSending(false); setResult(r); setSentAs(asked); setPane("response");
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (

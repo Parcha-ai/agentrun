@@ -1,4 +1,6 @@
 export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number };
+/** The request as the form has it, for the code pane: a cap that is not a number is kept as typed. */
+export type PreviewBody = Omit<StartBody, "max_cost_usd"> & { max_cost_usd?: number | string };
 /** `minCapUsd`: the agent's least cap (GET /agents/{id} min_cap_usd): a cap under it is refused here as the server
  *  refuses it (`cap >= min_cap_usd`); null, no cap can be kept on its model; absent, the server said nothing. */
 export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; minCapUsd?: number | null };
@@ -34,6 +36,21 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
     body.max_cost_usd = cap;
   }
   return { ok: true, body };
+}
+
+/** The request the form says, as entered, for the code pane and the JSON view: startBody's body when the form is valid,
+ *  else the same fields with nothing refused or dropped (a workflow input that is not JSON, as typed; a cap under the
+ *  agent's least, as the number it is; one that is not a number, as typed). A copied request is then refused as the form
+ *  is, never sent without the cap, revision or effort the form names. */
+export function previewBody(kind: "agentic" | "workflow", f: Omit<StartForm, "minCapUsd">): PreviewBody {
+  let input: unknown = kind === "agentic" ? { content: f.text } : f.text;
+  if (kind === "workflow") { try { input = JSON.parse(f.text); } catch { /* kept as typed */ } }
+  const body: PreviewBody = { input };
+  if (f.revision) body.revision = f.revision;
+  if (f.effort) body.effort = f.effort;
+  const cap = f.maxCostUsd?.trim();
+  if (kind === "agentic" && cap) body.max_cost_usd = Number.isFinite(Number(cap)) ? Number(cap) : cap;
+  return body;
 }
 
 type Schema = { $ref?: string; type?: string | string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; examples?: unknown[]; default?: unknown; enum?: unknown[]; description?: string; definitions?: Record<string, Schema> };
@@ -89,7 +106,7 @@ export { keeper };
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /** The request as cURL for the code pane. The token is `$AGENTRUN_TOKEN`: a value never appears. */
-export function curlFor(origin: string, agentId: string, body: StartBody, key: string): string {
+export function curlFor(origin: string, agentId: string, body: PreviewBody, key: string): string {
   return [
     `curl -X POST ${sh(`${origin}/v2/agents/${encodeURIComponent(agentId)}/runs`)} \\`,
     `  -H "Authorization: Bearer $AGENTRUN_TOKEN" \\`,

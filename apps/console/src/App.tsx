@@ -183,12 +183,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   }, [v2, where.section, missionTry, statsRange, statsAgent]);
   const revsAsked = useRef(0);
   useEffect(() => {
-    // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
+    // The picked agent's revisions and least cap, read again each time the agents are (the playground opening again), as
+    // an agent edited elsewhere keeps its id: the old ones go at once, and an answer for an earlier read is dropped.
     const n = ++revsAsked.current;
-    setRevs([]);
+    setRevs([]); setPickMin(null);
     if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
     if (pick) v2.getAgent(pick).then(({ agent: a }) => { if (n === revsAsked.current && "min_cap_usd" in a) setPickMin({ id: pick, min: a.min_cap_usd ?? null }); }).catch(() => {});
-  }, [v2, pick]);
+  }, [v2, pick, agents]);
   const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
     const t0 = performance.now();
     try {
