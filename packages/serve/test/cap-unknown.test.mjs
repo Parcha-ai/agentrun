@@ -359,9 +359,14 @@ async function inFlight(api, id, content, cap = 10) {
 
 test("a capped pi run steered mid-answer: the answer in flight finishes, never aborted, and the steered request is admitted", async (t) => {
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
-  // The faux model answers "Answer soon" after 1.5 s: the steer lands while that request is in flight.
-  const runId = await inFlight(api, "steered", "Answer soon, please.");
+  const dir = mkdtempSync(join(tmpdir(), "cap-steer-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const go = join(dir, "go");
+  // The faux model answers once `go` exists, made only after the steer is accepted: the steer lands while that request
+  // is in flight.
+  const runId = await inFlight(api, "steered", `Answer once ${go} exists.`);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Also say hi." })).body.mode, "steer");
+  writeFileSync(go, "");
   await follow(api, runId, ["completed", "failed", "cancelled"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.error?.code ?? null], ["completed", null], JSON.stringify(run.error));
@@ -390,6 +395,7 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   let run = await finished(api, runId);
   assert.deepEqual([run.status, run.error?.code ?? null, run.result.final_answer], ["completed", null, "On go on: done."], "the same process admits the next request");
   assert.equal(run.cost.usd, null, "the stopped request's cost shows unknown, never $0");
+  assert.deepEqual((await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage, { usd: null, requests: 2 }, "the stopped request is booked: counted, at an unknown cost");
   const spent = spentIn(storeFileOf(data, runId));
   assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the store says what the cap counts: the held worst case and the answer since, $${spent}`);
   // Completed, the run's process is gone: the next message opens a new one, which reads its spend from the store.

@@ -38,10 +38,10 @@ type Answer = { run: Run } | { refused: string };
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string }; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
 /** By default the server's stats carry no analytics, as an older server's. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, hold, strict = false, timeline, reread }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, harnesses, hold, strict = false, timeline, reread }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
@@ -69,7 +69,8 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })) : createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, efforts, go: (h: string) => went.push(h), tab })));
+  const props = { v2: v2 as never, agentId: agent.agent_id, defaultModel: models?.default ?? editorCaps.defaultModel, modelSource: models?.source, routePrefix: models?.route_prefix, harnesses, efforts, go: (h: string) => went.push(h), tab };
+  act(() => root!.render(strict ? createElement(StrictMode, null, createElement(AgentPage, props)) : createElement(AgentPage, props)));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -463,7 +464,7 @@ describe("AgentPage", () => {
 });
 
 describe("AgentPage, the model on a gateway server", () => {
-  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway" };
+  const gateway = { default: "agent-model/gpt-6-luna", source: "gateway", route_prefix: "agent-model" };
   const on = (harness: string, model?: string): Agent => {
     const a = agentFixture("invoice-checker");
     const { model: _m, ...definition } = a.definition;
@@ -474,6 +475,13 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("pi"), { models: gateway });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     expect(modelOf(page).title).toBe("agent-model/gpt-6-luna");
+  });
+  it("with each harness's default named by the server, a codex agent shows the gateway's default", async () => {
+    const harnesses = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
+    const page = await open(on("codex"), { models: gateway, harnesses });
+    expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
+    const claude = await open(on("claude-agent"), { models: gateway, harnesses });
+    expect(modelOf(claude).textContent).toBe("no default: choose a model");
   });
   it("a claude-agent agent naming no model has no default to show", async () => {
     const page = await open(on("claude-agent"), { models: gateway });
