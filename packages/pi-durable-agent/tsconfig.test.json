@@ -1,5 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true, "rootDir": "." },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "compilerOptions": { "composite": false, "noEmit": true, "rootDir": "." },
+  "include": ["test/**/*.ts"],
+  "references": [{ "path": "." }, { "path": "../dsl" }, { "path": "../pi" }]
 }

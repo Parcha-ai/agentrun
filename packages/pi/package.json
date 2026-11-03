@@ -39,8 +39,10 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "node ../../scripts/build-pi-demo.mjs && tsc -p tsconfig.json && node ../../scripts/render-pi-skill.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node ../../scripts/build.mjs .",
+    "build:before": "node ../../scripts/build-pi-demo.mjs",
+    "build:after": "node ../../scripts/render-pi-skill.mjs",
+    "typecheck": "node ../../scripts/build.mjs --typecheck .",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {

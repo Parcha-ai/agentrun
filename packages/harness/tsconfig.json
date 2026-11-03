@@ -1,12 +1,15 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "composite": true,
     "target": "ES2024",
     "lib": [
       "ES2024"
     ],
-    "noEmit": true,
+    "outDir": "dist",
+    "rootDir": "src",
     "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
     "types": [
@@ -15,5 +18,6 @@
   },
   "include": [
     "src"
-  ]
+  ],
+  "references": [{ "path": "../dsl" }, { "path": "../pi" }, { "path": "../pi-durable-disk/tsconfig.build.json" }, { "path": "../pi-transport/tsconfig.build.json" }, { "path": "../pi-vision" }]
 }

@@ -50,9 +50,10 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
+    "build": "node ../../scripts/build.mjs .",
+    "build:after": "node scripts/rewrite-dts.mjs dist",
     "prepack": "npm run build",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p examples",
+    "typecheck": "node ../../scripts/build.mjs --typecheck .",
     "test": "node --test --test-timeout=240000 'test/*.test.ts' 'test/examples/*.test.ts'",
     "test:acceptance": "node --test --test-concurrency=1 'test/acceptance/*.test.ts'",
     "test:live": "node --test --test-concurrency=1 'test/live/*.test.ts'",

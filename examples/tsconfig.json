@@ -1,5 +1,6 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": { "noEmit": true, "allowImportingTsExtensions": true, "resolveJsonModule": true },
-  "include": ["typed-research.ts", "typed-research-fixtures.ts", "run-typed-research.ts", "reference/*.ts", "hero/*.ts", "fixtures/graph-nested/*.ts", "web/agent/*.ts", "pi-transport-recording.ts", "vision-agent/*.ts", "issue-triage/*.ts"]
+  "include": ["typed-research.ts", "typed-research-fixtures.ts", "run-typed-research.ts", "reference/*.ts", "hero/*.ts", "fixtures/graph-nested/*.ts", "web/agent/*.ts", "pi-transport-recording.ts", "vision-agent/*.ts", "issue-triage/*.ts", "hero/sources.json", "hero/demo.json", "vision-agent/demo.json", "issue-triage/demo.json", "../packages/dsl/test/fixtures/graph/generate.d.mts"],
+  "references": [{ "path": "../packages/dsl" }, { "path": "../packages/jev" }, { "path": "../packages/pi" }, { "path": "../packages/pi-durable-agent" }, { "path": "../packages/pi-durable-disk/tsconfig.build.json" }, { "path": "../packages/pi-transport/tsconfig.build.json" }, { "path": "../packages/pi-vision" }, { "path": "../packages/harness" }]
 }

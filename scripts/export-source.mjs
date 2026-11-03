@@ -132,7 +132,7 @@ function excluded(path, file) {
   // directory named review, and a directory named like a review file, are source.
   return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
     (file && /^.+\.review\.[^/]+$/.test(parts.at(-1))) ||
-    /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
+    /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log|tsbuildinfo)$/.test(path);
 }
 const forbidden = [
   ['machine_path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
@@ -188,7 +188,7 @@ async function collect(relative = '') {
 }
 const receipt = {
   status: 'running', publicationReady: false, generatedAt: new Date().toISOString(), node: process.version,
-  packageLockSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.*', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files'],
+  packageLockSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.*', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files', 'TypeScript build info'],
   limitations: ['Heuristic scanning cannot prove the absence of every secret or private fact.', 'Binary assets are hashed and allowlisted by extension, not semantically inspected.', 'Export success does not authorize publication; source provenance, license and owner approval remain required.'],
   runtimeDependencies: { count: rows.length, packages: rows, flags: flagged, unresolvedOptional: missingOptional },
 };

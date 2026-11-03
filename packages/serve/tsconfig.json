@@ -1,5 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src", "types": ["node"] },
-  "include": ["src/**/*.ts"]
+  "compilerOptions": { "composite": true, "outDir": "dist", "rootDir": "src", "types": ["node"] },
+  "include": ["src/**/*.ts"],
+  "references": [{ "path": "../decisions" }, { "path": "../dsl" }, { "path": "../jev" }, { "path": "../pi" }, { "path": "../pi-durable-agent" }, { "path": "../pi-durable-disk/tsconfig.build.json" }, { "path": "../pi-transport/tsconfig.build.json" }]
 }

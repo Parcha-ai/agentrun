@@ -23,6 +23,8 @@
     }
   },
   "include": [
-    "./**/*.ts"
+    "./**/*.ts",
+    "../src/**/*.ts",
+    "../test/fixtures/paid-api.ts"
   ]
 }

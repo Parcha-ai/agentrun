@@ -16,5 +16,5 @@
       "@earendil-works/chord/*": ["./node_modules/@earendil-works/chord/dist/*"]
     }
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "examples/kill-9/survivors.ts", "examples/planned-move/pause.ts"]
 }
