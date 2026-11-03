@@ -17,7 +17,7 @@ import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
-import { booking } from "./paid-calls.js";
+import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
@@ -68,9 +68,9 @@ export type ToolHost = {
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
 export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };
 
-/** What a call node's effect gets from the run's process: its signal, environment and work directory, and one
- *  completion on the run's models (the `llm` tool's). */
-export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete };
+/** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
+ *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -109,7 +109,7 @@ const webFetchEntry = (name: string): ToolEntry => ({
     host.install(extension);
     return { tools: [tool], extensions: [extension] };
   },
-  effect: async (args, run) => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal })),
 });
 
 /** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
@@ -214,7 +214,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
       host.install(extension);
       return { tools: [tool], extensions: [extension] };
     },
-    effect: async (args, run) => searchFor(run.env, args, run.signal),
+    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal)),
   },
   browser: browserTool,
   // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.

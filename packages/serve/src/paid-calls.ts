@@ -8,9 +8,10 @@
 // published price, an estimate: its price on a 2xx; nothing on a 4xx other than a 408 (Parallel refused it before any
 // work); and its price on a 408, a 5xx or a request that failed or was stopped after it was sent, which Parallel may
 // have billed, as the decision provider books Parallel's (@parcha/agentrun-decisions).
-// The call a request is booked under (its id, and how a record is written to the run's store) is set around the tool's
-// execute by `booking`, where the web tools are bound (tools.ts, host-tools.ts), so the client deep inside a tool books
-// without the call passed down to it.
+// The call a request is booked under (its id, and how a record is written to the run's store) is set around the call:
+// around a tool's execute by `booking`, where the web tools are bound (tools.ts, host-tools.ts), and around a workflow
+// call node's effect by `bookedIn`, with the ledger the workflow's runner gives it (app.ts). The client deep inside a
+// tool books without the call passed down to it.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -66,6 +67,9 @@ const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: a
 export function booking<T extends ToolRegistration>(tool: T): T {
   return { ...tool, execute: (args: never, api: ToolExecutionApi, context: Context) => ledgers.run(ledgerOf(api, context), () => tool.execute(args, api as never, context)) } as T;
 }
+
+/** `work` with its paid requests booked in `ledger` (a workflow call node's); with none, booked nowhere. */
+export const bookedIn = <T>(ledger: Ledger | undefined, work: () => Promise<T>): Promise<T> => (ledger ? ledgers.run(ledger, work) : work());
 
 /** Whether Parallel may have billed a request it answered `status`: a 2xx, a 408 or a 5xx; never another 4xx. */
 const billed = (status: number) => (status >= 200 && status < 300) || status === 408 || status >= 500;
