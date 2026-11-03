@@ -1,15 +1,20 @@
 import { ChevronRight, KeyRound } from "lucide-react";
 import { useState } from "react";
 import type { AuthMode } from "@/lib/auth";
+import type { ImportOffer } from "@/lib/client";
 import { cn } from "@/lib/utils";
 
 export type SignInProps = {
   mode: Exclude<AuthMode, "signed_in">;
   /** The setup code from the link the server printed (`#code=`), when setup needs one. */
   code?: string | null;
-  /** Signs in, or sets the first password; resolves with the refusal to show, or null. */
-  onSubmit?: (password: string, code?: string) => Promise<string | null>;
+  /** Signs in, or sets the first password (`importSessions`: setup's box, ticked); resolves with the refusal to show, or
+   *  null. */
+  onSubmit?: (password: string, code?: string, importSessions?: boolean) => Promise<string | null>;
   problem?: string | null;
+  /** In setup, a server on this machine's offer to import its sessions (`GET /v2/setup/import`): the box shows with it,
+   *  counting, counted, or its count unknown. */
+  offer?: ImportOffer | null;
 };
 
 // The password field for each mode: its label, and the autocomplete token a password manager reads.
@@ -26,18 +31,22 @@ const COPY = {
 
 /** The hosted console's sign-in card, over AgentRun Server's own: the owner's password (or its first setting), with the
  *  server's HttpOnly session cookie as the result. Nothing is kept in the page. */
-export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = null }: SignInProps) {
+export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = null, offer = null }: SignInProps) {
   const [password, setPassword] = useState("");
+  // Never ticked for the owner: their own click asks for the import.
+  const [importSessions, setImportSessions] = useState(false);
   const [again, setAgain] = useState("");
   const [setupCode, setSetupCode] = useState(code ?? "");
   const [problem, setProblem] = useState<string | null>(initialProblem);
   const [busy, setBusy] = useState(false);
   const setup = mode === "setup";
+  // A count of none has nothing to offer; counting, or a count unknown, still does.
+  const offered = setup && offer !== null && !("sessions" in offer && offer.sessions === 0);
   const ready = mode !== "token_link" && password.length > 0 && (!setup || (password === again && password.length >= 12));
   const submit = async () => {
     if (!ready || !onSubmit) return;
     setBusy(true);
-    const p = await onSubmit(password, setup && setupCode ? setupCode : undefined);
+    const p = await onSubmit(password, setup && setupCode ? setupCode : undefined, setup && offered && importSessions);
     setBusy(false); setProblem(p);
   };
   return (
@@ -65,6 +74,15 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
                 <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-label="Password again" className={input} />
               </Field>
             )}
+            {offered && (
+              <label className="flex items-start gap-3 text-[14px]">
+                <input type="checkbox" name="import" checked={importSessions} onChange={(e) => setImportSessions(e.target.checked)} className="mt-1 size-4 accent-primary" />
+                <span>
+                  <span className="block">Import this machine's Claude Code, Codex and pi sessions</span>
+                  <span className="mt-1 block text-[12px] text-[#888]" aria-live="polite">{offerNote(offer)}</span>
+                </span>
+              </label>
+            )}
             <button type="submit" disabled={!ready || busy}
               className={cn("caps h-10 w-full border text-[13px]", ready && !busy ? "border-primary bg-primary text-black hover:bg-primary/90" : "border-[#555] bg-[#555] text-[#999]")}>
               {busy ? "Signing in" : setup ? "Set password and continue" : "Continue"}
@@ -81,6 +99,15 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
       </div>
     </main>
   );
+}
+
+const count = (n: number, one: string) => `${n.toLocaleString("en-US")} ${one}${n === 1 ? "" : "s"}`;
+const EACH = "Each project becomes an agent, each session a run you can read.";
+/** The box's note: the counts as they stand. */
+function offerNote(offer: ImportOffer): string {
+  if ("counting" in offer) return `Counting sessions… ${EACH}`;
+  if (offer.sessions === null || offer.projects === null) return `The count isn't known. ${EACH}`;
+  return `${count(offer.sessions, "session")} in ${count(offer.projects, "project")}. ${EACH}`;
 }
 
 const input = "h-10 w-full border border-[#444] bg-black px-3 font-mono text-[14px] outline-none focus:border-[#f5f5f5]";
