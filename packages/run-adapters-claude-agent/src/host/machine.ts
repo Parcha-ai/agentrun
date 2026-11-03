@@ -60,8 +60,6 @@ export interface LocalMachineOptions {
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
     auth?: AnthropicPolicyOptions["auth"];
-    /** The provider's own name for each model the CLI asks for (anthropicPolicy's `providerModels`). */
-    providerModels?: AnthropicPolicyOptions["providerModels"];
     /** Headers the host adds to every forwarded request (a gateway's spend tags). */
     headers?: ModelProxyOptions["headers"];
     log?: ModelProxyOptions["log"];
@@ -186,7 +184,6 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(options.proxy.webSearch ? { webSearch: true, ...(options.proxy.webSearchAllowance !== undefined ? { webSearchAllowance: options.proxy.webSearchAllowance } : {}) } : {}),
         ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
-        ...(options.proxy.providerModels ? { providerModels: options.proxy.providerModels } : {}),
         onThinkingDisabled: ({ model: main }) => options.proxy.log?.("claude-agent: thinking.disabled", { model: main }),
       }),
       hooks: options.proxy.hooks,

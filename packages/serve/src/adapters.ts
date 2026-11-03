@@ -298,11 +298,11 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   let adapter: AgentAdapter;
   try {
     const native = { ...needs, model: { ...needs.model, modelId: claudeModelId(needs.model) } };
-    // The CLI runs Anthropic's own id, which it knows the limits and betas of; its proxy sends the model as the
-    // provider's endpoint names it (claudeProvider: OpenRouter's slug), with the key as that endpoint takes it.
+    // The CLI runs Anthropic's own id, which it knows the limits and betas of, and sends it as it is: OpenRouter takes it
+    // too. The key goes as the provider's endpoint takes it (claudeProvider).
     const sent = provider?.modelId ?? native.model.modelId;
     const cli = sent.startsWith("anthropic/") ? claudeModelId({ provider: "anthropic", modelId: sent.slice("anthropic/".length) }) : sent;
-    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(cli !== sent ? { models: { [cli]: sent } } : {}) } : { origin: "", credential: () => "" };
+    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth } : { origin: "", credential: () => "" };
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
     adapter = claude.claudeAgentAdapter({ model: { default: cli }, provider: endpoint, price: priceOf(native), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions("claude-agent", env) });
   } catch (error) {

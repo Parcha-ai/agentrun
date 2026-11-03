@@ -75,11 +75,6 @@ export interface ClaudeAgentProvider {
   credential: () => Promise<string> | string;
   /** How the provider takes it: Anthropic's API takes `x-api-key` (default); a gateway may take a bearer token. */
   auth?: "x-api-key" | "bearer";
-  /** The provider's own name for a model, by the id the CLI runs (Anthropic's own: `claude-sonnet-5-5`), for a gateway
-   *  that names Anthropic's models its own way (OpenRouter's `anthropic/claude-sonnet-5.5`). The CLI keeps Anthropic's id,
-   *  which it knows the limits and betas of; the proxy sends the provider's name in its place. A model with none goes
-   *  as the CLI sent it. */
-  models?: Readonly<Record<string, string>>;
   /** Headers sent with every model request, the CLI's small-model calls included (a gateway's spend tags:
    *  `{ "x-litellm-tags": "job:...,run:..." }`). The CLI can neither set nor override them. Send a gateway's only to it. */
   headers?: Readonly<Record<string, string>>;
@@ -322,11 +317,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   if (skillsWrong.length) throw new Error(`agentrun-harness-claude: ${skillsWrong.join("; ")}`);
   const headersWrong = hostHeaderProblems(options.provider.headers);
   if (headersWrong.length) throw new Error(`agentrun-harness-claude: provider.headers: ${headersWrong.join("; ")}`);
-  const models = options.provider.models;
-  const named = (value: unknown) => typeof value === "string" && value.length > 0;
-  if (models !== undefined && (models === null || typeof models !== "object" || Array.isArray(models) || !Object.entries(models).every(([id, name]) => named(id) && named(name)))) {
-    throw new Error("agentrun-harness-claude: provider.models must name each model by a non-empty string, by the CLI's non-empty id");
-  }
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
   if (options.standIn) {
@@ -384,7 +374,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
-          ...(models ? { providerModels: models } : {}),
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
