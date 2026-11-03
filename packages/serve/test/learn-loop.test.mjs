@@ -53,10 +53,10 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const turn = reflectRows(first.rows);
     assert.equal(turn.filter((row) => row.kind === "user_message").length, 1, "one end-of-run turn");
     const asked = turn.find((row) => row.kind === "user_message");
-    assert.match(asked.summary, /^Learning: The task is done\./);
-    assert.match(asked.text, /Your notes from earlier runs are in `\.learning\/`, in your working directory/);
-    assert.doesNotMatch(asked.text, /(?:^|[\s`'"(\[])\/[^\s/]/m, "the message holds no absolute path");
-    assert.ok(!asked.text.includes(data) && !asked.text.includes("learning data"), "nor the data directory");
+    // A person reads that the run looks back, never the server's prompt, which stays in the run's store (what it says to
+    // the model is checked where the model reads it: learn-claude).
+    assert.deepEqual([asked.summary, asked.text], ["Looking back on this run.", "Looking back on this run."]);
+    assert.ok(!first.rows.some((row) => /The task is done|Your notes from earlier runs/.test(`${row.summary ?? ""}\n${row.text ?? ""}`)), "no row shows the prompt");
     assert.ok(turn.some((row) => row.tool_name === "write"), "it wrote with the agent's own tool");
     assert.equal(first.rows.filter((row) => row.kind === "final_answer").length, 1, "the job's answer is the run's only answer row");
 
