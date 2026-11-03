@@ -1,6 +1,6 @@
 // Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
 // starts from it. The folder is its home's `learning/` (files.ts homeOf), in Claude Code's auto-memory format
-// (packages/learn notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
+// (notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
 // git with main checked out, so any reader sees its files. This server is its only writer. Every git call runs with the
 // repository's hooks, fsmonitor, replace refs and lazy fetches off and reads no system or global config, and every call
 // on one agent's folder waits its turn in that agent's queue in this process.
@@ -18,8 +18,8 @@ import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
-import { INDEX_FILE, loadedIndex, NOTE_FILE, parseNoteFile } from "@parcha/agentrun-learn";
 import { homeOf, writeDurable } from "./files.js";
+import { INDEX_FILE, loadedIndex, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { isObject } from "./validate.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
@@ -238,7 +238,7 @@ async function readBlobs(cwd: string, repo: string, oids: readonly string[]): Pr
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** What commit `sha` holds for a run, read with plumbing: its index and its active notes, the `.md` files at its top.
- *  Only a regular file (mode 100644) under FILE_CAP, in UTF-8, is read, and only a note in shape (packages/learn
+ *  Only a regular file (mode 100644) under FILE_CAP, in UTF-8, is read, and only a note in shape (notes.ts
  *  parseNoteFile); anything else is named in `skipped`. A superseded or retired note is not a run's. A read git fails (an
  *  object missing, a timeout) throws. */
 async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {

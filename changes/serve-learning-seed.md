@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-serve, @parcha/pi-durable-agent, @parcha/agentrun-learn
+packages: @parcha/agentrun-serve, @parcha/pi-durable-agent
 kind: feature
 ---
 An agent whose definition says `learning: true` starts every run from what it has learned, on pi, claude-agent and codex alike. Learning is off unless the agent says so, and the server's `--learning off` (or `AGENTRUN_SERVE_LEARNING=off`) turns it off for every run; capabilities report the switch as `features.learning`.
@@ -7,4 +7,3 @@ An agent whose definition says `learning: true` starts every run from what it ha
 - Each run pins `main`'s commit in `runs/<id>/learning.json`, kept through a resume or a follow-up. The first 200 lines of that commit's `MEMORY.md` go into the run's instructions under `# Learned`, and `MEMORY.md` and the active notes are copied into the run's `work/.learning/`.
 - A learning fault never blocks a run: a folder that cannot be made or read starts the run with nothing learned. The run's `learning` reads `{state: "seeded"}`, `{state: "dropped", reason: "seed_failed"}`, or `null` for a run that does not learn; run lists carry `{state, reason}`. A server that goes down while it copies the notes into a run has saved the run's input first, so the next one relaunches the run with its first message and nothing learned; a copy it finds there unsaved goes, and the run's learning reads `seed_failed`.
 - `@parcha/pi-durable-agent`: an agentic revision keeps `learning` when its input sets it, so a definition that leaves it out keeps its revision id.
-- `@parcha/agentrun-learn`: `parseNoteFile`, `activeNotes`, `buildIndex` and `loadedIndex` read and build the folder's format.
