@@ -3,6 +3,7 @@
 // one resumes the session.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -314,6 +315,19 @@ test("pi's confinement holds for another harness's read: a link out of the works
   const read = toolResults(rows).at(-1);
   assert.match(read[0], /outside the workspace/, JSON.stringify(read));
   assert.doesNotMatch(read[0], /not for the agent/);
+});
+
+test("another harness's file tools name the workspace's paths relative to it: a path out of it, a missing file and a write, with no result naming the server's data directory", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "edges", "Touch the edges.", "claude-agent", ["read", "write"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const results = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status, r.tool_result_preview ?? ""]);
+  assert.deepEqual(results.map(([name, status]) => [name, status]), [["write", "failed"], ["read", "failed"], ["write", "success"]], JSON.stringify(results));
+  assert.match(results[0][2], /^\.\.\/escape\.md: outside the workspace(?: \(it resolves to \.\.\/escape\.md\))?$/, "the refusal names the path beside the workspace, not where it is");
+  assert.match(results[1][2], /^ENOENT: no such file or directory, \w+ 'missing\.md'$/);
+  assert.equal(results[2][2], "Successfully wrote to sub/ok.md");
+  assert.equal(await readFile(join(data, "runs", runId, "work", "sub", "ok.md"), "utf8"), "in");
+  for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {

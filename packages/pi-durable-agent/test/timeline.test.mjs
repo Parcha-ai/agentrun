@@ -480,6 +480,31 @@ test("a call that ended with no entry is interrupted; so is one still open when 
   assert.match(text(timelineOf([assistant([call("a", "read", { path: "x" })], 0)])), /Read x +running/);
 });
 
+test("a call an earlier process left open is interrupted in its place: the answer a later process gave after it stays the last row", () => {
+  // The store a relaunched run's process opens: a write a stop cut off (w3, no result), then this process's own calls and its answer.
+  const entries = [
+    user("Write the files.", 0),
+    assistant([call("w1", "write", { path: "one.md" })], 1), result("w1", "write", "ok", 2),
+    assistant([call("w3", "write", { path: "three.md" })], 3),
+    assistant([call("w4", "write", { path: "three.md" })], 4), result("w4", "write", "ok", 5),
+    assistant([{ type: "text", text: "All files exist." }], 6),
+  ];
+  const rest = (rows) => rows.filter((r) => r.kind !== "usage" && r.kind !== "phase");
+  const placed = (rows) => {
+    const at = rows.findIndex((r) => r.id.endsWith(":interrupted:w3"));
+    assert.ok(at > 0, "the cut call reads interrupted");
+    assert.deepEqual([rows[at - 1].kind, rows[at - 1].tool_use_id], ["tool_use", "w3"], "right after its call");
+    assert.equal(rows.at(-1).kind, "final_answer", "the answer is still the last row");
+  };
+  // Live: the next process's turn ends, which interrupts every call still open.
+  const reducer = timelineReducer({ conversationId: 1 });
+  reducer.apply([{ type: "snapshot", entries }, { type: "run_start", inputs: [] }]);
+  reducer.apply([{ type: "run_end", inputs: [] }]);
+  placed(rest(reducer.rows()));
+  // Stored: the settled read interrupts it too.
+  placed(rest(timelineOf(entries, { settled: true })));
+});
+
 test("waits: a retry, a poll and a queue are live rows that clear", () => {
   const reducer = timelineReducer({ conversationId: 1, now: () => 1_000 });
   const rows = (events) => summaries(reducer.apply(events).rows);

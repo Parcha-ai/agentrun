@@ -97,7 +97,9 @@ export interface AdapterRun {
 
 /** The door and the open of a run whose session is `spec` on `adapter`, with the file tools `tools` names (built at the
  *  open, over the run's environment). `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled
- *  (request-start.ts `cancelledIn`): once it says so, no model request leaves, as on pi. */
+ *  (request-start.ts `cancelledIn`): once it says so, no model request leaves, as on pi. `cwd`: the run's workspace, the
+ *  directory its file tools confine to, where the harness works too (the adapter's io.cwd), so a path the model builds
+ *  from its working directory is one the tools take. */
 export function adapterRun(
   make: (confine?: ConfineChild) => Promise<AgentAdapter>,
   harness: string,
@@ -108,6 +110,7 @@ export function adapterRun(
   dir?: string,
   cap?: CapGuard,
   cancelled: () => boolean = () => false,
+  cwd?: string,
 ): AdapterRun {
   const plane = planeOf(process.env);
   // The web tools' Parallel key, when one resolves to Parallel, read as the run's app loads, before its process starts
@@ -435,7 +438,7 @@ export function adapterRun(
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       queue.push(...accepted.values());
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());

@@ -349,6 +349,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
         dir,
+        // The host's workspace, when it names one: the CLI works where the host's file tools write (io.cwd).
+        ...(io.cwd ? { cwd: io.cwd } : {}),
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
           hooks: io.models,
