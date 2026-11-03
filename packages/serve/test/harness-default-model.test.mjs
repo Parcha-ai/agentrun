@@ -7,7 +7,7 @@ import { copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, scratch, serve } from "./support.mjs";
 
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
