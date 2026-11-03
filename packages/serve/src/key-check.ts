@@ -1,7 +1,9 @@
 // A key a person saves (tool-keys.ts) is checked against its provider before it is kept: one authenticated call that
-// costs nothing, given CHECK_MS to answer. A 401 or 403 is the provider refusing the key, and the save is refused with
-// nothing kept; a 2xx is the key accepted. No such call for the provider, no answer in time, the network, or any other
-// status keeps the key as not checked, saying why: an answer that does not say whether a key works never stops a save.
+// costs nothing, given CHECK_MS to answer. A 401 is the provider refusing the key, and the save is refused with nothing
+// kept; a 2xx is the key accepted. A 403 is the provider knowing the key and not answering this call: a key scoped away
+// from it (an OpenAI restricted key without the Models permission) may still do its tools' work, so it is never refused.
+// That, no such call for the provider, no answer in time, the network, or any other status keeps the key as not
+// checked, saying why: an answer that does not say whether a key works never stops a save.
 // Never a paid request: each call below cites the provider's pages that show it is not billed. No outcome holds the
 // key: the provider's first sentence is quoted only when it holds no KEY_PIECE characters of the key in a row.
 import { MONID_API } from "./monid.js";
@@ -88,6 +90,7 @@ export async function checkKey(row: { id: string; label: string }, key: string, 
   }
   if (status >= 200 && status < 300) return { state: "accepted", at };
   const said = quoted(text, key);
-  if (status === 401 || status === 403) return { state: "refused", message: `${row.label} refused this key (${status}${said ? `: ${said}` : ""})` };
+  if (status === 401) return { state: "refused", message: `${row.label} refused this key (401${said ? `: ${said}` : ""})` };
+  if (status === 403) return notChecked(`${row.label} would not answer the check (403${said ? `: ${said}` : ""}); the key may still work for its tools`);
   return notChecked(`${row.label} answered ${status}${said ? ` (${said})` : ""}`);
 }

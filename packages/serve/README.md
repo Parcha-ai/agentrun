@@ -442,12 +442,13 @@ it is `409 key_set_by_server`. A value is text of at most 1024 bytes with no con
 
 A key is checked against its provider before it is kept, with one call that costs nothing, given 5 s: monid's
 discover of one result, Parallel's list of monitors, Browserbase's list of projects and TypeSafe's list of models (at
-`BROWSERBASE_BASE_URL` or `TYPESAFE_BASE_URL` when the server is started with one). A key the provider refuses (401 or
-403) is `422 input_invalid`, its field's reason `refused_by_provider`, in plain words with the provider's first sentence
+`BROWSERBASE_BASE_URL` or `TYPESAFE_BASE_URL` when the server is started with one). A key the provider refuses (401)
+is `422 input_invalid`, its field's reason `refused_by_provider`, in plain words with the provider's first sentence
 (`Monid refused this key (401: Invalid API key format)`) and never any of the key, and nothing is kept: a key saved
 before stays as it was. Otherwise it is kept, and `GET` gives its row a `check`: `{state: "accepted", at}`, or
-`{state: "not_checked", reason, at}` when the provider did not answer in 5 s, could not be reached or answered
-something else, or has no call that costs nothing. `check` is null when the key is not stored here (the server's own is
+`{state: "not_checked", reason, at}` when the provider would not answer the check (403: a key scoped away from that
+call may still work for its tools), did not answer in 5 s, could not be reached or answered something else, or has no
+call that costs nothing. `check` is null when the key is not stored here (the server's own is
 not checked here); a key saved before this server checked keys reads `not_checked`, and is checked when saved again. A
 save of Browserbase's project id alone sends no key, and leaves its check as it was. Under `--faux` a key is checked only
 against the fake its runs are given (`fauxMonid`, `fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing
