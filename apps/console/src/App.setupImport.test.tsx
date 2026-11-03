@@ -23,13 +23,20 @@ describe("App, setup's import of this machine's sessions", () => {
     // The names' read asks for the archived agents too; nothing else does on the agents list.
     let archivedRead = 0;
     let statsRead = 0;
+    // Setup's reads of the import offer: a status of 0 answers as a network failure.
+    let importRead = 0;
     let set = false;
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       if (path === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
       if (path === "/v2/setup") { set = true; const body = JSON.parse(String(init?.body)); sent.push(body); return json(201, { signed_in: true, ...(body.import ? { importing: true } : {}) }); }
       if (path === "/v2/setup/import") {
-        if (!set) { const [status, body] = (before.length > 1 ? before.shift() : before[0])!; return json(status, body); }
+        if (!set) {
+          importRead += 1;
+          const [status, body] = (before.length > 1 ? before.shift() : before[0])!;
+          if (status === 0) throw new TypeError("fetch failed");
+          return json(status, body);
+        }
         const [status, body] = (after.length > 1 ? after.shift() : after[0]) ?? [404, missing(path)];
         return json(status, body);
       }
@@ -37,7 +44,7 @@ describe("App, setup's import of this machine's sessions", () => {
       if (path === "/v2/stats") statsRead += 1;
       return json(404, missing(path));
     });
-    return { sent, agentsRead: () => agentsRead, archivedRead: () => archivedRead, statsRead: () => statsRead };
+    return { sent, agentsRead: () => agentsRead, archivedRead: () => archivedRead, statsRead: () => statsRead, importRead: () => importRead };
   }
   async function until(host: HTMLElement, found: () => unknown, ms = 3000) {
     const end = Date.now() + ms;
@@ -191,11 +198,24 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(box(host)).toBeNull();
   });
 
-  it.each([[404, "a server that offers no import"], [403, "a read the server refuses"]])("shows no box for %i, %s", async (status) => {
-    server({ offer: [status, missing("/v2/setup/import")] });
+  it.each([[404, "a server that offers no import"], [403, "a read the server refuses"]])("shows no box for %i, %s, and asks no more", async (status) => {
+    const { importRead } = server({ offer: [status, missing("/v2/setup/import")] });
     const host = await render();
-    await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
+    // Past a poll's wait: no second read.
+    await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
     expect(box(host)).toBeNull();
     expect(host.textContent).not.toContain("Import this machine's");
+    expect(importRead()).toBe(1);
   });
+
+  it.each([
+    ["a 500", [500, { error: { code: "internal", message: "busy", retryable: true } }]],
+    ["a network failure", [0, null]],
+  ] as [string, [number, unknown]][])("shows the box once a read that failed before it showed (%s) is tried again", async (_, failed) => {
+    const { importRead } = server({ offer: [failed, [200, { projects: 3, sessions: 12 }]] });
+    const host = await render();
+    expect(await until(host, () => /12 sessions in 3 projects/.test(host.textContent ?? ""), 5000)).toBe(true);
+    expect(box(host)!.checked).toBe(false);
+    expect(importRead()).toBe(2);
+  }, 15_000);
 });

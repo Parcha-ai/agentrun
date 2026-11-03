@@ -87,19 +87,24 @@ export function App() {
   };
   useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
-  // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown.
+  // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown; one that
+  // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
+  // never hides the offer. A 404 or a 403 is the server offering none: no box, and no more reads.
   const [offer, setOffer] = useState<ImportOffer | null>(null);
   useEffect(() => {
     if (auth !== "setup") return;
     let live = true;
     (async () => {
-      for (let shown = false; live; shown = true) {
+      for (let shown = false; live; ) {
         const r = await v2.setupImport().then((x) => x, () => undefined);
         if (!live) return;
-        if (r === undefined) return void (shown && setOffer({ projects: null, sessions: null }));
-        if (!r || !("counting" in r || "sessions" in r)) return;
-        setOffer(r);
-        if (!("counting" in r)) return;
+        if (r === undefined && shown) return void setOffer({ projects: null, sessions: null });
+        if (r !== undefined) {
+          if (!r || !("counting" in r || "sessions" in r)) return;
+          setOffer(r);
+          shown = true;
+          if (!("counting" in r)) return;
+        }
         await new Promise((done) => setTimeout(done, IMPORT_POLL_MS));
       }
     })();
