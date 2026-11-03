@@ -166,9 +166,16 @@ export function spentIn(storeFile: string): number | null {
   }
   // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
   // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
-  // mark takes the nearest error entry not yet taken; which one it takes, when errors overlap, moves no figure below what
-  // can have been spent, as an answer's choice of start does not (openFigures). An error with no such mark (before any
-  // event: a 429, a 5xx) is its request's answer.
+  // mark takes the nearest error entry not yet taken among those after the earliest start holding its figure (a request's
+  // start and end marks hold the same, request-start.ts). Its own entry comes after its own start, so it is always among
+  // them. An error before every such start answered an earlier request (a 429, before any event): taken when a crash came
+  // between the mark and pi's entry, it would leave that request open at its hold. The marks with the fewest entries to
+  // choose from take first, so as many are taken as the marks' own entries in the store and no more errors are read as
+  // answers than are, one of which could close a start a crash cut; which one a mark takes, when errors overlap, moves no
+  // figure below what can have been spent, as an answer's choice of start does not (openFigures). An earlier start holding
+  // the very same figure (a 429's retry, with the same context) leaves its 429 takeable, so the spend then reads high,
+  // never low: telling the two apart needs to know which request each entry answers, and the marks do not say. An error
+  // with no such mark (before any event: a 429, a 5xx) is its request's answer.
   // A cancel's refusal (REQUEST_REFUSED) answers the next error entry, as openFigures and the timeline read them: those are
   // no request's, and no end mark takes one.
   const stopOf = (entry: EntryLike) => (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason;
@@ -182,12 +189,17 @@ export function spentIn(storeFile: string): number | null {
     }
   });
   const taken = new Set<number>();
-  rows.forEach((entry, at) => {
-    if (entry.kind !== REQUEST_ENDED || (entry.data as { error?: unknown } | undefined)?.error !== true) return;
+  const fieldsOf = (entry: EntryLike) => (entry.data ?? {}) as Record<string, unknown>;
+  const generationStart = (entry: EntryLike) => entry.kind === REQUEST_STARTED && typeof fieldsOf(entry).request !== "string" && fieldsOf(entry)[CAP_REFUSED_FIELD] !== true;
+  // Each such end mark, with the earliest start holding its figure (-1 for none: any error entry then).
+  const ends = rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry).error === true
+    ? [{ at, from: rows.findIndex((start, i) => i < at && generationStart(start) && figureOf(fieldsOf(start)[HELD_FIELD]) === figureOf(fieldsOf(entry)[HELD_FIELD])) }]
+    : []);
+  for (const { at, from } of ends.sort((a, b) => b.from - a.from)) {
     let nearest = -1;
-    for (const error of errorsAt) if (!taken.has(error) && (nearest < 0 || Math.abs(error - at) < Math.abs(nearest - at))) nearest = error;
+    for (const error of errorsAt) if (error > from && !taken.has(error) && (nearest < 0 || Math.abs(error - at) < Math.abs(nearest - at))) nearest = error;
     if (nearest >= 0) taken.add(nearest);
-  });
+  }
   // Each paid tool call marked and not settled, by call: what it was held at.
   const calls = new Map<unknown, unknown>();
   for (const [at, entry] of rows.entries()) {
