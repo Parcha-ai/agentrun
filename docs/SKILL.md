@@ -17,12 +17,17 @@ with a console in the browser. Ask the person before each step that changes thei
 
 ```sh
 npx @parcha/agentrun --no-open > agentrun.log 2>&1 &
-until grep -q 'AgentRun is running at' agentrun.log; do sleep 1; done
-grep 'AgentRun is running at' agentrun.log
+pid=$!
+for i in $(seq 600); do
+  grep -q 'AgentRun is running at' agentrun.log && break
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 1
+done
+grep 'AgentRun is running at' agentrun.log || { echo "AgentRun did not start:"; tail -20 agentrun.log; }
 ```
 
-It keeps its data in `~/.agentrun` and takes the first free port from 7340 on this machine's loopback. Give the person
-the address it prints; they open it in their browser and set the console's password on the first visit.
+It keeps its data in `~/.agentrun` and takes the first free port from 7340 on this machine's loopback. If it did not start,
+its last lines say why: tell the person, and stop. Give the person the address it prints; they open it in their browser and set the console's password on the first visit.
 
 ## 3. Give it a model
 

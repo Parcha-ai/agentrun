@@ -59,12 +59,13 @@ export async function freePort(from = DEFAULT_PORT) {
 
 export const USAGE = "Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open], or a server command: import, reset-password";
 
-/** The server's command: an installed server's launcher, else `npm exec` of the latest release, by its own bin name. */
+/** The server's command: an installed server's launcher, else `npm exec` of the latest release, by its own bin name: the
+ *  package named with --package, the bin after `--`, so the server gets only its own arguments. */
 export function server(args, resolve = createRequire(import.meta.url).resolve) {
   try {
     return { command: join(dirname(resolve("@parcha/agentrun-serve/package.json")), "launcher", "agentrun-serve"), args, fetched: false };
   } catch {
-    return { command: "npm", args: ["exec", "--yes", SERVE_SPEC, "--", "agentrun-serve", ...args], fetched: true };
+    return { command: "npm", args: ["exec", "--yes", `--package=${SERVE_SPEC}`, "--", "agentrun-serve", ...args], fetched: true };
   }
 }
 

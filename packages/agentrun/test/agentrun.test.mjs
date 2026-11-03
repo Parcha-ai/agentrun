@@ -3,7 +3,7 @@
 // says it has no model, and the console asks for its first password. npm exec of the packed package runs this bin.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,7 +73,7 @@ test("npm exec of the packed package runs this package's own agentrun bin", { ti
 
 test("an installed server runs its own launcher; with none, npm exec fetches the server's latest release and runs it by its own bin name, never this package's", () => {
   const missing = () => { throw new Error("not installed"); };
-  assert.deepEqual(server(["--port", "7340"], missing), { command: "npm", args: ["exec", "--yes", "@parcha/agentrun-serve@latest", "--", "agentrun-serve", "--port", "7340"], fetched: true });
+  assert.deepEqual(server(["--port", "7340"], missing), { command: "npm", args: ["exec", "--yes", "--package=@parcha/agentrun-serve@latest", "--", "agentrun-serve", "--port", "7340"], fetched: true });
   const installed = () => join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "package.json");
   assert.deepEqual(server(["import"], installed), { command: join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "launcher", "agentrun-serve"), args: ["import"], fetched: false });
   assert.ok(existsSync(new URL("../../serve/launcher/agentrun-serve", import.meta.url)), "the server ships the launcher this runs");
@@ -134,5 +134,72 @@ test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 bef
     const fake = `data:text/javascript,${encodeURIComponent(`Object.defineProperty(process, "versions", { value: { ...process.versions, node: "${node}" } });`)}`;
     const run = spawnSync(process.execPath, ["--import", fake, BIN, "--help"], { encoding: "utf8" });
     assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js 22.19 or newer on 22, or 24.2 or newer; you have v${node}.\n`], node);
+  }
+});
+
+// The headline path: `npx @parcha/agentrun` with no server installed beside it. The command fetches the server with
+// `npm exec`, naming the package with --package and running its bin after `--`: without --package, npm takes the bin from
+// the package spec and hands the server "agentrun-serve" as an argument, which it refuses. A fake npm first on PATH
+// records its argv and, as npm would, runs a stub server that prints its "Open " line.
+test("with no server beside it, the command runs npm exec --package=<server> -- agentrun-serve, and the server gets only its own arguments", { timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-fetch-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // This package alone, outside the workspace, so no installed server resolves from it.
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
+  mkdirSync(join(dir, "fake"));
+  const record = join(dir, "argv.json");
+  writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
+const fs = require("node:fs");
+const argv = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(argv));
+const at = argv.indexOf("--");
+const [bin, ...args] = at < 0 ? [] : argv.slice(at + 1);
+const named = argv.slice(0, at < 0 ? argv.length : at).some((arg) => arg === "--package" || arg.startsWith("--package="));
+// npm runs the bin it names: refuse the old form, as the server refuses a stray argument.
+if (!named || bin !== "agentrun-serve" || args.includes("agentrun-serve")) { console.error("agentrun-serve: unexpected argument"); process.exit(2); }
+const port = args[args.indexOf("--port") + 1];
+console.log("agentrun-serve on http://127.0.0.1:" + port + "/v2 (stub)");
+console.log("Open http://127.0.0.1:" + port + "/");
+// Stopped, it ends as the server does, 0; npm exec passes the code on.
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+  chmodSync(join(dir, "fake", "npm"), 0o755);
+  const { env } = bare(t);
+  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...env, PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(async () => { child.kill("SIGTERM"); await exited; });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !out.includes("\n") && i < 300; i++) {
+    if (child.exitCode !== null) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const argv = existsSync(record) ? JSON.parse(readFileSync(record, "utf8")) : [];
+  assert.ok(argv.indexOf("--package=@parcha/agentrun-serve@latest") >= 0 && argv.indexOf("--package=@parcha/agentrun-serve@latest") < argv.indexOf("--"), `--package names the server before --: ${JSON.stringify(argv)}`);
+  assert.equal(argv[argv.indexOf("--") + 1], "agentrun-serve", "the server's own bin runs");
+  assert.ok(!argv.slice(argv.indexOf("--") + 2).includes("agentrun-serve"), "the server gets no stray argument");
+  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, `${out}${err}`);
+  child.kill("SIGTERM");
+  assert.equal(await exited, 0, err);
+});
+
+// docs/SKILL.md's start step, as a coding agent runs it: when the command fails, the step ends and says why, never waits.
+test("the setup skill's start step ends with the command's error when it fails, and does not wait forever", { timeout: 30_000 }, () => {
+  const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
+  const step = /## 2\. Start it\n\n```sh\n([\s\S]*?)```/.exec(skill)?.[1];
+  assert.ok(step, "the skill has its start step");
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
+  try {
+    mkdirSync(join(dir, "fake"));
+    writeFileSync(join(dir, "fake", "npx"), "#!/bin/sh\necho 'npm error 404 Not Found - @parcha/agentrun' >&2\nexit 1\n");
+    chmodSync(join(dir, "fake", "npx"), 0o755);
+    const run = spawnSync("sh", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${join(dir, "fake")}:${process.env.PATH}` } });
+    assert.notEqual(run.signal, "SIGTERM", `the step ended on its own: ${run.stdout}${run.stderr}`);
+    assert.match(`${run.stdout}${run.stderr}`, /npm error 404 Not Found/, "it shows the command's error");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
