@@ -5,7 +5,7 @@ import type { Run, TimelineRow } from "@/lib/v2";
  *  JSON (with its written reports as Markdown). Nothing is invented when there is no answer. */
 export function RunResult({ run, rows }: { run: Run; rows: TimelineRow[] }) {
   const answer = run.result?.final_answer ?? rows.findLast((r) => r.kind === "final_answer")?.text ?? null;
-  if (answer) return <article className="report max-w-none" dangerouslySetInnerHTML={{ __html: markdown(answer) }} />;
+  if (answer?.trim()) return <article className="report max-w-none" dangerouslySetInnerHTML={{ __html: markdown(answer) }} />;
   if (run.result?.output !== undefined && run.result.output !== null) {
     // A workflow's output can carry written reports (a text field of several lines): each reads as Markdown under its
     // field's name, and the rest of the output stays JSON.
