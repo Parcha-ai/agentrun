@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/server.js";
 import { FAUX, client, follow, scratch, serve, startRun } from "./support.mjs";
@@ -76,7 +76,8 @@ test("this version's own runs/ and a directory with no agent.sqlite start as bef
 test("the bin prints the refusal and exits 1", { timeout: 20_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   await oldHome(data, "old");
-  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"] });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: dirname(data) } });
   const killer = setTimeout(() => child.kill("SIGTERM"), 10_000);
   t.after(() => (clearTimeout(killer), child.kill("SIGTERM")));
   let err = "";
