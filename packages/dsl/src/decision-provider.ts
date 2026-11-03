@@ -209,18 +209,23 @@ export function judgeFromProvider(provider: DecisionProvider, options: JudgeFrom
       // The deadline counts from before the images load, and loading is cut by it as by the run's signal.
       const started = Date.now();
       const loading = deadlineMs !== null ? AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]) : signal;
+      const cutWith = (reason: unknown) => {
+        const timedOut = (reason as { name?: unknown } | null)?.name === "TimeoutError";
+        const cut = new DecisionProviderError(timedOut ? "timeout" : "aborted", `${provider.id}: ${timedOut ? "the deadline passed" : "the request was cancelled"} while its images loaded; nothing was sent`, { cause: reason });
+        cutBeforeSending.add(cut);
+        return cut;
+      };
       let images: Awaited<ReturnType<typeof loadImages>>;
       try { images = await loadImages(provider, params.images, options.loadImage, loading); }
-      catch (error) {
-        if (!loading.aborted) throw error;
-        const timedOut = (loading.reason as { name?: unknown } | null)?.name === "TimeoutError";
-        const cut = new DecisionProviderError(timedOut ? "timeout" : "aborted", `${provider.id}: ${timedOut ? "the deadline passed" : "the request was cancelled"} while its images loaded; nothing was sent`, { cause: loading.reason });
-        cutBeforeSending.add(cut);
-        throw cut;
-      }
+      catch (error) { if (!loading.aborted) throw error; throw cutWith(loading.reason); }
+      // A load can end past the deadline before its timer fires (a loader's synchronous work, or hashing the last image,
+      // holds the thread): it is cut here, before anything is sent, and the provider gets only time that is left.
+      const elapsed = Date.now() - started;
+      if (loading.aborted) throw cutWith(loading.reason);
+      if (deadlineMs !== null && elapsed >= deadlineMs) throw cutWith(new DOMException("The decision's deadline passed while its images loaded", "TimeoutError"));
       request.images = images.loaded;
       digests = images.digests;
-      if (deadlineMs !== null) deadlineMs = Math.max(1, deadlineMs - (Date.now() - started));
+      if (deadlineMs !== null) deadlineMs -= elapsed;
     }
     const outcome = await provider.decide(request, { decisionId: params.decisionId ?? "", signal, deadlineMs });
     const { answers, confidence_source } = completeConfidence(params.questions, (outcome.answers ?? {}) as Record<string, unknown>);
