@@ -1,7 +1,7 @@
 // web_search and web_fetch on every harness with only a model key. pi, claude-agent and codex each run a revision that
 // names both: the search is native on pi and claude-agent (claude-agent's own, on the faux harness here, so its adapter is
 // seen opened with it; pi's one request to its model provider's hosted search, on a faux Anthropic and a faux OpenAI)
-// and keyless Exa on codex, whose own search is not bound yet (a fake MCP server), the
+// and on codex (Codex's own, on the faux harness here, its adapter seen opened with it); keyless Exa (a fake MCP server) where there is no native search, the
 // fetch is the kernel's guarded fetch (the fake network), and each run writes report.md citing the page. Then the
 // server picks Parallel (its key held by the server all along), and the next runs search and fetch through the fake
 // Parallel. A pi run whose model goes through a gateway searches keyless Exa (a fake MCP server). Capabilities say what
@@ -17,7 +17,7 @@ const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathnam
 const FAUX = { fauxHarness: fixture("faux-harness.mjs"), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
 const PAGE = "http://public.example/";
 const ANTHROPIC_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
-const NATIVE = { pi: "native", "claude-agent": "native", codex: "exa-keyless" };
+const NATIVE = { pi: "native", "claude-agent": "native", codex: "native" };
 const each = (value) => ({ pi: value, "claude-agent": value, codex: value });
 
 /** The environment of test `t` (model keys only, unless `extra` says more), and the lines each fake files. */
@@ -48,7 +48,7 @@ async function research(api, id, definition) {
 }
 const HARNESS_RESEARCH = "Research widgets on the web, read http://public.example/ and write report.md.";
 
-test("with only model keys: native search on pi and claude-agent, keyless Exa on codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
+test("with only model keys: native search on pi, claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api } = await serve(t, FAUX);
   assert.deepEqual(await resolves(api), { web_search: NATIVE, web_fetch: each("kernel") }, "native search where there is one, keyless Exa on codex, the kernel's fetch; Parallel's key held but not picked");
@@ -81,20 +81,18 @@ test("with only model keys: native search on pi and claude-agent, keyless Exa on
   // gpt-5's 20,000 and 40 tokens at $1.25 and $10 per million, and one call at $0.01.
   assert.deepEqual(openai.usage, { usd: 0.0354, requests: 5 });
 
-  // claude-agent: its own search, on the adapter it was opened with, and no web_search host tool. codex: no search
-  // option at all, and web_search a host tool searching keyless Exa.
-  for (const [harness, option, tools] of [["claude-agent", { webSearch: true, webSearchAllowance: 200_000 }, ["web_fetch", "write"]], ["codex", {}, ["web_search", "web_fetch", "write"]]]) {
+  // claude-agent and codex: each its own search, on the adapter it was opened with, and no web_search host tool.
+  for (const [harness, option, tools] of [["claude-agent", { webSearch: true, webSearchAllowance: 200_000 }, ["web_fetch", "write"]], ["codex", { webSearch: "live" }, ["web_fetch", "write"]]]) {
     const before = (await seen()).opened.length;
     const run = await research(api, `on-${harness}`, { harness, instructions: HARNESS_RESEARCH });
     const opened = (await seen()).opened.slice(before);
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: option }], `${harness}: the options its adapter was opened with`);
     assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [tools], `${harness}: its host tools`);
     assert.deepEqual(Object.keys(run.results).sort(), [...tools].sort());
-    if (harness === "codex") assert.match(run.results.web_search, /^\{"provider":"exa-keyless","query":"widgets","results":\[\{"url":"http:\/\/public\.example\//, "keyless Exa, in the one shape");
     assert.match(run.results.web_fetch, /"via":"direct"/);
     assert.match(run.report, /Public page, http:\/\/public\.example\//);
   }
-  assert.deepEqual((await seen()).exa.map((call) => [call.method, call.keyed]), [["initialize", false], ["notifications/initialized", false], ["tools/call", false]], "codex's one search, with no key");
+  assert.deepEqual((await seen()).exa, [], "no keyless Exa: every harness here searches natively");
   let calls = await seen();
   assert.deepEqual(calls.dialled, [PAGE, PAGE, PAGE, PAGE], "every fetch reached the page through the kernel's guarded fetch");
   assert.deepEqual(calls.parallel, [], "nothing reached Parallel, though the server holds its key");

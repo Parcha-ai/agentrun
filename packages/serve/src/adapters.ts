@@ -2,7 +2,7 @@
 // every id runs on run-adapters' faux harness, scripted by the module's `script(spec)`, as `--faux` runs pi on the
 // faux model. Otherwise codex runs on @parcha/agentrun-harness-codex and claude-agent on @parcha/agentrun-harness-claude, each
 // with serve's own model, price and endpoint, under the run's confinement, and claude-agent with its own web search
-// where the run's web_search resolves native (Codex's is not bound yet); a package or a pinned CLI that is missing says
+// where the run's web_search resolves native, and codex with its own; a package or a pinned CLI that is missing says
 // so with the one line that installs it: an npm install beside serve, or, when serve runs from npx, the npx line that
 // runs it with the missing package (claude-agent's SDK, Codex).
 import { readFileSync } from "node:fs";
@@ -194,12 +194,14 @@ export async function claudeSkillCheck(load: () => Promise<unknown> = loadClaude
   return typeof claude?.skillProblems === "function" ? (claude.skillProblems as SkillCheck) : undefined;
 }
 
-/** What claude-agent's adapter takes from the run's plane (tool-plane.ts): Claude's own WebSearch, on where web_search
- *  resolves native, with the input a search request may read in beyond its body (cap.ts), which its proxy adds to that
- *  request's bound; nothing otherwise, and nothing for another harness (Codex's own search is not bound yet). */
-export function nativeOptions(harness: string, env: NodeJS.ProcessEnv): { webSearch?: true; webSearchAllowance?: number } {
-  if (harness !== "claude-agent" || planeOf(env).web_search !== "native") return {};
-  return { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS };
+/** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native: claude-agent,
+ *  Claude's own WebSearch with the input a search request may read in beyond its body (cap.ts), which its proxy adds to
+ *  that request's bound; codex, Codex's own search, live (its adapter books each search); nothing otherwise. */
+export function nativeOptions(harness: string, env: NodeJS.ProcessEnv): { webSearch?: true | "live"; webSearchAllowance?: number } {
+  if (planeOf(env).web_search !== "native") return {};
+  if (harness === "claude-agent") return { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS };
+  if (harness === "codex") return { webSearch: "live" };
+  return {};
 }
 
 /** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
@@ -253,7 +255,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   }
   // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is
   // provider-qualified), or OpenAI's model id, which chooseModel has already taken out of "openai/<id>".
-  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), log: harnessLog("codex", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), log: harnessLog("codex", env), ...(nativeOptions("codex", env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {

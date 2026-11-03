@@ -928,7 +928,7 @@ export class Runs {
     // in the serve.json its start writes (start); resolving here is for a run made before that. A description with no secret
     // in it, read by the run's process, never by a request.
     const served = withSecrets(process.env);
-    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}) : {};
+    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
       void this.saveMeta(run).catch(() => undefined);
@@ -1263,7 +1263,7 @@ export class Runs {
     // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes once,
     // so a launch after a crash reads them back, never the settings of that moment, and keeping them is no write of its own.
     const tooling = await toolingOf(revision);
-    const plane = tooling ? planeFor(withSecrets(process.env), tooling, this.options.toolSettings?.() ?? {}) : {};
+    const plane = tooling ? planeFor(withSecrets(process.env), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),

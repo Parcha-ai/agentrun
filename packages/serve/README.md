@@ -299,15 +299,18 @@ table cannot run that way is refused before the run starts (`409`).
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
 (`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one; (3) the kernel's
-keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex,
-`web_search` is keyless Exa (or Parallel, picked) until Codex's own search is bound in a follow-up.
+keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
+Codex's own search, except behind a gateway or under a spend cap (its request has no input bound, which a cap cannot
+admit), where it is keyless Exa. `off` turns `web_search` off: nothing is searched, and an agent naming it is refused
+(`409`) until it is turned on again.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
 it is keyless Exa, or Parallel where picked, and a pick of `native` alone is unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Claude's own WebSearch | keyless Exa, a host tool (Codex's own search is not bound yet) | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, keyless Exa |
-| `web_search`, `native` | the same | unavailable (`no native search for codex yet`) | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `auto` (the default) | Claude's own WebSearch | Codex's own search, each search booked; behind a gateway or under a spend cap, keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, keyless Exa |
+| `web_search`, `native` | the same | the same, unavailable behind a gateway or under a spend cap | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
 | `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
@@ -377,19 +380,16 @@ refuses is refused and never leaves the machine.
 $0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
 `{error}`, with nothing searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
 
-`web_search` searches the web with no key, on pi, through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
-`web_search_exa` tool). This server has no keyed search, so it is the only search there is. What leaves the server is
+Keyless Exa, where `web_search` resolves to it, searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
+`web_search_exa` tool), with no key. What leaves the server is
 the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
 from the run, and no key. It goes to Exa over IPv4, straight from the run's process. Exa is a third party: its free,
 keyless use has a rate limit it does not publish, and its own terms. Past that limit Exa answers 429, and the search is a
 tool error that says so, with Exa's Retry-After: the model reads why and answers without it. Nothing is retried, and a
 search ends at 60 s, so a call never hangs. The answer is the query and its results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
-relies on. claude-agent and codex do not bind `web_search` yet.
-
-Keyless Exa is the default for a harness with no native search when no search key is saved. There is no switch for
-it yet: turning it off comes with Settings → Tools, as the provider pick for each capability, in this order: your pick,
-then the harness's native search, then a saved Exa or Parallel key, then keyless Exa, or off.
+relies on. Keyless Exa is the default for a harness with no native search when no search key is picked; `off` turns
+`web_search` off, keyless Exa included.
 
 The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
 environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
