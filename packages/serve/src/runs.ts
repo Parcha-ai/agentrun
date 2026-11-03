@@ -620,7 +620,8 @@ export class Runs {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
       ...(tooling ? { tooling } : {}),
-      ...(revision?.kind === "agentic" ? { harness: revision.body.harness ?? DEFAULT_HARNESS, writes: revision.body.tools.includes("write") } : {}),
+      // Its harness is read at its first message (steers), not here: stop-vs-message.test.mjs holds a message in that read.
+      ...(revision?.kind === "agentic" ? { writes: revision.body.tools.includes("write") } : {}),
     };
   }
 
