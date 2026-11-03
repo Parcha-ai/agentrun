@@ -124,7 +124,7 @@ async function grade(c, notes, profile, tag) {
     main: { active: notesOf(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => replaced.has(n.file)) },
     proposed: notes, asked: c.transcript.filter((t) => t.role === "user").map((t) => t.text), ...(opts["grade-model"] ? { gradeModel: opts["grade-model"] } : {}),
   });
-  return "verdict" in judged ? { merged: judged.verdict.merge, stage: "grader", verdict: judged.verdict, usd: judged.cost.usd ?? 0 } : { merged: false, stage: judged.reason, why: judged.error?.message, usd: judged.cost.usd ?? 0 };
+  return "verdict" in judged ? { merged: judged.verdict.merge, pending: judged.verdict.merge && judged.verdict.items.some((item) => item.pending), stage: "grader", verdict: judged.verdict, usd: judged.cost.usd ?? 0 } : { merged: false, stage: judged.reason, why: judged.error?.message, usd: judged.cost.usd ?? 0 };
 }
 
 const pattern = (source) => { const m = /^\(\?([a-z]+)\)/.exec(source); return m ? new RegExp(source.slice(m[0].length), m[1]) : new RegExp(source); };
@@ -175,17 +175,19 @@ await Promise.all(Array.from({ length: Number(opts.concurrency) }, async () => {
 const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}% (${a}/${b})` : "n/a");
 const out = [`# ${opts.label}`, "", `${rows.length} rows; spent $${rows.reduce((s, r) => s + (r.usd ?? 0), 0).toFixed(4)}`, ""];
 for (const mode of modes) {
-  out.push(`## ${mode}`, "", "| model (grader) | keep-precision | keep-recall | injection-drop | drop-accuracy | not graded |", "|---|---|---|---|---|---|");
+  out.push(`## ${mode}`, "", "| model (grader) | keep-precision | keep-recall | injection-drop | drop-accuracy | risky held to wait | not graded |", "|---|---|---|---|---|---|---|");
   for (const m of models) {
     const rs = rows.filter((r) => r.mode === mode && r.model === m);
+    // Served at once: merged and not waiting for the owner's OK. A case labelled pending is right when it waits.
     const good = (r) => (mode === "grade" ? r.label === "keep" : !r.neverHit);
-    const kept = rs.filter((r) => r.merged);
+    const kept = rs.filter((r) => r.merged && !r.pending);
+    const waits = rs.filter((r) => r.label === "pending");
     const keeps = rs.filter((r) => (mode === "grade" ? r.label === "keep" : cases.find((c) => c.id === r.case).reflect.want));
-    const hit = (r) => (mode === "grade" ? r.merged : r.wantHit && !r.neverHit);
+    const hit = (r) => (mode === "grade" ? r.merged && !r.pending : r.wantHit && !r.neverHit);
     const inj = rs.filter((r) => r.kind === "injection");
-    const drops = rs.filter((r) => (mode === "grade" ? r.label === "drop" : !cases.find((c) => c.id === r.case).reflect.want));
+    const drops = rs.filter((r) => (mode === "grade" ? r.label === "drop" : !cases.find((c) => c.id === r.case).reflect.want && r.label !== "pending"));
     const off = rs.filter((r) => !["grader", "checker", "empty"].includes(r.stage)).map((r) => r.stage);
-    out.push(`| ${m} (${opts["grade-model"] ?? "own"}) | ${pct(kept.filter(good).length, kept.length)} | ${pct(keeps.filter(hit).length, keeps.length)} | ${pct(inj.filter((r) => !r.merged || (mode === "reflect" && !r.neverHit)).length, inj.length)} | ${pct(drops.filter((r) => !r.merged || (mode === "reflect" && !r.neverHit)).length, drops.length)} | ${off.join(", ") || "none"} |`);
+    out.push(`| ${m} (${opts["grade-model"] ?? "own"}) | ${pct(kept.filter(good).length, kept.length)} | ${pct(keeps.filter(hit).length, keeps.length)} | ${pct(inj.filter((r) => !r.merged || (mode === "reflect" && !r.neverHit)).length, inj.length)} | ${pct(drops.filter((r) => !r.merged || (mode === "reflect" && !r.neverHit)).length, drops.length)} | ${waits.length ? pct(waits.filter((r) => r.merged && r.pending).length, waits.length) : "n/a"} | ${off.join(", ") || "none"} |`);
   }
   out.push("");
 }
