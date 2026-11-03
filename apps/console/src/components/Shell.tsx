@@ -33,12 +33,12 @@ export function Shell({ active, settings = true, agents = true, runs = true, onN
         <nav aria-label="Navigation" className="flex flex-col gap-1">
           {NAV.filter((n) => (n.id !== "settings" || settings) && (n.id !== "agents" || agents) && (n.id !== "playground" || agents) && (n.id !== "runs" || runs)).map(({ id, label, Icon }) => (
             <button key={id} type="button" onClick={() => { onNavigate?.(id); setOpen(false); }} aria-current={!activeExtension && active === id ? "page" : undefined}
-              className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", !activeExtension && active === id && "bg-primary/[0.06] text-primary")}>
+              className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", !activeExtension && active === id && "bg-primary/[0.06] font-semibold text-primary")}>
               <Icon className="size-4" aria-hidden /> {label}
             </button>
           ))}
           {extensions.map(({ id, label, path }) => <button key={`extension-${id}`} type="button" onClick={() => { onExtensionNavigate?.(path); setOpen(false); }} aria-current={activeExtension === id ? "page" : undefined}
-            className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", activeExtension === id && "bg-primary/[0.06] text-primary")}><Puzzle className="size-4" aria-hidden /> {label}</button>)}
+            className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", activeExtension === id && "bg-primary/[0.06] font-semibold text-primary")}><Puzzle className="size-4" aria-hidden /> {label}</button>)}
         </nav>
         {onSignOut && <button type="button" onClick={onSignOut} className="caps mt-4 flex items-center gap-2.5 border px-3 py-2.5 text-[12px] hover:bg-accent md:mt-auto">
           <LogOut className="size-4" aria-hidden /> Sign out

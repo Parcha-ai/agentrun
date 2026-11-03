@@ -8,6 +8,8 @@ Run summaries report result and file availability, with unknown values explicit.
 
 Sidebar selections use orange text and a subtle background.
 
+Selected navigation labels use semibold text.
+
 Agent-card stat labels stay on one line, with card actions grouped on a separate row.
 
 Mission Control's agent filter offers searchable options, selection markers and keyboard navigation. A run's breadcrumb links to its agent's run history.
