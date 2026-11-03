@@ -14,7 +14,7 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, type RunsFilter } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
 import { toolChoices } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
@@ -244,7 +244,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         const active = a.filter((x) => !x.archived_at);
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
-      .catch((e) => { if (n === agentsAsked.current) setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)); });
+      .catch((e) => { if (n === agentsAsked.current) setStartError(problemOf(e)); });
   }, [v2, where.section, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;
