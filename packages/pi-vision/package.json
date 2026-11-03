@@ -90,8 +90,8 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p test/types/tsconfig.json",
+    "build": "node ../../scripts/build.mjs .",
+    "typecheck": "node ../../scripts/build.mjs --typecheck .",
     "test": "node scripts/run-tests.mjs",
     "test:binaries": "node scripts/run-tests.mjs --binaries",
     "verify:tarball": "node scripts/verify-tarball.mjs",

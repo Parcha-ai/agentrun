@@ -38,9 +38,9 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && (test -f ../dsl/dist/index.d.ts || npm --prefix ../dsl run build) && tsc -p tsconfig.json",
+    "build": "node ../../scripts/build.mjs .",
     "prepack": "npm run build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node ../../scripts/build.mjs --typecheck .",
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {

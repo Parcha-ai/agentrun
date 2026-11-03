@@ -50,8 +50,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node ../../scripts/build.mjs .",
+    "typecheck": "node ../../scripts/build.mjs --typecheck .",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {

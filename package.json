@@ -10,9 +10,9 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && npm run build --workspaces --if-present",
+    "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && node scripts/build.mjs",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p examples/tsconfig.json",
+    "typecheck": "node scripts/check-node.mjs && node scripts/build.mjs --typecheck . examples/tsconfig.json",
     "check": "npm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && node scripts/generate-author-references.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples && npm run test:viewer",
     "demo": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
     "demo:triage": "node packages/dsl/dist/cli.js demo",

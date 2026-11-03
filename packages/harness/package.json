@@ -52,9 +52,10 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "rm -rf dist && for p in dsl jev pi pi-browser pi-durable-disk pi-transport pi-vision; do test -f ../$p/dist/index.d.ts || npm --prefix ../$p run build || exit 1; done && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
+    "build": "node ../../scripts/build.mjs .",
+    "build:after": "node scripts/rewrite-dts.mjs dist",
     "prepack": "npm run build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../scripts/build.mjs --typecheck ."
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.4.0",

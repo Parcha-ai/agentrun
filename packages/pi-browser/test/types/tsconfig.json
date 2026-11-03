@@ -1,5 +1,6 @@
 {
   "extends": "../../tsconfig.json",
-  "compilerOptions": { "noEmit": true, "rootDir": "../..", "allowJs": true },
-  "include": ["*.ts"]
+  "compilerOptions": { "composite": false, "noEmit": true, "rootDir": "../..", "allowJs": true },
+  "include": ["*.ts", "*.mjs"],
+  "references": [{ "path": "../.." }]
 }

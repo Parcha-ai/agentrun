@@ -53,9 +53,10 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/copy-page.mjs",
+    "build": "node ../../scripts/build.mjs .",
+    "build:after": "node scripts/copy-page.mjs",
     "prepack": "npm run build",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "typecheck": "node ../../scripts/build.mjs --typecheck .",
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {
