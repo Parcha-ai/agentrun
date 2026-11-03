@@ -18,7 +18,7 @@
 // A program that reads its declarations compiles whole when they change, since tsc's build mode does not look at them.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -260,6 +260,9 @@ export function build({ root = repository, targets = [root], typecheck = false, 
     const status = builder.build(config);
     declarationStamps.delete(workspace);
     if (status !== ts.ExitStatus.Success) throw Object.assign(new Error(`${rel(config)}: TypeScript reported errors`), { quiet: true });
+    // A check-only program that found nothing changed does not write its buildinfo, so a reference compiled since would
+    // keep it out of date on every run: it was checked against the current inputs just now.
+    if (!emitting && compiled.has(config) && existsSync(buildinfo)) utimesSync(buildinfo, new Date(), new Date());
     // Left only by a source whose time changed but not its text, after its output was deleted: tsc then emits nothing.
     const missing = emitting && staleOutputs(project, { compiled: true, rel });
     if (missing) {

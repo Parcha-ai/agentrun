@@ -157,3 +157,14 @@ test('a workspace with a tsconfig that is not composite builds with its own scri
   put(root, 'packages/a/src/index.ts', "export const answer: string = 'x';\n");
   assert.throws(() => run(root), /packages\/c: build \(.*\) exited 2/, "c builds again on a's new declarations, and its own build fails");
 });
+
+test('a check-only project is current after a project it references compiles again with the same declarations', (t) => {
+  const root = workspace();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  put(root, 'packages/b/tsconfig.test.json', { compilerOptions: { ...options, noEmit: true }, include: ['test'], references: [{ path: '.' }, { path: '../a' }] });
+  run(root, { typecheck: true });
+  rmSync(join(root, 'packages/a/dist'), { recursive: true });
+  put(root, 'packages/a/src/index.ts', readFileSync(join(root, 'packages/a/src/index.ts'), 'utf8'));
+  assert.deepEqual(run(root, { typecheck: true }), ['packages/a/tsconfig.json', 'packages/b/tsconfig.json', 'packages/b/tsconfig.test.json']);
+  assert.deepEqual(run(root, { typecheck: true }), [], 'the check found nothing changed, and tsc did not write its buildinfo');
+});
