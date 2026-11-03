@@ -4,14 +4,25 @@ import { afterEach, expect, it, vi } from "vitest";
 import { CodingAgentHandoff } from "./CodingAgentHandoff";
 import { codingAgentPrompt } from "@/lib/codingAgentHandoff";
 
-afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); document.body.innerHTML = ""; });
+afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); history.replaceState(null, "", "/"); document.body.innerHTML = ""; });
 
-it("carries the pinned native operation and input, with a credential-free server origin", () => {
-  const address = new URL("https://server.example/console?token=private#credential");
+it.each([
+  ["https://server.example", "https://server.example", ""],
+  ["", location.origin, ""],
+  ["https://server.example/proxy/v2/", "https://server.example/proxy/v2", "/proxy/v2"],
+  ["https://server.example/native-api/", "https://server.example/native-api", "/native-api"],
+  ["/native-api", `${location.origin}/native-api`, "/native-api"],
+  ["native-api", `${location.origin}/console/native-api`, "/console/native-api"],
+])("carries the pinned operation at %s without URL credentials", (endpoint, api, path) => {
+  history.replaceState(null, "", "/console/");
+  const address = new URL(endpoint, location.href);
   address.username = "owner"; address.password = "secret";
-  const prompt = codingAgentPrompt({ kind: "run", agentId: "citer", revision: "r1", input: { content: "Check this." } }, address.href);
+  address.search = "?token=private"; address.hash = "credential";
+  const source = endpoint.startsWith("https:") ? address.href : endpoint ? `${endpoint}${address.search}${address.hash}` : "";
+  const prompt = codingAgentPrompt({ kind: "run", agentId: "citer /", revision: "r1", input: { content: "Check this." } }, source);
   const context = JSON.parse(prompt.split("```json\n")[1].split("\n```")[0]);
-  expect(context).toEqual({ server: "https://server.example/v2", operation: "POST /v2/agents/citer/runs", agent_id: "citer", revision: "r1", request: { input: { content: "Check this." }, revision: "r1" } });
+  expect(context).toEqual({ server: api, operation: `POST ${path}/agents/citer%20%2F/runs`, agent_id: "citer /", revision: "r1", request: { input: { content: "Check this." }, revision: "r1" } });
+  expect(prompt).toContain(`${api}/openapi.json`);
   for (const secret of ["owner:", "secret", "token=private", "#credential"]) expect(prompt).not.toContain(secret);
 });
 

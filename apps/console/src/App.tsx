@@ -262,7 +262,7 @@ export function AgentRunConsole() {
         : where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "mission"
-        ? <MissionControl view={mission} error={missionError} canCreate={caps.features.agents?.create !== false} onRetry={() => setMissionTry((n) => n + 1)} onRefresh={() => setMissionTry((n) => n + 1)} loadingMore={missionMore}
+        ? <MissionControl view={mission} error={missionError} canCreate={caps.features.agents?.create !== false} filesSupported={caps.features.files?.read !== false} onRetry={() => setMissionTry((n) => n + 1)} onRefresh={() => setMissionTry((n) => n + 1)} loadingMore={missionMore}
             onMore={mission?.nextCursor ? () => {
               if (missionMore) return;
               missionPages.current++;

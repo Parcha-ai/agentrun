@@ -16,7 +16,7 @@ export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) =
  *  waiting on a person or failed, what they cost (said with its basis, never $0 for a cost not known), runs per agent,
  *  and the latest runs, each a link to its page. A server that answers `analytics` also gets its tokens, time, success
  *  and tools over the range picked (MissionAnalytics); one that does not gets the page as it was. */
-export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore, loadingMore, canCreate = true }: { view: MissionView | null; error?: string | null; onRetry?: () => void; scope?: AnalyticsScope; onRefresh?: () => void; onMore?: () => void; loadingMore?: boolean; canCreate?: boolean }) {
+export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore, loadingMore, canCreate = true, filesSupported = true }: { view: MissionView | null; error?: string | null; onRetry?: () => void; scope?: AnalyticsScope; onRefresh?: () => void; onMore?: () => void; loadingMore?: boolean; canCreate?: boolean; filesSupported?: boolean }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 10_000); return () => clearInterval(timer); }, []);
   if (error && !view) return (
@@ -69,9 +69,9 @@ export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore,
         <div className="space-y-3">
           {view.activityComplete !== true && <p className="text-[12px] text-muted-foreground">Partial activity: showing loaded runs. Open a state below to see more.</p>}
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-            <Activity title="Active work" runs={active} filters={[["queued", "Queued"], ["working", "Working"]]} names={names} now={now} snapshot={snapshot} />
-            <Activity title="Needs attention" runs={attention} filters={[["input_required", "Needs input"], ["paused", "Paused"], ["completed", "Completed"], ["failed", "Failed / escalated"]]} names={names} now={now} snapshot={snapshot} />
-            <Activity title="Failed runs" runs={failed} filters={[["failed", "View runs"]]} names={names} now={now} snapshot={snapshot} />
+            <Activity title="Active work" runs={active} filters={[["queued", "Queued"], ["working", "Working"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} />
+            <Activity title="Needs attention" runs={attention} filters={[["input_required", "Needs input"], ["paused", "Paused"], ["completed", "Completed"], ["failed", "Failed / escalated"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} />
+            <Activity title="Failed runs" runs={failed} filters={[["failed", "View runs"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} />
           </div>
         </div>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
@@ -86,7 +86,7 @@ export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore,
           <section className="border">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3"><h2 className="caps text-[12px] font-semibold">Recent runs</h2><a href="#/runs" className="text-[12px] underline">All runs</a></div>
             <p className="px-4 py-2 text-[12px] text-muted-foreground">Showing {view.recent.length} latest runs{view.nextCursor ? "; more available" : ""}.</p>
-            {view.recent.length ? <ActivityRows runs={view.recent} names={names} now={now} snapshot={snapshot} /> : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No runs yet.</p>}
+            {view.recent.length ? <ActivityRows runs={view.recent} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} /> : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No runs yet.</p>}
             {view.nextCursor && onMore && <div className="border-t p-3 text-center"><button type="button" onClick={onMore} disabled={loadingMore} className="border px-4 py-2 text-[13px] disabled:opacity-50">{loadingMore ? "Loading" : "Load more"}</button></div>}
           </section>
         </div>
@@ -95,18 +95,18 @@ export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore,
   );
 }
 
-function Activity({ title, runs, filters, names, now, snapshot }: { title: string; runs: Run[]; filters: [Run["status"], string][]; names: Map<string, string>; now: number; snapshot: string }) {
+function Activity({ title, runs, filters, names, now, snapshot, filesSupported }: { title: string; runs: Run[]; filters: [Run["status"], string][]; names: Map<string, string>; now: number; snapshot: string; filesSupported: boolean }) {
   return <section className="min-w-0 border" aria-label={title}><div className="space-y-2 border-b px-4 py-3"><h2 className="caps text-[12px] font-semibold">{title}</h2><nav aria-label={`${title} states`} className="flex flex-wrap gap-x-3 gap-y-1">{filters.map(([status, label]) => <a key={status} href={`#/runs?status=${status}`} className="text-[12px] underline">{label}</a>)}</nav></div>
-    {runs.length ? <ActivityRows runs={runs} names={names} now={now} snapshot={snapshot} /> : <p className="px-4 py-6 text-[13px] text-muted-foreground">No matching runs in the loaded activity.</p>}
+    {runs.length ? <ActivityRows runs={runs} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} /> : <p className="px-4 py-6 text-[13px] text-muted-foreground">No matching runs in the loaded activity.</p>}
   </section>;
 }
 
-function ActivityRows({ runs, names, now, snapshot }: { runs: Run[]; names: Map<string, string>; now: number; snapshot: string }) {
+function ActivityRows({ runs, names, now, snapshot, filesSupported }: { runs: Run[]; names: Map<string, string>; now: number; snapshot: string; filesSupported: boolean }) {
   return <ul>{runs.map((r) => <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="block min-w-0 space-y-2 px-4 py-3 hover:bg-accent">
     <div className="flex flex-wrap items-center gap-2"><StatusBadge run={r} /><span className="font-mono text-[11px] text-muted-foreground">{snapshot}</span></div>
     <p className="break-words text-[14px]">{r.title}</p>
     <p className="break-words font-mono text-[11px] text-muted-foreground">{names.get(r.agent_id) ?? r.agent_id} · rev {r.agent_version} · {duration(Math.max(0, (r.ended_at ? Date.parse(r.ended_at) : now) - Date.parse(r.created_at)))} · {cost(r.cost)}</p>
-    <p className="text-[11px] text-muted-foreground">{r.result ? "Result available · " : ""}Open run for timeline and files</p>
+    <p className="text-[11px] text-muted-foreground">{r.result_available === true || (r.result_available == null && r.result && (r.result.final_answer != null || r.result.output != null)) ? "Result available" : r.result_available === false ? "No result" : "Result availability unknown"} · {!filesSupported ? "File access unavailable" : r.files_available === true ? "Files available" : r.files_available === false ? "No files" : "File availability unknown"}. Open run for timeline{filesSupported ? " and files" : ""}</p>
     {r.error && <p className="break-words text-[12px] text-destructive-text">{r.error.message}</p>}
     {r.review && <p className="break-words text-[12px] text-warning-text">{r.review.reason}</p>}
   </a></li>)}</ul>;

@@ -40,7 +40,7 @@ type Tab = "graph" | "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, readFileBlob, filesComplete = true, filesTruncated = false, filesSupported = true, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
-  const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review, run);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null; blob?: Blob; error?: string } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);
@@ -79,6 +79,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       </div>
       {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
+          {run.imported_from ? (
+            <section className="border p-4" aria-label="Imported history"><p className="text-[14px] text-muted-foreground">This run was imported from {run.imported_from.source} and takes no more messages. Start a new run of the agent to continue this work.</p></section>
+          ) : run.kind === "agentic" && run.archived_at && run.status === "completed" ? (
+            <section className="border p-4" aria-label="Archived history"><p className="text-[14px] text-muted-foreground">Unarchive this run to send a follow-up. Its agent must also be active.</p></section>
+          ) : null}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-[11px] text-muted-foreground">Cancelled</p>

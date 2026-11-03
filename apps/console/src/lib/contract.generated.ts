@@ -1280,6 +1280,8 @@ export interface components {
       ended_at: components["schemas"]["Timestamp"] | null;
       /** @description Set when `failed`, as the run's own. */
       error?: components["schemas"]["RunError"] | null;
+      /** @description Whether at least one readable public work file was found, without reading file content. Dot paths, links and unsafe entries are excluded. The confined scan examines at most 128 entries and 16 directory levels. True means a readable file was found, even if other entries were not inspected. False means a complete scan found none. Null means none was found and the scan was incomplete, unreadable, unavailable or imported. */
+      files_available?: boolean | null;
       /** @description Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run. */
       imported_from?: ({
         /** @description The session's id in its source. */
@@ -1301,6 +1303,8 @@ export interface components {
         /** @description What it asked, at most 2000 characters. */
         question: string;
       }, null]>;
+      /** @description Whether a result is recorded, without its content. Null when availability cannot be established from the saved metadata. */
+      result_available?: boolean | null;
       /** @description Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here). */
       review?: OneOf<[{
         /**

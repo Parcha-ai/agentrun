@@ -25,16 +25,16 @@ export function rememberCodingAgent(choice: CodingAgentChoice) {
   window.dispatchEvent(new Event("agentrun-coding-agent-change"));
 }
 
-/** Native public operations and non-secret task context for an external coding agent. */
+/** The complete configured API endpoint and non-secret task context. */
 export function codingAgentPrompt(context: CodingAgentContext, serverUrl: string): string {
-  const url = new URL(serverUrl, globalThis.location?.origin);
+  const url = new URL(serverUrl || "/", globalThis.location?.href);
   const origin = url.origin;
   const path = url.pathname.replace(/\/$/, "");
-  const api = `${origin}${path.endsWith("/v2") ? path : "/v2"}`;
-  const root = api.slice(0, -"/v2".length);
+  const api = `${origin}${path}`;
+  const overview = path.endsWith("/v2") ? `${api.slice(0, -"/v2".length)}/llms.txt and ` : "";
   const agent = context.kind === "create" ? undefined : encodeURIComponent(context.agentId);
-  const operation = context.kind === "create" ? "POST /v2/agents"
-    : context.kind === "edit" ? `PUT /v2/agents/${agent}/definition` : `POST /v2/agents/${agent}/runs`;
+  const operation = context.kind === "create" ? `POST ${path}/agents`
+    : context.kind === "edit" ? `PUT ${path}/agents/${agent}/definition` : `POST ${path}/agents/${agent}/runs`;
   const task = context.kind === "create" ? "Create a native AgentRun agent."
     : context.kind === "edit" ? "Review and revise this AgentRun agent." : "Run this AgentRun agent on the pinned revision.";
   const data = {
@@ -47,7 +47,7 @@ export function codingAgentPrompt(context: CodingAgentContext, serverUrl: string
 
 Install or update the public AgentRun Server skill with your coding agent's skill installation workflow:
 https://github.com/Parcha-ai/agentrun/tree/main/packages/serve/skills/agentrun-serve
-Read its SKILL.md, then ${root}/llms.txt and ${api}/openapi.json. Check this server's capabilities before choosing models, tools or workflow features.
+Read its SKILL.md, then ${overview}${api}/openapi.json. Check this server's capabilities before choosing models, tools or workflow features.
 
 Use this existing server. Authentication is separate from skill installation: use the owner's locally configured AgentRun API credential from the environment. Never print credential values or ask for them in the conversation. A browser session does not authenticate your coding agent.
 

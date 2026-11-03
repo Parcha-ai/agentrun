@@ -20,7 +20,7 @@ const view: MissionView = {
 
 // Mission Control: the console's first page. Counts, cost said honestly, runs per agent and the latest runs, linked.
 describe("MissionControl", () => {
-  it("shows actionable activity by state, pinned revisions, elapsed time and explicit partial pagination", () => {
+  it.each([true, false])("shows actionable activity, pinned revisions and availability with file access %s", (filesSupported) => {
     const now = Date.parse("2026-10-30T03:02:00Z");
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(now);
     try {
@@ -31,10 +31,21 @@ describe("MissionControl", () => {
         { ...run("escalated", "failed", "idle", "Escalated task"), error: { code: "escalated", message: "Needs human review", retryable: false } },
         run("failed", "failed", "idle", "Failed task"),
       ];
-      const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, activity, activityComplete: false, nextCursor: "page2", readAt: now }, onMore: () => {}, onRefresh: () => {} }));
+      const recent = [
+        { ...run("available", "completed", "idle", "Saved report"), result_available: true, files_available: true },
+        { ...run("absent", "completed", "idle", "No saved output"), result_available: false, files_available: false },
+        { ...run("unknown", "completed", "idle", "Unknown output"), result_available: null, files_available: null },
+        run("legacy", "completed", "idle", "Older server"),
+      ];
+      const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, recent, activity, activityComplete: false, nextCursor: "page2", readAt: now }, filesSupported, onMore: () => {}, onRefresh: () => {} }));
       for (const label of ["Active work", "Needs attention", "Failed runs", "Active task", "Waiting task", "Failed task", "rev 1", "2 min", "Load more", "Partial activity", "Snapshot current"]) expect(html).toContain(label);
       for (const id of ["active", "waiting", "failed"]) expect(html).toContain(`href="#/runs/${id}"`);
       const page = new DOMParser().parseFromString(html, "text/html");
+      for (const [id, result, files] of [["available", "Result available", "Files available"], ["absent", "No result", "No files"], ["unknown", "Result availability unknown", "File availability unknown"], ["legacy", "Result availability unknown", "File availability unknown"]]) {
+        const row = page.querySelector(`a[href="#/runs/${id}"]`)!;
+        expect(row.textContent).toContain(result);
+        expect(row.textContent).toContain(filesSupported ? files : "File access unavailable");
+      }
       for (const [title, statuses] of [["Active work", ["queued", "working"]], ["Needs attention", ["input_required", "paused", "completed", "failed"]], ["Failed runs", ["failed"]]] as const) {
         const section = page.querySelector(`section[aria-label="${title}"]`)!;
         expect([...section.querySelectorAll('a[href^="#/runs?"]')].map((link) => link.getAttribute("href"))).toEqual(statuses.map((status) => `#/runs?status=${status}`));

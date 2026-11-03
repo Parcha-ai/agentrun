@@ -12,6 +12,29 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 const run: Run = { run_id: "r1", agent_id: "a1", agent_version: 1, revision: "rev1", kind: "agentic", status: "completed", state: "idle", title: "Write a report", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: null, archived_at: null };
 const file: RunFile = { path: "report.txt", content_type: "text/plain", size_bytes: 6, modified_at: run.created_at };
 
+describe("RunDetail's native lifecycle controls", () => {
+  it.each([
+    { name: "completed native run", record: run, message: true, stop: false, cancel: false, archive: "Archive" },
+    { name: "completed archived run", record: { ...run, archived_at: run.ended_at }, message: false, stop: false, cancel: false, archive: "Unarchive" },
+    { name: "completed imported history", record: { ...run, imported_from: { source: "codex" as const, session: "source-session" } }, message: false, stop: false, cancel: false, archive: "Archive" },
+    { name: "imported history with an active snapshot", record: { ...run, status: "working" as const, state: "working" as const, ended_at: null, imported_from: { source: "codex" as const, session: "source-session" } }, message: false, stop: false, cancel: false, archive: "Archive" },
+    { name: "archived working run", record: { ...run, status: "working" as const, state: "working" as const, ended_at: null, archived_at: run.created_at }, message: true, stop: true, cancel: true, archive: "Unarchive" },
+    { name: "archived run waiting for input", record: { ...run, status: "input_required" as const, state: "waiting" as const, ended_at: null, archived_at: run.created_at }, message: true, stop: false, cancel: true, archive: "Unarchive" },
+  ])("offers only supported native actions for $name", async ({ record, message, stop, cancel, archive }) => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, {
+      run: record, agentName: "Writer", messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false }, harnessSteers: true,
+      rows: [], files: [], onMessage: vi.fn(), actions: { onStop: vi.fn(), onCancel: vi.fn(), onArchive: vi.fn() },
+    })); });
+    expect(host.querySelector("textarea#composer") !== null).toBe(message);
+    const buttons = [...host.querySelectorAll("button")].map((button) => button.textContent?.trim());
+    expect(buttons.includes("Stop")).toBe(stop);
+    expect(buttons.includes("Cancel run")).toBe(cancel);
+    expect(buttons).toContain(archive);
+  });
+});
+
 describe("RunDetail's files", () => {
   it("previews supported images and downloads their original binary bytes", async () => {
     const original = await new Response(new Uint8Array([0x89, 0xff, 0x00]), { headers: { "content-type": "image/png" } }).blob();

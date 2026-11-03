@@ -1,6 +1,6 @@
 // A run's files: work/ only, its dotfiles (the run's skills among them) never listed or served, paths checked first.
 import assert from "node:assert/strict";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { follow, serve, startRun } from "./support.mjs";
@@ -29,6 +29,11 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   assert.equal(list.status, 200);
   assert.deepEqual(list.body.files.map((f) => f.path).sort(), [...media.map(([path]) => path), "page.html", "report.md", "sub/a b.txt"].sort(), "no dotfile, no .agents/skills, no symlink");
   assert.deepEqual([list.body.complete, list.body.truncated], [true, false]);
+  for (const path of ["/runs", "/agents/writer/runs"]) {
+    const summary = (await api("GET", path)).body.runs.find((run) => run.run_id === run_id);
+    assert.deepEqual([summary.result_available, summary.files_available], [true, true], `availability in ${path}`);
+    assert.equal(Object.hasOwn(summary, "result"), false, "summaries carry availability without result content");
+  }
   for (const [path, type] of media) {
     assert.equal(list.body.files.find((file) => file.path === path).content_type, type, `${path} list MIME`);
     const raw = await fetch(`${baseUrl}/runs/${run_id}/files/${path}`, { headers: { authorization: `Bearer ${token}` } });
@@ -62,4 +67,15 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   assert.equal(await code("sub%5Ca"), "invalid_file_path");
   assert.equal(await code("link.txt"), "not_found");
   assert.equal(await code("missing.txt"), "not_found");
+  for (const file of list.body.files) await unlink(join(work, file.path));
+  assert.equal((await api("GET", "/runs")).body.runs[0].files_available, false, "hidden skill files and symlinks are not public files");
+  await Promise.all(Array.from({ length: 130 }, (_, i) => symlink(join(data, "outside.txt"), join(work, `excluded-${i}`))));
+  assert.equal((await api("GET", "/runs")).body.runs[0].files_available, null, "refused entries also consume the bounded availability scan");
+  await rename(work, `${work}-unavailable`);
+  assert.equal((await api("GET", "/runs")).body.runs[0].files_available, null, "an unavailable working directory is unknown, not empty");
+  const elsewhere = join(data, "separate-files");
+  await mkdir(elsewhere);
+  await writeFile(join(elsewhere, "report.txt"), "outside the working directory");
+  await symlink(elsewhere, work);
+  assert.equal((await api("GET", "/runs")).body.runs[0].files_available, null, "a linked working directory is not scanned");
 });

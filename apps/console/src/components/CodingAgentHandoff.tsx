@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { CODING_AGENTS, codingAgentPrompt, readCodingAgent, rememberCodingAgent, type CodingAgentChoice, type CodingAgentContext } from "@/lib/codingAgentHandoff";
 
 /** A reviewed prompt copied into the person's chosen app or CLI. No application is opened automatically. */
-export function CodingAgentHandoff({ context, serverUrl = globalThis.location?.origin ?? "", label = "Use your coding agent" }: { context: CodingAgentContext | (() => CodingAgentContext); serverUrl?: string; label?: string }) {
+export function CodingAgentHandoff({ context, serverUrl = "/v2", label = "Use your coding agent" }: { context: CodingAgentContext | (() => CodingAgentContext); serverUrl?: string; label?: string }) {
   const [open, setOpen] = useState(false);
   const [choice, setChoice] = useState(readCodingAgent);
   const [prompt, setPrompt] = useState("");

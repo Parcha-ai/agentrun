@@ -1,4 +1,5 @@
 // The slice of agentrun.v2/0 the console reads, typed from the server's recorded responses (src/fixtures).
+import type { components } from "./contract.generated";
 
 /** `paused`: a workflow run paused by POST /v2/runs/{id}/pause; its calls in flight finish and no node starts. */
 export type RunStatus = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled" | "paused";
@@ -31,6 +32,11 @@ export type Run = {
   error: ApiError | null;
   cost: Cost | null;
   archived_at: string | null;
+  /** History run elsewhere: native messages are refused, and stop/cancel move nothing. */
+  imported_from?: components["schemas"]["Run"]["imported_from"];
+  /** Optional native summary facts; absent/null means availability has not been established. */
+  result_available?: components["schemas"]["RunSummary"]["result_available"];
+  files_available?: components["schemas"]["RunSummary"]["files_available"];
   poll_after_ms?: number;
   /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
    *  at, and why). Null or absent on every other run. */
