@@ -202,7 +202,7 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
 }
 
 /** pi's default on OpenRouter alone (capabilities' `provider/model-id`), from tl-tools: undefined until it is set. */
-const PI_OR_DEFAULT = undefined;
+const PI_OR_DEFAULT = "openrouter/openai/gpt-6-sol";
 
 test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet (tl-tools)" }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
