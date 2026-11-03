@@ -98,6 +98,10 @@ const NAME = /[a-zA-Z][a-zA-Z0-9:-]*/y;
 export type Tag = { lt: number; gt: number; name: string; end: boolean };
 
 const isSpace = (code: number) => code === 32 || (code >= 9 && code <= 13);
+const SLASH = 47;
+const EQUALS = 61;
+/** Whether `code` ends an attribute's name: a space, "/", "=" or ">". */
+const endsName = (code: number) => isSpace(code) || code === SLASH || code === EQUALS || code === 62;
 
 /**
  * A reader of `html`'s tags, each call the next tag from `at`: "<" then a letter starts one, "</" an end tag, "<!" a
@@ -157,26 +161,49 @@ export function tagsOf(html: string): (at: number) => Tag | null {
   };
 }
 
-const ATTRS: Record<string, RegExp> = { href: /\shref\s*=\s*/i, src: /\ssrc\s*=\s*/i };
 const TITLE_END = /<\/title(?=[\s/>])/gi;
-const quotes = new Set(['"', "'"]);
 
-/** The value of the first `name` attribute (href or src) in a tag's inside (`a href="..."`), decoded; null when it has
- *  none. */
+/**
+ * The value of a tag's first `name` attribute (href or src), decoded; "" for one written with no value; null when it has
+ * none. `inside` is what the tag holds between its name and its ">" (insideOf). Its attributes are read in one pass, as a
+ * browser reads them: a name (up to a space, "/", "=" or ">"; a "=" that starts one is part of it), then "=" and a
+ * value, quoted or up to a space, or no value. So a "src=" inside another attribute's quoted value is that value's
+ * text, and an attribute right after a closing quote (`class="x"src=...`) is one. A value is quoted by the same rule
+ * tagsOf ends a tag by: a quote right after the "=" and its spaces; one that no quote closes runs to the tag's end.
+ */
 function attrOf(inside: string, name: "href" | "src", decode: Decode): string | null {
-  const found = ATTRS[name]!.exec(inside);
-  if (!found) return null;
-  const from = found.index + found[0].length;
-  const quote = inside[from]!;
-  let value: string;
-  if (quotes.has(quote)) {
-    const close = inside.indexOf(quote, from + 1);
-    value = inside.slice(from + 1, close < 0 ? inside.length : close);
-  } else {
-    const space = inside.slice(from).search(/[\s>]/);
-    value = inside.slice(from, space < 0 ? inside.length : from + space);
+  const { length } = inside;
+  for (let at = 0; at < length;) {
+    const code = inside.charCodeAt(at);
+    if (isSpace(code) || code === SLASH) { at += 1; continue; }
+    const from = at;
+    do at += 1; while (at < length && !endsName(inside.charCodeAt(at)));
+    const named = at - from === name.length && inside.slice(from, at).toLowerCase() === name;
+    while (isSpace(inside.charCodeAt(at))) at += 1;
+    if (inside.charCodeAt(at) !== EQUALS) {
+      if (named) return "";
+      continue;
+    }
+    at += 1;
+    while (isSpace(inside.charCodeAt(at))) at += 1;
+    const quote = inside[at];
+    let start = at;
+    let end: number;
+    if (quote === '"' || quote === "'") {
+      start = at + 1;
+      const close = inside.indexOf(quote, start);
+      end = close < 0 ? length : close;
+      at = end + 1;
+    } else {
+      while (at < length && !isSpace(inside.charCodeAt(at))) at += 1;
+      end = at;
+    }
+    if (named) {
+      const value = inside.slice(start, end);
+      return value.includes("&") ? decode(value) : value;
+    }
   }
-  return value.includes("&") ? decode(value) : value;
+  return null;
 }
 /** What a tag at `lt` named `name` holds between its name and its ">" at `gt`. */
 const insideOf = (html: string, name: string, lt: number, gt: number) => html.slice(lt + 1 + name.length, gt);
