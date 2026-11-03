@@ -87,8 +87,8 @@ function scripted(turns) {
         async send() {
           ended = deferred();
           const script = turns[next++];
-          if (script) await script({ ask, book, say });
-          ended.resolve({ status: "completed" });
+          // A script may end its turn as the harness says it ended (a failure, say); by default it completed.
+          ended.resolve((script ? await script({ ask, book, say }) : undefined) ?? { status: "completed" });
         },
         async recover() {},
         turnEnd: () => ended.promise,
@@ -102,11 +102,11 @@ function scripted(turns) {
 
 const runOf = (harness) => ({ harness, env: async () => ({ confinePrefix: () => ["/usr/bin/setpriv", "--no-new-privs", "--"] }) });
 
-async function opened(storage, adapter, wrap = (harness) => harness) {
+async function opened(storage, adapter, wrap = (harness) => harness, watch = () => {}) {
   const harness = wrap(await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx));
   const app = adapterRun(async () => adapter, "late", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
   const events = [];
-  app.door.attach((e) => events.push(e.type));
+  app.door.attach((e) => (events.push(e.type), watch(e, app)));
   await app.onOpen(runOf(harness));
   const door = { run: { harness }, signal: new AbortController().signal, emit: (e) => events.push(e.type), adopt: () => {} };
   return { app, door, events, harness };
@@ -352,6 +352,100 @@ test("a booking that comes in as the run ends: before its process lets the store
     assert.deepEqual(pricings(entries), { 1: 1, 2: 1 }, "each once");
     assert.deepEqual(usage(entries, true), { usd: null, requests: 2 }, "its cost unknown, never $0");
   }
+});
+
+/** A wrap for the run's Harness that can hold one commit before it reaches the store, chosen by what it writes: `hold(match)`
+ *  makes the next commit with an entry `match` takes wait until `release()`, and `reached` says it is waiting. Its entries
+ *  are read by running the change on a recorder first, only while a hold is set; a change that does more than append
+ *  entries (it reads, or makes a conversation) throws there and is never held. Held before it is sent, it leaves the
+ *  store's line free, so the run's other writes, a booking's among them, go on meanwhile. */
+function holding() {
+  let rule;
+  let gate;
+  let reached;
+  const entriesOf = async (change) => {
+    const entries = [];
+    const recorder = { appendEntry: async (...args) => void entries.push(args.length === 3 ? { conversation: args[1], ...args[2] } : { conversation: args[0], ...args[1] }) };
+    try {
+      await change(recorder);
+    } catch {
+      return [];
+    }
+    return entries;
+  };
+  const wrap = (harness) => new Proxy(harness, {
+    get: (target, key) => key !== "commit" ? Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) : async (change, context) => {
+      if (rule && (await entriesOf(change)).some(rule)) {
+        const wait = gate.promise;
+        rule = undefined;
+        reached.resolve();
+        await wait;
+      }
+      return target.commit(change, context);
+    },
+  });
+  // Each hold keeps its own gate: one set while another waits releases only itself.
+  const hold = (match) => {
+    const own = { gate: deferred(), reached: deferred() };
+    rule = match;
+    gate = own.gate;
+    reached = own.reached;
+    return { reached: own.reached.promise, release: () => own.gate.resolve() };
+  };
+  return { wrap, hold };
+}
+
+/** `promise`, or a failure naming `what` after `ms`. Its timer is a ref'd one, so a test that waits on a promise keeps the
+ *  event loop alive: the turn's booking wait holds only an unref'd timer, and with none other node's runner cancels the
+ *  test as soon as the loop is idle. */
+const within = (promise, ms, what) => {
+  let timer;
+  const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms)));
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+};
+
+test("a message that comes in while a turn's last costs are written waits its place: the run's start and end stay paired, and it never reads idle while it works", { timeout: BOOKING_WAIT_MS * 8 }, async () => {
+  const storage = new MemoryStorage();
+  const held = holding();
+  // Turn 1 books request 1 and asks request 2, then fails. Request 2 is booked only while the turn's error is being
+  // written, so its cost is still to write as the turn ends; a follow-up comes in while that write waits.
+  const script = scripted([
+    async ({ ask, book, say }) => {
+      const first = await ask();
+      say("First.");
+      await book(first, 0.001);
+      await ask();
+      return { status: "failed", error: "the harness failed" };
+    },
+    async ({ ask, book, say }) => {
+      const third = await ask();
+      say("Second.");
+      await book(third, 0.003);
+    },
+  ]);
+  // At each run_end, whether a turn was still working: a run_end then pairs a run_start it does not belong to.
+  const busyAtEnd = [];
+  const run = await opened(storage, script.adapter, held.wrap, (e, app) => e.type === "run_end" && busyAtEnd.push(app.door.busy()));
+  const failure = held.hold((e) => typeof e.model?.[0]?.errorMessage === "string");
+  assert.deepEqual(await run.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, run.door), { accepted: true });
+  await within(failure.reached, BOOKING_WAIT_MS * 3, "the turn's error entry, held");
+  await script.book(2, 0.002);
+  const cost = held.hold((e) => e.kind === BOOKED && e.data.request === 2);
+  failure.release();
+  await within(cost.reached, BOOKING_WAIT_MS * 3, "the flush of request 2's cost, held");
+  // The follow-up, while the turn's last cost waits to be written.
+  const followUp = run.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, run.door);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  cost.release();
+  assert.deepEqual(await within(followUp, BOOKING_WAIT_MS * 3, "the follow-up accepted"), { accepted: true });
+  for (let at = Date.now(); !assistants(await rootOf(run.harness)).some((m) => m.content.some((c) => c.text === "Second.")) || run.events.at(-1) !== "run_end" || run.app.door.busy(); ) {
+    assert.ok(Date.now() - at < BOOKING_WAIT_MS * 4, "the follow-up's turn ends");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(run.events.filter((e) => e === "run_start" || e === "run_end").every((e, i) => e === (i % 2 === 0 ? "run_start" : "run_end")), true, `each run_start ended before the next: ${run.events.join(" ")}`);
+  assert.deepEqual(busyAtEnd.filter(Boolean), [], "no run_end while a turn worked");
+  const entries = await rootOf(run.harness);
+  assert.deepEqual(pricings(entries), { 1: 1, 2: 1, 3: 1 }, "each request's cost once");
 });
 
 test("the next open re-books what the session booked with its tokens and model; a journal from before bookings kept tokens re-books with none", async () => {
