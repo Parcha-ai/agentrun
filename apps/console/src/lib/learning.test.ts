@@ -80,7 +80,7 @@ describe("the before and after", () => {
     expect(shownImpact({ ...impact, before: { ...impact.before, runs: 1 } })).toBe(false);
   });
   it("formats with the console's own: a run's time as elapsed() writes it, a cost as cost() writes an estimate, the change as a whole percent", () => {
-    expect([took(65), took(12.4), took(0)]).toEqual(["1m 05s", "12s", "0s"]);
+    expect([took(65), took(12.4), took(3.8), took(0)]).toEqual(["1m 05s", "12s", "4s", "0s"]);
     expect([money(1.234), money(0.1146), money(0.000814)]).toEqual(["$1.23 est.", "$0.11 est.", "$0.0008 est."]);
     expect([change(18, 12), change(0.11, 0.03), change(0, 1)]).toEqual([-33, -73, null]);
   });

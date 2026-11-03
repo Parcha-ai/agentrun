@@ -116,8 +116,9 @@ export function dropWords(l: NonNullable<RunLearning>): string {
 /** A run's learning while it goes, in a few words. */
 export const goingWords = (state: LearningState) => (state === "seeded" ? "Learns after the run" : "Looking back");
 
-/** A median time, as the console writes how long a run took ("12s", "1m 05s"). */
-export const took = (seconds: number) => elapsed(seconds * 1000);
+/** A median time, as the console writes how long a run took ("12s", "1m 05s"), to the nearest second (elapsed() alone
+ *  cuts 3.8 s to 3s, which reads against the change beside it). */
+export const took = (seconds: number) => elapsed(Math.round(seconds) * 1000);
 /** A median cost, as the console writes a run's: the medians are of estimates, so each says so. */
 export const money = (usd: number) => cost({ usd, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null });
 /** The change from `a` to `b` as a whole percent: -33 is a third less. Null when `a` is not above zero. */
