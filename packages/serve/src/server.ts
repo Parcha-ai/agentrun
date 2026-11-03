@@ -756,7 +756,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       await runnable(revision, place, { capped: body.max_cost_usd !== undefined });
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
-      return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
+      // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
+      // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
+      return { status: 202, body: await runs.view(run, { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
 
@@ -1195,14 +1197,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "stopRun": {
         const run = await needRun(id);
         const stopped = await runs.stop(run);
-        const view = await runs.view(run);
-        return send(res, 200, { run_id: run.id, stopped, status: view.status, state: view.state });
+        // From the run itself, as a message's answer: a stop that happened is never answered home_busy.
+        const { status, state } = statusOf(run);
+        return send(res, 200, { run_id: run.id, stopped, status, state });
       }
       case "cancelRun": {
         const run = await needRun(id);
         const requested = await runs.cancel(run);
-        const view = await runs.view(run);
-        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
+        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: statusOf(run).status });
       }
       case "archiveRun":
       case "unarchiveRun": {
