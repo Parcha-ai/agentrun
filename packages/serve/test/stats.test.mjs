@@ -270,7 +270,7 @@ test("a held run still queued (launched, its work not started) counts as active;
   const store = {
     agents: 1, archivedAgents: 0, archivedRuns: 0,
     runs: { total: 3, running: 3, completed: 0, failed: 0, stopped: 0, escalated: 0 },
-    cost: { usd: null, known: 0, unknown: 3 },
+    cost: { usd: null, known: 0, unknown: 3, boundedUnknown: { runs: 0, atMostUsd: null } },
     byAgent: [{ id: "a", name: "A", runs: 3 }],
     running: ["q", "w", "elsewhere"],
   };
