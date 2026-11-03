@@ -39,9 +39,9 @@ const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.t
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
 type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
-/** By default the server's stats carry no analytics, as an older server's. `followed` lists the latest run's reads (its
+/** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => ({}), models, harnesses, hold, strict = false, timeline, reread }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
@@ -124,7 +124,7 @@ describe("AgentPage", () => {
     const unknown = { ...runs[runs.length - 1], cost: null };
     const page = await open(agentFixture("invoice-checker"), { runs: [...runs.slice(0, -1), unknown] });
     expect(page.asked).toEqual(["agent invoice-checker", "runs invoice-checker"]);
-    expect(page.tabs()).toEqual(["Runs"]);
+    expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
     expect(links.map((a) => a.getAttribute("href"))).toEqual(runs.map((r) => `#/runs/${encodeURIComponent(r.run_id)}`));
@@ -254,7 +254,7 @@ describe("AgentPage", () => {
 
   it("has a Workflow tab only for a workflow agent, at its own address", async () => {
     const page = await open(agentFixture("support-triage"), { runs: runsOf("support-triage") });
-    expect(page.tabs()).toEqual(["Runs", "Workflow"]);
+    expect(page.tabs()).toEqual(["Runs", "Workflow", "Analytics"]);
     // A workflow revision has no harness, model or thinking of its own.
     expect(page.fact("Harness")).toBeUndefined();
     await page.click(/^Workflow$/);
@@ -274,7 +274,7 @@ describe("AgentPage", () => {
 
   it("opens an agentic agent on its Runs tab whatever tab the address names", async () => {
     const page = await open(agentFixture("invoice-checker"), { tab: "workflow" });
-    expect(page.tabs()).toEqual(["Runs"]);
+    expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
     expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
   });
@@ -290,7 +290,7 @@ describe("AgentPage", () => {
     expect(page.went).toEqual(["#/agents?archived=true"]);
   });
 
-  it("shows an Analytics tab only when the server's stats for this agent carry analytics", async () => {
+  it("shows an Analytics tab once the server's stats for this agent are read, and none when the read fails", async () => {
     const page = await open(agentFixture("invoice-checker"), { stats: async () => statsWith(ANALYTICS) });
     expect(page.tabs()).toEqual(["Runs", "Analytics"]);
     // One read, bounded: this agent's, over the Analytics tab's first range (from a UTC day 29 days back).
@@ -299,16 +299,13 @@ describe("AgentPage", () => {
     await page.click(/^Analytics$/);
     expect(page.went).toEqual(["#/agents/invoice-checker/analytics"]);
     act(() => root?.unmount());
-    // An older server's stats have no analytics, and one without stats fails them: no tab, and nothing in its place.
-    for (const stats of [async () => statsWith(), async () => { throw new Error("no route GET /v2/stats"); }]) {
-      const older = await open(agentFixture("invoice-checker"), { stats });
-      expect(older.tabs()).toEqual(["Runs"]);
-      expect(older.host.textContent).not.toMatch(/analytics/i);
-      act(() => root?.unmount());
-    }
+    // A read that fails: no tab, and nothing in its place.
+    const failed = await open(agentFixture("invoice-checker"), { stats: async () => { throw new Error("the store is busy"); } });
+    expect(failed.tabs()).toEqual(["Runs"]);
+    expect(failed.host.textContent).not.toMatch(/analytics/i);
   });
 
-  it("opens the address's Analytics tab once the stats say it is there, and Runs on a server without it", async () => {
+  it("opens the address's Analytics tab once the stats are read, and Runs when they can't be", async () => {
     let answer!: (v: unknown) => void;
     // The page's read waits; the tab opens on its answer, with no read of its own.
     const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => new Promise((r) => (answer = r)) });
@@ -322,9 +319,9 @@ describe("AgentPage", () => {
     expect(page.host.textContent).toContain("Success by harness and effort");
     expect(page.statsAsked).toHaveLength(1);
     act(() => root?.unmount());
-    const older = await open(agentFixture("invoice-checker"), { tab: "analytics" });
-    expect(older.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
-    expect(older.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
+    const failed = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: async () => { throw new Error("the store is busy"); } });
+    expect(failed.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
+    expect(failed.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
   });
 
   it("runs the agent from its page with the picked effort, never an output, and opens the run it started", async () => {

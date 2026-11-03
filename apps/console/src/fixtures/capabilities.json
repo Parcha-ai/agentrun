@@ -41,10 +41,161 @@
       "strong": "faux/faux-1"
     },
     "tools": [
-      "read",
-      "write",
-      "edit",
-      "ask_person"
+      {
+        "name": "read",
+        "summary": "Read a file in the run's work/.",
+        "nodes": true,
+        "calls": false,
+        "available": true,
+        "harnesses": [
+          "pi",
+          "claude-agent",
+          "codex"
+        ]
+      },
+      {
+        "name": "write",
+        "summary": "Write a file in the run's work/.",
+        "nodes": true,
+        "calls": false,
+        "available": true,
+        "harnesses": [
+          "pi",
+          "claude-agent",
+          "codex"
+        ]
+      },
+      {
+        "name": "edit",
+        "summary": "Edit a file in the run's work/.",
+        "nodes": true,
+        "calls": false,
+        "available": true,
+        "harnesses": [
+          "pi",
+          "claude-agent",
+          "codex"
+        ]
+      },
+      {
+        "name": "ask_person",
+        "summary": "Ask the person who started the run; the turn ends until a message answers.",
+        "nodes": false,
+        "calls": false,
+        "available": true,
+        "harnesses": [
+          "pi"
+        ]
+      },
+      {
+        "name": "fetch_page",
+        "summary": "Fetch one public web page: { ok, url, status, title, text, links }; a private or local address, or a scheme other than http(s), is refused.",
+        "nodes": true,
+        "calls": true,
+        "available": true,
+        "harnesses": [
+          "pi",
+          "claude-agent",
+          "codex"
+        ]
+      },
+      {
+        "name": "web_fetch",
+        "summary": "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched as fetch_page fetches it: fetch_page's Page plus via, \"parallel\" or \"direct\"; a URL fetch_page refuses is refused, never sent to Parallel.",
+        "nodes": true,
+        "calls": true,
+        "available": true,
+        "harnesses": [
+          "pi",
+          "claude-agent",
+          "codex"
+        ]
+      },
+      {
+        "name": "web_search",
+        "summary": "Search the web through Exa's keyless endpoint (mcp.exa.ai, no key; only the query leaves this server), {query, n?} -> {provider: \"exa-keyless\", query, results: [{url, title, snippet, published?}]}, or {error} (a 429 when Exa's free rate limit is reached).",
+        "nodes": true,
+        "calls": false,
+        "available": true,
+        "harnesses": [
+          "pi"
+        ]
+      },
+      {
+        "name": "browser",
+        "summary": "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
+        "nodes": true,
+        "calls": false,
+        "available": false,
+        "missing": [
+          "BROWSERBASE_API_KEY",
+          "BROWSERBASE_PROJECT_ID"
+        ],
+        "harnesses": [
+          "pi"
+        ]
+      },
+      {
+        "name": "monid.discover",
+        "summary": "Search monid's catalog of paid data endpoints in plain words: { results: [{ provider, endpoint, description, score, price }] }.",
+        "nodes": false,
+        "calls": false,
+        "available": false,
+        "missing": [
+          "MONID_API_KEY"
+        ],
+        "harnesses": [
+          "pi"
+        ]
+      },
+      {
+        "name": "monid.inspect",
+        "summary": "One monid endpoint before it runs: the JSON Schemas of its input (path, query, body), its price, notes and documentation.",
+        "nodes": false,
+        "calls": false,
+        "available": false,
+        "missing": [
+          "MONID_API_KEY"
+        ],
+        "harnesses": [
+          "pi"
+        ]
+      },
+      {
+        "name": "monid.run",
+        "summary": "Run one monid endpoint, paid per call from the monid wallet: its output, price and cost; a slow provider is waited for, about two minutes at most.",
+        "nodes": false,
+        "calls": false,
+        "available": false,
+        "missing": [
+          "MONID_API_KEY"
+        ],
+        "harnesses": [
+          "pi"
+        ]
+      },
+      {
+        "name": "pdf_pages",
+        "summary": "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
+        "nodes": false,
+        "calls": true,
+        "call_only": true,
+        "available": true,
+        "harnesses": [
+          "pi"
+        ]
+      },
+      {
+        "name": "llm",
+        "summary": "A workflow call: { prompt, system?, maxTokens?, tier? } -> { text, model, usage, cost_usd }; one completion on the model of the tier (default), no tools and no loop.",
+        "nodes": false,
+        "calls": true,
+        "call_only": true,
+        "available": true,
+        "harnesses": [
+          "pi"
+        ]
+      }
     ],
     "workflows": {
       "nodes": [
