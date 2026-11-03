@@ -10,8 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { harnessOffers } from "../dist/harness.js";
-import { secret, withSecrets } from "../dist/secrets.js";
+import { secret } from "../dist/secrets.js";
 import { readingOf } from "../dist/server.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -362,12 +361,6 @@ test("TypeSafe's key unlocks Jev's decisions: saved, the jev provider is availab
 
 test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing the harnesses again, and capabilities read right after show each change", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
-  // What one probe of the harnesses costs here (each CLI's package and pins, codex's binary hashed): a write that probes
-  // them again cannot answer in less.
-  const started = performance.now();
-  await harnessOffers(withSecrets({ ...process.env, AGENTRUN_SERVE_FAUX: FAUX }));
-  const probe = performance.now() - started;
-  if (probe < 200) return t.skip(`this host probes its harnesses in ${Math.round(probe)} ms, too fast to tell a write that probes from one that does not`);
   const lines = [];
   const { api } = await serve(t, { log: (line) => void lines.push(line) });
   const caps = async () => (await api("GET", "/capabilities")).body;
@@ -391,11 +384,12 @@ test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing
   assert.deepEqual([(await tool("web_search")).missing, await parallel()], [["PARALLEL_API_KEY"], false], "deleted: Parallel missing at once");
   assert.deepEqual((await caps()).harnesses, harnesses, "no tool key and no tool setting changes what the harnesses offer");
 
-  // Each write's time as the server logged it: well under one probe of the harnesses, which none of them makes.
-  const writes = lines.filter((line) => / event=request method=(PUT|DELETE) path=\/v2\/settings\/tool/.test(line)).map((line) => [/path=(\S+)/.exec(line)[1], Number(/ ms=(\d+)/.exec(line)[1])]);
-  assert.equal(writes.length, 6, JSON.stringify(writes));
-  const bound = Math.max(50, probe / 4);
-  assert.deepEqual(writes.filter(([, ms]) => ms >= bound), [], `each write answers in under ${Math.round(bound)} ms (one probe here: ${Math.round(probe)} ms): ${JSON.stringify(writes)}`);
-  // The server's own word for it: it probed the harnesses once, at its start, and no write probed them again.
-  assert.deepEqual(lines.filter((line) => / event=harness_offers /.test(line)).map((line) => /why=(\S+)/.exec(line)[1]), ["start"]);
+  // Probes counted, not timed: the server logs each probe of the harnesses (event=harness_offers), and it made one, at its
+  // start, around the six writes it logged; none of them probed again.
+  const events = lines.flatMap((line) => {
+    const probe = / event=harness_offers why=(\S+)/.exec(line);
+    const write = / event=request method=(PUT|DELETE) path=(\/v2\/settings\/tool\S*)/.exec(line);
+    return probe ? [`probe:${probe[1]}`] : write ? [`${write[1]} ${write[2]}`] : [];
+  });
+  assert.deepEqual(events, ["probe:start", "PUT /v2/settings/tools", "PUT /v2/settings/tools", "PUT /v2/settings/tool-keys/parallel", "PUT /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/parallel"]);
 });
