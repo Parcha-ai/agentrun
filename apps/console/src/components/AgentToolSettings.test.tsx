@@ -80,6 +80,38 @@ describe("AgentEditor, an agent's tool settings", () => {
     expect(page.row("web_search")!.textContent).toContain(`pi: unavailable: ${OFF}`);
   });
 
+  it("with the server's web_search off, an agent that does not grant it picks its own provider first, then grants it, and saves both", async () => {
+    const OFF = "web_search is turned off in settings";
+    const off = toolChoices([{ ...SEARCH, provider: "off", available: false, reason: OFF, resolves: { pi: `unavailable: ${OFF}`, "claude-agent": `unavailable: ${OFF}`, codex: `unavailable: ${OFF}` } }, FETCH]);
+    const offCaps = { ...caps, tools: caps.tools.map((t) => (t.name === "web_search" ? { ...t, available: false } : t)) };
+    const base = agentWith();
+    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["read"] }, tools: [{ name: "read" }] };
+    const page = await open(agent, { providerChoices: off, editorCaps: offCaps });
+    const grant = () => page.host.querySelector<HTMLInputElement>('input[value="web_search"]')!;
+    // The server's off is the only obstacle: the grant waits for a provider of the agent's own, offered before it.
+    expect(grant().disabled).toBe(true);
+    expect(page.row("web_search")).toBeTruthy();
+    await page.choose("web_search", "exa-keyless");
+    expect(grant().disabled).toBe(false);
+    await act(async () => { grant().click(); });
+    await page.click(/^Save revision$/);
+    expect(page.saves[0].tool_settings).toEqual({ web_search: { provider: "exa-keyless" } });
+    expect(page.saves[0].tools).toContain("web_search");
+  });
+
+  it("what a tool resolves to is the server's word only for the model it was read for: another model in the form says once saved", async () => {
+    const base = agentWith(undefined, "native");
+    const agent: Agent = { ...base, definition: { ...base.definition, model: "anthropic/claude-sonnet-5" } };
+    const page = await open(agent);
+    expect(page.row("web_search")!.textContent).toContain("pi: native");
+    await page.click(/Harness, thinking and model/);
+    const model = page.host.querySelector<HTMLInputElement>('input[placeholder="provider/model"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(model, "openai/gpt-x"); model.dispatchEvent(new Event("input", { bubbles: true })); });
+    await page.click(/What this agent can do/);
+    expect(page.row("web_search")!.textContent).not.toContain("pi: native");
+    expect(page.row("web_search")!.textContent).toContain("once saved");
+  });
+
   it("reloaded, the agent's own pick is chosen and marked; Reset takes it back to the server's, and the definition carries none", async () => {
     const agent = agentWith({ web_search: { provider: "parallel" } }, "unavailable: PARALLEL_API_KEY is not set");
     const page = await open(agent);

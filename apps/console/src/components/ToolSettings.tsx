@@ -66,12 +66,14 @@ export function Resolves({ value, prefix }: { value: string | undefined; prefix?
 /** What a capability resolves to on each harness, one line each. */
 export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORDER.map((h) => <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} />)}</>;
 
-/** The agent editor's tool settings: per capability this agent grants that has a provider choice, its provider, the
- *  server's pick its default, and what it resolves to on the agent's harness. Nothing at all when none has one. */
-export function AgentToolSettings({ agent, harness, tools, choices, value, issues, onChange }: {
+/** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
+ *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
+ *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
+export function AgentToolSettings({ agent, harness, model, tools, choices, value, issues, onChange }: {
   agent: Agent | null;
-  /** The harness and tools in the form, saved or not. */
+  /** The harness, model and tools in the form, saved or not (no model: the server's default). */
   harness: string;
+  model?: string;
   tools: readonly string[];
   choices: readonly ToolChoice[];
   /** The settings in the form: the agent's own, or the person's change of them. */
@@ -80,7 +82,7 @@ export function AgentToolSettings({ agent, harness, tools, choices, value, issue
   issues: Record<string, string>;
   onChange: (next: ToolSettings) => void;
 }) {
-  const rows = choices.filter((c) => tools.includes(c.name));
+  const rows = choices.filter((c) => tools.includes(c.name) || !c.available);
   if (!rows.length) return null;
   const saved = (agent?.definition.tool_settings ?? {}) as ToolSettings;
   const { byTool, rest } = issuesFor(issues, "definition.tool_settings", rows.map((t) => t.name));
@@ -90,11 +92,14 @@ export function AgentToolSettings({ agent, harness, tools, choices, value, issue
       <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's provider (its default here) unless it is changed here.</p>
       <ToolTable label="This agent's tool providers" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onChange={onChange}
         resolvesOf={(t) => {
-          // The server's word holds for what it knows: the saved provider on the saved harness. A change resolves once saved.
+          // The server's word holds only for what it was read for: the agent's, for its saved provider, harness and model;
+          // capabilities', for the server's provider on each harness with the server's default model. A change of any of
+          // them resolves once saved.
           const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null);
           const known = agent?.tools?.find((x) => x.name === t.name)?.resolved;
-          if (!own && harness === (agent?.definition.harness ?? "pi") && known) return <Resolves value={known} prefix={`${harness}: `} />;
-          if (!own && !saved[t.name]) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} />;
+          const savedModel = (model ?? "") === ((agent?.definition.model as string | undefined) ?? "");
+          if (!own && harness === (agent?.definition.harness ?? "pi") && savedModel && known) return <Resolves value={known} prefix={`${harness}: `} />;
+          if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} />;
           return <span className="block font-mono text-[12px] text-muted-foreground">once saved</span>;
         }} />
       {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
