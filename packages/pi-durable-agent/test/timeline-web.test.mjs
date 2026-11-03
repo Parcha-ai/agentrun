@@ -30,6 +30,11 @@ test("a search's row: its query, how many sources, the first three distinct doma
   assert.equal(two.tool_result_preview, "1. Node.js EOL — endoflife.date\nAbout Node.js EOL.\nhttps://endoflife.date/nodejs\n2. Release schedule — github.com\nAbout Release schedule.\nhttps://github.com/nodejs/release\nProvider: Exa keyless");
 });
 
+test("a search result with no title is named by its URL in the preview", () => {
+  const row = search({ provider: "parallel", query: "q", results: [{ url: "https://registry.example/widgets", title: "", snippet: "Widgets are registered." }] }, "q");
+  assert.equal(row.tool_result_preview, "1. https://registry.example/widgets — registry.example\nWidgets are registered.\nhttps://registry.example/widgets\nProvider: Parallel");
+});
+
 test("a running search reads as running; one that found nothing is a quiet missing, never an error", () => {
   const reducer = timelineReducer({ conversationId: 1 });
   reducer.apply([{ type: "message_end", entry: assistant([call("s1", "web_search", { query: "q" })], 1) }]);
