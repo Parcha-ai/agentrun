@@ -7,7 +7,8 @@ it ran. Each run is a [`@parcha/pi-durable-disk`](../pi-durable-disk/README.md) 
 pointed at it works the way it works against the hosted API; the capabilities document says what this server does not
 offer.
 
-This package is held: it is built and tested in this repository and not published yet.
+Published to npm from the next release (`@beta`): `npx @parcha/agentrun-serve` then starts it with nothing else installed, its
+console included. Until then, run it from a checkout (below) or the container.
 
 ## Quick start (no key, no network)
 
@@ -206,8 +207,11 @@ gets them, in its environment or on its pipe.
 An agentic revision names its model as `provider/model-id` (`"model"` in its definition), or names none and runs on
 this host's default, `AGENT_MODEL`. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
-to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, fast, default, strong}`). Where the models come
-from:
+to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
+`source` is `gateway`, `providers` or `faux` (the published document marks these as `models/2`, beyond the contract's
+`managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
+model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source. Where
+the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
@@ -363,8 +367,9 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 ## Webhooks
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
-or `https` address, with no user or password in it. Two kinds of message are POSTed to it: `run.needs_input` when a run
-comes to need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
+or `https` address, with no user or password in it. Loopback and private-network addresses are allowed, so a receiver
+on your own machine or network works. Two kinds of message are POSTed to it: `run.needs_input` when a run comes to
+need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once carried back).
 
 ```json
@@ -459,9 +464,12 @@ at once, the last wins. A body over `capabilities.home.max_file_bytes` (`limits.
 as a run's are, a write goes at most 16 directories deep (as deep as the list goes), and a link anywhere on the way is
 never followed: a read is `404`, a write or a delete
 `403 system_file_forbidden`. `learning/` is the server's alone: the list shows it as one entry,
-`{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it, in
-any case and however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason`
-`host_owned`); its notes are read through `/v2/agents/{id}/learning`. An archived agent's home is read and written as
+`{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it,
+however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`); its notes
+are read through `/v2/agents/{id}/learning`. A host-owned name is matched by its first segment folded (compatibility
+form, any case, no combining marks) and, where that segment and `learning/` are both on disk, by identity (the same
+device and inode), so a disk that takes another spelling for one name is refused the same way. A path takes only plain
+segments: each its own NFC form, with no default-ignorable code point, or it is `400 invalid_file_path`. An archived agent's home is read and written as
 its definition is. A write is held to its directory through `/proc/self/fd`; where there is none (macOS),
 `capabilities.home.writes` is `false` and `PUT` and `DELETE` are `501 unsupported_here`, as Node has no `openat` to
 write safely by path, while the list and reads still work. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
@@ -505,7 +513,10 @@ A definition names the harness that runs it: `pi` (the default, and what a defin
 `claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
 (`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
 back.
-`GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`. A definition naming a
+`GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
+model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
+it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
+model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
@@ -640,8 +651,8 @@ closes. Without it, the console says to open the link. Either cookie takes the p
 and its body is `application/json`, or, on a `PUT` to a route that takes bytes (`PUT /v2/files/{id}`), of any content
 type. A request that sends an `Authorization` header is checked on that header alone.
 
-The server's build copies the console's build (`npm ci && npm run build` in `apps/console`, run first) into
-`dist/console`; the image always carries it. A server built without it answers `/` with a 404 that says so. `/console/`
+The repository's `npm ci && npm run build` builds the console (`apps/console`) first, and the server's build copies it
+into `dist/console`; the image always carries it. A server built without it answers `/` with a 404 that says so. `/console/`
 (the console's address before) and `/setup` and `/sign-in` (the old page's, which the printed setup link still names)
 send the browser to `/`, which keeps a link's `#code`.
 
