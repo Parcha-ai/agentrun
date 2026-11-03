@@ -173,8 +173,11 @@ test("a workflow's model node naming web_search, its revision listing no tools, 
   const ran = async () => {
     const started = await api("POST", "/agents/finder/runs", { input: { question: "What is six times seven?" } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
+    // Saved before its process started, so it is there when the start answers; the run then keeps it.
+    const pinned = await planeOfRun(started.body.run_id);
     await follow(api, started.body.run_id, ["completed"]);
-    return planeOfRun(started.body.run_id);
+    assert.deepEqual(await planeOfRun(started.body.run_id), pinned, "kept as it was saved before the launch");
+    return pinned;
   };
   assert.deepEqual(await ran(), { web_search: "exa-keyless" }, "the node's tool resolved: auto, with no model's native search");
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);

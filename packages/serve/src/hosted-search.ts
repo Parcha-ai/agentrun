@@ -22,6 +22,9 @@ export const SEARCH_INPUT_TOKENS = 25_000;
 export const HOSTED_SEARCH_ALLOWANCE_TOKENS = HOSTED_MAX_USES * SEARCH_INPUT_TOKENS;
 export const ANTHROPIC_SEARCH_TOOL = Object.freeze({ type: "web_search_20250305", name: "web_search", max_uses: HOSTED_MAX_USES });
 export const OPENAI_SEARCH_TOOL = Object.freeze({ type: "web_search" });
+/** OpenAI's hosted search has no per-tool limit: the Responses API's `max_tool_calls` caps the built-in tool calls of the
+ *  request at the HOSTED_MAX_USES its fee is reserved for, as Anthropic's tool's `max_uses` does. */
+export const OPENAI_SEARCH_LIMIT = Object.freeze({ max_tool_calls: HOSTED_MAX_USES });
 /** $10 per 1,000 searches (Anthropic) or calls (OpenAI). */
 export const SEARCH_USD = 0.01;
 /** OpenAI's models that bill each call's search content as a fixed block of 8,000 input tokens apart from the response's
@@ -115,7 +118,7 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
       // The hosted tool, exactly, and no other: the context offers none of its own.
       onPayload: (payload) => {
         const body = payload as Record<string, unknown>;
-        return anthropic ? { ...body, tools: [ANTHROPIC_SEARCH_TOOL] } : { ...body, tools: [OPENAI_SEARCH_TOOL], include: [...(Array.isArray(body.include) ? body.include : []), "web_search_call.action.sources"] };
+        return anthropic ? { ...body, tools: [ANTHROPIC_SEARCH_TOOL] } : { ...body, ...OPENAI_SEARCH_LIMIT, tools: [OPENAI_SEARCH_TOOL], include: [...(Array.isArray(body.include) ? body.include : []), "web_search_call.action.sources"] };
       },
       onProviderStreamEvent: (event) => read.event(event),
     });

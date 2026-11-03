@@ -526,6 +526,16 @@ export class Runs {
   }
 
   /** Writes the run's serve.json as it is when its turn comes. */
+  /** Resolves `run`'s tools' providers once, from its pinned revision and this server's settings, and saves them in its
+   *  serve.json before it is launched (tool-plane.ts). Nothing to resolve, or already kept: nothing written. */
+  private async pinPlane(run: Run): Promise<void> {
+    if (run.meta.tool_plane || !run.tooling) return;
+    const plane = planeFor(withSecrets(process.env), run.tooling, this.options.toolSettings?.() ?? {});
+    if (!Object.keys(plane).length) return;
+    run.meta.tool_plane = plane;
+    await this.saveMeta(run);
+  }
+
   private saveMeta(run: Run): Promise<void> {
     run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(() => writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`));
     return run.saving;
@@ -908,8 +918,9 @@ export class Runs {
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
-    // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A description
-    // with no secret in it, read by the run's process, never by a request.
+    // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
+    // saved before its first launch (pinPlane); resolving here is for a run made before that. A description with no secret
+    // in it, read by the run's process, never by a request.
     const served = withSecrets(process.env);
     const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}) : {};
     if (!run.meta.tool_plane && Object.keys(plane).length) {
@@ -1250,6 +1261,9 @@ export class Runs {
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, await toolingOf(revision));
     run.moment = "other";
+    // Its tools' providers, resolved and saved before its process starts: a launch after a crash reads these back, never
+    // the settings of that moment. A save that fails fails the start; the run never runs on providers it did not keep.
+    await this.pinPlane(run);
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;

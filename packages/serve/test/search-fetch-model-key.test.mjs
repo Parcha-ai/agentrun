@@ -76,7 +76,7 @@ test("with only model keys: native search on pi and claude-agent, keyless Exa on
   assert.match(openai.results.web_search, /"results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The public page says the answer is forty-two\."\},\{"url":"https:\/\/result\.example\/2"/);
   assert.match(openai.report, /http:\/\/public\.example\//);
   sent = (await seen()).upstream.slice(1);
-  assert.deepEqual(sent.map((call) => [call.path, call.body.tools, call.body.include]), [["/v1/responses", [{ type: "web_search" }], ["web_search_call.action.sources"]]]);
+  assert.deepEqual(sent.map((call) => [call.path, call.body.tools, call.body.include, call.body.max_tool_calls]), [["/v1/responses", [{ type: "web_search" }], ["web_search_call.action.sources"], 5]], "its calls capped at the 5 its fee is reserved for");
   assert.equal(sent[0].key, "Bearer not-a-secret");
   // gpt-5's 20,000 and 40 tokens at $1.25 and $10 per million, and one call at $0.01.
   assert.deepEqual(openai.usage, { usd: 0.0354, requests: 5 });
