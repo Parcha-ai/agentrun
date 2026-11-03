@@ -91,6 +91,7 @@ export function FilePicker({ attachments, limits = {}, disabled }: { attachments
       onDragOver={(e) => { if (disabled) return; e.preventDefault(); setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={(e) => { e.preventDefault(); setOver(false); if (!disabled) add([...e.dataTransfer.files]); }}
+      role="group"
       aria-label="Files for the run"
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -110,7 +111,7 @@ export function FilePicker({ attachments, limits = {}, disabled }: { attachments
           ))}
         </ul>
       )}
-      {refusals.length > 0 && <ul className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{refusals.map((r) => <li key={r}>{r}</li>)}</ul>}
+      {refusals.length > 0 && <ul className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{refusals.map((r, i) => <li key={`${i}:${r}`}>{r}</li>)}</ul>}
     </div>
   );
 }
