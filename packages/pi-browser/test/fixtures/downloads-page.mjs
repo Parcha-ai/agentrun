@@ -36,3 +36,21 @@ export function downloadsPage(chars) {
   parts.push("</main>\n<footer><p>Footer</p></footer>\n</body>\n</html>\n");
   return { html: parts.join(""), first, last };
 }
+
+/** A page of at least `chars` characters shaped to defeat a scan that is not linear: `unclosed`, an svg start tag that
+ *  is never closed before each paragraph, then a style and a script never closed either; `unquoted`, a paragraph whose
+ *  title attribute opens a quote that no quote ever closes, each time. `{ html, first, last }` as downloadsPage's,
+ *  `first` and `last` its first and last paragraph's text. */
+export function shapedPage(shape, chars) {
+  const parts = ["<!DOCTYPE html>\n<html><head><title>Shaped</title></head><body>\n<h1>Start</h1>\n"];
+  let size = parts[0].length;
+  let last = null;
+  for (let i = 0; size < chars; i += 1) {
+    last = `para ${i}`;
+    const part = shape === "unclosed" ? `<svg class="icon" viewBox="0 0 10 10"><p>${last} of the page, kept</p>\n` : `<p title="open>${last} of the page, kept</p>\n`;
+    parts.push(part);
+    size += part.length;
+  }
+  if (shape === "unclosed") parts.push("<p>tail</p><style>.a { color: red }\n<script>track();\n");
+  return { html: parts.join(""), first: "para 0", last };
+}

@@ -14,11 +14,11 @@ const GUARD_MS = 30_000;
 const URL_ = "https://downloads.example/dl/";
 const CHILD = `
 import { monitorEventLoopDelay } from "node:perf_hooks";
-const [dist, local, fixture, chars, which, options] = process.argv.slice(1);
+const [dist, local, fixture, chars, which, options, shape] = process.argv.slice(1);
 const { readPage } = await import(dist);
 const { httpBackup } = await import(local);
-const { downloadsPage } = await import(fixture);
-const { html, first, last } = downloadsPage(Number(chars));
+const { downloadsPage, shapedPage } = await import(fixture);
+const { html, first, last } = shape ? shapedPage(shape, Number(chars)) : downloadsPage(Number(chars));
 const held = monitorEventLoopDelay({ resolution: 10 });
 held.enable();
 const started = performance.now();
@@ -34,11 +34,11 @@ held.disable();
 process.stdout.write(JSON.stringify({ wallMs, heldMs: held.max / 1e6, htmlChars: html.length, first, last, page, error }));
 `;
 
-/** `which` ("readPage", "abort" or "httpBackup") on a generated page of `chars` characters, in a child process:
- *  `{ hung: true }` when it does not answer within GUARD_MS. */
-function inChild(which, chars, options = {}) {
+/** `which` ("readPage", "abort" or "httpBackup") on a generated page of `chars` characters (downloadsPage's, or
+ *  shapedPage's `shape`), in a child process: `{ hung: true }` when it does not answer within GUARD_MS. */
+function inChild(which, chars, options = {}, shape = "") {
   return new Promise((resolve, reject) => {
-    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("../dist/coding-agent-local.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options)];
+    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("../dist/coding-agent-local.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape];
     const child = spawn(process.execPath, ["--input-type=module", "-e", CHILD, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
@@ -126,4 +126,14 @@ test("a page converted in pieces reads as one pass over it would, but for the sp
   const page = await readPage(html, URL_);
   const lines = (text) => text.replace(/[ \t]+$/gm, "");
   assert.equal(lines(page.text), lines(NodeHtmlMarkdown.translate(html, { keepDataImages: false }).trim()));
+});
+
+test("50,000 svg start tags never closed, then a style and a script never closed, on a 5 MB page: read within 10 s, the event loop never held 100 ms", async () => {
+  const run = await inChild("readPage", 5_000_000, {}, "unclosed");
+  quick(run, 10_000);
+  const { page } = run;
+  assert.equal(page.truncated, true);
+  assert.match(page.text, /^# Start\n/);
+  assert.ok(page.text.includes("para 0 of the page, kept"), "the text after an unclosed svg is kept");
+  assert.doesNotMatch(page.text, /color: red|track\(\)/, "an unclosed style runs to the end of the page");
 });
