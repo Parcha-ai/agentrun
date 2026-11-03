@@ -31,6 +31,7 @@ agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentr
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
 Open http://127.0.0.1:7340/
+Boxes: none is ready, so sandbox agents do not run here. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
 
@@ -83,7 +84,8 @@ export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
-Its log says `event=boxes available=docker`. In a second shell, export the two `AGENTRUN_` lines it printed (a later
+Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
+their tools there.` In a second shell, export the two `AGENTRUN_` lines it printed (a later
 start prints where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a
 sandbox agent, run it, watch it, and read the file it wrote:
 
@@ -235,17 +237,20 @@ end to end. The [published image](#in-the-published-image) cannot host boxes yet
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
 the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
 `write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
-its harness. Any other shape is `422 input_invalid` on `definition.place`. A definition that names none runs in this
-host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
-it, `runner` included. An edit that names no place keeps the agent's.
+its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
+remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). A definition that
+names none runs in this host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one
+that names a place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
 A run runs in its revision's place, else this host's default. A run request names no place: `POST /agents/{id}/runs`
 with `place` is `422 input_invalid`, as with any field the body does not keep. The run keeps the place it resolved to,
 and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, when they come, will be an option of
 `sandbox` (such as `native_tools: true`), never a third mode.
 
-`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default), and a
-workflow's place is `runner` or none (`422` on a sandbox).
+`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default, with
+the sandbox place as its `fix`), and a workflow's place is `runner` or none (`422` on a sandbox, with the runner place as
+its `fix`). In `capabilities.tools`, `bash` is `available: false` with a `reason` (`no box is set up on this server: …`,
+each box's own reason) when no box this server has can run it.
 
 `GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
@@ -322,7 +327,11 @@ log line says what the server found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
 
-The line gives a reason for each listed box that is unavailable. A reason never holds a key, a command's output or a
+The line gives a reason for each listed box that is unavailable, and the banner says the same in words
+(`Boxes: docker is ready, so sandbox agents run their tools there.`). Each reason says what to do next: a box the list
+does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
+lists), and a `docker` whose daemon does not answer says to start Docker or add this server's user to the `docker`
+group, then restart the server, since the probe runs once. A reason never holds a key, a command's output or a
 provider's answer.
 
 - `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
@@ -408,7 +417,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
 | `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
 | `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
-| `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
+| `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
 `bash` runs only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
@@ -653,7 +662,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
-| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts. The agent's runs, newest first. |
+| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
@@ -691,7 +700,12 @@ file is at most `limits.max_upload_bytes`, 50 MiB (`413`). The same bytes sent a
 `422` at `file_ids` before anything starts. Each is copied, never linked, into the run's `work/inputs/` at its `path`,
 folders kept, before the run's process starts; a name already taken gets a suffix (`notes-2.txt`, `docs-2/`), the same
 for the same files in the same order. The run reads them as any file of its workspace, and `GET /v2/runs/{id}/files`
-lists them. Each upload is kept in `DIR/files/<file_id>/`, 0600. `upload.expires_at`, which the contract requires, is
+lists them. An agentic run is told of them in its first message, on every harness: after the input's `content` and a
+blank line, one line, `Files for this run: inputs/notes.txt (32 B), inputs/docs/plan.md (1.5 KB).`, each file by the
+path the run's tools take and its size, at most 20 and then how many more, and never past what the run's door takes in
+one message (fewer named, then only how many). That is the message the harness gets, so it
+is the timeline's first `user_message`; the run's `input` stays as it was sent. A run given no files is sent its
+`content` as it is. Each upload is kept in `DIR/files/<file_id>/`, 0600. `upload.expires_at`, which the contract requires, is
 advisory and not enforced in this release: a `PUT` after it is still taken, and nothing deletes an upload.
 
 ## Agent home
@@ -708,9 +722,11 @@ as a run's are, a write goes at most 16 directories deep (as deep as the list go
 never followed: a read is `404`, a write or a delete
 `403 system_file_forbidden`. `learning/` is the server's alone: the list shows it as one entry,
 `{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it,
-however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`); its notes
-are read through `/v2/agents/{id}/learning`. A host-owned name is matched by its first segment folded (compatibility
-form, any case, no combining marks) and, where that segment and `learning/` are both on disk, by identity (the same
+however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`). A read's
+refusal names the learning API (`/v2/agents/{id}/learning`) on a server that has that route, and on one that does not
+says `the server keeps learning/ for itself; this server has no learning API yet`. A host-owned name is matched by its
+first segment folded (compatibility form, any case, no combining marks) and, where that segment and `learning/` are both
+on disk, by identity (the same
 device and inode), so a disk that takes another spelling for one name is refused the same way. A path takes only plain
 segments: each its own NFC form, with no default-ignorable code point, or it is `400 invalid_file_path`. An archived agent's home is read and written as
 its definition is. A write is held to its directory through `/proc/self/fd`; where there is none (macOS),
@@ -763,7 +779,11 @@ model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
-says what is missing.
+says what is missing. The packages and pins are checked once, at the start (`event=harness_offers why=start`): a harness
+installed after it, or put back on its pinned build, stays unavailable until AgentRun restarts, and its reason ends
+saying so, `once it is installed, restart AgentRun to pick it up` or `once the pinned build is installed, restart
+AgentRun`. Run from npx, a reason whose install line is the npx line that starts the server with what is missing needs
+no such clause: running that line is the restart. A reason a setting fixes (a model key, say) names no restart.
 
 `claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id, and prices the run
 by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such as OpenRouter names the same models with
