@@ -9,7 +9,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, APPROVE_PASSWORD, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
+  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
 } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -343,7 +343,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
             {saved && <span className="caps text-[10px] text-success-text" role="status">{saved}</span>}
           </div>
           <p className="mt-1 text-[13px] text-muted-foreground">{note.description}</p>
-          {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{approves === "password" ? APPROVE_PASSWORD : APPROVE_LATER}</p>}
+          {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{approves === "password" ? APPROVE_SIGN_IN : APPROVE_LATER}</p>}
         </div>
         {!readOnly && !retiring && (
           <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">

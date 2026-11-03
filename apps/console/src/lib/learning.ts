@@ -122,7 +122,7 @@ export function approval(caps: unknown): Approval {
 /** Said on a waiting note while the server has no approve route. */
 export const APPROVE_LATER = "Approving here comes in the next update; until then it stays out of every run.";
 /** Said on a waiting note to a caller who is not signed in with the owner's password, where the server approves. */
-export const APPROVE_PASSWORD = "Approving needs your password sign-in. Until then it stays out of every run.";
+export const APPROVE_SIGN_IN = "Approving needs your password sign-in. Until then it stays out of every run.";
 /** Why a note waits, in one line. */
 export const WAITS_WHY = "It changes what this agent trusts or skips, so it waits for you.";
 /** Beside the notes that wait: what a run on the host can reach, and where an untrusted task runs instead. */
