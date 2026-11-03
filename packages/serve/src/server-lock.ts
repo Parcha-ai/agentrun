@@ -118,9 +118,10 @@ export function stoppingOf(dataRoot: string, now = Date.now()): Stopping | undef
 }
 
 /** Takes the data root's server lock, as takeServerLock. When another server holds it and is stopping (its record),
- *  waits for that server, up to its record's `until`, retrying every `everyMs`, and tells `waiting` once as it starts to. A
- *  server that is not stopping is refused at once with ServerLockHeldError, as is one that still holds the lock at its
- *  `until`. */
+ *  waits for that server as long as its process lives, under one cap, its record's `until` (the server's whole close:
+ *  its runs' drain, their carry backs and their boxes' cleanup), retrying every `everyMs`, and tells `waiting` once as it
+ *  starts to. A server that is not stopping is refused at once with ServerLockHeldError, as is one that still holds the
+ *  lock at its `until`, or a holder that is not the stopping server (its process gone, the lock still held). */
 export async function takeServerLockAfterStop(dataRoot: string, options: { waiting?: (stopping: Stopping) => void; everyMs?: number } = {}): Promise<ServerLock> {
   try {
     return takeServerLock(dataRoot);
@@ -134,7 +135,7 @@ export async function takeServerLockAfterStop(dataRoot: string, options: { waiti
       try {
         return takeServerLock(dataRoot);
       } catch (again) {
-        if (!(again instanceof ServerLockHeldError) || Date.now() >= stopping.until) throw again;
+        if (!(again instanceof ServerLockHeldError) || Date.now() >= stopping.until || !processAlive(stopping.pid)) throw again;
       }
     }
   }

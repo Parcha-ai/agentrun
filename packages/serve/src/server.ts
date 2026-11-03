@@ -64,8 +64,10 @@ const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
-/** What a stopping server's mark allows past its runs' kill bound: the deliveries', the listener's and the stores' stop. */
-const STOP_MARGIN_MS = 10_000;
+/** What a stopping server's record allows past its runs' kill bound, the cap a start waits under: the runs' carry backs,
+ *  retried while the agent store is held (about 15.5 s), their boxes' cleanup (up to a minute), and the deliveries', the
+ *  listener's and the stores' stop. A start stops waiting sooner once the stopping server's process is gone. */
+const STOP_MARGIN_MS = 120_000;
 /** A wait, as the stop's lines give it: whole seconds, rounded up, one at least. */
 const seconds = (ms: number) => `${Math.max(1, Math.ceil(ms / 1000))} s`;
 /** Where the stop's lines go (ServeOptions.notice). */
