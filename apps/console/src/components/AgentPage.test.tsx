@@ -38,10 +38,10 @@ type Answer = { run: Run } | { refused: string };
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run> };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses, hold, strict = false, timeline, reread, agentError }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
@@ -56,7 +56,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
       const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
       throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
     },
-    getAgent: async (id: string) => { asked.push(`agent ${id}`); return { agent, etag: null }; },
+    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; return { agent, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
       return cursor && more ? more() : { runs, next_cursor: next };
@@ -533,5 +533,36 @@ describe("AgentPage, where it runs", () => {
     expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
     act(() => root?.unmount()); document.body.innerHTML = "";
     expect((await open(base)).fact("Runs")).toBe("On the server");
+  });
+});
+
+// Each failed read says the server's refusal as `code: message`, and any other failure by its message.
+describe("AgentPage, a failed read's problem", () => {
+  it("says the agent's read failing: a refusal, an error and anything else thrown", async () => {
+    const refused = await open(agentFixture("invoice-checker"), { agentError: new ClientError(404, "agent_not_found", "no agent invoice-checker") });
+    expect(refused.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: agent_not_found: no agent invoice-checker");
+    act(() => root?.unmount());
+    const failed = await open(agentFixture("invoice-checker"), { agentError: new TypeError("Failed to fetch") });
+    expect(failed.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: Failed to fetch");
+    act(() => root?.unmount());
+    const thrown = await open(agentFixture("invoice-checker"), { agentError: "offline" });
+    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: offline");
+  });
+
+  it("says the next page of runs refused", async () => {
+    const runs = runsOf("invoice-checker");
+    const page = await open(agentFixture("invoice-checker"), { runs: runs.slice(0, 5), next: "c2", more: async () => { throw new ClientError(400, "invalid_cursor", "that cursor is not one this server gave"); } });
+    await page.click(/^Load more$/);
+    expect(page.host.textContent).toContain("More runs could not be read: invalid_cursor: that cursor is not one this server gave");
+  });
+
+  it("says the latest run's record refused on every try, and its timeline refused", async () => {
+    const { release, latest } = await splitRun(async () => { throw new ClientError(503, "store_busy", "the store is busy", true); });
+    release();
+    await until(() => latest().textContent!.includes("This run could not be refreshed: store_busy: the store is busy"));
+    act(() => root?.unmount());
+    const page = await open(agentFixture("invoice-checker"), { timeline: async () => { throw new ClientError(404, "run_not_found", "no run with that id"); } });
+    const panel = () => page.host.querySelector('section[aria-label="Latest run"]')!;
+    await until(() => panel().textContent!.includes("The timeline could not be read: run_not_found: no run with that id"));
   });
 });

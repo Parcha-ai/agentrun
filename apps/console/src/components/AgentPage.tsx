@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import type { Agent } from "@/lib/agentForm";
-import { type Client, ClientError } from "@/lib/client";
+import { type Client, problemOf } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
@@ -31,8 +31,6 @@ const TABS: { id: string; label: string; shows: (a: Agent, server: Server) => bo
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
-
-const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
 
 /** An agent's address: its page, one of its tabs, or `edit` for its editor. `#/agents/new` is the create form, so an
  *  agent whose id is "new" is given its Runs tab's address instead. */
