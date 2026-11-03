@@ -78,6 +78,19 @@ for (const harness of ["claude-agent", "codex"]) {
     return runId;
   }
 
+  test(`${harness}: a turn stopped mid-request, with nothing after, reads $0.002 so far and 1 charge with no price while its process is alive, as a settled read would`, { timeout: 120_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    const runId = await secondOut(api, `stop-live-${harness}`, join(await scratch(t), "go"));
+    assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+    await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
+    // The stopped turn is over: the request it cut is no request in flight, though the run's process is still there.
+    // Given a moment for the stop's last events to be read; then what the run says, whatever it says.
+    for (const end = Date.now() + 15_000; (await view(api, runId)).cost.unpriced !== 1 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 200));
+    const run = await view(api, runId);
+    assert.deepEqual([run.status, run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], ["input_required", null, 0.002, 1], JSON.stringify(run.cost));
+    assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: 0.002, unpriced: 1 });
+  });
+
   test(`${harness}: a run cancelled mid-request reads $0.002 so far and 1 charge with no price`, { timeout: 120_000 }, async (t) => {
     const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
     const runId = await secondOut(api, `cancel-${harness}`, join(await scratch(t), "go"));

@@ -4,7 +4,7 @@
 // ceiling is claimed. A known cost has neither.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
+import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, custom, user } from "./timeline-support.mjs";
 
 const rowOf = (entries, settled = true) => timelineOf(entries, { settled }).find((row) => row.kind === "usage");
@@ -60,4 +60,15 @@ test("a run whose every cost is known has neither field", () => {
   const entries = [user("go"), started(), priced("one", 0.01), started(), priced("two", 0.02)];
   assert.deepEqual(usageOf(entries), { usd: 0.03, requests: 2 });
   assert.equal(rowOf(entries).summary, "Cost so far: $0.0300 over 2 model requests");
+});
+
+test("the live reducer, told its stopped turn is over (idle), reads the request that turn cut as a charge with no price, as the settled read does", () => {
+  const entries = [user("go"), started(), priced("one", 0.01), started()];
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "snapshot", entries }]);
+  assert.deepEqual(reducer.rows().findLast((r) => r.kind === "usage")?.usage, { usd: 0.01, requests: 2 }, "live: the last request is in flight");
+  // An older reducer has no idle(): its live row stands, the known sum with nothing unpriced.
+  const idle = reducer.idle?.() ?? reducer.rows().findLast((r) => r.kind === "usage");
+  assert.deepEqual(idle?.usage, { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 });
+  assert.deepEqual(reducer.rows().findLast((r) => r.kind === "usage")?.usage, usageOf(entries), "the same as the settled read");
 });
