@@ -43,7 +43,8 @@ export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 /** How long one box's probe may take; the probes run at once, so this bounds them all. */
 export const PROBE_TIMEOUT_MS = 5_000;
 
-const NOT_ENABLED = "not enabled on this server";
+/** Why a box AGENTRUN_BOXES does not list is unavailable, with what turns it on: the variable, then a restart. */
+const notEnabled = (id: BoxId) => `not enabled on this server; to turn it on, start AgentRun with ${BOXES_ENV}=${id} (a comma-separated list of boxes)`;
 const NOT_YET = "the bwrap box is not in this release yet";
 const NOT_PROBED = "configured; not probed at start";
 const TRANSPORT = "@parcha/pi-transport";
@@ -69,7 +70,7 @@ export async function boxRegistry(env: NodeJS.ProcessEnv, options: { timeoutMs?:
   const probed = await Promise.all(
     BOX_IDS.map((id) => {
       if (id === "bwrap") return unavailable(id, NOT_YET);
-      if (!enabled.has(id)) return unavailable(id, NOT_ENABLED);
+      if (!enabled.has(id)) return unavailable(id, notEnabled(id));
       return bounded(id, timeoutMs, (signal) => PROBES[id](env, signal));
     }),
   );

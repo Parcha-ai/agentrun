@@ -176,7 +176,7 @@ test("capabilities lists the place modes, this host's default, and each box: non
   assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.equal(places.default, "runner");
   assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["bwrap", false], ["docker", false], ["modal", false], ["daytona", false]]);
-  for (const box of places.boxes) assert.equal(box.reason, box.id === "bwrap" ? "the bwrap box is not in this release yet" : "not enabled on this server");
+  for (const box of places.boxes) assert.equal(box.reason, box.id === "bwrap" ? "the bwrap box is not in this release yet" : `not enabled on this server; to turn it on, start AgentRun with AGENTRUN_BOXES=${box.id} (a comma-separated list of boxes)`);
 });
 
 test("one box table: capabilities' boxes, a place's 422 and every box enum of the OpenAPI document come from the box registry's ids", async (t) => {

@@ -18,7 +18,8 @@ import { FAUX, scratch, withEnv } from "./support.mjs";
 
 const VM = VM_PROVIDER.id;
 const DAYTONA_KEY = "DAYTONA_API_KEY";
-const NOT_ENABLED = "not enabled on this server";
+/** The reason a box AGENTRUN_BOXES does not list gives: it names the variable and the restart, so a person can turn it on. */
+const notEnabled = (id) => `not enabled on this server; to turn it on, start AgentRun with AGENTRUN_BOXES=${id} (a comma-separated list of boxes)`;
 const NOT_YET = "the bwrap box is not in this release yet";
 const CANARY = `not-a-key-${process.pid}`;
 const keys = () => Object.fromEntries(BOX_KEYS.map((name) => [name, `${CANARY}-${name}`]));
@@ -62,7 +63,7 @@ test("with nothing listed, nothing is probed and every box is unavailable: bwrap
   const daytona = await fakeDaytona(t, takes(`${CANARY}-${DAYTONA_KEY}`));
   for (const listed of [undefined, "", " , "]) {
     const registry = await boxRegistry({ PATH: docker.PATH, ...keys(), DAYTONA_API_URL: daytona.url, ...(listed === undefined ? {} : { AGENTRUN_BOXES: listed }) });
-    assert.deepEqual(registry.offers(), BOX_IDS.map((id) => ({ id, available: false, reason: id === "bwrap" ? NOT_YET : NOT_ENABLED })));
+    assert.deepEqual(registry.offers(), BOX_IDS.map((id) => ({ id, available: false, reason: id === "bwrap" ? NOT_YET : notEnabled(id) })));
     for (const id of BOX_IDS) assert.equal(registry.provider(id), undefined, `no provider for ${id}`);
   }
   assert.deepEqual(docker.calls(), [], "docker was never run");
@@ -87,7 +88,7 @@ test("docker listed: a docker that answers `docker version` is available, with i
   assert.equal(registry.provider("docker")?.name, "docker");
   assert.deepEqual(docker.calls(), ["version --format {{.Server.Version}}"], "one call, the probe: building the provider runs nothing");
   assert.deepEqual(offerOf(registry, "bwrap"), { id: "bwrap", available: false, reason: NOT_YET });
-  assert.deepEqual(offerOf(registry, "daytona"), { id: "daytona", available: false, reason: NOT_ENABLED });
+  assert.deepEqual(offerOf(registry, "daytona"), { id: "daytona", available: false, reason: notEnabled("daytona") });
   // The log line says why each listed box is not there, bwrap included; a box not listed needs no reason.
   assert.deepEqual(boxesLog(registry.offers(), new Set(["docker", "bwrap"])), { available: "docker", unavailable: BOX_IDS.filter((id) => id !== "docker").join(","), bwrap: NOT_YET });
 });
