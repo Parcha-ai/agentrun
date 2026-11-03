@@ -224,3 +224,18 @@ test("one template holding a 3 MB page of short tags, closed at its end: dropped
   quick(run, 10_000);
   assert.match(run.page.text, /^# Start\n\nafter the template, kept$/);
 });
+
+test("a textarea's or a title's text is never read as tags: a \"<template>\" in one, inside a template or out of one, opens nothing, and a \"<script>\" in a title drops nothing, as markdown and as plain text", async () => {
+  const html = '<html><head><title>Use <script> tags</title></head><body><h1>Top</h1>'
+    + '<template><textarea><template></textarea><p>Hidden in the template.</p></template><p>Visible after a template.</p>'
+    + '<template><title><template></title></template><p>Visible after a title in a template.</p>'
+    + '<form><textarea><template></textarea></form><p>Visible after a textarea.</p></body></html>';
+  for (const deadlineMs of [undefined, 0]) {
+    const page = await readPage(html, "https://site.example/", deadlineMs === undefined ? {} : { deadlineMs });
+    const how = deadlineMs === undefined ? "markdown" : "text";
+    assert.equal(page.converted, how);
+    assert.equal(page.title, "Use <script> tags", how);
+    assert.match(page.text, /Top[\s\S]*Visible after a template\.[\s\S]*Visible after a title in a template\.[\s\S]*Visible after a textarea\./, how);
+    assert.doesNotMatch(page.text, /Hidden/, how);
+  }
+});

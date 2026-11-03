@@ -164,3 +164,10 @@ test("a frame inside a template is no frame however templates nest: a template i
   const seen = await judgedHere(html);
   assert.deepEqual([seen.frames, seen.frameText], [["https://shown.example"], ["Shown"]]);
 });
+
+test("a \"<template>\" in a textarea or a title inside a template opens nothing: the template ends at its own end tag, and the frame after it is read", async () => {
+  const html = '<html><body><template><textarea><template></textarea><iframe src="https://hidden.example/">hidden</iframe></template>'
+    + '<template><title><template></title></template><iframe src="https://shown.example/">Shown</iframe></body></html>';
+  const seen = await judgedHere(html);
+  assert.deepEqual([seen.frames, seen.frameText], [["https://shown.example"], ["Shown"]]);
+});
