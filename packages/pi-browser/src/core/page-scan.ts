@@ -10,13 +10,22 @@ export type Decode = (text: string) => string;
 
 const INERT_NAMES = new Set(["script", "style", "svg", "noscript", "template"]);
 const CLOSER: Record<string, RegExp> = Object.fromEntries(["script", "style", "svg", "noscript", "template"].map((name) => [name, new RegExp(`</${name}(?=[\\s/>])[^>]*>?`, "gi")]));
+/** The inert blocks whose content is text, not markup, to their first end tag: a tag inside one is none. */
+const RAW_TEXT = new Set(["script", "style", "noscript"]);
+
+/** InertDrop's one pass over a page's template tags, from its first template: `open` the start tags of the templates
+ *  it holds open, innermost last; `seen` every start it met; `ends`, for each it saw closed, the offset just past the
+ *  end tag that closed it; `done` once it has read the page to its end. */
+type TemplatePass = { next: (at: number) => Tag | null; at: number; open: number[]; seen: Set<number>; ends: Map<number, number>; done: boolean };
 
 /** A page without its script, style, svg, noscript and template elements and its comments, in steps so a caller on the
  *  event loop can yield between them (dropInert, all at once). One whose end is missing runs to the end of the page, as
  *  a browser reads it; but an svg's start tag goes alone, since a browser lets the HTML that follows out of an unclosed
- *  svg. A nested svg or template ends at the first end tag of its name. A search for an end tag that finds none is not
- *  made again from a later start of that name (none follows it either), so a page of unclosed svgs is read once, not
- *  once for each. */
+ *  svg. A template ends at the end tag that closes it, as in a browser: a template inside it is counted, so its end tag
+ *  ends only the inner one, and a "</template>" inside a script, a style, a noscript or a comment within it is text.
+ *  A nested svg ends at the first end tag of its name. A search for an end tag that finds none is not made again from
+ *  a later start of that name (none follows it either), so a page of unclosed svgs is read once, not once for each; and
+ *  the templates' ends are found in one forward pass however many there are (#templateEnd). */
 export class InertDrop {
   // Its blocks are found among the page's tags (tagsOf), so a "<script>" inside an attribute value is none.
   readonly #next: (at: number) => Tag | null;
@@ -26,12 +35,14 @@ export class InertDrop {
   #at = 0;
   #from = 0;
   #done = false;
+  #templates: TemplatePass | null = null;
 
   constructor(readonly html: string) {
     this.#next = tagsOf(html);
   }
 
-  /** Drops the blocks found in the next `chars` characters or so; true once the whole page is read. */
+  /** Drops the blocks found in the next `chars` characters or so; true once the whole page is read. A template's end
+   *  is looked for `chars` characters at a time too, so no step reads much more than that. */
   step(chars: number): boolean {
     const { html } = this;
     const until = this.#at + chars;
@@ -45,20 +56,66 @@ export class InertDrop {
       let end = tag.gt < 0 ? html.length : tag.gt + 1;
       if (!comment) {
         const name = tag.name;
-        let close: RegExpExecArray | null = null;
-        if (end < (this.#unclosed.get(name) ?? Number.POSITIVE_INFINITY)) {
-          const closer = CLOSER[name]!;
-          closer.lastIndex = end;
-          close = closer.exec(html);
-          if (!close) this.#unclosed.set(name, end);
+        if (name === "template") {
+          const close = this.#templateEnd(tag.lt, end, chars);
+          // Not found within this step's reading: the next step goes on from this template.
+          if (close === undefined) break;
+          end = close >= 0 ? close : html.length;
+        } else {
+          const close = this.#endTagEnd(name, end);
+          end = close >= 0 ? close : name === "svg" ? end : html.length;
         }
-        end = close ? close.index + close[0].length : name === "svg" ? end : html.length;
       }
       this.#kept.push(html.slice(this.#from, tag.lt));
       this.#from = this.#at = end;
       if (end >= html.length) this.#finish();
     }
     return this.#done;
+  }
+
+  /** The offset just past the first end tag named `name` from `from` (CLOSER), or -1 when there is none. */
+  #endTagEnd(name: string, from: number): number {
+    if (from >= (this.#unclosed.get(name) ?? Number.POSITIVE_INFINITY)) return -1;
+    const closer = CLOSER[name]!;
+    closer.lastIndex = from;
+    const close = closer.exec(this.html);
+    if (!close) { this.#unclosed.set(name, from); return -1; }
+    return close.index + close[0].length;
+  }
+
+  /**
+   * The offset just past the end tag that closes the template whose start tag is at `lt` and ends at `from`, -1 when
+   * none closes it, or undefined when the pass has read `budget` characters without finding it (the next call goes on).
+   * One pass over the page's tags from its first template, with tags of its own (tagsOf), only ever forward: a start
+   * tag of a template is opened, an end tag closes the innermost one open, and a script, a style or a noscript is
+   * passed to its end tag, its text never read as tags. Each template's end is kept as the pass meets it, so a later
+   * template asks the pass again only when it is past where the pass has read. A template the pass did not meet as a
+   * tag (one inside a block the two scans read differently) ends at the first end tag of its name, as before.
+   */
+  #templateEnd(lt: number, from: number, budget: number): number | undefined {
+    const pass: TemplatePass = (this.#templates ??= { next: tagsOf(this.html), at: lt, open: [], seen: new Set(), ends: new Map(), done: false });
+    const stop = pass.at + budget;
+    while (!pass.ends.has(lt) && !pass.done && (pass.at <= lt || pass.seen.has(lt))) {
+      if (pass.at >= stop) return undefined;
+      const tag = pass.next(pass.at);
+      // No tag left, or one with no ">" after it (a comment with no "-->" among them): nothing closes after it.
+      if (!tag || tag.gt < 0) { pass.done = true; break; }
+      pass.at = tag.gt + 1;
+      if (tag.name === "template") {
+        if (!tag.end) { pass.open.push(tag.lt); pass.seen.add(tag.lt); }
+        else {
+          const opened = pass.open.pop();
+          if (opened !== undefined) pass.ends.set(opened, tag.gt + 1);
+        }
+      } else if (!tag.end && RAW_TEXT.has(tag.name)) {
+        const close = this.#endTagEnd(tag.name, pass.at);
+        if (close < 0) pass.done = true;
+        else pass.at = close;
+      }
+    }
+    const end = pass.ends.get(lt);
+    if (end !== undefined) return end;
+    return pass.seen.has(lt) ? -1 : this.#endTagEnd("template", from);
   }
 
   #finish(): void {
