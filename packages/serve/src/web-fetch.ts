@@ -10,22 +10,19 @@
 // capabilities resolves to Parallel, read once and held in this module's memory: never in an environment, a child or a
 // file.
 //
-// A page is read in parts (fetch-page.ts): the tool's `offset` and `max_chars` name the part, which either path reads the
-// same. Parallel's extract has no offset (its full content always starts at the page's start, cut where it was asked to
-// stop), so each part read through it is one billed extract of the page's text up to one character past the part, so a
-// page it cut there shows as going on, and never past the most of a page web_fetch reads (PAGE_READ_MAX_CHARS) and one.
-// The page's whole length is known when Parallel gave less (or more) than it was asked for. Nothing is kept between
-// parts: a run's client holds only whether its key was refused.
-//
-// Where Parallel is picked and gives no page for a part past the first, that part is the page as fetched directly from
-// its start (`restarted`), since the earlier parts were Parallel's text and the direct page's characters are not its.
-// The call alone says so: Parallel picked, an offset past 0, and the answer from the direct fetch.
+// A page is read once a run and given in parts (fetch-page.ts): the tool's `offset` and `max_chars` name the part. The
+// first call for a URL reads the page, through Parallel or the direct fetch, and the run keeps what it read by the URL
+// asked for (Pages, the last PAGES_HELD pages): every later part of that URL comes from it, with no request and, through
+// Parallel, no bill. So a page's parts are always one read's, by one provider. Parallel's extract has no offset (its full
+// content always starts at the page's start), so it is asked once for the most of a page web_fetch reads
+// (PAGE_READ_MAX_CHARS) and one character more, so a page it cut there shows as going on; the page's whole length is
+// known when Parallel gave less (or more) than it was asked for.
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, fetchPage, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, pageText, type Part, partOf, partProblem, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf } from "./tool-plane.js";
@@ -34,19 +31,24 @@ export const WEB_FETCH_TOOL = "web_fetch";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
 const PARALLEL_TIMEOUT_MS = 60_000;
 const PORTS = new Set(["", "80", "443"]);
+/** How many pages a run keeps what it read of (Pages): each at most PAGE_READ_MAX_CHARS characters of text. */
+export const PAGES_HELD = 8;
 
-/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none; `restarted`, on the
- *  page read from its start in place of a later part, whose earlier parts were Parallel's text. */
-export type WebPage = Page & { via: "parallel" | "direct"; parallel?: string; restarted?: true };
+/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. */
+export type WebPage = Page & { via: "parallel" | "direct"; parallel?: string };
+/** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
+export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
+/** The pages a run read, by the URL asked for, the last used last: at most PAGES_HELD of them. */
+export type Pages = Map<string, WebRead>;
 type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
-/** Parallel for one run, on one key: `read`, its extract of the part `part` names, a page it read or, for any failure,
- *  why it read none; `post`, one request to another of its endpoints (web_search's, web-search.ts). Neither retries, and
- *  each stops at 60 s. `live` is false once a 401 or 403 to either said the key is not served. */
-export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal, part?: Part): Promise<Page | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
+/** Parallel for one run, on one key: `read`, its extract of a page (one billed request), the page it read or, for any
+ *  failure, why it read none; `post`, one request to another of its endpoints (web_search's, web-search.ts). Neither
+ *  retries, and each stops at 60 s. `live` is false once a 401 or 403 to either said the key is not served. */
+export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Read | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
 
 /** The absolute http(s) URLs a markdown text links to (`[text](url)`), each once and without its fragment, in order, as
- *  they are read (linksWithin keeps those within the caps and counts the rest; a later part reads none). A URL ends at
- *  whitespace or at the ")" that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
+ *  they are read (linksWithin keeps those within the caps and counts the rest). A URL ends at whitespace or at the ")"
+ *  that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
 function* linksOf(markdown: string): Generator<string> {
   const seen = new Set<string>();
   for (let at = markdown.indexOf("]("); at !== -1; at = markdown.indexOf("](", at + 2)) {
@@ -65,9 +67,9 @@ function* linksOf(markdown: string): Generator<string> {
   }
 }
 
-/** Parallel's extract on `apiKey`: one URL a request, one billed extract a part, its full content up to the part asked
- *  for as the page's text (markdown), its links read from it, status 200 (Parallel answers a page it could not read in
- *  `errors`, with no content). */
+/** Parallel's extract on `apiKey`: one URL a request, each a billed extract, its full content to the most of a page
+ *  web_fetch reads as the page's text (markdown), its links read from it, status 200 (Parallel answers a page it could
+ *  not read in `errors`, with no content). */
 export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Extract {
   let refused = false;
   const post: Extract["post"] = async (url, body, signal) => {
@@ -83,12 +85,10 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
   return {
     live: () => !refused,
     post,
-    async read(url, signal, part = {}) {
+    async read(url, signal) {
       try {
-        // One character past the part, so a page Parallel cut there shows as going on (its whole length Parallel does not
-        // give), and never past the most of a page a read reaches and that one: the extract has no offset.
-        const { offset, maxChars } = partOf(part);
-        const asked = Math.min(offset + maxChars, PAGE_READ_MAX_CHARS) + 1;
+        // The most of a page a read reaches and one character more, so a page Parallel cut there shows as going on.
+        const asked = PAGE_READ_MAX_CHARS + 1;
         const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: asked } } }, signal);
         if (!response.ok) {
           await response.body?.cancel().catch(() => undefined);
@@ -98,7 +98,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
         const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");
         if (!row) return errors?.length ? "listed the URL in errors" : "answered no content";
         const text = row.full_content as string;
-        return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...pageText(text, part, text.length !== asked), ...linksWithin(linksOf(text), part) };
+        return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(text, text.length !== asked), ...linksWithin(linksOf(text)) };
       } catch (error) {
         const name = (error as Error)?.name;
         return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
@@ -119,29 +119,45 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
   return publicFetch(url, { ...options, signal, fetchImpl: async () => { throw checked; } }).then(() => false, (error: unknown) => error === checked);
 }
 
-/** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: through `parallel` when it is given and live and the
- *  guard passes the URL within `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through
- *  fetch_page's guarded fetch. A page fetched directly where `parallel` was given says why Parallel gave none
- *  (`parallel`): a picked provider that fails is never a silent fallback. */
-export async function webFetch(url: unknown, { parallel, checkMs = TIMEOUT_MS, offset, maxChars, ...options }: GuardOptions & Part & { parallel?: Extract | null; checkMs?: number } = {}): Promise<WebPage> {
-  const part = { offset, maxChars };
+/** The page at `url` read once: through `parallel` when it is given and live and the guard passes the URL within
+ *  `checkMs` (default fetch_page's 30 s), else (or when it answers no page) through fetch_page's guarded fetch. A page
+ *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
+ *  never a silent fallback. */
+async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | (Unread & Pick<WebPage, "via" | "parallel">)> {
   let why: string | undefined;
   if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
   else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
   else if (parallel) {
-    const read = await parallel.read(url as string, options.signal, part);
+    const read = await parallel.read(url as string, options.signal);
     if (typeof read !== "string") return { ...read, via: "parallel" };
     why = read;
   }
-  if (!parallel) return { ...(await fetchPage(url, { ...options, ...part })), via: "direct" };
-  // Parallel was picked and gave none: a later part starts the page again from its start, the earlier parts having been
-  // Parallel's text.
-  const restart = partOf(part).offset > 0;
-  const page = await fetchPage(url, { ...options, ...(restart ? { maxChars } : part) });
-  return { ...page, via: "direct", parallel: why!, ...(restart && page.ok ? { restarted: true as const } : {}) };
+  return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
+}
+
+/** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: from `pages`, the run's, where it holds the URL,
+ *  with no request; else read once (readOnce) and kept there. */
+export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOUT_MS, offset, maxChars, ...options }: GuardOptions & Part & { parallel?: Extract | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
+  const named = typeof url === "string" ? url : undefined;
+  let read = named === undefined ? undefined : pages?.get(named);
+  if (!read) {
+    const fresh = await readOnce(url, parallel, checkMs, options);
+    if (!fresh.ok) return fresh;
+    read = fresh;
+  }
+  if (pages && named !== undefined) {
+    // The last used last: the oldest goes past PAGES_HELD.
+    pages.delete(named);
+    pages.set(named, read);
+    if (pages.size > PAGES_HELD) pages.delete(pages.keys().next().value!);
+  }
+  const { via, parallel: why, ...page } = read;
+  return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
 }
 
 let parallel: Extract | null | undefined;
+/** The pages this run read (Pages): its process is the run's, so the agent's tool and a call node's web_fetch share them. */
+export const runPages: Pages = new Map();
 /** The run's Parallel extract, made once in its process so a refused key holds for the rest of the run: on the Parallel
  *  key the server handed it (handedKeys, the read the decision providers share), null without one. */
 export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
@@ -153,8 +169,8 @@ export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
 /** The part `options` names of the page at `url` by the provider the run's plane resolves web_fetch to: Parallel's
  *  extract (with the direct fetch behind it) where it resolves to parallel, the guarded direct fetch otherwise, and a
  *  failed Page saying why where it is unavailable or the part is one a call may not ask for (partProblem), before
- *  anything is fetched. */
-export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions & Part = {}): Promise<WebPage | Page> {
+ *  anything is fetched. From `pages` (the run's, runPages) where they hold the URL. */
+export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions & Part & { pages?: Pages } = {}): Promise<WebPage | Page> {
   const problem = partProblem(options);
   if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
   const resolved = planeOf(env).web_fetch;
@@ -182,7 +198,6 @@ function partLine(page: Page, name: string): string | undefined {
 export function webFetchText(page: WebPage | Page, name: string = WEB_FETCH_TOOL): string {
   const lines = [JSON.stringify(page)];
   if ("parallel" in page && page.parallel) lines.push(`Parallel was picked for web_fetch and gave no page (${page.parallel}); this one was fetched directly.`);
-  if ("restarted" in page && page.restarted) lines.push("Parallel's extract failed, so this is the page as fetched directly, from its start: the earlier parts came from Parallel's text.");
   const where = partLine(page, name);
   if (where) lines.push(where);
   return lines.join("\n");
@@ -195,12 +210,12 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). Through Parallel, every call is one billed extract, a later part as much as the first: read on only as far as you need. Where Parallel gives no page for a later part, the answer is the page fetched directly from its start (restarted true), since the earlier parts were Parallel's text. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {
       const { url, offset, max_chars } = args as { url?: unknown; offset?: number; max_chars?: number };
-      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
+      const page = await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, pages: runPages, ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
       return forModel(webFetchText(page, name), { details: page });
     },
   });

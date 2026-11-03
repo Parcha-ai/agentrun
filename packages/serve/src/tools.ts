@@ -18,7 +18,7 @@ import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { forModel } from "./result.js";
-import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, resolvesView, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
@@ -99,7 +99,7 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
 
 /** web_fetch, bound under `name`: its own, or a legacy name for it (LEGACY_NAMES, fetch_page). */
 const webFetchEntry = (name: string): ToolEntry => ({
-  summary: "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, links, links_omitted?, via, parallel?, restarted?, refused?, error? }; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.",
+  summary: "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, links, links_omitted?, via, parallel?, refused?, error? }; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.",
   needs: [],
   nodes: true,
   bind: async (host) => {
@@ -108,8 +108,9 @@ const webFetchEntry = (name: string): ToolEntry => ({
     host.install(extension);
     return { tools: [tool], extensions: [extension] };
   },
-  // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default.
-  effect: async (args, run) => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, signal: run.signal }),
+  // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default, from the page
+  // the run read (runPages) where it holds the URL.
+  effect: async (args, run) => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: runPages, signal: run.signal }),
 });
 
 /** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
