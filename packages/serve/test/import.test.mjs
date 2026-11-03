@@ -305,6 +305,22 @@ test("the CLI's --dry-run lists each project and writes nothing; the import itse
   assert.ok(!real.stdout.includes(CANARY));
 });
 
+test("the CLI's import cuts the server's own keys out of what it keeps: a key in its environment is nowhere in the store, the runs or their files", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const data = join(root, "agents");
+  // No launcher: the key is in the environment the server starts with, which its start moves out of process.env.
+  const env = { ...process.env, HOME: h.at, OPENAI_API_KEY: CANARY };
+  const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env, encoding: "utf8" });
+  assert.equal(ran.status, 0, ran.stderr);
+  // Every byte the import kept: the store (its write-ahead log too) and every file beside it.
+  const kept = [];
+  const walk = (at) => { for (const entry of readdirSync(at, { withFileTypes: true })) { const path = join(at, entry.name); if (entry.isDirectory()) walk(path); else kept.push([path, readFileSync(path)]); } };
+  walk(data);
+  assert.deepEqual(kept.filter(([, bytes]) => bytes.includes(CANARY)).map(([path]) => path.slice(data.length + 1)), [], "the key is nowhere in what the import kept");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
+});
+
 test("a skill folder this user cannot read, or a skills directory it cannot read, is named unreadable, never dropped silently; the rest still imports", { skip: process.getuid?.() === 0 ? "root reads a mode 000 folder" : false }, async (t) => {
   const root = await scratch(t);
   const h = home(root);

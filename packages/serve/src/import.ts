@@ -21,6 +21,7 @@ import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js"
 import { catalogPrices, type Listed } from "./model.js";
 import { DEFAULT_PORT } from "./server.js";
 import { secretCut } from "./secret-cut.js";
+import { withSecrets } from "./secrets.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
 /** A session file written to this recently may still be running: it is left for a later import. */
@@ -836,7 +837,9 @@ export async function importCommand(
   usage: string,
   {
     home = homedir(),
-    env = process.env,
+    // The server's own keys, which its start moved out of process.env (secrets.ts), read back in: the import cuts them
+    // out of what it keeps, as it cuts every other key in the environment.
+    env = withSecrets(process.env),
     out = console.log,
   }: {
     home?: string;
