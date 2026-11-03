@@ -170,7 +170,9 @@ export type Run = {
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
-  /** A stop in flight: from its mark to its abort's answer. A message meanwhile waits for it (stopAnswered). */
+  /** A stop on its way: from its mark to its abort's answer, or a server's abort of a saved stop's turn that outlived the
+   *  server before it (finishStop). The abort withdraws every input queued behind that turn, so a message meanwhile waits
+   *  for it (stopAnswered). */
   stopping?: true;
   endedAt?: string;
   outcome?: Status;
@@ -848,7 +850,12 @@ export class Runs {
         this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
         if (event === "snapshot" && run.finishStop) {
           run.finishStop = false;
-          if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
+          if (run.working && stopped(run) && run.submitted === 0) {
+            // The run reads stopped already, so a message sent now would go in behind the turn this abort ends, and be
+            // withdrawn with it: it waits for the abort, as for a stop in flight.
+            run.stopping = true;
+            void this.abortTurn(run).catch(() => undefined).finally(() => (run.stopping = undefined));
+          }
         }
       }
     }
