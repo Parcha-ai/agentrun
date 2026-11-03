@@ -31,6 +31,7 @@ agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentr
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
 Open http://127.0.0.1:7340/
+Boxes: none is ready, so sandbox agents do not run here. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
 
@@ -83,7 +84,8 @@ export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
-Its log says `event=boxes available=docker`. In a second shell, export the two `AGENTRUN_` lines it printed (a later
+Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
+their tools there.` In a second shell, export the two `AGENTRUN_` lines it printed (a later
 start prints where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a
 sandbox agent, run it, watch it, and read the file it wrote:
 
@@ -235,17 +237,20 @@ end to end. The [published image](#in-the-published-image) cannot host boxes yet
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
 the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
 `write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
-its harness. Any other shape is `422 input_invalid` on `definition.place`. A definition that names none runs in this
-host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one that names a place keeps
-it, `runner` included. An edit that names no place keeps the agent's.
+its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
+remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). A definition that
+names none runs in this host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one
+that names a place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
 A run may narrow a sandbox agent to `runner`, never widen a runner agent into a sandbox: `POST /agents/{id}/runs` takes
 `"place": "runner"`, and any other value is `422`. A narrowed run runs without `bash`, and is never refused for its box.
 The run keeps the place it resolved to, and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box,
 when they come, will be an option of `sandbox` (such as `native_tools: true`), never a third mode.
 
-`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default), and a
-workflow's place is `runner` or none (`422` on a sandbox).
+`bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default, with
+the sandbox place as its `fix`), and a workflow's place is `runner` or none (`422` on a sandbox, with the runner place as
+its `fix`). In `capabilities.tools`, `bash` is `available: false` with a `reason` (`no box is set up on this server: …`,
+each box's own reason) when no box this server has can run it.
 
 `GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
@@ -322,7 +327,11 @@ log line says what the server found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
 
-The line gives a reason for each listed box that is unavailable. A reason never holds a key, a command's output or a
+The line gives a reason for each listed box that is unavailable, and the banner says the same in words
+(`Boxes: docker is ready, so sandbox agents run their tools there.`). Each reason says what to do next: a box the list
+does not name says `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker` (keeping the boxes it already
+lists), and a `docker` whose daemon does not answer says to start Docker or add this server's user to the `docker`
+group, then restart the server, since the probe runs once. A reason never holds a key, a command's output or a
 provider's answer.
 
 - `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
@@ -722,9 +731,11 @@ as a run's are, a write goes at most 16 directories deep (as deep as the list go
 never followed: a read is `404`, a write or a delete
 `403 system_file_forbidden`. `learning/` is the server's alone: the list shows it as one entry,
 `{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it,
-however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`); its notes
-are read through `/v2/agents/{id}/learning`. A host-owned name is matched by its first segment folded (compatibility
-form, any case, no combining marks) and, where that segment and `learning/` are both on disk, by identity (the same
+however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`). A read's
+refusal names the learning API (`/v2/agents/{id}/learning`) on a server that has that route, and on one that does not
+says `the server keeps learning/ for itself; this server has no learning API yet`. A host-owned name is matched by its
+first segment folded (compatibility form, any case, no combining marks) and, where that segment and `learning/` are both
+on disk, by identity (the same
 device and inode), so a disk that takes another spelling for one name is refused the same way. A path takes only plain
 segments: each its own NFC form, with no default-ignorable code point, or it is `400 invalid_file_path`. An archived agent's home is read and written as
 its definition is. A write is held to its directory through `/proc/self/fd`; where there is none (macOS),

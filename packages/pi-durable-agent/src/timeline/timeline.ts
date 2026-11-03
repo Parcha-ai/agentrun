@@ -318,6 +318,19 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
 
+/** The message of a result that is only the harness's diagnostics block (`<harness>`, then `[error] …` lines), as a
+ *  call that threw or named a tool its run does not offer answers: its first error's, else its first line's, without
+ *  the severity. Undefined for any other text, whose own first line says what happened. */
+function diagnosticOf(text: string): string | undefined {
+  const lines = text.trim().split("\n").map((line) => line.trim());
+  if (lines[0] !== "<harness>") return undefined;
+  const end = lines.indexOf("</harness>");
+  const inner = lines.slice(1, end < 0 ? undefined : end).filter(Boolean);
+  const said = inner.map((line) => /^\[(\w+)\]\s*(.*)$/.exec(line)).filter((match): match is RegExpExecArray => match !== null);
+  const first = said.find((match) => match[1] === "error") ?? said[0];
+  return first ? (first[2] ?? "") : (inner[0] ?? "");
+}
+
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const caps = { ...CAPS, ...options.caps };
@@ -368,7 +381,7 @@ function createProjector(options: TimelineOptions) {
   }
 
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
-  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? text)) || "no detail";
+  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
