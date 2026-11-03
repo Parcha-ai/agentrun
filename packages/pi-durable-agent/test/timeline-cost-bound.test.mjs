@@ -3,7 +3,7 @@
 // plus those figures, read as the cap reads them. Anything else unknown, or a cut with no figure, leaves no bound.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_STARTED, timelineOf } from "../dist/timeline/index.js";
+import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, custom, user } from "./timeline-support.mjs";
 
 const usageOf = (entries, settled = true) => timelineOf(entries, { settled }).find((row) => row.kind === "usage")?.usage;
@@ -113,4 +113,16 @@ test("a request that ended on an error after its response began (its end mark sa
 
 test("a known cost has no bound", () => {
   assert.deepEqual(usageOf([user("go"), started(0.2), priced("one"), started(0.5), priced("two", 0.02)]), { usd: 0.03, requests: 2 });
+});
+
+test("a paid tool call is bounded by what its own call was held to: cut by a crash, or charged an amount no one knows", () => {
+  const marked = (heldUsd, call = "c1") => custom(TOOL_STARTED, heldUsd === undefined ? { tool: "monid.run", charged_by: "monid", call } : { tool: "monid.run", charged_by: "monid", call, heldUsd });
+  const charged = (usd, call = "c1") => custom(TOOL_COST, { tool: "monid.run", charged_by: "monid", call, usd });
+  assert.deepEqual(usageOf([user("go"), priced("one"), marked(0.3)]), { usd: null, requests: 1, at_most_usd: 0.31 }, "a call the crash cut, at its held figure");
+  assert.deepEqual(usageOf([user("go"), priced("one"), marked(0.3)], false), { usd: 0.01, requests: 1 }, "live, it is in flight: the sum so far");
+  assert.deepEqual(usageOf([user("go"), priced("one"), marked(0.2), charged(null)]), { usd: null, requests: 1, at_most_usd: 0.21 }, "a charge no one knows, at what its call was held to");
+  assert.deepEqual(usageOf([user("go"), priced("one"), marked(0.2), charged(0.004)]), { usd: 0.014, requests: 1 }, "a known charge settles it: no bound");
+  assert.deepEqual(usageOf([user("go"), priced("one"), charged(null)]), { usd: null, requests: 1 }, "a charge with no mark: unbounded");
+  assert.deepEqual(usageOf([user("go"), priced("one"), marked(undefined)]), { usd: null, requests: 1 }, "a cut call with no figure: unbounded");
+  assert.deepEqual(usageOf([user("go"), started(0.5), marked(0.2), charged(null)]), { usd: null, requests: 1, at_most_usd: 0.7 }, "beside a cut request: each at its own figure, never one for the other");
 });

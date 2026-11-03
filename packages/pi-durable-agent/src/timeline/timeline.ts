@@ -178,6 +178,8 @@ function createMeter() {
   let charges = 0;
   // Paid tool calls marked and not yet settled, by call.
   const held = new Map<string, unknown>();
+  // For the bound: what each paid tool charge no one knows was held to, as its call's mark says (undefined: none).
+  const toolFigures: unknown[] = [];
   const pending: { unmetered: boolean; figure: number | undefined; id: string | undefined }[] = [];
   /** The request a pending or late cost names, by its host's key and number; none for an older mark. */
   const idOf = (data: Obj | undefined) => (data?.request !== undefined && data?.request !== null ? JSON.stringify([data.key ?? null, data.request]) : undefined);
@@ -268,9 +270,13 @@ function createMeter() {
     } else if (entry.kind === TOOL_STARTED) {
       held.set(str(data?.call) ?? `#${held.size}`, data?.heldUsd);
     } else if (entry.kind === TOOL_COST) {
-      held.delete(str(data?.call) ?? "");
+      const call = str(data?.call) ?? "";
+      const figure = held.get(call);
+      held.delete(call);
       charges += 1;
-      addCost(data?.usd);
+      // A charge no one knows is no model request's: it is bounded by what its own call was held to, not by a request's.
+      if (typeof data?.usd === "number" && Number.isFinite(data.usd)) known += data.usd;
+      else (unknown += 1), toolFigures.push(figure);
       return "charge";
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come, bounded by what its host held
@@ -348,7 +354,7 @@ function createMeter() {
     if (!requests && !compactions && !cut && !charges && !cutCalls) return undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
-    const atMost = usd === null ? bound(open(inFlight), settled ? 0 : sidesOpen) : undefined;
+    const atMost = usd === null ? bound(open(inFlight), settled ? 0 : sidesOpen, cutCalls > 0) : undefined;
     return { usd, requests: count, charges: charges + cutCalls, ...(atMost === undefined ? {} : { at_most_usd: Math.round(atMost * 1e6) / 1e6 }), ...(usd === null && atMost === undefined && unpriced ? { unpriced } : {}) };
   }
 
@@ -359,18 +365,28 @@ function createMeter() {
    *  is a cap's own reading of the same marks. A cost still pending counts the same way, at what its host held for it (its
    *  pending mark's figure, else one of its kind's start figures), until it comes; one that ended on an error after its
    *  response began counts at its end mark's figure, its entry's partial cost aside. Undefined when one is unknown from before
-   *  the first mark, or a start of a kind with such a request holds no figure. `flying`, `summarizing`: in flight, not cut. */
-  function bound(flying: number, summarizing: number): number | undefined {
+   *  the first mark, or a start of a kind with such a request holds no figure. `flying`, `summarizing`: in flight, not cut.
+   *  Paid tool calls are a part of their own (toolPart); `cutCalls`: the run is settled with calls never settled. */
+  function bound(flying: number, summarizing: number, cutCalls: boolean): number | undefined {
     if (unknownUnmarked > 0) return undefined;
     let sum = known - erredPartial + erredHeld;
     for (const { figure } of pending) if (figure !== undefined) sum += figure;
     const unheld = pending.filter(({ figure }) => figure === undefined).length;
     // An erred request's end with no entry paired to it yet counts at its figure, as a stopped request's does.
-    for (const part of [requestPart("generation", flying, unheld, erredEnds), requestPart("compaction", summarizing)]) {
+    for (const part of [requestPart("generation", flying, unheld, erredEnds), requestPart("compaction", summarizing), toolPart(cutCalls)]) {
       if (part === undefined) return undefined;
       sum += part;
     }
     return sum;
+  }
+
+  /** The paid tools' part of the bound: each charge no one knows (TOOL_COST with a null `usd`), and each call a crash cut
+   *  (`cut`: marked, never settled, in a settled run), at what its call was held to (TOOL_STARTED's `heldUsd`, the most the
+   *  call can charge, as a host's cap holds it). Undefined when one of those has no such figure. */
+  function toolPart(cut: boolean): number | undefined {
+    const figures = [...toolFigures, ...(cut ? held.values() : [])];
+    if (figures.some((figure) => !(typeof figure === "number" && Number.isFinite(figure) && figure >= 0))) return undefined;
+    return (figures as number[]).reduce((x, y) => x + y, 0);
   }
 
   /** One kind of request's part of the bound (a cost-bearing kind's part: another, such as a paid tool's calls, adds its
