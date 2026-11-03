@@ -82,7 +82,8 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
 
 /** A run's box, as its tools' environment: found by its label or made on the first call, once; made again on the call
  *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. `mirror`, on a remote
- *  box: copies a file the run's host tools filed in work/ (at `path`, relative to it) into the box, once the box is open. */
+ *  box: copies a file the run's host tools filed in work/ (at `path`, relative to it) into the box, now when the box is open,
+ *  else at its open. */
 export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
 
 /** Where a run's box comes from: a provider of this process's own (Docker, or the tests' faux box), or, for a remote box,
@@ -91,6 +92,9 @@ export type BoxSource = { provider: () => Promise<BoxProvider> } | { relay: stri
 
 export function runBox(source: BoxSource, run: { id: string; root: string; dir: string; place: Place }): RunBox {
   let held: Promise<{ env: ExecutionEnv; box: Box }> | undefined;
+  // What the host tools filed while no box was open in this process: a box a process before it made has no seed now, so
+  // these go in when it opens (and to a new box, whose seed carries them anyway, again: the same bytes).
+  const filed = new Map<string, Uint8Array>();
   const open = async (context: Context): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
     const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run.id, context) : await localRunBox(await source.provider(), run, context);
@@ -98,6 +102,12 @@ export function runBox(source: BoxSource, run: { id: string; root: string; dir: 
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
       if (!ended.ok) throw new Error(`the run's box could not be taken over: ${ended.error.message}`);
+    }
+    if (filed.size) {
+      const files = [...filed].map(([path, bytes]) => ({ path: posix.join(BOX_WORK, path), bytes }));
+      filed.clear();
+      const sent = await box.upload(files, context);
+      if (!sent.ok) mirrorFailed(files.map((file) => file.path).join(", "), sent.error);
     }
     return { box, env: boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv };
   };
@@ -115,16 +125,22 @@ export function runBox(source: BoxSource, run: { id: string; root: string; dir: 
     env: async (context) => (await opened(context)).env,
     ...("relay" in source
       ? {
-          // A box not opened yet gets the file with its seed: only an open (or opening) box is written.
+          // An open (or opening) box is written now; with none, the file waits for the box's open.
           mirror: async (path: string, data: string | Uint8Array) => {
+            const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
             const box = held && (await held.catch(() => undefined))?.box;
-            if (!box) return;
-            const sent = await box.upload([{ path: posix.join(BOX_WORK, path), bytes: typeof data === "string" ? new TextEncoder().encode(data) : data }], BACKGROUND);
+            if (!box) return void filed.set(path, bytes);
+            const sent = await box.upload([{ path: posix.join(BOX_WORK, path), bytes }], BACKGROUND);
             if (!sent.ok) throw sent.error;
           },
         }
       : {}),
   };
+}
+
+/** Said in the run's process log: a file the host tools filed in work/ that its remote box did not get. */
+function mirrorFailed(paths: string, error: Error): void {
+  process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${paths} filed in work/ but not copied into the run's box: ${error.message}` })}\n`);
 }
 
 /** A box of this process's provider: the run's, by its label, or one made now with work/ bound. */
