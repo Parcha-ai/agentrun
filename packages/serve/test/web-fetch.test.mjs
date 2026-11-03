@@ -186,6 +186,47 @@ test("max_chars counts the text as the answer holds it: a quote or a line break 
   assert.deepEqual([smiles.chars, smiles.text, smiles.next_offset], [1_000, "😀".repeat(500), 1_000], "500 whole pairs, not 500 and a half");
 });
 
+test("max_chars below its minimum (200) is refused before anything is fetched, saying the minimum, and so is an offset below 0; a smaller part read directly still advances by a whole character, never stuck at its offset", async () => {
+  assert.equal(pages.MAX_CHARS_MIN, 200);
+  assert.equal(pages.URL_PARAMETERS.properties.max_chars.minimum, 200, "the tool's schema says it");
+  for (const [part, said] of [[{ maxChars: 1 }, "max_chars must be at least 200 (it was 1)"], [{ maxChars: 199.5 }, "max_chars must be at least 200 (it was 199.5)"], [{ offset: -1 }, "offset must be a whole number, 0 or more (it was -1)"]]) {
+    const net = network();
+    const page = await fetchFor({}, PUBLIC, { ...net, ...part });
+    assert.deepEqual([page.ok, page.error, net.dialled], [false, said, []], JSON.stringify(part));
+  }
+  assert.equal((await fetchFor({}, PUBLIC, { ...network(), maxChars: 200 })).ok, true, "200 reads");
+  // The finding: a part of one character whose next is a quote, a line break, a backslash or a pair came back empty, its
+  // next_offset where it started, and a caller following it never moved on.
+  for (const body of ['"rest', "\nrest", "\\rest", "😀rest"]) {
+    const page = await webFetch(PUBLIC, { ...network(), fetchImpl: async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } }), maxChars: 1 });
+    const first = body.codePointAt(0) > 0xffff ? 2 : 1;
+    assert.deepEqual([page.text, page.chars, page.next_offset], [body.slice(0, first), first, first], JSON.stringify(body));
+  }
+  assert.deepEqual([pages.partEnd('"x', 0, 1), pages.partEnd("😀x", 0, 1), pages.partEnd("\u0001x", 0, 3), pages.partEnd("x", 1, 1)], [1, 2, 1, 1], "one whole character at least, while one is left");
+});
+
+test("at the minimum, a page whose parts end before a quote, a line break, a backslash and a pair is read whole by following next_offset: every part advances, none repeats, none skips", async () => {
+  const min = pages.MAX_CHARS_MIN;
+  assert.equal(min, 200);
+  const fill = (n) => "a".repeat(n);
+  // Each part takes 199 characters of 'a's (or a special and 197), and the next special (taking two) does not fit.
+  const body = `${fill(199)}"${fill(197)}\n${fill(197)}\\${fill(197)}😀${fill(197)}${'"\n\\😀b'.repeat(300)}end`;
+  const fetchImpl = async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } });
+  const parts = [];
+  for (let offset = 0, guard = 0; ; guard++) {
+    assert.ok(guard < 1_000, "the parts end");
+    const page = await webFetch(PUBLIC, { ...network(), fetchImpl, offset, maxChars: min });
+    assert.ok(JSON.stringify(page.text).length - 2 <= min, `part ${parts.length} takes ${JSON.stringify(page.text).length - 2}`);
+    parts.push(page.text);
+    if (!page.truncated) break;
+    assert.ok(page.next_offset > offset, `part ${parts.length} advances from ${offset} (next_offset ${page.next_offset})`);
+    assert.equal(page.next_offset, offset + page.chars, "next_offset is where this part ends");
+    offset = page.next_offset;
+  }
+  assert.deepEqual(parts.slice(1, 5).map((part) => [...part][0]), ['"', "\n", "\\", "😀"], "parts begin at each special");
+  assert.equal(parts.join(""), body, "the whole page, no repeats, no gaps");
+});
+
 test("through Parallel a page is read in parts too: Parallel is asked for one character past the part, and the page's whole length is known only when it gave less", async () => {
   const long = `${"forty-two ".repeat(7_000)}end`;
   const asked = [];
