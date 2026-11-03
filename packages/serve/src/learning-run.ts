@@ -14,15 +14,16 @@
 // It holds the runs' learning in flight; a run's learning itself is in its serve.json (`learning`, `reflect`), which
 // the kernel writes.
 import { lstat, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, posix } from "node:path";
+import { INDEX_FILE, parseNoteFile } from "@parcha/agentrun-learn";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { dropSeed, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, shortLearning, snapshotLearned, withAgentGrade } from "./learning.js";
+import { activeOf, dropSeed, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, snapshotLearned, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
-import { hostSecrets, secret, withSecrets } from "./secrets.js";
+import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { ended, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -64,6 +65,33 @@ export function labelled(reflect: Reflect | undefined, rows: TimelineEvent[]): T
     ...(row.kind === "user_message" ? { summary: `Learning: ${(row.summary ?? "").replace(/^You: /, "")}` } : {}),
   }));
 }
+/** A path that names a file at the top of a run's copy of the folder: `.learning/<file>` relative to its work, as a
+ *  harness's file tools take it, or the same at the end of an absolute path (claude-agent's CLI joins its working
+ *  directory; a box names its own). */
+const IN_COPY = new RegExp(`(?:^|/)${LEARNED_DIR.replace(".", "\\.")}/([^/]+)$`);
+/** The files of the run's copy of the folder its job read, in the order it first read them, each once: every `read`
+ *  call whose result came back a success, matched to its call by id (claude-agent's rows can hold the result above the
+ *  call), on any harness: pi's, claude-agent's (the host's `read`, served to its CLI as `mcp__hands__read`) and codex's
+ *  (the same tool, as an app-server dynamic tool) rows all name it `read`, with the path as the model gave it. The
+ *  end-of-run turn's reads are its own, not the job's, and are left out; so is a read that failed or never ended, and
+ *  MEMORY.md, which is no note. Which of these files are notes the run started from is for its seed to say (noteUsed). */
+export function notesRead(reflect: Reflect | undefined, rows: readonly TimelineEvent[]): string[] {
+  const done = new Set(rows.flatMap((row) => (row.kind === "tool_result" && row.tool_status === "success" && row.tool_use_id ? [row.tool_use_id] : [])));
+  const read = new Set<string>();
+  for (const row of rows) {
+    if (row.kind !== "tool_use" || row.tool_name !== "read" || !row.tool_use_id || !done.has(row.tool_use_id) || reflects(reflect, row.id)) continue;
+    const file = IN_COPY.exec(posix.normalize(row.tool_input_preview ?? ""))?.[1];
+    if (file && file !== INDEX_FILE) read.add(file);
+  }
+  return [...read];
+}
+
+/** The notes a run's learning added, from its proposal: each note's file, name and the notes it supersedes. */
+const learnedOf = (proposal: Proposal): NoteLearned[] => proposal.notes.flatMap(({ file, text }) => {
+  const note = parseNoteFile(file, text);
+  return Array.isArray(note) ? [] : [{ file, name: note.name, supersedes: note.supersedes }];
+});
+
 /** The run's learning row, once its learning was proposed, merged or dropped (`seed_failed` included): its state, reason
  *  and detail. One row, which says where the learning ended. */
 export function withLearning(rows: readonly TimelineEvent[], learning: Learning | undefined): TimelineEvent[] {
@@ -150,6 +178,9 @@ export class LearningRuns {
   /** By run: what its end-of-run turn wrote, being checked (proposeOnce), and its proposal, being graded (gradeOnce). */
   private readonly proposing = new Map<string, Promise<void>>();
   private readonly grading = new Map<string, Promise<void>>();
+  /** The host's secrets as shown() last cut them, by their values, and the saved keys it read. */
+  private cut?: { key: string; shown: Shown };
+  private saved?: Map<string, string | undefined>;
   constructor(private readonly options: LearningOptions, private readonly kernel: LearningKernel) {}
 
   private get closing(): boolean {
@@ -252,6 +283,7 @@ export class LearningRuns {
         this.setLearning(run, "dropped", "propose_failed", "What the end-of-run turn wrote could not be set aside to be checked.");
       });
     }
+    await this.noteUsed(run);
   }
 
   /** The run's end written, as it would be without learning: what its end-of-run turn wrote checked, then graded and
@@ -324,7 +356,37 @@ export class LearningRuns {
    *  hold. For a count, which reads the rest from the learning ledger and never a run's files. */
   heldLearning(runId: string): { state: LearningState; reason: LearningReason | null } | null | undefined {
     const held = this.kernel.held(runId);
-    return held ? shortLearning(held.meta.learning ?? null) : undefined;
+    if (!held) return undefined;
+    const learning = held.meta.learning;
+    return learning ? { state: learning.state, reason: learning.reason } : null;
+  }
+
+  /** The host's secrets as they are now, as a reader cuts them (secretsShown): the ones this server holds, the keys
+   *  saved on it, and its tokens, as the learning routes cut them. Built again only once they change. Every run's view
+   *  and every row of a list asks it, so the saved keys, which are read from their file and opened one by one, are read
+   *  once and kept until a person saves or deletes one (keysChanged). */
+  shown(): Shown {
+    const saved = (this.saved ??= new Map(SECRET_NAMES.map((name) => [name, this.options.storedKeys?.(name)])));
+    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken];
+    const key = values.join("\0");
+    if (this.cut?.key !== key) this.cut = { key, shown: secretsShown(values) };
+    return this.cut.shown;
+  }
+
+  /** A key was saved on this server or deleted from it: the next view reads them again. */
+  keysChanged(): void {
+    this.saved = undefined;
+  }
+
+  /** A run's learning as its view shows it (learning.ts learningView), cut of the host's secrets now; `settled`, once
+   *  the run has ended and settled, shows the notes it read. */
+  view(learning: Learning | undefined, settled: boolean) {
+    return learning ? learningView(learning, this.shown(), settled) : null;
+  }
+
+  /** A run's learning as a list shows it (learning.ts shortLearning): from serve.json for a run the kernel does not hold. */
+  short(learning: Learning | null, settled: boolean) {
+    return shortLearning(learning, this.shown(), settled);
   }
 
   /** How the runs `rows` holds that tried to learn fared, over `filter` (learningStats): a held run's learning from
@@ -352,11 +414,38 @@ export class LearningRuns {
     });
   }
 
-  /** Moves the run's learning on, and shows its row. Saved by the caller, or with the run's end. */
+  /** Moves the run's learning on, and shows its row. The notes the run read (`used`) stay with it, whatever its
+   *  learning does after. Saved by the caller, or with the run's end. */
   private setLearning(run: Run, state: LearningState, reason: LearningReason | null = null, detail: string | null = null, more: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = {}): void {
-    run.meta.learning = { state, reason, detail, at: new Date().toISOString(), ...more };
+    const used = run.meta.learning?.used;
+    run.meta.learning = { state, reason, detail, at: new Date().toISOString(), ...(used ? { used } : {}), ...more };
     run.updatedAt = run.meta.learning.at;
     this.kernel.show(run);
+  }
+
+  /** As the run settles, before its end is written: the notes its job read from its copy of the folder (notesRead), by
+   *  their names in its seed, kept with its learning (`used`), so a view or a list reads them from serve.json and never
+   *  from its rows again. Only a note the run started from counts: MEMORY.md, a file the run wrote there, and a note
+   *  not in its seed are not notes it used. Read again at each settle, a follow-up's reads with the rest. A seed that
+   *  cannot be read leaves what was there, and says why. */
+  private async noteUsed(run: Run): Promise<void> {
+    if (!run.meta.learning) return;
+    const files = notesRead(run.meta.reflect, run.rows);
+    let used: NonNullable<Learning["used"]> = [];
+    if (files.length) {
+      try {
+        const pin = await readPin(run.dir);
+        const names = new Map(pin ? activeOf(await seedAt(this.options.agents.dir, run.agentId, pin.seed)).map((note) => [note.file, note.name]) : []);
+        used = files.flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
+      } catch (error) {
+        return warn(run.id, `which notes it read is not known: ${(error as Error).message}`);
+      }
+    }
+    // As the learning is now: nothing else changed it meanwhile, but its object may be a new one.
+    const learning = run.meta.learning;
+    if (!learning) return;
+    const { used: _, ...rest } = learning;
+    run.meta.learning = used.length ? { ...rest, used } : rest;
   }
 
   private dropLearning(run: Run, reason: LearningReason, detail: string): void {
@@ -530,7 +619,7 @@ export class LearningRuns {
       const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.");
       if ("problems" in merge) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(merge.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: merge.problems });
       if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
-      await end("merged", null, "What the run learned is merged into main.", { merged: merge.merged });
+      await end("merged", null, "What the run learned is merged into main.", { merged: merge.merged, learned: learnedOf(proposal) });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;

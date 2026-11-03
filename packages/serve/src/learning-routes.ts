@@ -18,10 +18,10 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "@parcha/agentrun-learn";
+import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "@parcha/agentrun-learn";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 
@@ -44,19 +44,7 @@ type NoteView = { file: string; name: string; description: string; type: string;
 type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 type Note = LearnedNote & { text: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
-/** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
-export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
-/** What a name holding a secret reads: packages/learn redactSecrets' mark, the name's whole, never a part of it. */
-const REDACTED = "[redacted]";
-
-/** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
- *  packages/learn redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
- *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. */
-export function secretsShown(values: readonly string[]): Shown {
-  const matches = valueMatcher(values);
-  const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
-  return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text), name: (name) => (holds(name) ? REDACTED : name) };
-}
+export { secretsShown, type Shown } from "./learning.js";
 
 /** The few values last kept, by key, oldest dropped first: at most `entries` of them, `bytes` in all by their sizes. */
 class Recent<T> {

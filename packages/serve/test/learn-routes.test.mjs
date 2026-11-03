@@ -361,7 +361,7 @@ test("a commit's notes are read once: a later page and the view at the same main
   assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
 });
 
-test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log and the run's diff read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
+test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log, the run's diff and the notes a run learned and used read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
   // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
   const value = ["s3cret", "store", "pass", process.pid, Date.now().toString(36)].join("-");
   const named = `${value}.md`;
@@ -378,6 +378,11 @@ test("a note's name that holds a value made secret after it was written is never
   settled(two.view, two.rows, "merged");
   const before = (await first.api("GET", "/agents/namer/learning")).body;
   assert.deepEqual(before.notes.items.map((n) => [n.file, n.status, n.superseded_by]), [[named, "active", null], ["old-plan.md", "superseded", named]], "shown as it is while no secret");
+  assert.deepEqual(two.view.learning.learned, [{ file: named, name: "Plan", supersedes: ["old-plan.md"] }], "shown as it is while no secret");
+  // A third run reads the note by that name.
+  assert.equal((await first.api("PUT", "/agents/namer/definition", learner("namer", { tools: ["write", "read"], instructions: `Answer the question.\nRead: ${JSON.stringify([`.learning/${named}`])}`, version: 3 }))).status, 200);
+  const three = await ended(first.api, await started(first.api, "namer"));
+  assert.deepEqual(three.view.learning.used, [{ file: named, name: "Plan" }], "shown as it is while no secret");
   await first.close();
 
   // The server again, with the name's value as a launcher's secret (the model key).
@@ -407,7 +412,14 @@ test("a note's name that holds a value made secret after it was written is never
   assert.deepEqual(after.notes.items.map((n) => [n.file, n.status]), [["[redacted]", "retired"], ["old-plan.md", "superseded"]]);
   const learned = (await api("GET", `/runs/${two.view.run_id}/learning`)).body;
   assert.deepEqual(learned.verdict.items, [{ file: "[redacted]", keep: true, why: "It holds as a general rule." }], "the grader's item names the note [redacted]");
-  const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after]);
+  // What run two learned and run three used, on each run's view and in the list, name the note [redacted].
+  const runTwo = (await api("GET", `/runs/${two.view.run_id}`)).body.learning;
+  const runThree = (await api("GET", `/runs/${three.view.run_id}`)).body.learning;
+  const listed = (await api("GET", "/agents/namer/runs")).body.runs;
+  assert.deepEqual([runTwo.learned, runThree.used], [[{ file: "[redacted]", name: "Plan", supersedes: ["old-plan.md"] }], [{ file: "[redacted]", name: "Plan" }]]);
+  const inList = (runId) => listed.find((run) => run.run_id === runId).learning;
+  assert.deepEqual([inList(two.view.run_id).learned, inList(three.view.run_id).used], [runTwo.learned, runThree.used], "and in the list");
+  const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after, runTwo, runThree, listed]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });
 

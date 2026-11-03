@@ -3,6 +3,8 @@
 // instructions plan, one write a request, then says "Reflected.". The instructions plan with one line:
 // - `Learn: <JSON>`: an array of [file, text] pairs, each written into the run's copy of the folder;
 // - `Learn once: <JSON>`: the same, less the files the run's index names already (a later run of the agent adds none).
+// A line `Read: <JSON>` (an array of paths) has the job read each path first, one read a request, then answer: on pi with
+// pi's own read tool, on the faux harness with the host's.
 // On pi the instructions can also say "Answer once <file> exists." (the job's answer holds until the test makes that
 // file), "Reflect once <file> exists." (the turn holds until the test makes that file) or "Reflect slowly." (the turn
 // answers after a minute, or when it is aborted). A later message `Write: <JSON>` ([file, text] pairs) writes each file
@@ -35,6 +37,8 @@ export function planned(system) {
 export const note = (name, description, body = `${description}.\n`, extra = "") => `---\nname: ${name}\ndescription: ${description}\ntype: reference\n${extra}---\n${body}`;
 
 const answerOf = (system) => (/Say your prompt\./.test(system) ? system : "Job answer.");
+/** The paths the instructions in `system` have the job read before it answers. */
+const readsOf = (system) => JSON.parse(/^Read: (\[.*\])$/m.exec(system)?.[1] ?? "[]");
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
 const slow = (faux, ms, text) =>
@@ -85,6 +89,8 @@ export default function reply(context, faux) {
       return faux.message(answerOf(system));
     })();
   }
+  const reads = readsOf(system);
+  if (!asked && done < reads.length) return faux.message(faux.toolCall("read", { path: reads[done] }), { stopReason: "toolUse" });
   if (!asked) return faux.message(answerOf(system));
   const plan = planned(system);
   return (async () => {
@@ -101,5 +107,6 @@ export default function reply(context, faux) {
 export function script(spec) {
   const system = spec.system.join("\n");
   const writes = planned(system).map(([file, content]) => ({ call: "write", args: { path: `.learning/${file}`, content }, usd: 0.001 }));
-  return [{ say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, ...writes, { say: "Reflected.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  const reads = readsOf(system).map((path) => ({ call: "read", args: { path }, usd: 0.001 }));
+  return [...reads, { say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, ...writes, { say: "Reflected.", usd: 0.001 }, { end: true, usd: 0.001 }];
 }

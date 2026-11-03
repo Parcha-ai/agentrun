@@ -80,3 +80,38 @@ test("on claude-agent's real adapter, the end-of-run turn's notes land in the ru
   ]);
   assert.ok(!existsSync(join(data, "runs", runId, ".learning")) && !existsSync(join(data, "runs", runId, "harness", "work", ".learning")), "nothing was written beside the workspace");
 });
+
+test("on claude-agent's real adapter, a run that reads a note its CLI names by the working directory's full path used it: its learning block names the note by its name, and a note its end-of-run turn reads is not one it used", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  let cwd;
+  const text = (content) => (typeof content === "string" ? content : content.filter((b) => b.type === "text").map((b) => b.text).join("\n"));
+  const results = (messages) => messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.type === "tool_result").length;
+  const fake = await fakeAnthropic({
+    reply: (r) => {
+      if (!r.tools.includes("mcp__hands__read")) return { text: "ok" };
+      cwd ??= CWD.exec(JSON.stringify(r.body))?.[1];
+      const turn = r.messages.findLastIndex((m) => m.role === "user" && FOLDER.test(text(m.content)));
+      // The job: the note read at the CLI's working directory joined with .learning/, as Claude names a file, then the answer.
+      if (turn < 0) return results(r.messages) === 0 ? { tool: { name: "mcp__hands__read", input: { path: `${cwd}/.learning/check-units.md` } } } : { text: "Claude answered." };
+      // The end-of-run turn reads the other note, and keeps nothing.
+      return results(r.messages.slice(turn + 1)) === 0 ? { tool: { name: "mcp__hands__read", input: { path: ".learning/cite-sources.md" } } } : { text: "Nothing new." };
+    },
+  });
+  t.after(() => fake.close());
+  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` }, ["AGENT_MODEL_BASE_URL"]);
+  const { api } = await serve(t, { learning: "on", faux: undefined });
+  const id = "claude-reader";
+  await made(api, learner(id, { harness: "claude-agent", model: `anthropic/${MODEL}`, tools: ["write", "read"], instructions: "Answer the question." }));
+  // Two notes, as a person writes them.
+  for (const [file, body] of [["check-units.md", UNITS], ["cite-sources.md", SOURCES]]) assert.equal((await api("PUT", `/agents/${id}/learning/files/${file}`, { text: body }, { "if-none-match": "*" })).status, 201);
+
+  const runId = await started(api, id, "Answer.");
+  const { view, rows } = await ended(api, runId, ["completed"]);
+  assert.equal(view.result.final_answer, "Claude answered.");
+  // Each read as claude-agent's rows hold it: the host's read, its path as the model gave it, and its result a success.
+  const calls = rows.filter((row) => row.kind === "tool_use" && row.tool_name === "read").map((row) => [row.agent_label, row.tool_input_preview]);
+  assert.deepEqual(calls, [[null, `${cwd}/.learning/check-units.md`], ["learning", ".learning/cite-sources.md"]], JSON.stringify(calls));
+  assert.ok(rows.filter((row) => row.kind === "tool_result" && row.tool_name === "read").every((row) => row.tool_status === "success"));
+  settled(view, rows, "dropped", "empty");
+  assert.deepEqual(view.learning.used, [{ file: "check-units.md", name: "Check units" }]);
+  assert.deepEqual((await api("GET", `/agents/${id}/runs`)).body.runs[0].learning.used, view.learning.used);
+});

@@ -45,6 +45,10 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   const runId = await started(api, "replacer");
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
+  // What it learned, and what that replaced, on its learning block and in the agent's list.
+  const learned = [{ file: "refunds-v2.md", name: "Refunds path", supersedes: ["refunds.md"] }];
+  assert.deepEqual(view.learning.learned, learned);
+  assert.deepEqual((await api("GET", "/agents/replacer/runs")).body.runs.find((run) => run.run_id === runId).learning.learned, learned);
   assert.equal(git(repo, ["show", "main:refunds-v2.md"]), NEW.trimEnd());
   assert.equal(git(repo, ["show", "main:refunds.md"]), note("Refunds path", "Refunds live under /help/", "Refunds live under /help/.\n", "status: superseded\nsuperseded_by: refunds-v2.md\n").trimEnd());
   assert.equal(`${git(repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds-v2.md) — Refunds live under /policies/refunds\n");

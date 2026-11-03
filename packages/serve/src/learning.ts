@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
-import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, type Verdict } from "@parcha/agentrun-learn";
+import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, valueMatcher, type Verdict } from "@parcha/agentrun-learn";
 import { homeOf, writeDurable } from "./files.js";
 import { isObject } from "./validate.js";
 
@@ -51,17 +51,49 @@ export type LearningReason = (typeof LEARNING_REASONS)[number];
  *  nor written to the cache. */
 export type Tokens = { input: number; cache_read: number; cache_write: number; output: number };
 export const NO_TOKENS: Tokens = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+/** A note a run read from its copy of the folder (`used`), by its file and its front matter's name. */
+export type NoteUsed = { file: string; name: string };
+/** A note a run's learning added to the folder (`learned`): its file, its name, and the notes it superseded. */
+export type NoteLearned = NoteUsed & { supersedes: string[] };
 /** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
  *  grader's `verdict`, kept before the merge, the merge commit, and what the grade cost (null when unknown, never 0),
- *  which is in no run's totals. */
+ *  which is in no run's totals; the notes the run read from `.learning/` (`used`, found in its rows as it settles), and
+ *  once merged the notes it added (`learned`). Names are kept as written, and cut of the host's secrets as they leave. */
 export type Learning = {
   state: LearningState; reason: LearningReason | null; detail: string | null; at: string;
   problems?: Problem[]; verdict?: Verdict; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
+  used?: NoteUsed[]; learned?: NoteLearned[];
 };
-/** A run's learning as its view shows it: the state, why and when. */
-export const learningView = ({ state, reason, detail, at }: Learning) => ({ state, reason, detail, at });
-/** A run's learning as a list shows it: its state and reason. */
-export const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
+
+/** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
+export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
+/** What a name holding a secret reads: packages/learn redactSecrets' mark, the name's whole, never a part of it. */
+const REDACTED = "[redacted]";
+/** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
+ *  packages/learn redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
+ *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. */
+export function secretsShown(values: readonly string[]): Shown {
+  const matches = valueMatcher(values);
+  const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
+  return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text), name: (name) => (holds(name) ? REDACTED : name) };
+}
+
+const isText = (value: unknown): value is string => typeof value === "string";
+/** The notes a run read and learned, as a view or a list shows them, each name cut of the host's secrets (`shown`):
+ *  `used` once the run settled, `learned` once it merged, each only when it holds a note. serve.json's are read as
+ *  untrusted: an entry out of shape is left out. */
+function notesView({ state, used, learned }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[] } {
+  const read = settled && Array.isArray(used) ? used.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
+  const added = state === "merged" && Array.isArray(learned) ? learned.filter((note) => isText(note?.file) && isText(note.name) && Array.isArray(note.supersedes) && note.supersedes.every(isText)).map(({ file, name, supersedes }) => ({ file: shown.name(file), name: shown.text(name), supersedes: supersedes.map(shown.name) })) : [];
+  return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}) };
+}
+/** A run's learning as its view shows it: the state, why and when, and the notes it read and learned (notesView). */
+export const learningView = (learning: Learning, shown: Shown, settled: boolean) => {
+  const { state, reason, detail, at } = learning;
+  return { state, reason, detail, at, ...notesView(learning, shown, settled) };
+};
+/** A run's learning as a list shows it: its state and reason, and the notes it read and learned (notesView). */
+export const shortLearning = (learning: Learning | null, shown: Shown, settled: boolean) => (learning ? { state: learning.state, reason: learning.reason, ...notesView(learning, shown, settled) } : null);
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
 
