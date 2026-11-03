@@ -70,7 +70,8 @@ function tokensOf(usage: unknown): { input: number; output: number; cacheRead: n
 /** One request as pi's own assistant message: its content, the model it asked for (the harness's id when that is not
  *  known), and its usage with the cost when it is known. Tokens not known are 0, which pi's timeline reads as unknown.
  *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
-function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
+/** `at`: when the answer began (its first text or call), which its entry's time says; now when not given. */
+function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string, at = now()) {
   if (error !== undefined) {
     return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
@@ -90,7 +91,7 @@ function assistantMessage(harness: string, model: string | undefined, request: P
       cost: known ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usage!.usd as number } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     },
     stopReason: calls.length ? "toolUse" : "stop",
-    timestamp: now(),
+    timestamp: at,
   };
 }
 
@@ -169,6 +170,9 @@ export function adapterRun(
   // The current request's content, and the requests whose cost is in but whose entry is not written yet.
   let text = "";
   let calls: ToolCall[] = [];
+  // When the current request's content began: its entry, written once its cost is in (often after its calls ended),
+  // says this time, so a call's row starts when the call did.
+  let began: number | undefined;
   const costed: Pending[] = [];
   const written = new Set<number>();
   // The request the harness asked last, and the requests whose answer has an entry (taken as its write begins).
@@ -216,9 +220,10 @@ export function adapterRun(
       if (!text && !calls.length && !costed.length) return;
       if (!costed.length && !final) return;
       const request = costed.shift();
-      const content = { text, calls };
+      const content = { text, calls, at: began };
       text = "";
       calls = [];
+      began = undefined;
       // At a turn's end with no cost in: the request still unbooked is the one this content answers. It is written at
       // unknown cost and marked booked, so a later open never writes it again.
       const unbooked = !request && final && open.size ? Math.min(...open) : undefined;
@@ -226,7 +231,7 @@ export function adapterRun(
       const marked = request?.request ?? unbooked;
       if (marked !== undefined) answered.add(marked);
       await commit(async (tx) => {
-        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
+        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls, undefined, content.at) as never] });
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
         if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
@@ -271,14 +276,18 @@ export function adapterRun(
   };
 
   const onEvent = (event: AdapterEvent) => {
-    if (event.type === "text") text += event.delta;
-    else if (event.type === "tool_start") {
+    if (event.type === "text") {
+      began ??= now();
+      text += event.delta;
+    } else if (event.type === "tool_start") {
       const call: ToolCall = { type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> };
       // A call of the current request's answer after that answer's entry was written (at its first call's end): written
       // now as the answer's continuation, so its result never comes before it and the next answer never holds it.
       const request = current;
-      if (text || calls.length || request === undefined || !answered.has(request)) calls.push(call);
-      else {
+      if (text || calls.length || request === undefined || !answered.has(request)) {
+        began ??= now();
+        calls.push(call);
+      } else {
         later(() =>
           commit(async (tx) => {
             await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_CONTINUED, data: { key: spec.key, request } });
@@ -288,11 +297,13 @@ export function adapterRun(
       }
     }
     else if (event.type === "tool_end") {
+      // The result's time is when the call ended, whenever its entry is written.
+      const ended = now();
       void flush();
       later(() =>
         commit(async (tx) => {
           await tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
-            model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.") }], isError: event.isError, timestamp: now() } as never],
+            model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.") }], isError: event.isError, timestamp: ended } as never],
             data: { diagnostics: [] },
           });
         }).then(() => undefined),

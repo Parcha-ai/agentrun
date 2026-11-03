@@ -393,7 +393,7 @@ function createProjector(options: TimelineOptions) {
     make("phase", held.conv, held.base, { summary: `Tool cost: ${held.by} charged ${held.charge.text} for ${held.tool}`, tool_name: held.tool, tool_use_id: held.id || null, usage: { usd: held.charge.usd, requests: 0 } });
   // Results stored before their call (a harness bridge once wrote one before the answer that held its call), by
   // `conversation:id`: the call takes it when it comes; one whose call never comes is an action of its own.
-  const early = new Map<string, { conv: number; id: string; name: string; view: ToolResultView; base: string }>();
+  const early = new Map<string, { conv: number; id: string; name: string; view: ToolResultView; base: string; at: number }>();
   // Paths this run wrote: a later read that finds nothing there failed; one of any other path only probed.
   const written = new Set<string>();
   const previous = new Map<number, string>();
@@ -443,7 +443,8 @@ function createProjector(options: TimelineOptions) {
   /** A call's outcome, on its own row: its status, the action and a one-line result as its summary, the result readable
    *  as its preview, and a write's path. A call that returned but whose result says it did not do its work (a refused
    *  fetch) reads as that, failed; a read that found nothing of a path the run never wrote is a quiet "not found". */
-  function finish(call: OpenCall, view: ToolResultView): void {
+  /** `at`: when the result came (its entry's time), else the entry being read. */
+  function finish(call: OpenCall, view: ToolResultView, at = stamp): void {
     call.done = true;
     const named = label(call.name, call.args, view);
     const outcome = outcomeOf(call.name, view);
@@ -455,7 +456,7 @@ function createProjector(options: TimelineOptions) {
     const line = call.charge ? `${ended} · charged ${call.charge.text}` : ended;
     const preview = outcome?.preview ?? (view.text ? readable(view.text) : undefined);
     Object.assign(call.use, {
-      summary: clean(line, caps.summary), tool_status: status, ended_at: endOf(call),
+      summary: clean(line, caps.summary), tool_status: status, ended_at: endOf(call, at),
       tool_result_preview: preview ? clean(rel(preview), caps.preview) : null, tool_result_size_bytes: utf8Bytes(view.text),
     });
     if (status !== "success") return;
@@ -557,7 +558,7 @@ function createProjector(options: TimelineOptions) {
           const before = early.get(`${conv}:${id}`);
           if (before) {
             early.delete(`${conv}:${id}`);
-            finish(call, before.view);
+            finish(call, before.view, before.at);
           }
         });
       }
@@ -578,7 +579,7 @@ function createProjector(options: TimelineOptions) {
       if (call) {
         finish(call, view);
         touch(call.use);
-      } else if (id) early.set(`${conv}:${id}`, { conv, id, name, view, base });
+      } else if (id) early.set(`${conv}:${id}`, { conv, id, name, view, base, at: stamp });
       else add(callless(conv, base, "", name, view));
       if (!view.isError) {
         const answer = str(args.answer);
