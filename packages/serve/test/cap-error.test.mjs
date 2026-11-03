@@ -232,6 +232,25 @@ test("after a crash, a request whose response began and that ended on an error c
   assert.equal(round(spentIn(storeOf(t, [started(0.4), entryOf(refusedAtHttp), started(0.4), entryOf(message(0.05))]))), 0.05, "a 429, then its retry answered");
 });
 
+// A crash between an error's end mark and pi's entry for it leaves the mark with no entry of pi's. Taking an earlier
+// request's 429 instead, its own request's answer, would leave that request open at its hold: $0.50 spent instead of $0.10.
+test("after a crash between an error's end mark and pi's entry, the mark never takes the 429 just before its own start", (t) => {
+  assert.equal(round(spentIn(storeOf(t, [started(0.4), entryOf(refusedAtHttp), started(0.1), erred(0.1)]))), 0.1);
+});
+
+test("after a crash between an error's end mark and pi's entry, the mark never takes a 429 a request earlier", (t) => {
+  assert.equal(round(spentIn(storeOf(t, [started(0.4), entryOf(refusedAtHttp), started(0.2), entryOf(message(0.05)), started(0.1), erred(0.1)]))), 0.15);
+});
+
+test("after a crash, an error's end mark always takes its own request's entry, however the marks fall", (t) => {
+  // Its own entry lands before its end mark, after another request's start: read as an answer, it would close that
+  // request's start, cut by the crash ($0.42 instead of $0.50).
+  const overloaded = entryOf(message(0.02, "error", "overloaded_error"));
+  assert.equal(round(spentIn(storeOf(t, [started(0.4), overloaded, started(0.1), erred(0.4)]))), 0.5, "its own entry before another request's start");
+  // Two such errors overlapping: the mark that can take fewer entries takes first, so each takes one ($0.52 otherwise).
+  assert.equal(round(spentIn(storeOf(t, [started(0.4), overloaded, started(0.1), erred(0.4), entryOf(message(0.03, "error", "overloaded_error")), erred(0.1)]))), 0.5, "two overlapping, both taken");
+});
+
 test("after a crash, an error for a request that never left counts nothing: the cap's refusal, a mark not written, a cancelled run's refusal", (t) => {
   const capRefusal = entryOf({ ...refusedAtHttp, errorMessage: "spend_cap_reached: the next model request was not sent. It could cost up to $0.001000." });
   assert.equal(round(spentIn(storeOf(t, [started(0.1), entryOf(message(0.05)), started(undefined, { capRefused: true }), capRefusal]))), 0.05);
