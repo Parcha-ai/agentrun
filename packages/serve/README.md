@@ -381,6 +381,19 @@ refuses is refused and never leaves the machine.
 $0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
 `{error}`, with nothing searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
 
+Parallel's fees are the run's spend, booked as monid's are: each search and each page Parallel extracts is marked in the
+run's records before it is sent (`agentrun.tool_started`, held at its price) and settled once Parallel answers
+(`agentrun.tool_cost`: `tool` `web_search` or `web_fetch`, `charged_by` `"parallel"`, `usd`), shown on its timeline
+(`Tool cost: parallel charged $0.0010 for web_search`), summed into its cost and under `/usage`'s `tools` meter. Parallel
+answers what it used as counts, never an amount, so each is booked at Parallel's published price (docs.parallel.ai,
+read 2026-11-03), an estimate: a `fast` search $0.001 for up to 10 results and $0.001 for each one past them, an extract
+$0.001 a URL; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
+connection its price (Parallel may have billed it). Under a [spend cap](#spend-cap) each is a paid call: sent only when
+what the run has spent and holds, plus its price, fits the cap. Otherwise nothing reaches Parallel: a search answers the
+cap's refusal (`spend_cap_reached: Parallel's search was not sent. It could cost up to $0.001 …`) and a page is the
+guarded direct fetch, with `parallel` giving the same words. A workflow's `call` node naming either tool is held by the
+cap but not yet booked.
+
 Keyless Exa, where `web_search` resolves to it, searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
 `web_search_exa` tool), with no key. What leaves the server is
 the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
