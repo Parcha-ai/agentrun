@@ -53,11 +53,12 @@ test("a model serve has no price for is refused under a cap, and only under one;
   assert.equal(free.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 1_000_000 }), undefined, "a listed $0 model passes any cap");
 });
 
-test("claude-agent's own search is opened with the stated allowance, 8 searches of 25,000 tokens, which its proxy adds to a search request's bound; nothing where web_search does not resolve native, and nothing for codex, whose own search is not bound yet", () => {
+test("claude-agent's own search is opened with the stated allowance, 8 searches of 25,000 tokens, which its proxy adds to a search request's bound; codex's own search, live (its adapter books each search); nothing where web_search does not resolve native", () => {
   assert.equal(NATIVE_SEARCH_ALLOWANCE_TOKENS, 200_000);
   const plane = (web_search) => ({ AGENTRUN_SERVE_TOOL_PLANE: JSON.stringify({ web_search }) });
   assert.deepEqual(nativeOptions("claude-agent", plane("native")), { webSearch: true, webSearchAllowance: 200_000 });
-  for (const [harness, env] of [["pi", plane("native")], ["codex", plane("native")], ["codex", plane("exa-keyless")], ["claude-agent", plane("parallel")], ["codex", {}]]) assert.deepEqual(nativeOptions(harness, env), {}, `${harness} ${JSON.stringify(env)}`);
+  assert.deepEqual(nativeOptions("codex", plane("native")), { webSearch: "live" });
+  for (const [harness, env] of [["pi", plane("native")], ["codex", plane("exa-keyless")], ["claude-agent", plane("parallel")], ["codex", {}]]) assert.deepEqual(nativeOptions(harness, env), {}, `${harness} ${JSON.stringify(env)}`);
 });
 
 test("the over-cap row: after the usage row, once its booked cost is past the cap, saying by how much; none at or under it, or with no cap or no known cost", () => {

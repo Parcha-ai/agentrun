@@ -229,7 +229,7 @@ test("the run check resolves search as the run does: a workflow picking native s
   flow.root.steps[0].tools = ["web_search"];
   const native = { web_search: { provider: "native" } };
   assert.match(said(await blockersOf(env, { kind: "workflow", workflow: flow, toolSettings: native }, {})), /The tool web_search does not run here on pi: no native search for a model with none named\./, "a workflow's nodes may run on another tier: never the default model's native search");
-  const codex = { kind: "agentic", harness: "codex", tools: ["web_search"], toolSettings: native };
+  const codex = { kind: "agentic", harness: "codex", instructions: "Search the web.", tools: ["web_search"], toolSettings: native };
   assert.doesNotMatch(said(await blockersOf(env, codex, {})), /web_search/, "uncapped: Codex's own search");
   assert.match(said(await blockersOf(env, codex, {}, { capped: true })), /The tool web_search does not run here on codex: no native search for codex under a spend cap\./, "capped: refused, never a search that cannot run");
 });
