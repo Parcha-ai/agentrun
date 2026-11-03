@@ -5,8 +5,7 @@
 //
 // A run whose place is a box gets codingSource's instead: pi's own read, write, edit and bash, each call made on the
 // box's environment (run-box.ts), so the shell exists only in the box. One source feeds pi's tool table (tools.ts,
-// app.ts) and another harness's host tools (host-tools.ts). A run its request narrowed to the runner keeps a bash that
-// runs nothing: its description and each call's answer tell the model why it has no shell.
+// app.ts) and another harness's host tools (host-tools.ts).
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
@@ -40,30 +39,10 @@ export function boxPath(path: string, hostWork?: string): string | undefined {
   return at === BOX_WORK || at.startsWith(`${BOX_WORK}/`) ? named : undefined;
 }
 
-/** What a run narrowed to the runner answers each call of a boxed tool it lacks (bash) with. */
-export const narrowedAnswer = (tool: string) => `${tool} is not available: this run's place is the runner`;
-
-/** A boxed tool the runner lacks, for a run narrowed to it: pi's own name and arguments, a description saying so, and
- *  an answer to every call, which changes nothing and so may run again. */
-const narrowedTool = (tool: ToolRegistration): ToolRegistration => ({
-  ...tool,
-  description: `Not available in this run: its request narrowed its place to the runner, which has no shell. A call answers "${narrowedAnswer(tool.name)}".`,
-  replay: "safe",
-  execute: async () => {
-    throw new Error(narrowedAnswer(tool.name));
-  },
-});
-
 /** A run's coding tools by its place: on the runner, CodingTools (no bash); in a box, pi's read, write, edit and bash,
  *  each with its arguments, output and replay as pi ships it and its environment the box's. A file tool's path stays in
- *  the box's work dir; bash's command is the box's own. `narrowed`: a run on the runner whose agent's place is a box,
- *  whose bash says it is not available here. */
-export function codingSource(place: Place, box?: BoxedEnv, narrowed = false): CodingSource {
-  if (place.mode === "runner" && narrowed) {
-    const lacking = (pis.tools ?? []).filter((tool) => BOXED_TOOLS.includes(tool.name) && !(CodingTools.tools ?? []).some((own) => own.name === tool.name)).map(narrowedTool);
-    const tools = [...(CodingTools.tools ?? []), ...lacking];
-    return { extension: { ...CodingTools, tools }, tools };
-  }
+ *  the box's work dir; bash's command is the box's own. */
+export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
   if (place.mode === "runner") return { extension: CodingTools, tools: CodingTools.tools ?? [] };
   if (!box) throw new Error("a run whose place is a box needs its box for its coding tools");
   const tools = (pis.tools ?? []).filter((tool) => BOXED_TOOLS.includes(tool.name)).map((tool): ToolRegistration => ({

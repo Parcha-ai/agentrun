@@ -36,19 +36,6 @@ test("no tool the table binds registers bash on the runner: what each installs a
   }
 });
 
-test("a run narrowed to the runner keeps a bash that runs nothing: its description and every call's answer say why, and read, write and edit are the runner's own", async () => {
-  const source = codingSource({ mode: "runner" }, undefined, true);
-  assert.deepEqual(source.tools.slice(0, -1), CodingTools.tools, "the runner's own file tools, unchanged");
-  assert.deepEqual(source.extension.tools, source.tools);
-  assert.equal(source.extension.name, ArchilCodingTools.name);
-  const bash = source.tools.at(-1);
-  const pis = ArchilCodingTools.tools.find((tool) => tool.name === "bash");
-  assert.deepEqual([bash.name, bash.parameters, bash.replay], ["bash", pis.parameters, "safe"], "pi's name and arguments; an answer that changes nothing may run again");
-  assert.equal(bash.description, 'Not available in this run: its request narrowed its place to the runner, which has no shell. A call answers "bash is not available: this run\'s place is the runner".');
-  await assert.rejects(bash.execute({ command: "printf hi > out.txt" }, {}, {}), { message: "bash is not available: this run's place is the runner" });
-  assert.deepEqual(codingSource({ mode: "runner" }).tools, CodingTools.tools, "a run that was not narrowed has no bash at all");
-});
-
 test("in a box the source is pi's read, write, edit and bash, each call made on the box's environment, nothing else of a call changed", async () => {
   const calls = [];
   const boxEnv = { cwd: "/run/agentrun/run/work", marker: "the box's" };

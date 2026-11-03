@@ -84,9 +84,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const place = storedPlace(meta?.place);
   const root = resolve(where.root, "..", "..");
   const box = place.mode === "sandbox" ? runBox(() => runBoxProvider(place, env, root), { id: run.id, root, dir: where.root, place }) : undefined;
-  // A run its request narrowed to the runner (an agent whose place is a box) is told so when it calls bash.
-  const narrowed = place.mode === "runner" && revision.kind === "agentic" && revision.body.place?.mode === "sandbox";
-  const coding = codingSource(place, box, narrowed);
+  const coding = codingSource(place, box);
   const registry = createRegistry();
   registry.install(coding.extension);
   // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
