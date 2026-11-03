@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, route, runsHash } from "./App";
 import { agentHash } from "@/components/AgentPage";
+import { agentsList, recorded } from "@/fixtures";
+import type { Agent } from "@/lib/agentForm";
+import type { Run, TimelinePage } from "@/lib/v2";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -232,5 +235,95 @@ describe("App, an agent's address", () => {
     await wait(() => !!host.textContent?.includes("Save revision"));
     expect(host.textContent).toContain("Save revision");
     expect(host.querySelector('[role="tab"]')).toBeNull();
+  });
+});
+
+// An agent made in this console is named at once wherever its runs show, never by its id until a reload.
+describe("App, the agents' names", () => {
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+  const made = recorded<Agent>("write.agent-create").body;
+  const started: Run = { ...recorded<Run>("start.run").body, agent_id: made.agent_id };
+  /** A server over the recorded agents (`active`, a copy, so a create never changes the recording; `archived`) and `runs`:
+   *  a create adds the recorded create's agent, and a start of it answers `started` and lists it. `archivedFails`: its read
+   *  of the archived agents answers 503. */
+  function server({ active = [...agentsList()], archived = [] as Agent[], runs = [] as Run[], archivedFails = false } = {}) {
+    const page = (r: Run): TimelinePage => ({ run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const u = new URL(url, "http://serve.test");
+      const method = init?.method ?? "GET";
+      const [, , what, id, sub] = u.pathname.split("/").map(decodeURIComponent);
+      if (what === "auth") return json(200, { password_set: true, signed_in: true });
+      if (what === "capabilities") return json(200, recorded("capabilities").body);
+      if (what === "stats") return json(200, {});
+      if (what === "agents" && !id && method === "POST") { active.push(made); return json(201, made); }
+      if (what === "agents" && !id && u.searchParams.get("archived") && archivedFails) return json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } });
+      if (what === "agents" && !id) return json(200, { agents: u.searchParams.get("archived") ? archived : active, next_cursor: null });
+      if (what === "agents" && !sub) return json(200, [...active, ...archived].find((a) => a.agent_id === id), { etag: `"${made.revision}"` });
+      if (what === "agents" && sub === "runs" && method === "POST") { runs.unshift(started); return json(202, started); }
+      if (what === "agents" && sub === "runs") return json(200, { runs: runs.filter((r) => r.agent_id === id), next_cursor: null });
+      if (what === "runs" && !id) return json(200, { runs, next_cursor: null });
+      const run = runs.find((r) => r.run_id === id);
+      if (what === "runs" && run && !sub) return json(200, run);
+      if (what === "runs" && run && sub === "timeline") return json(200, page(run));
+      if (what === "runs" && run && sub === "files") return json(200, { run_id: run.run_id, files: [], complete: true, truncated: false });
+      return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
+    });
+  }
+  async function open(hash: string) {
+    location.hash = hash;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const until = async (ok: () => boolean) => { for (let i = 0; i < 160 && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); expect(ok()).toBe(true); };
+    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
+    const type = async (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+      await act(async () => { Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
+    };
+    const rows = () => [...host.querySelectorAll("tbody tr")].map((r) => r.textContent ?? "");
+    return { host, until, button, type, rows };
+  }
+
+  it("names an agent made here, not by its id, on its run's page and in Runs, with no reload", async () => {
+    server();
+    const { host, until, button, type, rows } = await open("#/agents/new");
+    // Create it from the editor, as a person does: its name and instructions, then Create.
+    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
+    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
+    await act(async () => { button(/^Create$/)!.click(); });
+    // Its page, then a run of it from the run bar: the run's page opens.
+    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}` && !!host.querySelector('section[aria-label="Start a run"] textarea'));
+    await type(host.querySelector<HTMLTextAreaElement>('section[aria-label="Start a run"] textarea')!, "Check the 2.3.0 entry.");
+    await act(async () => { button(/^Run$/)!.click(); });
+    await until(() => location.hash === `#/runs/${encodeURIComponent(started.run_id)}` && !!host.querySelector("h1"));
+    // The run's page names its agent in its breadcrumb.
+    await until(() => host.textContent!.includes(made.definition.name!));
+    expect(host.textContent).not.toContain(made.agent_id);
+    // Runs names it too.
+    await act(async () => { location.hash = "#/runs"; });
+    await until(() => rows().some((r) => r.includes(made.definition.name!)));
+    expect(rows().join("\n")).not.toContain(made.agent_id);
+  });
+
+  it("names a run of an archived agent, which is not gone, and shows the id of one that is", async () => {
+    const [kept, ...active] = agentsList();
+    const gone = "01a18400-0000-7000-8000-000000000000";
+    const run = recorded<Run>("start.run").body;
+    server({ active, archived: [{ ...kept, archived_at: "2026-11-02T12:00:00Z" }], runs: [{ ...run, agent_id: kept.agent_id }, { ...run, run_id: `${run.run_id}-2`, agent_id: gone }] });
+    const { until, rows } = await open("#/runs");
+    await until(() => rows().length === 2 && rows()[0].includes(kept.definition.name!));
+    expect(rows()[1]).toContain(gone);
+  });
+
+  it("keeps the active agents' names when the read of the archived ones fails, and shows no id as gone meanwhile", async () => {
+    const [mine, ...rest] = agentsList();
+    const [kept] = rest;
+    const run = recorded<Run>("start.run").body;
+    server({ active: [mine], archived: [{ ...kept, archived_at: "2026-11-02T12:00:00Z" }], archivedFails: true, runs: [{ ...run, agent_id: mine.agent_id }, { ...run, run_id: `${run.run_id}-2`, agent_id: kept.agent_id }] });
+    const { until, rows } = await open("#/runs");
+    await until(() => rows().length === 2 && rows()[0].includes(mine.definition.name!));
+    // The archived agent's name could not be read: its run shows neither a name nor an id that would read as gone.
+    expect(rows()[1]).not.toContain(kept.agent_id);
+    expect(rows()[1]).not.toContain(kept.definition.name!);
   });
 });

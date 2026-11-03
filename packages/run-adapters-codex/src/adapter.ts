@@ -186,6 +186,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           ...(options.standIn?.env ? { env: options.standIn.env } : {}),
           acquire: localMachine({
             dir,
+            // The host's workspace, when it names one: Codex works where the host's file tools write (io.cwd).
+            ...(io.cwd ? { cwd: io.cwd } : {}),
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
             ...(options.webSearch ? { webSearch: options.webSearch } : {}),
