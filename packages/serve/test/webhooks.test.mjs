@@ -14,7 +14,7 @@ import { startServe } from "../dist/index.js";
 import { nextMoment } from "../dist/runs.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, scratch, serve, startRun, withEnv } from "./support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -446,9 +446,7 @@ test("settings: an http or https URL with no user or password, and nothing else;
 async function serverProcess(t, data) {
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  await until(() => /AGENTRUN_API_KEY=/.test(out), "the server's banner");
+  const out = await printed(child, /^AGENTRUN_API_KEY=/m);
   return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim()) };
 }
 
