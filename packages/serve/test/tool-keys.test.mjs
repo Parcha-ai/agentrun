@@ -38,6 +38,9 @@ async function meetsDocument(api, view) {
 }
 
 test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
+  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key }, KEYS);
   const { api, data } = await serve(t);
