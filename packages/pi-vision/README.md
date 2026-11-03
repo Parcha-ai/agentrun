@@ -53,7 +53,7 @@ pi-vision is a library, not a command line: an extension for a pi-durable host, 
 and [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai) and installs this package's extension.
 [`examples/reference`](https://github.com/Parcha-ai/agentrun/tree/main/examples/reference) is such a host, and
 [what a host supplies](https://github.com/Parcha-ai/agentrun/blob/main/docs/reference-host.md) says what each package asks
-of one. There is no pi coding-agent extension: `pi install npm:@parcha/pi-vision@beta` adds
+of one. There is no pi coding-agent extension: `pi install npm:@parcha/pi-vision@latest` adds
 the five skills (`find`, `look`, `report`, `transcribe`, `verify`) and no tool, and the `vision.see` they call is not defined there.
 
 ## What it does
@@ -103,8 +103,8 @@ transcript, the photographs and the film), [`boulder-chapters`](https://github.c
 
 ## Status
 
-Published on npm under the `beta` tag, at the workspace version with this repository's other packages: install it with
-`@beta`. Everything this README describes is built; a part that is not throws `NotBuiltError`, never a half answer.
+Published on npm under the `latest` tag, at the workspace version with this repository's other packages: install it with
+`@latest`. Everything this README describes is built; a part that is not throws `NotBuiltError`, never a half answer.
 
 ## Known limits
 
@@ -119,7 +119,7 @@ A spreadsheet the test kit writes, read the way `read` reads it for a model: no 
 installed. In an empty directory:
 
 ```sh
-npm install @parcha/pi-vision@beta
+npm install @parcha/pi-vision@latest
 ```
 
 `read.mjs`:
@@ -294,8 +294,8 @@ cap on pages, frames or price: a host that wants one wraps `execute`. The planne
 model, through `VisionOptions.jev`: the judge `createJevRunner` from `@parcha/agentrun-jev` returns, which owns the
 transport, the images header and the price, and the model to ask (`jev-1.14.0` unless `jev.model` names another; it is
 the first Jev that answers box questions). pi-vision imports neither that package nor the TypeSafe SDK; it hands the
-judge each image as PNG or JPEG bytes under a reference written in the request. Install the Jev package with its `beta`
-tag (`npm install @parcha/agentrun-jev@beta`); the judge needs `TYPESAFE_API_KEY`:
+judge each image as PNG or JPEG bytes under a reference written in the request. Install the Jev package with its `latest`
+tag (`npm install @parcha/agentrun-jev@latest`); the judge needs `TYPESAFE_API_KEY`:
 
 ```ts
 import { createJevRunner } from "@parcha/agentrun-jev";
