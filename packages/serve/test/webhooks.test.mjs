@@ -1061,3 +1061,84 @@ test("a fresh data directory has its since-time right after the first start, bef
   assert.ok(Date.parse(since) <= Date.parse(endedIn(data, run.run_id)), `${since} is at or before the first run's end`);
   assert.equal(readFileSync(file, "utf8").trim(), since, "and never written again");
 });
+
+// ---- the notice ledger: what the outbox has queued of each run, in the outbox's own write.
+
+const ledgerOf = (dir) => JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8")).notices;
+
+test("a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const first = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => first.close());
+  first.save({ url: hook.url });
+  const ended = new Date().toISOString();
+  const run = { run_id: "run_1", agent_id: "a", status: "completed", title: "t" };
+  assert.equal(first.emit("run.needs_input", { ...run, status: "input_required", pending: { kind: "question" } }, "row_7"), "queued");
+  assert.equal(first.emit("run.ended", run, ended), "queued");
+  assert.deepEqual(Object.keys(ledgerOf(dir)), ["run_1"]);
+  assert.deepEqual([ledgerOf(dir).run_1.ended, ledgerOf(dir).run_1.wait], [ended, "row_7"], "recorded in the write that queued them");
+  assert.equal(first.emit("run.ended", run, ended), "queued", "the same end: already queued");
+  await until(() => hook.got.length === 2, "both sent");
+  await first.close();
+  // The next server reads the ledger: the same end and the same wait queue nothing, a new end of the run does.
+  const next = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => next.close());
+  assert.equal(next.emit("run.ended", run, ended), "queued");
+  assert.equal(next.emit("run.needs_input", { ...run, status: "input_required", pending: { kind: "question" } }, "row_7"), "queued");
+  const later = new Date(Date.now() + 1_000).toISOString();
+  assert.equal(next.emit("run.ended", run, later), "queued");
+  await until(() => hook.got.length === 3, "the new end sent");
+  await sleep(200);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.needs_input", "run.ended", "run.ended"]);
+  assert.equal(ledgerOf(dir).run_1.ended, later);
+});
+
+test("a start's catch-up queues each end the store holds and the ledger does not, once; an end before the since-time or the webhook's own setting is never sent", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  const before = new Date(Date.now() - 60_000).toISOString();
+  webhooks.save({ url: hook.url });
+  const now = new Date().toISOString();
+  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  await webhooks.catchUp([{ id: "old", endedAt: before }, { id: "lost", endedAt: now }], describe);
+  await webhooks.catchUp([{ id: "lost", endedAt: now }], describe);
+  await until(() => hook.got.length === 1, "the lost end sent");
+  await sleep(200);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).data.run_id), ["lost"], "once, and never the end before the webhook was set");
+  assert.equal(ledgerOf(dir).lost.ended, now);
+});
+
+test("the ledger keeps an end exactly as long as a start's catch-up looks for it: one just inside the day stays and is not sent again; one just past it is dropped, and not sent either", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  const inside = new Date(Date.now() - day + 60_000).toISOString();
+  const past = new Date(Date.now() - day - 60_000).toISOString();
+  // Record-keeping began, and the webhook was set, two days ago; the ledger holds both ends from an earlier server.
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 2 * day).toISOString()}\n`);
+  const setup = new Webhooks(dir, env, () => undefined, []);
+  setup.save({ url: hook.url });
+  await setup.close();
+  const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+  writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 2 * day).toISOString() })}\n`);
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [], attempts: [], notices: { inside: { ended: inside }, past: { ended: past } } })}\n`);
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  // A new notice writes the ledger, pruned as the catch-up would read it.
+  webhooks.emit("run.ended", { run_id: "now", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+  assert.deepEqual(Object.keys(ledgerOf(dir)).sort(), ["inside", "now"], "the end past the day is dropped; the one inside it stays");
+  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  await webhooks.catchUp([{ id: "inside", endedAt: inside }, { id: "past", endedAt: past }], describe);
+  await until(() => hook.got.length === 1, "the new end sent");
+  await sleep(300);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).data.run_id), ["now"], "neither earlier end sent again");
+});
