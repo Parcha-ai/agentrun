@@ -4,6 +4,7 @@ Candidate: `3573f4a6`. This is a review handoff, not a merge-ready verdict.
 
 | Proof | Result |
 |---|---|
+| Automated review | PASS, exact-head Greptile 5/5; all 5 threads answered and resolved in 2 iterations. [Review report](review-report.md). |
 | Console typecheck and full suite | PASS, 385 tests in 45 files. |
 | Live browser | PASS, 27 checkpoints across 9 scoped rows, including actual audio/video playback, byte-exact downloads and a slow expanded refresh across the polling interval. |
 | Public client against actual server/run processes | PASS, 8 test results, including revisions, input, idempotency, files and restart. |
