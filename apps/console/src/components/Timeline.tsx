@@ -41,16 +41,18 @@ const title = (row: TimelineRow): ReactNode => {
 
 /** A tool's label as a person reads it, whatever the harness calls it ("Fetch" for web_fetch and WebFetch, "Shell" for
  *  bash); any other id as words ("browser_release" is "Browser release"). An MCP server's prefix (`mcp__hands__`) goes. */
-const TOOL: Record<string, string> = {
+// A Map, so a tool named like an Object property (`__proto__`, `constructor`: an imported session names its own tools)
+// finds nothing here and reads as words, never as the lookup's prototype.
+const TOOL = new Map<string, string>(Object.entries({
   read: "Read", write: "Write", edit: "Edit", multiedit: "Edit", apply_patch: "Edit", notebookedit: "Edit",
   bash: "Shell", shell: "Shell", local_shell: "Shell", exec_command: "Shell",
   web_fetch: "Fetch", webfetch: "Fetch", fetch: "Fetch", web_search: "Search", websearch: "Search",
   ls: "List files", glob: "Find files", find: "Find files", grep: "Search files",
   ask_person: "Question", submit: "Answer", codemode: "Script", todowrite: "To-dos", task: "Subagent", skill: "Skill",
-};
+}));
 function toolLabel(id: string): string {
   const bare = id.replace(/^mcp__.+?__/, "");
-  const known = TOOL[bare.toLowerCase()];
+  const known = TOOL.get(bare.toLowerCase());
   if (known) return known;
   const words = bare.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
   return words ? words[0]!.toUpperCase() + words.slice(1) : id;

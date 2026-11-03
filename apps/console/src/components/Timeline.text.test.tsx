@@ -74,6 +74,15 @@ describe("Timeline, a tool step's label", () => {
     ] as const) expect(labelOf(id), id).toBe(word);
   });
 
+  // An imported session's tool names are whatever its harness wrote: one named like an Object property (`__proto__`,
+  // `constructor`) is a name like any other, never the lookup's own prototype (which React can't render).
+  it("reads a tool named like an object property as words, and the timeline still renders", () => {
+    expect(labelOf("__proto__")).toBe("Proto");
+    expect(labelOf("constructor")).toBe("Constructor");
+    expect(labelOf("toString")).toBe("To string");
+    expect(labelOf("hasOwnProperty")).toBe("Has own property");
+  });
+
   it("makes words of any other id, and says the same for a result row of the older shape", () => {
     expect(labelOf("browser_release")).toBe("Browser release");
     expect(labelOf("runsGet")).toBe("Runs get");
