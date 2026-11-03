@@ -139,6 +139,12 @@ async function readAt(home: string, repo: string, sha: string): Promise<{ index:
 /** One file at commit `sha`: its blob id and text, or undefined. */
 const fileAt = async (home: string, repo: string, sha: string, file: string) => (await textsOf(home, repo, await entriesAt(home, repo, sha, file))).get(file);
 
+/** Whether commit `sha`'s tree holds anything at `file`, as git stores it: any mode or type, any size, any bytes. The
+ *  notes leave out a file that is not a regular UTF-8 one under FILE_CAP, so a write asks this before it takes a name
+ *  as free. */
+const heldAt = async (home: string, repo: string, sha: string, file: string) =>
+  (await git(home, repo, ["ls-tree", "-z", sha, "--", file])).toString("utf8").split("\0").some((entry) => entry.slice(entry.indexOf("\t") + 1) === file);
+
 /** The commits on main that are changes: a run's merge (`Run-Id`) or a person's commit (`Changed-By: user`), by their
  *  trailers' lines; the folder's first commit, the host's, is neither. Every commit on main is the host's, so a line
  *  that matches is a trailer. */
@@ -348,8 +354,12 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
     for (let tries = 0; ; tries++) {
       const main = await mainOf(home, repo);
       const current = main ? await fileAt(home, repo, main, file) : undefined;
-      if (condition.match && !(current && condition.match.includes(etagOf(current.oid)))) throw new ApiError("precondition_failed", current ? "The note changed since it was read (a run's merge, or another edit): read it again." : "There is no such note on main: create it with If-None-Match: *.");
-      if (condition.absent && current) throw new ApiError("precondition_failed", "The folder has a note by this name: read it, then edit it with If-Match.");
+      // A file main holds by this name that is no note (another mode, over FILE_CAP, not UTF-8) is never written over:
+      // a create of the name is refused, and an edit or a retire gives no hint to create it.
+      const held = current !== undefined || (main !== undefined && (await heldAt(home, repo, main, file)));
+      const notNote = "The folder's file by this name on main is no note (not a regular UTF-8 file of at most 1 MiB), and a person's write never replaces it.";
+      if (condition.match && !(current && condition.match.includes(etagOf(current.oid)))) throw new ApiError("precondition_failed", current ? "The note changed since it was read (a run's merge, or another edit): read it again." : held ? notNote : "There is no such note on main: create it with If-None-Match: *.");
+      if (condition.absent && held) throw new ApiError("precondition_failed", current ? "The folder has a note by this name: read it, then edit it with If-Match." : notNote);
       let text = given;
       if (text === undefined) {
         const note = parseNoteFile(file, current!.text);

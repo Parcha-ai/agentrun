@@ -456,6 +456,42 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
 });
 
+test("a file on main that is not a note (over the read cap, not UTF-8, executable or a link) is never written over: a create of its name is 412, and an edit or a retire by its blob is 412 with no hint to create it, main untouched", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  await made(api, learner("holder"));
+  const repo = repoOf(data, "holder");
+  const files = "/agents/holder/learning/files";
+  assert.equal((await api("PUT", `${files}/kept.md`, { text: UNITS }, { "if-none-match": "*" })).status, 201, "the folder made by a create");
+  // By an operator's hand on main, each a file the notes leave out: over the 1 MiB read cap, not UTF-8, mode 100755,
+  // and a symbolic link (mode 120000).
+  writeFileSync(join(repo, "big.md"), `${SOURCES}${"a".repeat(1 << 20)}\n`);
+  writeFileSync(join(repo, "latin.md"), Buffer.from([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0xfe, 0x0a]));
+  writeFileSync(join(repo, "exec.md"), TABLES);
+  chmodSync(join(repo, "exec.md"), 0o755);
+  symlinkSync("kept.md", join(repo, "link.md"));
+  git(repo, ["add", "big.md", "latin.md", "exec.md", "link.md"]);
+  git(repo, ["update-index", "--chmod=+x", "exec.md"]);
+  git(repo, ["commit", "-q", "-m", "an operator's hand"]);
+  const tree = (file) => git(repo, ["ls-tree", "-l", "main", "--", file]);
+  assert.deepEqual(["big.md", "latin.md", "exec.md", "link.md"].map((file) => tree(file).split(/\s+/)[0]), ["100644", "100644", "100755", "120000"]);
+  const main = git(repo, ["rev-parse", "main"]);
+  for (const file of ["big.md", "latin.md", "exec.md", "link.md"]) {
+    const before = tree(file);
+    const etag = `"${git(repo, ["rev-parse", `main:${file}`])}"`;
+    assert.equal((await api("GET", `${files}/${file}`)).status, 404, `${file} is no note to read`);
+    const created = await api("PUT", `${files}/${file}`, { text: ASK }, { "if-none-match": "*" });
+    assert.deepEqual([created.status, created.body?.error?.code], [412, "precondition_failed"], `${file}: ${JSON.stringify(created.body)}`);
+    for (const [method, body] of [["PUT", { text: ASK }], ["POST", undefined]]) {
+      const edited = await api(method, `${files}/${file}${body ? "" : "/retire"}`, body, { "if-match": etag });
+      assert.deepEqual([edited.status, edited.body?.error?.code], [412, "precondition_failed"], `${method} ${file}: ${JSON.stringify(edited.body)}`);
+      assert.ok(!/if-none-match/i.test(edited.body.error.message), `${method} ${file}: no hint to create it: ${edited.body.error.message}`);
+    }
+    assert.equal(tree(file), before, `${file} untouched`);
+  }
+  assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
+  assert.equal(git(repo, ["status", "--porcelain"]), "", "the checked-out files are main's");
+});
+
 test("a run's learning shows the grader's item for each new note: a drop of two notes names the one that failed, with its question and why", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
