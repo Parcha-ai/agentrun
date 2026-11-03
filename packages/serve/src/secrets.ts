@@ -86,10 +86,11 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
 const MIN_SECRET = 8;
 
 /** This host's secrets, for a scan of what a run wrote: each one the launcher lists, as this process holds it (never in
- *  the environment once handed over, so a scan of process.env alone sees none of them), and the value of every other
- *  key, token, secret or password `env` names. */
-export const hostSecrets = (env: NodeJS.ProcessEnv): string[] => {
-  const held = SECRET_NAMES.map((name) => secret(name) ?? "");
+ *  the environment once handed over, so a scan of process.env alone sees none of them), and beside it the key a person
+ *  saved under that name on the server `stored` reads for (a run that names its tool is handed it), and the value of
+ *  every other key, token, secret or password `env` names. */
+export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
+  const held = SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]);
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
