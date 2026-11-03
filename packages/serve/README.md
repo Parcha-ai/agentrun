@@ -125,6 +125,10 @@ A request's path has no query. `auth_failed` names the route and why (`no_creden
 `wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
+`event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
+package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
+PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
+once without checking again (a key some harness reads would, with `why=key`).
 
 ## In a container
 
@@ -590,8 +594,9 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 
 A saved key is read by name like one the launcher hands over, and the launcher's value wins for a name it holds. A run
 gets the saved keys at its launch, over the pipe its secrets come on (a workflow run's `PARALLEL_API_KEY` on its
-decision descriptor), never in any process's environment, and never the seal key. No restart: after a `PUT` or
-`DELETE`, capabilities, the harnesses' offers, a save's checks and a run's checks see the change at once. A run already
+decision descriptor), never in any process's environment, and never the seal key. No restart: a `PUT` or `DELETE`
+answers once capabilities, a save's checks and a run's checks see the change, in milliseconds. No harness reads a tool
+key, so a key leaves what each harness offers as it is, and the harnesses are not checked again. A run already
 running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
 `BROWSERBASE_PROJECT_ID` is on the launcher's list for this, as every field a person may save is. Capabilities name each
 tool's key (`tools[].key`, a `GET /settings/tool-keys` id, `browserbase` for `browser`), so a page can link a tool's
