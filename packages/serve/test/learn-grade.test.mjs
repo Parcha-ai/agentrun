@@ -5,7 +5,7 @@
 // run is merged once, never twice. GET /v2/stats counts how the runs that tried to learn fared, from the ledger and the
 // runs the server holds, never a run's files.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY } from "./fixtures/faux-jev.mjs";
@@ -112,6 +112,57 @@ test("a server that goes mid-grade grades the run once at its next start; a run 
   assert.equal(mergesOf(repo, runId).length, 1, "merged once");
   assert.equal(callsIn(calls).length, 2, "the kept verdict was not asked again");
 });
+
+// A run whose learning waits to be checked or graded is opened again for a follow-up, and its server goes while the
+// follow-up runs. The next server reads the run as running, so its start passes the learning over: the run's own end,
+// once the follow-up finishes, is where it is checked and graded, with no later restart.
+for (const at of ["proposed", "reflecting"]) {
+  test(`a run opened again for a follow-up while its learning is ${at}, its server gone while the follow-up runs: the next server finishes the follow-up, then ${at === "proposed" ? "grades" : "checks and grades"} what the run proposed, and it merges, with no restart after`, { timeout: 180_000 }, async (t) => {
+    const gate = join(await scratch(t), "answer");
+    const calls = join(await scratch(t), "calls.jsonl");
+    writeFileSync(gate, "");
+    withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls, AGENTRUN_TEST_FAUX_GRADE_HOLD: "1" }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+    const first = await serve(t, { learning: "on", faux: LEARN });
+    const { data } = first;
+    await made(first.api, learner("reopened", { plan: PLAN, instructions: `Answer once ${gate} exists.` }));
+    const runId = await started(first.api, "reopened");
+    for (let i = 0; callsIn(calls).length === 0; i++) {
+      assert.ok(i < 1200, "the grader is asked");
+      await sleep(50);
+    }
+    assert.equal((await first.api("GET", `/runs/${runId}`)).body.learning.state, "proposed");
+    // The follow-up's answer holds until the gate is back, so the server goes while it runs, mid-grade.
+    rmSync(gate);
+    const sent = await first.api("POST", `/runs/${runId}/messages`, { content: "One more thing." });
+    assert.equal(sent.status, 202, JSON.stringify(sent.body));
+    for (let i = 0; (await first.api("GET", `/runs/${runId}`)).body.status !== "working"; i++) {
+      assert.ok(i < 1200, "the follow-up runs");
+      await sleep(50);
+    }
+    await first.close();
+    const saved = JSON.parse(readFileSync(join(data, "runs", runId, "serve.json"), "utf8"));
+    assert.deepEqual([saved.learning.state, saved.learning.verdict], ["proposed", undefined], "nothing was decided");
+    if (at === "reflecting") {
+      // A server that went after the run settled and before its check: what the turn wrote is set aside, not yet checked.
+      writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "The end-of-run turn ended; what it wrote waits to be checked." } }));
+      rmSync(join(data, "runs", runId, "learning-proposal.json"));
+      assert.ok(existsSync(join(data, "runs", runId, "learning-turn", "check-units.md")), "the turn's copy is set aside");
+    }
+    // The next server: the follow-up answers, the run ends, and its learning goes on from where it was.
+    delete process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD;
+    writeFileSync(gate, "");
+    const second = await serve(t, { learning: "on", faux: LEARN, data });
+    const { view, rows } = await ended(second.api, runId);
+    assert.equal(view.status, "completed");
+    settled(view, rows, "merged");
+    assert.equal(callsIn(calls).length, 2, "one grader call per server");
+    const repo = repoOf(data, "reopened");
+    assert.equal((await savedOf(data, runId)).learning.merged, git(repo, ["rev-parse", "main"]));
+    assert.equal(mergesOf(repo, runId).length, 1, "merged once");
+    assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "check-units.md"]);
+    await second.close();
+  });
+}
 
 test("a grader that never answers is cut off at its bound: the run's learning is grade_failed, and what the grade spent is unknown (null), never $0, on the run, in the ledger and on /v2/usage", { timeout: 120_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
