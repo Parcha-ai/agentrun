@@ -44,8 +44,11 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
   // Each change is the whole of the server's settings: a capability the body leaves out takes its default.
   const save = async (next: ToolSettings) => {
     setBusy(true); setProblem(null);
+    // A save's answer is the newest settings: a read still out (a Retry's) is dropped, never put back over it.
+    const n = ++asked.current;
     try {
-      setAnswer(await v2.saveToolSettings(next));
+      const saved = await v2.saveToolSettings(next);
+      if (n === asked.current) setAnswer(saved);
       onSaved();
     } catch (e) {
       setProblem(e instanceof ClientError && e.status === 422 && e.fields?.length
@@ -67,7 +70,7 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
             <ToolTable label="This server's tool providers" rows={choices} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onChange={(next) => void save(next)}
               resolvesOf={(t, provider) => (provider === t.provider ? <PerHarness choice={t} />
                 : capsRead === "reading" ? <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>
-                : <span className="block text-[12px] text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <button type="button" onClick={retry} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent">Retry</button></span>)} />
+                : <span className="block text-[12px] text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <button type="button" onClick={retry} disabled={busy} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent disabled:opacity-45">Retry</button></span>)} />
           ) : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">This server offers no tool with a choice of provider.</p>}
           {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
           {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}
