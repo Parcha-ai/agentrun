@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bodyOf, canApprove, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, money, noteParts, noteText, originOf, pendingBy, provenance, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, money, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
+import type { TimelineRow } from "./v2";
 
 // What the console reads of a run's and an agent's learning, and the words it says it in.
 const NOTE = "---\nname: Try /policies/refund-policy first\ndescription: Open it before any other page\ntype: feedback\nsupersedes: [shopify-refund-policy-path.md]\n---\nOpen `/policies/refund-policy` first.\n";
@@ -130,8 +131,10 @@ describe("notes that wait for the owner's OK", () => {
     expect(waitsForOk(null)).toBe(false);
     expect([waitWords(1), waitWords(2), waitWords(0)]).toEqual(["1 note waits for your OK", "2 notes wait for your OK", "A note waits for your OK"]);
   });
-  it("the console approves only on a server whose capabilities say it does", () => {
-    expect([canApprove({ learning: { approve: true } }), canApprove({ learning: { pending: true } }), canApprove({}), canApprove(null), canApprove({ learning: "on" })]).toEqual([true, false, false, false, false]);
+  it("the console approves only on a server whose capabilities say it does; one that says what approving needs says so", () => {
+    expect(approval({ learning: { approve: true } })).toBe("yes");
+    expect(approval({ learning: { pending: true, approve: false, approve_needs: "password" } })).toBe("password");
+    expect([approval({ learning: { pending: true } }), approval({ learning: { approve: false } }), approval({}), approval(null), approval({ learning: "on" })]).toEqual(["later", "later", "later", "later", "later"]);
   });
   it("a note waits when its status says so", () => {
     expect([isPending({ status: "pending" }), isPending({ status: "active" })]).toEqual([true, false]);
@@ -143,5 +146,68 @@ describe("notes that wait for the owner's OK", () => {
     expect(originOf({ text: text('origin: "run"\n') })).toBe("run");
     expect(originOf({ text: text("", "origin: you\n") })).toBeUndefined();
     expect(originOf({ text: "no front matter" })).toBeUndefined();
+  });
+});
+
+// The end-of-run look-back as one step: every row labelled `learning` (its message, its writes or whatever else it
+// answers with, and the row that says how it ended) folds into one row, said from the run's learning, with the rows
+// behind it.
+describe("the look-back on a run's timeline", () => {
+  const row = (id: string, seq: number, over: Partial<TimelineRow> & { learning?: unknown }): TimelineRow => ({ id, seq, kind: "text_block", summary: "", text: null, timestamp: `2026-11-03T18:50:0${seq}Z`, tool_name: null, ...over }) as TimelineRow;
+  const ASKED = row("u1", 1, { kind: "user_message", summary: "You: Find this shop's refund policy page" });
+  const ANSWER = row("a1", 2, { kind: "final_answer", summary: "https://www.brooklinen.com/policies/refund-policy" });
+  const LOOK = row("l1", 3, { kind: "user_message", agent_label: "learning", summary: "Looking back on this run.", text: "Looking back on this run." });
+  const WRITES = [
+    row("l2", 4, { kind: "tool_use", tool_name: "write", agent_label: "learning", summary: "Wrote .learning/refund-limit.md", tool_input_preview: ".learning/refund-limit.md" }),
+    row("l3", 5, { kind: "tool_result", tool_name: "write", agent_label: "learning", summary: "Wrote .learning/refund-limit.md: ok" }),
+    row("l4", 6, { kind: "phase", agent_label: "learning", summary: "Saved .learning/refund-limit.md" }),
+    row("l5", 7, { kind: "text_block", agent_label: "learning", summary: "Reflected.", text: "Reflected." }),
+  ];
+  const USAGE = row("us", 8, { kind: "usage", summary: "Cost so far: $0.0136 over 4 model requests" });
+  const ended = (learning: { state: string; reason: string | null; detail: string }) => row("learning", 9, { kind: "learning", agent_label: "learning", summary: learning.detail, text: learning.detail, learning });
+  const MERGED: RunLearning = { state: "merged", reason: null, learned: [{ file: "refund-limit.md", name: "Refund limit", supersedes: [] }, { file: "answer-shape.md", name: "Answer shape", supersedes: ["old.md"] }] };
+  const KEPT = ended({ state: "merged", reason: null, detail: "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)" });
+
+  it("folds into one row where it began, saying what it kept by name, with no file path; the rows are behind it", () => {
+    const out = learningSteps([ASKED, ANSWER, LOOK, ...WRITES, USAGE, KEPT], MERGED);
+    expect(out.map((r) => r.id)).toEqual(["u1", "a1", "l1", "us"]);
+    const one = out[2]!;
+    expect(one).toMatchObject({ kind: "Learning", agent_label: null, tool_name: null, summary: "Looked back: kept 2 notes (Refund limit, Answer shape)", timestamp: LOOK.timestamp });
+    expect(one.summary).not.toContain(".learning/");
+    expect(one.text!.split("\n")).toEqual(["Looking back on this run.", "Wrote .learning/refund-limit.md", "Wrote .learning/refund-limit.md: ok", "Saved .learning/refund-limit.md", "Reflected.", "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)"]);
+    // Every other row is as it was.
+    expect(out[0]).toBe(ASKED);
+    expect(out[3]).toBe(USAGE);
+  });
+  it("is keyed on the learning label, not on writes: a look-back that answers with its notes in text folds the same", () => {
+    const blocks = row("n1", 4, { kind: "text_block", agent_label: "learning", summary: "<note file=\"refund-limit.md\">…", text: "<note file=\"refund-limit.md\">\n---\nname: Refund limit\n---\nAsk first.\n</note>" });
+    const out = learningSteps([ASKED, LOOK, blocks, ended({ state: "merged", reason: null, detail: "Learned: Refund limit" })], { state: "merged", reason: null, learned: [MERGED!.learned![0]!] });
+    expect(out.map((r) => [r.id, r.summary])).toEqual([["u1", ASKED.summary], ["l1", "Looked back: kept 1 note (Refund limit)"]]);
+  });
+  it("says when there was nothing new to keep, and why a note was not kept", () => {
+    expect(learningSteps([LOOK, ...WRITES, ended({ state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." })], { state: "dropped", reason: "empty" })[0]!.summary).toBe("Looked back: nothing new to keep");
+    const graded = { state: "dropped" as const, reason: "grader", detail: "Not kept: It's about one shop's returns portal, not a rule other shops share." };
+    expect(learningSteps([LOOK, ...WRITES, ended(graded)], graded)[0]!.summary).toBe("Looked back: kept nothing. It's about one shop's returns portal, not a rule other shops share.");
+  });
+  it("while it looks back or checks its notes, says so, in one row that grows", () => {
+    const going = learningSteps([ASKED, LOOK, WRITES[0]!], { state: "reflecting", reason: null });
+    expect(going.map((r) => [r.id, r.summary])).toEqual([["u1", ASKED.summary], ["l1", "Looking back on this run…"]]);
+    expect(going[1]!.text).toContain("Wrote .learning/refund-limit.md");
+    const checking = ended({ state: "proposed", reason: null, detail: "Checking 2 new notes…" });
+    expect(learningSteps([LOOK, ...WRITES, checking], { state: "proposed", reason: null, detail: "Checking 2 new notes…" })[0]!.summary).toBe("Looking back: checking 2 new notes…");
+  });
+  it("a timeline read after the run says how it ended, though the run read before it does not yet", () => {
+    const out = learningSteps([LOOK, ...WRITES, KEPT], { state: "proposed", reason: null });
+    expect(out[0]!.summary).toBe("Looked back. Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)");
+  });
+  it("with no look-back (a skip), the row that says how learning ended stays alone, labelled Learning", () => {
+    const skipped = ended({ state: "dropped", reason: "no_budget", detail: "Skipped: no budget left in this run to look back." });
+    const out = learningSteps([ASKED, ANSWER, skipped], { state: "dropped", reason: "no_budget" });
+    expect(out.map((r) => r.id)).toEqual(["u1", "a1", "learning"]);
+    expect(out[2]).toMatchObject({ kind: "Learning", agent_label: null, summary: "Skipped: no budget left in this run to look back." });
+  });
+  it("a run with no learning is as it was", () => {
+    const rows = [ASKED, ANSWER, USAGE];
+    expect(learningSteps(rows, null)).toEqual(rows);
   });
 });

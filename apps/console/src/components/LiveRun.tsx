@@ -40,7 +40,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     if (run && harness.state === "loading") void readHarness(v2, run).then(setHarness);
   }, [run?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
   const offer = messageOffer(harness, caps);
-  useLearningSettle(run, () => refresh());
+  useLearningSettle(run, () => refresh(), () => setFollows((n) => n + 1));
 
   const refresh = async () => {
     const n = runReads.begin();

@@ -8,8 +8,8 @@ import { type Agent, editBody, noteSaveError } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import {
-  type AgentLearning, bodyOf, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, canApprove, CHANGED, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
+  type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
+  APPROVE_LATER, APPROVE_PASSWORD, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
 } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -24,6 +24,8 @@ const runTitle = (runs: Map<string, Run>, id: string) => runs.get(id)?.title || 
 const PROSE = "text-[14px] leading-[1.65] [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12.5px] [&_h1]:mb-2 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:mb-0.5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_pre]:mb-2 [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:bg-background [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[12px] [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5";
 /** Whether the keyboard's save is ⌘ or Ctrl, as the editor's hint names it (both save). */
 const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+/** The most pages of notes, or of changes, the tab reads past the first on its own (for a link's note, or a note's source). */
+const MORE_PAGES = 20;
 const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
 /** The agent's Learning tab: the notes it wrote for itself after its runs, which every later run reads first. Each note
@@ -34,22 +36,35 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown }>({ items: [], cursor: null });
+  const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown; pages: number }>({ items: [], cursor: null, pages: 0 });
+  // The changes past the view's first page, read only while a note's source is not yet known.
+  const [olderLog, setOlderLog] = useState<{ items: LearningChange[]; cursor: string | null; pages: number }>({ items: [], cursor: null, pages: 0 });
+  // Whether the runs read are all the agent's (false: the latest page of them only).
+  const [allRuns, setAllRuns] = useState(true);
   const [adding, setAdding] = useState(false);
   const asked = useRef(0);
+  const reading = useRef(false);
   const read = () => {
     const n = ++asked.current;
+    reading.current = false;
     setError(null);
-    v2.agentLearning(agent.agent_id).then((r) => { if (n === asked.current) { setView(r); setLater({ items: [], cursor: r.notes.next_cursor }); } }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
+    v2.agentLearning(agent.agent_id).then((r) => {
+      if (n !== asked.current) return;
+      setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
+    }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
-    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) setRuns(r.runs); }, () => {});
+    v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); setAllRuns(!r.next_cursor); } }, () => {});
   };
   useEffect(read, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
+  // it, so old and new versions never mix and the cursor is always the current read's.
   const more = () => {
-    if (!later.cursor) return;
+    if (!later.cursor || reading.current) return;
+    const n = asked.current;
+    reading.current = true;
     v2.learningNotes(agent.agent_id, later.cursor).then(
-      (p) => setLater((x) => ({ items: [...x.items, ...p.items.filter((i) => !x.items.some((y) => y.file === i.file))], cursor: p.next_cursor })),
-      (e) => setLater((x) => ({ ...x, error: e ?? new Error("unknown") })),
+      (p) => { if (n !== asked.current) return; reading.current = false; setLater((x) => ({ items: [...x.items, ...p.items.filter((i) => !x.items.some((y) => y.file === i.file))], cursor: p.next_cursor, pages: x.pages + 1 })); },
+      (e) => { if (n !== asked.current) return; reading.current = false; setLater((x) => ({ ...x, error: e ?? new Error("unknown") })); },
     );
   };
 
@@ -58,18 +73,33 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
   const waiting = all.filter(isPending);
-  // Whether this server approves from the console, read once a note waits: until it says so, no Approve.
-  const [approves, setApproves] = useState<boolean | undefined>(undefined);
+  // Whether this caller approves from the console, read once a note waits: until the server says so, no Approve.
+  const [approves, setApproves] = useState<Approval | undefined>(undefined);
   const anyWaiting = waiting.length > 0;
   useEffect(() => {
     if (!anyWaiting || approves !== undefined) return;
     let live = true;
-    Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(canApprove(c)); }, () => { if (live) setApproves(false); });
+    Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(approval(c)); }, () => { if (live) setApproves("later"); });
     return () => { live = false; };
   }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
   const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
-  const from = useMemo(() => provenance(view?.log.items ?? []), [view]);
+  const from = useMemo(() => provenance([...(view?.log.items ?? []), ...olderLog.items]), [view, olderLog.items]);
+  // A note an address points at past the pages read: the next pages are read until it shows, at most MORE_PAGES of them.
+  const missing = focus.filter((f) => !all.some((x) => x.file === f)).length > 0;
+  useEffect(() => {
+    if (view && missing && later.cursor && later.error === undefined && later.pages < MORE_PAGES) more();
+  }, [view, missing, later.cursor, later.pages]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A note whose source is past the changes read: the next changes are read until every note's is known, or they end.
+  const unknown = all.some((x) => !from.has(x.file));
+  useEffect(() => {
+    if (!view || !unknown || !olderLog.cursor || olderLog.pages >= MORE_PAGES) return;
+    const n = asked.current;
+    v2.learningLog(agent.agent_id, olderLog.cursor).then(
+      (p) => { if (n === asked.current) setOlderLog((x) => ({ items: [...x.items, ...p.items], cursor: p.next_cursor, pages: x.pages + 1 })); },
+      () => { if (n === asked.current) setOlderLog((x) => ({ ...x, cursor: null })); },
+    );
+  }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
   // How many of the runs read here used each note: shown only by a server that says what a run read.
   const usedIn = useMemo(() => {
     const out = new Map<string, number>();
@@ -95,22 +125,23 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
         <section className="border border-warning/50" aria-label="Waiting for your OK">
           <h2 className="caps flex items-baseline gap-2 border-b border-warning/50 px-4 py-3 text-[12px] font-semibold">Waiting for your OK<span className="font-mono font-normal text-muted-foreground">{waiting.length}</span></h2>
           <p className="px-4 pt-3 text-[13px] text-muted-foreground">{WAITS_WHY}</p>
+          <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} onChanged={read} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} approves={approves} />
               </li>
             ))}
           </ul>
         </section>
       )}
-      {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
+      {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-[12px] text-muted-foreground">{IMPACT_LATER}</p>}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <section className="min-w-0 space-y-3" aria-label="Notes">
           <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
             <div className="min-w-0 flex-1">
               <h2 className="text-lg font-semibold">What it has learned</h2>
-              <p className="mt-0.5 text-[13px] text-muted-foreground">{active.length ? `${notes(active.length)} in use. Every later run reads them before it starts.` : "No note is in use: the next run starts with nothing learned."}</p>
+              <p className="mt-0.5 text-[13px] text-muted-foreground">{active.length ? `${notes(active.length)} in use. Every later run reads ${active.length === 1 ? "it" : "them"} before it starts.` : "No note is in use: the next run starts with nothing learned."}</p>
             </div>
             {!readOnly && !adding && <Button size="sm" onClick={() => setAdding(true)}><Plus aria-hidden /> Add a note</Button>}
           </div>
@@ -119,7 +150,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} onChanged={read} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} usedIn={usedIn.get(x.file)} usedOf={allRuns ? undefined : runs.length} onChanged={read} />
               </li>
             ))}
           </ul>
@@ -136,6 +167,9 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
     </div>
   );
 }
+
+/** Said where the before and after goes until the server has one (it needs two runs on each side of the first note). */
+const IMPACT_LATER = "After two runs on each side of its first note, this shows what learning changed.";
 
 /** A titled box at the side, as Mission Control's lists are: a bordered section under a caps header. */
 function Panel({ title, children, label }: { title: string; children: ReactNode; label?: string }) {
@@ -262,8 +296,9 @@ function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: 
 type From = { run?: { id: string; at: string; reason: string }; edited?: string } | undefined;
 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
-/** `approves`: for a note that waits, whether the server approves from the console (undefined while that is read). */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; onChanged: () => void; approves?: boolean }) {
+/** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
+ *  `usedOf`: how many runs `usedIn` counts over, when they are the agent's latest only (more runs than were read). */
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, usedOf, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; usedOf?: number; onChanged: () => void; approves?: Approval }) {
   const [editing, setEditing] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
@@ -308,11 +343,11 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, on
             {saved && <span className="caps text-[10px] text-success-text" role="status">{saved}</span>}
           </div>
           <p className="mt-1 text-[13px] text-muted-foreground">{note.description}</p>
-          {waits && approves === false && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{APPROVE_LATER}</p>}
+          {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{approves === "password" ? APPROVE_PASSWORD : APPROVE_LATER}</p>}
         </div>
         {!readOnly && !retiring && (
           <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
-            {waits ? approves && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${note.name}`}>{approving ? "Approving" : "Approve"}</Button>
+            {waits ? approves === "yes" && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${note.name}`}>{approving ? "Approving" : "Approve"}</Button>
               : <Button size="sm" variant="ghost" onClick={() => setEditing(true)} aria-label={`Edit ${note.name}`}><Pencil aria-hidden /> Edit</Button>}
             <Button size="sm" variant="destructive" onClick={() => setRetiring(true)} aria-label={`Retire ${note.name}`}>Retire</Button>
           </div>
@@ -328,7 +363,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, on
           </span>
         ) : from?.edited ? <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Written by you · {when(from.edited)}</span> : null}
         {from?.run && from.edited && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Edited by you · {when(from.edited)}</span>}
-        {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {runsWord(usedIn)}</span>}
+        {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {usedOf ? `${usedIn} of the latest ${usedOf} runs` : runsWord(usedIn)}</span>}
       </footer>}
       {retiring && <RetireConfirm note={note} v2={v2} agentId={agentId} onDone={(ok) => { setRetiring(false); if (ok) onChanged(); }} />}
     </article>
@@ -376,7 +411,7 @@ function RetireConfirm({ note, v2, agentId, onDone }: { note: LearningNote; v2: 
   return (
     <div role="alertdialog" aria-label={`Retire ${note.name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(false); } }}
       className="flex flex-wrap items-center gap-3 border-t border-destructive/40 bg-destructive/5 px-5 py-3">
-      <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Retire it?</span> It leaves every later run's instructions; the record stays.</p>
+      <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Retire it?</span> Later runs stop reading it. It stays under Earlier notes.</p>
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Yes, retire"}</Button>
       <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Keep</Button>
@@ -506,6 +541,9 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
 /** The notes no longer in use: replaced by a newer one, or retired. Closed until asked; one a link points at opens it. */
 function Earlier({ notes: list, all, from, focus }: { notes: LearningNote[]; all: LearningNote[]; from: ReturnType<typeof provenance>; focus: string[] }) {
   const [open, setOpen] = useState(list.some((x) => focus.includes(x.file)));
+  // A note a link points at that arrives with a later page opens the list too.
+  const pointed = list.some((x) => focus.includes(x.file));
+  useEffect(() => { if (pointed) setOpen(true); }, [pointed]);
   const nameOf = (file: string | null) => all.find((x) => x.file === file)?.name ?? file;
   // To the note that replaced it: scrolled to, and the focus on it.
   const toNote = (file: string) => {
@@ -568,7 +606,8 @@ function NotKept({ runs }: { runs: Run[] }) {
   );
 }
 
-/** The index the next run reads first, one line a note in use: built by the server from the notes, so read-only. */
+/** The index the next run reads first, one line a note in use (so its lines are counted as notes): built by the server
+ *  from the notes, so read-only. */
 function NextRun({ index }: { index: string }) {
   const [open, setOpen] = useState(false);
   const lines = index.split("\n").filter((l) => l.trim()).length;
@@ -577,7 +616,7 @@ function NextRun({ index }: { index: string }) {
       <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
         <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
         <span className="caps text-[12px] font-semibold">What the next run reads</span>
-        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{lines ? `${lines} ${lines === 1 ? "line" : "lines"}` : "nothing"}</span>
+        <span className="ml-auto font-mono text-[11px] text-muted-foreground">{lines ? notes(lines) : "nothing"}</span>
       </button>
       {open && (
         <div className="border-t">

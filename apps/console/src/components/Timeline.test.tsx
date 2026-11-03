@@ -52,24 +52,3 @@ describe("Timeline, a text block", () => {
     expect(h).toContain("lucide-message-square-text");
   });
 });
-
-describe("Timeline, a run's learning", () => {
-  it("the row that says how its learning ended is labelled Learning, once, with no chip repeating it", () => {
-    const h = html(row({ kind: "learning", agent_label: "learning", summary: "Learned: Try /policies/refund-policy first (replaces 1 older note)" }));
-    expect(h).toMatch(/>Learning</);
-    expect(h).not.toMatch(/>learning</);
-    expect(h).toContain("Learned: Try /policies/refund-policy first (replaces 1 older note)");
-  });
-  it("the message that starts the look back is the server's, not the person's: Learning, in its words", () => {
-    const h = html(row({ kind: "user_message", agent_label: "learning", summary: "Looking back on this run." }));
-    expect(h).toMatch(/>Learning</);
-    expect(h).not.toMatch(/>You</);
-    expect(h).not.toMatch(/>learning</);
-    expect(h).toContain(">Looking back on this run.<");
-    // An older server's row carried the prompt behind "Learning: ": the prefix goes.
-    expect(html(row({ kind: "user_message", agent_label: "learning", summary: "Learning: The task is done." }))).toContain(">The task is done.<");
-  });
-  it("the agent's own steps while it looks back keep their chip", () => {
-    expect(html(row({ kind: "tool_use", tool_name: "write", agent_label: "learning", summary: "Wrote .learning/a.md" }))).toMatch(/>learning</);
-  });
-});

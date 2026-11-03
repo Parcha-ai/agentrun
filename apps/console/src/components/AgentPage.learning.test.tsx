@@ -25,14 +25,15 @@ const ended: TimelinePage = { run_id: "run-b", status: "completed", state: "idle
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | null; notes?: string[] } = {}, listed: Run = run, reread: () => Run = () => run) {
+async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | null; notes?: string[] } = {}, listed: Run = run, reread: () => Run = () => run, timeline: () => TimelinePage = () => ended) {
   let current = a;
   let reads = 0;
+  let timelines = 0;
   const v2 = {
     getAgent: async () => ({ agent: current, etag: '"r1"' }),
     statsOver: async () => ({}),
     listAgentRuns: async () => ({ runs: [listed], next_cursor: null }),
-    getTimeline: async () => ended,
+    getTimeline: async () => { timelines++; return timeline(); },
     getRun: async () => { reads++; return reread(); },
     agentLearning: async () => EMPTY,
     updateDefinition: async (_id: string, body: { definition: Agent["definition"] }) => { current = { ...current, revision: "r2", revisions: 2, definition: body.definition }; return { agent: current, etag: '"r2"' }; },
@@ -43,7 +44,7 @@ async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | n
   render(props);
   await settle();
   const tabs = () => [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
-  return { host, tabs, render, reads: () => reads, text: () => host.textContent ?? "" };
+  return { host, tabs, render, reads: () => reads, timelines: () => timelines, text: () => host.textContent ?? "" };
 }
 
 describe("AgentPage's Learning tab", () => {
@@ -105,5 +106,27 @@ describe("AgentPage's Learning tab", () => {
     const settled = p.reads();
     await act(async () => { await new Promise((r) => setTimeout(r, 2300)); });
     expect(p.reads()).toBe(settled);
+  }, 15_000);
+  it("the latest run's timeline is read again once its learning moves: its look-back step and its row agree", async () => {
+    const deciding: Run = { ...run, learning: { state: "proposed", reason: null } };
+    let n = 0;
+    const rows = () => {
+      const detail = n >= 2 ? "Learned: Try it first (replaces 1 older note)" : "Checking 1 new note…";
+      return [
+        { id: "l1", seq: 1, kind: "user_message", agent_label: "learning", summary: "Looking back on this run.", text: "Looking back on this run.", timestamp: "2026-11-03T16:52:05Z", tool_name: null },
+        { id: "learning", seq: 2, kind: "learning", agent_label: "learning", summary: detail, text: detail, timestamp: "2026-11-03T16:52:06Z", tool_name: null },
+      ] as TimelinePage["rows"];
+    };
+    const p = await open(agent(), { learning: "on" }, deciding, () => (++n < 2 ? { ...deciding } : { ...run }), () => ({ ...ended, rows: rows() }));
+    const latest = () => p.host.querySelector('section[aria-label="Latest run"]')!;
+    expect(latest().textContent).toContain("Looking back: checking 1 new note…");
+    for (let i = 0; i < 400 && !(latest().textContent ?? "").includes("Looked back: kept 1 note (Try it first)"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(latest().textContent).toContain("Looked back: kept 1 note (Try it first)");
+    expect(latest().textContent).toContain("Learned 1 note");
+    for (let i = 0; i < 40 && p.timelines() < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(p.timelines()).toBeGreaterThan(1);
+    const step = [...latest().querySelectorAll("ol > li")].find((li) => li.textContent?.includes("Looked back"))!;
+    await act(async () => { step.querySelector("button")!.click(); });
+    expect(step.querySelector("pre")!.textContent).toContain("Learned: Try it first (replaces 1 older note)");
   }, 15_000);
 });

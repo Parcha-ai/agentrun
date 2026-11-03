@@ -131,7 +131,7 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
 
     // Retire their own note, after the confirm: it leaves the notes in use and shows under Earlier notes.
     await page.click(/^Retire Keep/);
-    expect(page.text()).toContain("Retire it? It leaves every later run's instructions; the record stays.");
+    expect(page.text()).toContain("Retire it? Later runs stop reading it. It stays under Earlier notes.");
     await page.click(/^Yes, retire$/);
     expect(page.card(MINE)).toBeNull();
     expect(page.text()).toContain("1 note in use.");

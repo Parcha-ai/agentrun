@@ -109,13 +109,24 @@ export function originOf(n: Pick<LearningNote, "origin" | "text">): "you" | "run
   }
   return undefined;
 }
-/** Whether this server approves a waiting note from the console (capabilities `learning.approve`). A server that holds
- *  notes for the OK without the route says nothing, and the console offers no Approve. */
-export const canApprove = (caps: unknown) => !!caps && typeof caps === "object" && (caps as { learning?: { approve?: unknown } }).learning?.approve === true;
+/** Whether this caller approves a waiting note from the console, by the server's capabilities: `yes` when
+ *  `learning.approve` is true (the owner's password session); `password` when the server says approving needs the
+ *  owner's password sign-in (`learning.approve_needs`); `later` from a server that says neither (it holds notes for the
+ *  OK without the approve route). Only `yes` offers Approve. */
+export type Approval = "yes" | "password" | "later";
+export function approval(caps: unknown): Approval {
+  const l = !!caps && typeof caps === "object" ? (caps as { learning?: { approve?: unknown; approve_needs?: unknown } }).learning : undefined;
+  if (!l || typeof l !== "object") return "later";
+  return l.approve === true ? "yes" : l.approve_needs === "password" ? "password" : "later";
+}
 /** Said on a waiting note while the server has no approve route. */
 export const APPROVE_LATER = "Approving here comes in the next update; until then it stays out of every run.";
+/** Said on a waiting note to a caller who is not signed in with the owner's password, where the server approves. */
+export const APPROVE_PASSWORD = "Approving needs your password sign-in. Until then it stays out of every run.";
 /** Why a note waits, in one line. */
 export const WAITS_WHY = "It changes what this agent trusts or skips, so it waits for you.";
+/** Beside the notes that wait: what a run on the host can reach, and where an untrusted task runs instead. */
+export const HOST_RUNS = "Runs that use bash on the host run as you. For untrusted tasks, use the sandbox.";
 
 /** What a file name the server cut of a secret reads: shown, never linked. */
 export const REDACTED = "[redacted]";
@@ -257,11 +268,64 @@ export function shortTitle(title: string, max = 40): string {
 /** A timeline row as the console labels a run's learning: the row that says how it ended, and the message that starts
  *  the look back ("Looking back on this run.", the server's own words; it is not the person's), each read "Learning",
  *  without the chip that would say it again. An older server's look-back row, which carried the prompt, loses its
- *  "Learning: " prefix. Every other row is as it was. The timeline calls it once a row. */
+ *  "Learning: " prefix. Every other row is as it was. learningSteps calls it on each row it leaves as a row, and on each
+ *  line of the look-back it folds. */
 export function learningLabel(row: TimelineRow): TimelineRow {
-  if (row.kind === "learning") return { ...row, kind: "Learning", agent_label: null };
-  if (row.kind === "user_message" && row.agent_label === "learning") return { ...row, kind: "Learning", agent_label: null, summary: row.summary.replace(/^Learning:\s*/, "") };
+  if (row.kind === LEARNING) return { ...row, kind: "Learning", agent_label: null };
+  if (row.kind === "user_message" && row.agent_label === LEARNING) return { ...row, kind: "Learning", agent_label: null, summary: row.summary.replace(/^Learning:\s*/, "") };
   return row;
+}
+/** The label the server puts on every row of a run's learning, and the kind of the row that says how it ended. */
+const LEARNING = "learning";
+
+/** How far a run's learning has got: it only moves forward, so of two reads the further one is the newer. */
+const STAGE: Record<string, number> = { seeded: 0, reflecting: 1, proposed: 2, merged: 3, dropped: 3, pending: 3 };
+const stage = (l: RunLearning | undefined) => (l ? STAGE[l.state] ?? 0 : -1);
+/** The learning a timeline row of kind `learning` carries (`learning`: its state, reason and words), when it does. */
+const rowLearning = (row: TimelineRow | undefined): RunLearning | undefined => {
+  const l = (row as { learning?: unknown } | undefined)?.learning;
+  return l && typeof l === "object" && typeof (l as { state?: unknown }).state === "string" ? (l as NonNullable<RunLearning>) : undefined;
+};
+const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The look-back's one step, in words, from where the run's learning stands: under way, what it kept by name, what
+ *  waits for the OK, nothing new, or why nothing was kept. Never a file path. */
+export function lookedBack(l: RunLearning | undefined): string {
+  if (!l || stage(l) < 2) return "Looking back on this run…";
+  if (l.state === "proposed") return `Looking back: ${lowerFirst(l.detail?.trim() || "Checking its new notes…")}`;
+  const names = (refs: NoteRef[]) => refs.map((x) => x.name.replace(/\s+/g, " ").trim()).join(", ");
+  if (l.state === "merged") {
+    const kept = learnedBy(l);
+    return kept.length ? `Looked back: kept ${notes(kept.length)} (${names(kept)})` : `Looked back. ${l.detail?.trim() || "It kept what it learned."}`;
+  }
+  if (l.state === "pending") {
+    const waits = pendingBy(l);
+    return `Looked back: ${lowerFirst(waitWords(waits.length))}${waits.length ? ` (${names(waits)})` : ""}`;
+  }
+  if (dropKind(l.reason) === "nothing") return "Looked back: nothing new to keep";
+  return `Looked back: kept nothing. ${upperFirst(dropWords(l).replace(/^Not kept:\s*/, ""))}`;
+}
+
+/** A run's timeline rows as its page shows them, with its end-of-run look-back as ONE step. Every row labelled
+ *  `learning` (the look-back's message, whatever it did, its notes written as files or given as text, and the row that
+ *  says how its learning ended) folds into one row, where the look-back began: "Looked back: kept 2 notes (Refund
+ *  limit, Answer shape)", said from the run's learning (`learning`, the same the header's chips read, so the two agree)
+ *  or from the timeline's own row when that one is further on. The rows it stands for open under it, each on a line. A
+ *  run that did not look back (a skip) keeps its one learning row, labelled. Every other row is as it was. */
+export function learningSteps(rows: readonly TimelineRow[], learning?: RunLearning): TimelineRow[] {
+  const looked = rows.filter((r) => r.agent_label === LEARNING && r.kind !== LEARNING);
+  if (!looked.length) return rows.map(learningLabel);
+  const end = rows.findLast((r) => r.kind === LEARNING);
+  const fromRow = rowLearning(end);
+  const said = stage(fromRow) > stage(learning ?? undefined) ? fromRow : learning && { ...learning, detail: learning.detail ?? fromRow?.detail ?? end?.summary };
+  const first = looked[0]!;
+  const step: TimelineRow = {
+    id: first.id, seq: first.seq, timestamp: first.timestamp, ...(first.created_at ? { created_at: first.created_at } : {}),
+    kind: "Learning", agent_label: null, tool_name: null, summary: lookedBack(said ?? undefined),
+    text: [...looked, ...(end ? [end] : [])].map((r) => learningLabel(r).summary).join("\n"),
+  };
+  return rows.flatMap((r) => (r === first ? [step] : r.agent_label === LEARNING || r.kind === LEARNING ? [] : [r]));
 }
 
 /** The run that first kept each note, and the last time a person changed it, from the changes on the page read. */

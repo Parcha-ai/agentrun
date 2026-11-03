@@ -21,15 +21,18 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; vi.useRealTimers(); document.body.innerHTML = ""; });
 
-function Probe({ run, reread }: { run: R | null; reread: () => void }) { useLearningSettle(run, reread); return null; }
+function Probe({ run, reread, moved }: { run: R | null; reread: () => void; moved: () => void }) { useLearningSettle(run, reread, moved); return null; }
 function mount(run: R | null) {
   const reads: number[] = [];
+  const moves: (string | undefined)[] = [];
   const reread = () => { reads.push(Date.now()); };
+  let shown = run;
+  const moved = () => { moves.push(shown?.learning?.state); };
   root = createRoot(document.body.appendChild(document.createElement("div")));
-  const render = (r: R | null) => act(() => root!.render(createElement(Probe, { run: r, reread })));
+  const render = (r: R | null) => { shown = r; act(() => root!.render(createElement(Probe, { run: r, reread, moved }))); };
   render(run);
   const start = Date.now();
-  return { reads, render, at: () => reads.map((t) => (t - start) / 1000) };
+  return { reads, moves, render, at: () => reads.map((t) => (t - start) / 1000) };
 }
 const wait = (ms: number) => act(() => { vi.advanceTimersByTime(ms); });
 const setHidden = (h: boolean) => act(() => { hidden = h; document.dispatchEvent(new Event("visibilitychange")); });
@@ -83,6 +86,23 @@ describe("useLearningSettle", () => {
     expect(vi.getTimerCount()).toBe(1);
     wait(1_000);
     expect(m.at()).toEqual([2]);
+  });
+  it("says when an ended run's learning moves, so the page reads its timeline again; not on the first read, nor while it works", () => {
+    const m = mount({ status: "working", learning: { state: "seeded", reason: null } });
+    m.render({ status: "working", learning: { state: "seeded", reason: null } });
+    expect(m.moves).toEqual([]);
+    m.render(deciding);
+    m.render({ ...deciding });
+    expect(m.moves).toEqual(["reflecting"]);
+    m.render({ status: "completed", learning: { state: "proposed", reason: null } });
+    m.render(merged);
+    m.render({ ...merged });
+    expect(m.moves).toEqual(["reflecting", "proposed", "merged"]);
+    // A page opened on a run that has settled reads nothing again.
+    act(() => root!.unmount()); root = undefined;
+    const settled = mount(merged);
+    settled.render({ ...merged });
+    expect(settled.moves).toEqual([]);
   });
   it("does nothing for a run still working, one that does not learn, or one whose learning has settled", () => {
     for (const run of [{ status: "working" as const, learning: { state: "seeded" as const, reason: null } }, { status: "completed" as const, learning: null }, merged, null]) {

@@ -50,20 +50,21 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }> };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
   const v2 = {
     agentLearning: async (id: string) => { calls.push(`learning ${id}`); return (fake.learning ?? (async () => view()))(); },
-    listAgentRuns: async (id: string) => { calls.push(`runs ${id}`); return { runs: fake.runs ?? RUNS, next_cursor: null }; },
+    listAgentRuns: async (id: string) => { calls.push(`runs ${id}`); return { runs: fake.runs ?? RUNS, next_cursor: fake.runsNext ?? null }; },
     readNote: async (_id: string, file: string) => { calls.push(`read ${file}`); return (fake.read ?? (async (f: string) => ({ note: view().notes.items.find((x) => x.file === f)!.text, etag: `"v-${f}"` })))(file); },
     writeNote: async (_id: string, file: string, text: string, on: unknown) => { calls.push(`write ${file} ${JSON.stringify(on)}`); return (fake.write ?? (async () => ({ text, etag: '"v2"' })))(file, text, on); },
     retireNote: async (_id: string, file: string, etag: string) => { calls.push(`retire ${file} ${etag}`); return (fake.retire ?? (async () => ({ text: "", etag: '"v3"' })))(file, etag); },
     approveNote: async (_id: string, file: string, etag: string) => { calls.push(`approve ${file} ${etag}`); return (fake.approve ?? (async () => ({ note: "", etag: '"v4"' })))(file, etag); },
     getAgent: async () => { calls.push("agent"); return { agent: a, etag: '"rv1"' }; },
     updateDefinition: async (_id: string, body: unknown, etag: string | null) => { calls.push(`put ${JSON.stringify(body)} ${etag}`); return (fake.update ?? (async () => ({ agent: { ...a, revision: "rv2", revisions: 2, definition: { ...a.definition, ...(body as { definition: object }).definition } }, etag: '"rv2"' })))(body, etag); },
-    learningNotes: async () => ({ items: [], total: 0, next_cursor: null }),
+    learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
+    learningLog: async (_id: string, cursor: string) => { calls.push(`log after ${cursor}`); return (fake.log ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -98,6 +99,14 @@ describe("the Learning tab's notes", () => {
     expect(mine.textContent).toContain("Written by you");
     expect(mine.textContent).toContain("Used in 1 run");
   });
+  it("one note in use is said as one: it, not them", async () => {
+    const one = view();
+    one.notes.items = one.notes.items.filter((x) => x.file !== MINE);
+    one.index = `- [Try /policies/refund-policy first](${FIRST}) — Open it first\n`;
+    const t = await open(agent(true), { learning: async () => one });
+    expect(t.text()).toContain("1 note in use. Every later run reads it before it starts.");
+    expect(t.text()).toContain("What the next run reads1 note");
+  });
   it("a server that does not say what runs read shows no use count", async () => {
     const t = await open(agent(true), { runs: RUNS.map((r) => ({ ...r, learning: r.learning && { state: r.learning.state, reason: r.learning.reason } })) });
     expect(t.text()).not.toContain("Used in");
@@ -122,7 +131,8 @@ describe("the Learning tab's notes", () => {
   });
   it("what the next run reads is the server's index, read-only, behind a toggle", async () => {
     const t = await open(agent(true));
-    expect(t.text()).toContain("What the next run reads2 lines");
+    expect(t.text()).toContain("What the next run reads2 notes");
+    expect(t.text()).not.toMatch(/\d lines?\b/);
     await t.click(/^What the next run reads/);
     expect(t.host.querySelector("pre")?.textContent).toContain(`(${FIRST})`);
     expect(t.text()).toContain("Read-only");
@@ -178,6 +188,18 @@ describe("the before and after", () => {
       expect(t.host.querySelector('section[aria-label^="Since it learned"]')).toBeNull();
       act(() => root?.unmount()); document.body.innerHTML = "";
     }
+  });
+  it("until there is one, one quiet line says when it will show; an older server, which has none to give, says nothing", async () => {
+    const LINE = "After two runs on each side of its first note, this shows what learning changed.";
+    const t = await open(agent(true), { learning: async () => view({ impact: null }) });
+    expect(t.text()).toContain(LINE);
+    expect(t.host.querySelectorAll("p").length).toBeGreaterThan(0);
+    expect([...t.host.querySelectorAll("p")].filter((x) => x.textContent === LINE)).toHaveLength(1);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(agent(true), { learning: async () => view({ impact: undefined }) })).text()).not.toContain(LINE);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    // With learning off, no run will fill it: nothing is promised.
+    expect((await open(agent(false), { learning: async () => view({ impact: null }) })).text()).not.toContain(LINE);
   });
 });
 
@@ -278,7 +300,7 @@ describe("retiring a note", () => {
     const t = await open(agent(true));
     await t.click(/^Retire Keep/);
     const dialog = t.host.querySelector('[role="alertdialog"]')!;
-    expect(dialog.textContent).toContain("Retire it? It leaves every later run's instructions; the record stays.");
+    expect(dialog.textContent).toContain("Retire it? Later runs stop reading it. It stays under Earlier notes.");
     expect(document.activeElement?.textContent).toBe("Yes, retire");
     await t.key(dialog, "Escape");
     expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
@@ -408,6 +430,7 @@ describe("notes that wait for the owner's OK", () => {
     expect(box).not.toBeNull();
     expect(t.host.querySelector("section, article")).toBe(box);
     expect(box.textContent).toContain("It changes what this agent trusts or skips, so it waits for you.");
+    expect(box.textContent).toContain("Runs that use bash on the host run as you. For untrusted tasks, use the sandbox.");
     expect(box.querySelector(`article[aria-label="Trust acme.com's refund page"]`)).not.toBeNull();
     expect(t.text()).toContain("2 notes in use.");
     expect(box.textContent).toContain("From you");
@@ -441,10 +464,64 @@ describe("notes that wait for the owner's OK", () => {
       act(() => root?.unmount()); document.body.innerHTML = "";
     }
   });
+  it("on a server that approves only from the owner's password sign-in, a caller without one sees why, and no Approve", async () => {
+    const t = await open(agent(true), { learning: async () => waitingView(), caps: { learning: { pending: true, approve: false, approve_needs: "password" } } });
+    const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
+    expect(t.button(/^Approve /)).toBeUndefined();
+    expect(t.button(/^Retire Trust/)).toBeTruthy();
+    expect(box.textContent).toContain("Approving needs your password sign-in. Until then it stays out of every run.");
+    expect(box.textContent).not.toContain("Approving here comes in the next update");
+  });
   it("there is no such section when no note waits, and the capabilities are not even read", async () => {
     const t = await open(agent(true), { caps: APPROVES });
     expect(t.host.querySelector('section[aria-label="Waiting for your OK"]')).toBeNull();
     expect(t.button(/^Approve /)).toBeUndefined();
     expect(t.calls).not.toContain("capabilities");
+  });
+});
+
+describe("pages past the first", () => {
+  const DEEP = "deep-note.md";
+  const paged = (extra: Partial<AgentLearning> = {}) => { const v = view(extra); v.notes = { ...v.notes, total: 4, next_cursor: "n1" }; return v; };
+  it("a page asked for before a refresh never lands after it: no old notes, no old cursor", async () => {
+    let release!: (p: { items: LearningNote[]; total: number; next_cursor: string | null }) => void;
+    let reads = 0;
+    const t = await open(agent(true), {
+      learning: async () => (reads++ === 0 ? paged() : view()),
+      notes: () => new Promise((r) => { release = r; }),
+    });
+    await t.click(/^Load more notes$/);
+    await t.click(/^Retire Keep/);
+    await t.click(/^Yes, retire$/);
+    expect(reads).toBe(2);
+    await act(async () => { release({ items: [note("stale.md", "Stale note")], total: 4, next_cursor: "n2" }); });
+    await settle();
+    expect(t.card("Stale note")).toBeNull();
+    expect(t.button(/^Load more notes$/)).toBeUndefined();
+  });
+  it("a run's link to a note past the first page reads pages until it shows it, highlighted", async () => {
+    const t = await open(agent(true), { learning: async () => paged(), notes: async () => ({ items: [note(DEEP, "A deep note")], total: 4, next_cursor: null }) }, { focus: [DEEP] });
+    expect(t.calls).toContain("notes after n1");
+    expect(t.card("A deep note")!.className.split(/\s+/)).toContain("border-primary");
+  });
+  it("one that was replaced opens Earlier notes once its page arrives", async () => {
+    const t = await open(agent(true), { learning: async () => paged(), notes: async () => ({ items: [note(DEEP, "A deep note", { status: "superseded", superseded_by: FIRST })], total: 4, next_cursor: null }) }, { focus: [DEEP] });
+    expect(t.host.querySelector('section[aria-label="Earlier notes"]')!.textContent).toContain("A deep note");
+  });
+  it("a note's source past the first page of changes is read from the next ones", async () => {
+    const v = view();
+    v.notes.items = [...v.notes.items, note("older.md", "An older note")];
+    v.log = { ...v.log, next_cursor: "l1" };
+    const t = await open(agent(true), {
+      learning: async () => v,
+      runs: [...RUNS, runOf("run-z", "rei.com", { state: "merged", reason: null })],
+      log: async () => ({ items: [{ by: { run: "run-z" }, commit: "c0", at: "2026-11-03T15:00:00Z", reason: "General.", files: ["older.md", "MEMORY.md"] }], total: 4, next_cursor: null }),
+    });
+    expect(t.calls).toContain("log after l1");
+    expect(t.card("An older note")!.querySelector('a[href="#/runs/run-z"]')?.textContent).toBe("rei.com");
+  });
+  it("says how many of the latest runs used a note when there are more runs than it read", async () => {
+    const t = await open(agent(true), { runsNext: "r1" });
+    expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Used in 3 of the latest 6 runs");
   });
 });

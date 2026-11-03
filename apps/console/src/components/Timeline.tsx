@@ -2,7 +2,6 @@ import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, Loa
 import { useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
-import { learningLabel } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
 
@@ -24,7 +23,6 @@ const label = (row: TimelineRow) =>
   ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
 
 function Row({ row, last }: { row: TimelineRow; last: boolean }) {
-  row = learningLabel(row);
   const [open, setOpen] = useState(false);
   const Icon = ICON[row.kind] ?? Flag;
   const detail = row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text;
