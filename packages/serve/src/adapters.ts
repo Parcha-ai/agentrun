@@ -31,9 +31,16 @@ const SERVE_VERSION: string = JSON.parse(readFileSync(new URL("../package.json",
 export const startedByNpx = (file: string = fileURLToPath(import.meta.url)): boolean => file.split(sep).includes("_npx");
 
 /** `message` with an adapter's own install line (`npmLine`, which installs `spec` into a project) as the npx line that
- *  runs this same server with `spec` beside it, when the server runs from npx. Any other message is left as it is. */
-export function installHint(message: string, npmLine: string, spec: string, npx = startedByNpx()): string {
-  return npx && message.includes(npmLine) ? message.replace(npmLine, `npx -p @parcha/agentrun-serve@${SERVE_VERSION} -p ${spec} agentrun-serve`) : message;
+ *  runs this same server with `spec` beside it, when the server runs from npx. Started by `npx @parcha/agentrun`
+ *  (`command`, the AGENTRUN_COMMAND that command sets), the line runs that command, so the person keeps it and its data
+ *  (~/.agentrun): npx installs the three beside each other, and the command takes the server it finds there. Any other
+ *  message is left as it is. */
+export function installHint(message: string, npmLine: string, spec: string, npx = startedByNpx(), command?: string): string {
+  if (!npx || !message.includes(npmLine)) return message;
+  const line = command === "agentrun"
+    ? `npx -p @parcha/agentrun -p @parcha/agentrun-serve@${SERVE_VERSION} -p ${spec} agentrun`
+    : `npx -p @parcha/agentrun-serve@${SERVE_VERSION} -p ${spec} agentrun-serve`;
+  return message.replace(npmLine, line);
 }
 
 /** For tests: a JSON `{command, args?, env?}` that speaks Codex's app-server protocol in place of Codex. agentrun-harness-codex
@@ -227,7 +234,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   } catch (error) {
     const message = (error as Error).message;
     const said = message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`;
-    throw new HarnessUnavailable(claude.CLAUDE_AGENT_SDK_INSTALL && claude.CLAUDE_AGENT_SDK_VERSION ? installHint(said, claude.CLAUDE_AGENT_SDK_INSTALL, `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}`, npx) : said);
+    throw new HarnessUnavailable(claude.CLAUDE_AGENT_SDK_INSTALL && claude.CLAUDE_AGENT_SDK_VERSION ? installHint(said, claude.CLAUDE_AGENT_SDK_INSTALL, `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}`, npx, env.AGENTRUN_COMMAND) : said);
   }
   if (refused !== undefined) throw refused;
   return adapter;
@@ -250,7 +257,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
     } catch (error) {
       const message = (error as Error).message;
       const said = message.includes("npm install") ? message : `${message} (${INSTALL.codex})`;
-      throw new HarnessUnavailable(installHint(said, codex.CODEX_INSTALL, `@openai/codex@${codex.CODEX_VERSION}`, npx));
+      throw new HarnessUnavailable(installHint(said, codex.CODEX_INSTALL, `@openai/codex@${codex.CODEX_VERSION}`, npx, env.AGENTRUN_COMMAND));
     }
   }
   // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is

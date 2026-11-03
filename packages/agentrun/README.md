@@ -17,5 +17,10 @@ runs a current model of that provider. Other commands are the server's: `npx @pa
 local Claude Code, Codex and pi sessions, and `npx @parcha/agentrun reset-password` clears the console's password.
 `--data DIR` and `--port N` change where it keeps its data and the port it takes.
 
+Started this way, the server runs agents on pi. Claude and Codex need their SDK or CLI beside the server: start it as
+`npx -p @parcha/agentrun -p @parcha/agentrun-serve -p @anthropic-ai/claude-agent-sdk@0.3.286 agentrun` (for Codex,
+`-p @openai/codex@0.164.0`), the line the server's capabilities and New agent give when one is missing. It keeps
+`~/.agentrun`.
+
 The TypeScript SDK for the hosted AgentRun API is published as `@parcha/agentrun` 0.2.x, from its own repository; this
 package starts with 0.3.0, so a dependency on `^0.2` keeps the SDK.

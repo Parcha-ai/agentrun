@@ -111,7 +111,8 @@ export async function main(argv, env = process.env) {
   const at = argv.indexOf("--data");
   const dir = at >= 0 ? argv[at + 1] : join(homedir(), ".agentrun");
   const rest = at >= 0 ? [...argv.slice(0, at), ...argv.slice(at + 2)] : argv;
-  const childEnv = { AGENTRUN_LOG: "quiet", ...env, ...modelEnv(env) };
+  // AGENTRUN_COMMAND tells the server this command started it, so a missing harness's install line keeps the person on it.
+  const childEnv = { AGENTRUN_LOG: "quiet", ...env, ...modelEnv(env), AGENTRUN_COMMAND: "agentrun" };
   // A subcommand (import, reset-password) is the server's own, on the same data directory.
   if (rest[0] && !rest[0].startsWith("-")) {
     const { command, args, fetched } = server([rest[0], "--data", dir, ...rest.slice(1)]);
