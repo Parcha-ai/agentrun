@@ -57,7 +57,7 @@ test("a model whose provider has no key here, or no model on a host with no defa
   const plain = await api("POST", "/agents", agent("plain"));
   assert.equal(plain.status, 201);
   assert.deepEqual(plain.body.warnings.map((w) => [w.field, w.reason]), [["definition.model", "not_set_up_here"]]);
-  assert.match(plain.body.warnings[0].message, /No model yet: add a model key in Settings → Model keys, or set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY where AgentRun starts\./);
+  assert.match(plain.body.warnings[0].message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts\./);
   const run = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code], [409, "agent_not_runnable"]);
   assert.match(run.body.error.message, /No OpenAI key here for openai\/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
