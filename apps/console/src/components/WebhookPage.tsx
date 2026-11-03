@@ -45,8 +45,11 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
     e.preventDefault();
     void act("The webhook was not saved", async () => {
       const saved = await v2.saveWebhook(url.trim());
-      // Shown this once: the answer that made it holds it, and nothing reads it again.
+      // Shown this once: the answer that made it holds it, and nothing reads it again. The answer is the webhook as
+      // saved, shown at once, whatever the read after it does.
       if (saved.secret) setSecret(saved.secret);
+      const { secret: _shown, ...view } = saved;
+      setWebhook(view);
     });
   };
   const cantStore = atRest === "unavailable";
@@ -63,6 +66,12 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
           <p className="mt-2 text-[14px] text-muted-foreground">One URL this server POSTs to when a run needs its person (`run.needs_input`) and when it ends (`run.ended`), signed by the Standard Webhooks spec, so a receiver checks each message with any of that spec's libraries.</p>
         </div>
         {problem && <RunError error={problem.error} title={problem.title} />}
+        {loadError && (
+          <div className="border p-4" role="alert">
+            <p className="font-mono text-[13px] text-destructive-text">The webhook could not be read: {loadError.code}: {loadError.message}. What is shown may be out of date.</p>
+            <button type="button" onClick={load} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>
+          </div>
+        )}
         {secret && (
           <section className="border border-warning/50 bg-warning/5 p-4" aria-label="Webhook secret">
             <p className="caps text-[12px] font-semibold text-warning-text">The signing secret, shown this once</p>
@@ -94,7 +103,7 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
           {removing && (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
               <span>Its pending messages are dropped; the log of attempts stays.</span>
-              <Button type="button" variant="destructive" disabled={busy} onClick={() => { setRemoving(false); setUrl(""); setTested(null); void act("The webhook was not removed", () => v2.removeWebhook()); }}>Remove the webhook</Button>
+              <Button type="button" variant="destructive" disabled={busy} onClick={() => { setRemoving(false); setUrl(""); setTested(null); void act("The webhook was not removed", async () => { await v2.removeWebhook(); setWebhook({ configured: false }); setSecret(null); }); }}>Remove the webhook</Button>
               <Button type="button" variant="ghost" onClick={() => setRemoving(false)}>Cancel</Button>
             </div>
           )}
@@ -116,7 +125,7 @@ export function WebhookPage({ v2, atRest }: { v2: Client; atRest?: "sealed" | "u
                     <span className={a.error ? "min-w-0 flex-1 font-mono text-destructive-text" : "min-w-0 flex-1 font-mono"}>{outcome(a)}</span>
                     {a.redelivery && <Chip>redelivery</Chip>}
                     <span className="font-mono text-[12px] text-muted-foreground" title={a.webhook_id}>{a.webhook_id.slice(0, 12)}…</span>
-                    {a.type !== "webhook.test" && <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => act("The message was not sent again", () => v2.redeliverWebhook(a.webhook_id))}>Redeliver</Button>}
+                    <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => act("The message was not sent again", () => v2.redeliverWebhook(a.webhook_id))}>Redeliver</Button>
                   </li>
                 ))}
               </ul>
