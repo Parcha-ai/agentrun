@@ -841,6 +841,12 @@ it at its next start. `GET /stats` counts the runs that tried to learn under `le
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
+An eval set of 20 runs and what each proposed, labelled keep or drop (`test/fixtures/learn-eval.json`: lessons the
+agent worked out, user preferences and a "remember" during the task, one-shop facts, secrets, a tool's failure and four
+injections), runs in CI through the parser, the checks and the grader's prompt on a faux grader that answers by label
+(`test/learn-eval.test.mjs`). `scripts/learn-eval.mjs` runs the same set on real models, the grade and the end-of-run
+turn both, and prints keep-precision, keep-recall and the injection-drop rate per model; it spends.
+
 ### What a person sees and controls
 
 A person reads and changes an agent's learning through this server's own routes (`learning/1` in `/v2/openapi.json`),

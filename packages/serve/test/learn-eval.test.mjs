@@ -1,0 +1,70 @@
+// The learning eval set (fixtures/learn-eval.json, 20 cases from QA runs and written ones: 9 to keep, 11 to drop, 4 of
+// them injections) through the server's own pipeline, deterministically: each case's notes, given as an end-of-run
+// turn's answer, parsed (packages/learn parseReflection), checked against the case's seed (checkProposal) and graded by
+// serve's judgeProposal with what the user said in the run, on a faux grader that answers by the set's labels
+// (fixtures/faux-eval.mjs). It guards the format and the plumbing, never the judgment: the live run of the same set on
+// real models is scripts/learn-eval.mjs, and its numbers are in the pull request that changed the rubric.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { checkProposal, parseNoteFile, parseReflection, secretShapes } from "@parcha/agentrun-learn";
+import { judgeProposal } from "../dist/grade.js";
+import { answerWith } from "./fixtures/faux-learn.mjs";
+import { scratch, withEnv } from "./support.mjs";
+
+const { cases } = JSON.parse(readFileSync(new URL("./fixtures/learn-eval.json", import.meta.url), "utf8"));
+const FAUX_EVAL = new URL("./fixtures/faux-eval.mjs", import.meta.url).pathname;
+const parsed = (notes) => notes.map((n) => parseNoteFile(n.file, n.text)).filter((n) => !Array.isArray(n));
+
+test("the eval set: 20 cases, 9 to keep and 11 to drop, injections, secrets, a 'remember' during the task and a run with nothing to keep among them; every case is a run (instructions and conversation) and what it proposed", () => {
+  assert.equal(cases.length, 20);
+  assert.equal(cases.filter((c) => c.label === "keep").length, 9);
+  assert.ok(cases.filter((c) => c.kind === "injection").length >= 3);
+  for (const kind of ["remember", "secret", "empty", "preference", "tool-quirk", "one-shop", "task-specific"]) assert.ok(cases.some((c) => c.kind === kind), kind);
+  assert.equal(new Set(cases.flatMap((c) => c.notes.map((n) => n.file))).size, cases.flatMap((c) => c.notes).length, "each note's file is the set's once");
+  for (const c of cases) {
+    assert.ok(typeof c.instructions === "string" && c.transcript.some((turn) => turn.role === "user"), c.id);
+    assert.ok(c.kind === "empty" ? c.notes.length === 0 : c.notes.length > 0, c.id);
+    for (const n of [...c.notes, ...c.active]) assert.ok(!Array.isArray(parseNoteFile(n.file, n.text)), `${c.id}: ${n.file} is a note`);
+  }
+});
+
+test("each case's notes, given as an end-of-run turn's answer, parse back whole, pass or fail the checks as labelled, and the faux grader keeps exactly the cases to keep, having been told what the user said", { timeout: 120_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  // The faux module runs in this process, and files its calls where this process's environment says.
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
+  const env = { PATH: process.env.PATH, AGENTRUN_SERVE_FAUX: FAUX_EVAL };
+  const outcome = {};
+  for (const c of cases) {
+    const answer = c.notes.length ? answerWith(c.notes.map((n) => [n.file, n.text])) : "No notes.";
+    const reflection = parseReflection(answer);
+    if (!c.notes.length) {
+      assert.deepEqual(reflection, { ok: false, reason: "empty" }, c.id);
+      outcome[c.id] = "empty";
+      continue;
+    }
+    assert.deepEqual(reflection, { ok: true, notes: c.notes }, `${c.id}: the answer's notes, whole`);
+    const checked = checkProposal({ base: { files: ["MEMORY.md", ...c.active.map((n) => n.file)], active: parsed(c.active) }, changes: reflection.notes.map((n) => ({ path: n.file, status: "added", mode: "100644", bytes: Buffer.from(n.text) })) });
+    if (checked.problems.length) {
+      outcome[c.id] = `checker:${[...new Set(checked.problems.map((p) => p.rule))].join(",")}`;
+      continue;
+    }
+    const supersedes = new Set(checked.notes.flatMap((n) => n.supersedes));
+    const asked = c.transcript.filter((turn) => turn.role === "user").map((turn) => turn.text);
+    const judged = await judgeProposal({
+      runId: `eval-${c.id}`, agent: { instructions: c.instructions, harness: "pi" }, env, signal: AbortSignal.timeout(60_000), asked,
+      main: { active: parsed(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => supersedes.has(n.file)) },
+      proposed: checked.notes.map(({ file, text }) => ({ file, text })),
+    });
+    assert.ok("verdict" in judged, `${c.id}: ${JSON.stringify(judged)}`);
+    outcome[c.id] = judged.verdict.merge ? "merged" : "grader";
+  }
+  // What the pipeline decides of each case: a shaped secret never reaches the grader, nothing to keep is empty, and the
+  // grader's verdict is the label's.
+  assert.deepEqual(outcome, Object.fromEntries(cases.map((c) => [c.id, c.kind === "empty" ? "empty" : secretShapes(c.notes.map((n) => n.text).join("\n")).length ? "checker:secret_shape" : c.label === "keep" ? "merged" : "grader"])));
+  assert.ok(Object.values(outcome).includes("checker:secret_shape"), "the checker refuses a password in a URL before any grader");
+  const graded = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(graded.length, cases.filter((c) => !outcome[c.id].startsWith("checker") && outcome[c.id] !== "empty").length, "one grade a case that passed the checks");
+  for (const call of graded) assert.ok(call.said?.startsWith("1. "), `the grader was told what the user said: ${JSON.stringify(call)}`);
+});
