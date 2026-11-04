@@ -25,6 +25,9 @@ const hangSignalled = (signal) => new Proxy({ hang: true }, { has(target, key) {
 export function script(spec) {
   const text = spec.system.join("\n");
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name) })}\n`);
+  // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
+  const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
+  if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];
   // A research turn: the session's web_search when it has one as a tool (its harness's own search is not one), then the
   // page with web_fetch, then report.md citing it.
   const research = /Research (.+?) on the web, read (\S+) and write report\.md\./.exec(text);
