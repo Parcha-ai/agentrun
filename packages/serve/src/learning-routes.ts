@@ -1,7 +1,8 @@
 // What a person sees and controls of an agent's learning: this server's own routes under /v2 (learning/1).
-// - Per agent: main's index, its notes and its log of changes, each a page, and how its runs' learning fared; one note as
-//   text with its ETag, the note's blob id on main.
-// - A person's edit, create or retire of one note: a precondition on the note's version (If-Match, or If-None-Match: * to
+// - Per agent: main's index, its notes and its log of changes, each a page, its skills and workflow drafts, and how its
+//   runs' learning fared; one note, a skill's SKILL.md or a draft's file as text with its ETag, its blob id on main.
+// - A person's approval of a note, a skill or a draft that waits for the owner's OK, and their edit, create or retire of
+//   one note (a skill or a draft is a run's to change): a precondition on the note's version (If-Match, or If-None-Match: * to
 //   create; neither is 428), the structural checks a run's notes pass (learn/check.ts checkNote; a retire, the note's
 //   format alone, so a leaking note can always be revoked) and no grader, then one host commit on main in the agent's
 //   queue, compare and swap, with MEMORY.md rebuilt and a `Changed-By: user` trailer, and the checked-out files brought
@@ -18,7 +19,7 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { approve, buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire, supersede } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, isHeld, type LearnedNote, learnedFront, learnedName, learnedPlace, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, SKILLS_DIR, supersede, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
 import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -89,15 +90,21 @@ const placeOf = async (data: string, agentId: string) => ({ home: homeOf(data, a
 export const etagOf = (oid: string) => `"${oid}"`;
 const EMPTY: Page<never> = { items: [], total: 0, next_cursor: null };
 
-/** The `.md` files at commit `sha`'s top (or the one `file`), by name: the index and notes' names, regular files under
- *  FILE_CAP only, each with its blob id. */
+/** Whether `path` is a skill's SKILL.md or a draft's workflow.json or README.md, its folder well named. */
+const isLearned = (path: string) => {
+  const place = learnedPlace(path);
+  return place !== undefined && learnedName(place.kind, place.name);
+};
+
+/** The `.md` files at commit `sha`'s top (or the one `file`, a skill's or a draft's too), by name: the index and notes'
+ *  names, regular files under FILE_CAP only, each with its blob id. */
 async function entriesAt(home: string, repo: string, sha: string, file?: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   for (const entry of (await git(home, repo, ["ls-tree", "-l", "-z", sha, ...(file ? ["--", file] : [])])).toString("utf8").split("\0").filter(Boolean)) {
     const tab = entry.indexOf("\t");
     const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
     const path = entry.slice(tab + 1);
-    if ((path === INDEX_FILE || NOTE_FILE.test(path)) && mode === "100644" && type === "blob" && oid && Number(size) <= FILE_CAP) out.set(path, oid);
+    if ((path === INDEX_FILE || NOTE_FILE.test(path) || (file !== undefined && isLearned(path))) && mode === "100644" && type === "blob" && oid && Number(size) <= FILE_CAP) out.set(path, oid);
   }
   return out;
 }
@@ -196,6 +203,63 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
   return parsed;
 }
 
+/** A skill or a workflow draft as the view lists it: its folder's name, its file (a skill's SKILL.md, a draft's
+ *  workflow.json, with its `readme`), its description, `pending` while it waits for its owner's OK, the run whose merge
+ *  last changed it, its size in bytes, and the ETag of the file that says whether it waits (a SKILL.md, a README.md),
+ *  which an approval names. */
+type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending"; run: string | null; bytes: number; etag: string };
+/** By the folder and the commit: its skills and drafts, raw (each answer cuts them of the host's secrets as they are
+ *  then), for the 8 commits last read. */
+const learnedAtCache = new Recent<{ skills: LearnedView[]; workflows: LearnedView[] }>(8, 4 << 20);
+
+/** The run whose merge last changed each of commit `sha`'s files under skills/ and workflows/: its first-parent log's
+ *  commits with a Run-Id, newest first, read once (a person's approval, which names none, changes no answer). */
+async function lastRuns(home: string, repo: string, sha: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const { head, files } of recordsOf(await git(home, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e%(trailers:key=Run-Id,valueonly,separator=%x2C)", sha, "--", SKILLS_DIR, WORKFLOWS_DIR]))) {
+    const run = head.split(",")[0]!.trim();
+    if (run) for (const file of files) if (!out.has(file)) out.set(file, run);
+  }
+  return out;
+}
+
+/** Commit `sha`'s skills and workflow drafts, by name: each skill's SKILL.md and each draft's workflow.json with its
+ *  README.md, regular files under FILE_CAP, with what their front matter says. A draft without its README, or a file
+ *  that is not UTF-8, is left out, as the checker never lets it in. Read once a commit, then kept. */
+async function learnedAt(home: string, repo: string, sha: string): Promise<{ skills: LearnedView[]; workflows: LearnedView[] }> {
+  const key = `${repo}\0${sha}`;
+  const known = learnedAtCache.get(key);
+  if (known) return known;
+  const entries = new Map<string, { oid: string; size: number }>();
+  for (const entry of (await git(home, repo, ["ls-tree", "-r", "-l", "-z", sha, "--", SKILLS_DIR, WORKFLOWS_DIR])).toString("utf8").split("\0").filter(Boolean)) {
+    const tab = entry.indexOf("\t");
+    const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
+    const path = entry.slice(tab + 1);
+    if (isLearned(path) && mode === "100644" && type === "blob" && oid && Number(size) <= FILE_CAP) entries.set(path, { oid, size: Number(size) });
+  }
+  const fronts = new Map([...entries].filter(([path]) => !path.endsWith("/workflow.json")).map(([path, { oid }]) => [path, oid]));
+  const [texts, runs] = await Promise.all([textsOf(home, repo, fronts), lastRuns(home, repo, sha)]);
+  const skills: LearnedView[] = [];
+  const workflows: LearnedView[] = [];
+  for (const [path, { size }] of entries) {
+    const place = learnedPlace(path)!;
+    if (place.kind === "readme") continue;
+    const held = place.kind === "skill" ? path : `${WORKFLOWS_DIR}/${place.name}/README.md`;
+    const front = texts.get(held);
+    if (!front) continue;
+    const said = learnedFront(front.text);
+    const item: LearnedView = { name: place.name, file: path, ...(place.kind === "workflow" ? { readme: held } : {}), description: said?.description ?? "", status: isHeld(front.text) ? "pending" : "active", run: runs.get(path) ?? null, bytes: size, etag: etagOf(front.oid) };
+    (place.kind === "skill" ? skills : workflows).push(item);
+  }
+  const byName = (a: LearnedView, b: LearnedView) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const found = { skills: skills.sort(byName), workflows: workflows.sort(byName) };
+  learnedAtCache.set(key, found, [...skills, ...workflows].reduce((n, item) => n + item.description.length + 512, 0));
+  return found;
+}
+
+/** A skill or a draft as the view shows it, cut of the host's secrets: a name or a file holding one reads [redacted]. */
+const learnedView = (item: LearnedView, shown: Shown): LearnedView => ({ ...item, name: shown.name(item.name), file: shown.name(item.file), ...(item.readme ? { readme: shown.name(item.readme) } : {}), description: shown.text(item.description) });
+
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows. */
 const noteView = ({ file, name, description, type, status, origin, superseded_by, text, oid }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, origin, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid) });
@@ -223,9 +287,9 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
 export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact) {
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
-  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts, impact };
-  const [{ index, notes }, log] = await Promise.all([notesAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts, impact };
+  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact };
+  const [{ index, notes }, { skills, workflows }, log] = await Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), skills: skills.map((item) => learnedView(item, shown)), workflows: workflows.map((item) => learnedView(item, shown)), log, counts, impact };
 }
 
 /** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the
@@ -250,33 +314,43 @@ export async function learningLog(data: string, agentId: string, query: URLSearc
   return logPage(home, repo, sha, at?.offset ?? 0, limit, shown);
 }
 
-/** The file a route names, decoded: a note's name, or MEMORY.md for a read. Anything else is 400: the folder holds only
- *  `.md` files at its top. The name is never echoed. */
-function fileOf(raw: string, write: boolean): string {
+/** The file a route names, decoded, for its `use`: a note's name; for a read MEMORY.md too, and a skill's SKILL.md or a
+ *  draft's workflow.json or README.md (`skills/<name>/SKILL.md`, percent-encoded); for an approval a skill's SKILL.md or
+ *  a draft's README.md, the file that says it waits. Anything else is 400. The name is never echoed. */
+function fileOf(raw: string, use: "read" | "write" | "approve"): string {
   let file: string;
   try {
     file = decodeURIComponent(raw);
   } catch {
     throw new ApiError("bad_request", "the file name is not percent-encoded right");
   }
-  if (file === INDEX_FILE && write) throw new ApiError("bad_request", "MEMORY.md is built by the server from the active notes, one line each, and is never written: edit, create or retire a note instead.");
+  const place = learnedPlace(file);
+  if (place) {
+    if (!learnedName(place.kind, place.name)) throw new ApiError("bad_request", "A skill's folder is named with lowercase letters, digits and single dashes, a workflow's with lowercase letters, digits, dashes and underscores.");
+    if (use === "write") throw new ApiError("bad_request", "A skill or a workflow is changed by a run's learning, or approved by its owner: a person edits, creates and retires notes.");
+    if (use === "approve" && place.kind === "workflow") throw new ApiError("bad_request", "A workflow is approved by its README.md, the file that says it waits.");
+    return file;
+  }
+  if (file === INDEX_FILE && use !== "read") throw new ApiError("bad_request", "MEMORY.md is built by the server from the active notes, one line each, and is never written: edit, create or retire a note instead.");
   if (file !== INDEX_FILE && !NOTE_FILE.test(file)) throw new ApiError("bad_request", "A learning file is a note's name at the folder's top: letters, digits, dots, dashes and underscores, starting with a letter or digit, ending .md.");
   return file;
 }
 
-/** GET /agents/{id}/learning/files/{file}: the file on main as text, and its ETag. */
-export async function readNote(data: string, agentId: string, raw: string, shown: Shown): Promise<{ text: string; etag: string }> {
-  const file = fileOf(raw, false);
+/** GET /agents/{id}/learning/files/{file}: the file on main as text, its ETag, and its type (a draft's workflow.json is
+ *  JSON). */
+export async function readNote(data: string, agentId: string, raw: string, shown: Shown): Promise<{ text: string; etag: string; type?: string }> {
+  const file = fileOf(raw, "read");
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
   const found = sha ? await fileAt(home, repo, sha, file) : undefined;
   if (!found) throw new ApiError("not_found", "the agent's learning folder has no such file on main");
-  return { text: shown.text(found.text), etag: etagOf(found.oid) };
+  return { text: shown.text(found.text), etag: etagOf(found.oid), ...(file.endsWith(".json") ? { type: "application/json; charset=utf-8" } : {}) };
 }
 
-/** A note as a text answer: its ETag, an explicit type, nosniff, and a sandbox on whatever opens it. */
-export function sendNote(res: ServerResponse, status: number, note: { text: string; etag: string }, headers: Record<string, string> = {}): void {
-  res.writeHead(status, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "sandbox", etag: note.etag, ...headers });
+/** A note (or a skill's or draft's file) as a text answer: its ETag, an explicit type (markdown unless it names one),
+ *  nosniff, and a sandbox on whatever opens it. */
+export function sendNote(res: ServerResponse, status: number, note: { text: string; etag: string; type?: string }, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "content-type": note.type ?? "text/markdown; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "sandbox", etag: note.etag, ...headers });
   res.end(note.text);
 }
 
@@ -331,7 +405,9 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
  *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing,
  *  commit nothing. `refuse`: the host's secrets. */
 export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
-  const file = fileOf(raw, true);
+  const file = fileOf(raw, input.approve ? "approve" : "write");
+  // A skill's SKILL.md or a draft's README.md: only ever approved here.
+  const learned = learnedPlace(file);
   const condition = conditionOf(input.ifMatch, input.ifNoneMatch, input.body !== undefined);
   let given: string | undefined;
   if (input.body !== undefined) {
@@ -371,7 +447,11 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       // Beside the note itself: what an approve marks of the notes the approved one supersedes.
       const also = new Map<string, string>();
       const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, Note>();
-      if (text === undefined && input.approve) {
+      if (text === undefined && learned) {
+        // Approved, it is no longer held: given to every later run. Nothing else in the folder changes.
+        if (!isHeld(current!.text)) throw new ApiError("bad_request", `The ${learned.kind === "skill" ? "skill" : "workflow"} is not waiting for an OK: it is active.`);
+        text = released(current!.text);
+      } else if (text === undefined && input.approve) {
         const note = parseNoteFile(file, current!.text);
         if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
         if (note.status !== "pending") throw new ApiError("bad_request", `The note is not waiting for an OK: it is ${note.status}.`);
@@ -394,7 +474,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status line a retire adds` }, input.refuse)]);
       }
       if (current && text === current.text) return { status: 200, file, text, etag: etagOf(current.oid) };
-      const after = [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];
+      const after = learned ? [...notes.values()] : [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];
       const lines = after.filter((note) => note.status === "active").length;
       if (lines > INDEX_LINES) throw refused([{ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so retire a note first` }]);
       const parent = main ?? (await openAgentRepo(home, repo, check));

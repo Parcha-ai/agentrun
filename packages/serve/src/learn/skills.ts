@@ -63,6 +63,15 @@ export function skillProblems(text: string, name: string): string[] {
   return out;
 }
 
+/** A SKILL.md's or a draft README's front matter as a reader shows it: its name, description and status, each absent
+ *  when it is not there; undefined for a text with no front matter. */
+export function learnedFront(text: string): { name?: string; description?: string; status?: string } | undefined {
+  const front = frontOf(text);
+  if (typeof front === "string") return undefined;
+  const [name, description, status] = ["name", "description", "status"].map((key) => front.value(key));
+  return { ...(name === undefined ? {} : { name }), ...(description === undefined ? {} : { description }), ...(status === undefined ? {} : { status }) };
+}
+
 /** Whether a SKILL.md or a draft's README.md sets `status`, which only the host does (`held`). */
 export const setsStatus = (text: string): boolean => {
   const front = frontOf(text);
@@ -83,6 +92,15 @@ export function held(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be held: ${front}`);
   return `${front.lf.slice(0, front.end)}\nstatus: pending${front.lf.slice(front.end)}`;
+}
+
+/** `text`, a held SKILL.md or draft README.md, as the host leaves it when its owner approves it: its front matter with
+ *  no `status` line, so it is given to every later run. Throws on a text with no front matter. */
+export function released(text: string): string {
+  const front = frontOf(text);
+  if (typeof front === "string") throw new Error(`it cannot be approved: ${front}`);
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
+  return `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
 }
 
 /** A draft's `README.md` as the host writes it, from the workflow's name and the one-line description its block gives. */

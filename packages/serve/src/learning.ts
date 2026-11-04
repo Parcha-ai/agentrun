@@ -134,13 +134,16 @@ export function secretsShown(values: readonly string[]): Shown {
 
 const isText = (value: unknown): value is string => typeof value === "string";
 /** The notes a run read and learned, as a view or a list shows them, each name cut of the host's secrets (`shown`):
- *  `used` once the run settled, `learned` and `pending` (what waits for the owner's OK) once it merged, each only when
- *  it holds a note. serve.json's are read as untrusted: an entry out of shape is left out. */
-export function notesView({ state, used, learned, pending }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[]; pending?: NoteUsed[] } {
+ *  `used` once the run settled, `learned` and `pending` (what waits for the owner's OK) once it merged, and the skill
+ *  and the workflow draft it merged (`skills`, `workflows`, each `pending` while it waits), each only when it holds one.
+ *  serve.json's are read as untrusted: an entry out of shape is left out. */
+export function notesView({ state, used, learned, pending, skills, workflows }: Learning, shown: Shown, settled: boolean): { used?: NoteUsed[]; learned?: NoteLearned[]; pending?: NoteUsed[]; skills?: LearnedFile[]; workflows?: LearnedFile[] } {
   const read = settled && Array.isArray(used) ? used.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
   const added = state === "merged" && Array.isArray(learned) ? learned.filter((note) => isText(note?.file) && isText(note.name) && Array.isArray(note.supersedes) && note.supersedes.every(isText)).map(({ file, name, supersedes }) => ({ file: shown.name(file), name: shown.text(name), supersedes: supersedes.map(shown.name) })) : [];
   const waiting = state === "merged" && Array.isArray(pending) ? pending.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : [];
-  return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}) };
+  const files = (list: LearnedFile[] | undefined) => (state === "merged" && Array.isArray(list) ? list.filter((item) => isText(item?.file) && isText(item.name)).map(({ file, name, pending: waits }) => ({ file: shown.name(file), name: shown.name(name), ...(waits === true ? { pending: true as const } : {}) })) : []);
+  const [kept, drafts] = [files(skills), files(workflows)];
+  return { ...(read.length ? { used: read } : {}), ...(added.length ? { learned: added } : {}), ...(waiting.length ? { pending: waiting } : {}), ...(kept.length ? { skills: kept } : {}), ...(drafts.length ? { workflows: drafts } : {}) };
 }
 /** A run's learning in a person's words as a read shows them (learning-words.ts wordsOf): each part cut of the host's
  *  secrets as they are now (`shown`) first, then the words cut short to `max`, so a secret is never shown in part. */
