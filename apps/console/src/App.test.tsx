@@ -690,3 +690,68 @@ describe("App, the no-model bar", () => {
     expect(bar(host)).toBeNull();
   });
 });
+
+// A run page's back arrow goes back: to the console page the person came from (the runs list, the agent's page), or, on a
+// run opened at its own address (a link from elsewhere), to its agent's page. The breadcrumb's agent name links there too.
+describe("App, a run page's back arrow", () => {
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const run = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null };
+  const calc = { agent_id: "calc", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+  const serve = () => vi.stubGlobal("fetch", async (url: string) => {
+    const u = new URL(url, "http://serve.test");
+    if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+    if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (u.pathname === "/v2/agents") return json(200, { agents: [calc], next_cursor: null });
+    if (u.pathname === "/v2/runs") return json(200, { runs: [run], next_cursor: null });
+    if (u.pathname === "/v2/runs/r1") return json(200, run);
+    if (u.pathname === "/v2/runs/r1/files") return json(200, { run_id: "r1", files: [], complete: true, truncated: false });
+    if (u.pathname === "/v2/runs/r1/timeline") return json(200, { run_id: "r1", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
+    return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
+  });
+  const wait = async (ok: () => boolean, what: string) => {
+    const end = Date.now() + 4000;
+    while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(ok(), what).toBe(true);
+  };
+  const mount = () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    return host;
+  };
+  const back = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('nav[aria-label="Breadcrumb"] button[aria-label="Back"]');
+  // Each test starts as a page load would: an address the console never numbered.
+  // (The address's own hashchange is let through first, before the console is there to number it.)
+  const fresh = async (hash: string) => { location.hash = hash; await new Promise((r) => setTimeout(r, 20)); history.replaceState(null, ""); };
+
+  it("goes back to the runs list a run was opened from", async () => {
+    serve(); await fresh("#/runs");
+    const host = mount();
+    await wait(() => !!host.textContent?.includes("What is two and two?"), "the run is listed");
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => /What is two and two\?/.test(b.textContent ?? ""))!.click(); });
+    await wait(() => !!back(host), "the run's page has a back arrow");
+    expect(location.hash).toBe("#/runs/r1");
+    await act(async () => { back(host)!.click(); });
+    await wait(() => location.hash === "#/runs", "back on the runs list");
+  });
+
+  it("goes back to the agent's page a run was opened from", async () => {
+    serve(); await fresh("#/agents/calc");
+    const host = mount();
+    await act(async () => { location.hash = "#/runs/r1"; });
+    await wait(() => !!back(host), "the run's page has a back arrow");
+    await act(async () => { back(host)!.click(); });
+    await wait(() => location.hash === "#/agents/calc", "back on the agent's page");
+  });
+
+  it("a run opened at its own address goes to its agent's page, whose name in the breadcrumb links there too", async () => {
+    serve(); await fresh("#/runs/r1");
+    const host = mount();
+    await wait(() => !!back(host), "the run's page has a back arrow");
+    const name = host.querySelector<HTMLAnchorElement>('nav[aria-label="Breadcrumb"] a');
+    expect(name?.textContent).toBe("Calc");
+    expect(name?.getAttribute("href")).toBe("#/agents/calc");
+    await act(async () => { back(host)!.click(); });
+    await wait(() => location.hash === "#/agents/calc", "on the agent's page");
+  });
+});
