@@ -209,13 +209,22 @@ export function anthropicOutputLeast(body: Record<string, unknown>): number {
 /** The thinking tokens a Messages request may bill that its stream never shows: Claude 4-class models stream only a
  *  summary of their thinking (and a redacted block shows none of it), so a request that thinks counts its thinking
  *  budget, or its `max_tokens` when its thinking is adaptive (no budget); one with thinking off, none. A stopped request
- *  counts the part of it that did not stream (the host subtracts what the response sent), never past its hold. */
+ *  counts the part of it that did not stream (less `anthropicReasoningBytes` of what it sent), never past its hold. */
 export function anthropicReasoningHidden(body: Record<string, unknown>): number {
   const thinking = body.thinking;
   if (!isPlain(thinking)) return 0;
   if (thinking.type === "enabled") return typeof thinking.budget_tokens === "number" && Number.isFinite(thinking.budget_tokens) && thinking.budget_tokens > 0 ? thinking.budget_tokens : anthropicOutputAsked(body) ?? 0;
   if (thinking.type === "adaptive") return anthropicOutputAsked(body) ?? 0;
   return 0;
+}
+
+/** The bytes of thinking one Messages stream event carries: a thinking delta's text, UTF-8; 0 for text, a tool call's
+ *  JSON, a signature and every other event. */
+export function anthropicReasoningBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: { type?: unknown; thinking?: unknown } };
+  return parsed.type === "content_block_delta" && parsed.delta?.type === "thinking_delta" && typeof parsed.delta.thinking === "string" ? Buffer.byteLength(parsed.delta.thinking, "utf8") : 0;
 }
 
 /** A Messages body with its output limited to `max` tokens, thinking included: `max_tokens` at most `max`, never raised,
@@ -374,6 +383,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     outputAsked: anthropicOutputAsked,
     outputLeast: anthropicOutputLeast,
     reasoningHidden: anthropicReasoningHidden,
+    reasoningBytesOf: anthropicReasoningBytes,
     limitOutput: limitAnthropicOutput,
     usageOf: anthropicUsage,
   };
