@@ -185,9 +185,11 @@ const browserTool: ToolEntry = {
     const parts = faux
       ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv) => { provider: unknown; driver: unknown } }).default(host.env)
       : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
-    // A refused key reads as a model key's refusal does (key-refusal.ts), naming where a person sets it; web_fetch is named
-    // only to a run that has it.
-    const words = { refusedCredential: BROWSERBASE_REFUSED, ...(host.tools.some((name) => capabilityOf(name) === WEB_FETCH_TOOL) ? { otherSource: WEB_FETCH_TOOL } : {}) };
+    // A refused key reads as a model key's refusal does (key-refusal.ts), naming where a person sets it. The run's page
+    // reader is named only to a run that has one, by the name its tool is bound under (fetch_page, the legacy name, is
+    // bound as itself).
+    const reader = host.tools.find((name) => capabilityOf(name) === WEB_FETCH_TOOL);
+    const words = { refusedCredential: BROWSERBASE_REFUSED, ...(reader ? { otherSource: reader } : {}) };
     const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work, words });
     const extension = browser.extension as unknown as Extension;
     host.install(extension);
