@@ -9,7 +9,7 @@ import * as refusal from "../dist/key-refusal.js";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 // A value no key holds until the second test saves it.
-const LATER = ["later", "held", "0123456789"].join("-");
+const LATER = ["later", "held", "zyxwvutsrq"].join("-");
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 const pieces = (value) => Array.from({ length: value.length - 7 }, (_, i) => value.slice(i, i + 8));
 const noKey = (text, where) => {
