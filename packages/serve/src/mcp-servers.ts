@@ -235,7 +235,8 @@ function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | undefined {
   if (!isObject(value)) return void issues.push({ field: "prices", reason: "wrong_type", message: "prices is an object of the server's tool names to their price in USD a call." });
   const bad = Object.entries(value).filter(([, usd]) => typeof usd !== "number" || !Number.isFinite(usd) || usd < 0);
   for (const [tool] of bad) issues.push({ field: `prices.${tool}`, reason: "invalid", message: `prices.${tool} is a price in USD a call: a finite number, 0 or more.` });
-  return bad.length ? undefined : (value as McpPrices);
+  // Keyed by tool names, which may be an object's own properties (`__proto__`): no prototype to fall into.
+  return bad.length ? undefined : (Object.assign(Object.create(null), value) as McpPrices);
 }
 
 function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {

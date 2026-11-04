@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic, lastUserText } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -187,6 +188,10 @@ test("pi: a tool with no price runs, shown not metered on the timeline and in /u
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost?.usd, 0, "known, never unknown");
   const tools = (await api("GET", "/usage?group_by=meter")).body.lines.find((line) => line.meter === "tools");
   assert.deepEqual([tools?.usd, tools?.not_metered_calls], [0, 1], JSON.stringify(tools));
+  // Both counts meet the served document.
+  const doc = (await api("GET", "/openapi.json")).body;
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineUsage" }, usage.usage), []);
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/UsageLine" }, tools), []);
 });
 
 test("claude-agent: with no setting the CLI's MCP call parks: the session is interrupted after its parked result with no model request between, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {

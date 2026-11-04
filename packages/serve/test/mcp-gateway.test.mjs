@@ -142,6 +142,26 @@ test("a call the gate parks answers its waiting text, marked parked, with the ha
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0);
 });
 
+test("a call from a harness that cannot end its turn on a parked call (no `parked` in its park) never parks: the gate's request is refused before it is written, the call is answered so, and nothing is sent", async (t) => {
+  const written = [];
+  // A gate that parks as the run's does: the request committed through the park, then the waiting text.
+  const gate = { ...gateOf(() => "allow"), enter: async (tool, _args, callId, park) => {
+    await park.commit(async () => written.push(callId));
+    park.parked?.(callId);
+    return { text: waitingText(tool), isError: false, parked: true };
+  } };
+  const { fake, gateway } = await setup(t, { gate, commit: store().commit });
+  for (const park of [undefined, { commit: async (change) => change({}) }]) {
+    const said = await gateway.call("fake", "add", { a: 1, b: 1 }, { signal: signal(), callId: "c1", ...(park ? { park } : {}) });
+    assert.deepEqual([textOf(said), said.isError, isParked(said)], ["The mcp:fake/add call needs a person's approval, which this harness can't wait for yet; nothing was sent.", true, false]);
+  }
+  assert.deepEqual(written, [], "no approval left waiting");
+  // A gate that answers parked without committing is refused too.
+  const { gateway: bare } = await setup(t, { gate: { ...gate, enter: async (tool) => ({ text: waitingText(tool), isError: false, parked: true }) } });
+  assert.equal(isParked(await bare.call("fake", "add", {}, { signal: signal(), callId: "c2" })), false);
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0);
+});
+
 test("a priced call is marked at its price, sent and booked at it; over the run's cap it is refused unsent; with nowhere to book it, refused unsent; an unpriced call is marked not metered", async (t) => {
   t.after(() => useSpend(undefined));
   const { entries, commit } = store();
@@ -199,4 +219,42 @@ test("at the session proxy's /mcp/<server>: a client that drops a held tools/cal
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(fake.log.filter((entry) => entry.tool === "slow_write").length, 1, "and it was sent once");
+});
+
+test("a tool named like an object's own property (__proto__) keeps its price: pinned, refused over the cap, held and booked once it leaves", async (t) => {
+  t.after(() => useSpend(undefined));
+  const listed = [{ name: "__proto__", inputSchema: schema }];
+  // Saved prices read back from JSON, as the server's file and a PUT's body are.
+  const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: listed, prices: JSON.parse('{"__proto__": 0.05}') }), headers: () => undefined };
+  const pin = mcpPinOf(["mcp:fake/__proto__"], source);
+  assert.deepEqual(Object.entries(pin.fake.prices), [["__proto__", 0.05]]);
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  const { entries, commit } = store();
+  const gateway = mcpGateway({ pin: JSON.parse(JSON.stringify({ fake: { url: fake.url, tools: listed, prices: pin.fake.prices } })), credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), commit });
+  let spent = 0;
+  useSpend({ cap: 0.04, spent: () => spent, add: (usd) => void (spent += usd) });
+  assert.match(textOf(await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c1" })), /^spend_cap_reached: mcp:fake\/__proto__ was not sent/);
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  // The call leaves (the fake answers it has no such tool): booked at its price, whatever it answers.
+  await gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c2" });
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 1);
+  assert.equal(spent, 0.05);
+  assert.deepEqual(entries.map((entry) => [entry.kind, entry.data.usd ?? entry.data.heldUsd]), [["agentrun.tool_started", 0.05], ["agentrun.tool_cost", 0.05]]);
+});
+
+test("a priced call that never left (its server is down) books nothing: no mark, no charge, the cap untouched", async (t) => {
+  t.after(() => useSpend(undefined));
+  const { entries, commit } = store();
+  const dead = "http://127.0.0.1:9/mcp";
+  const gateway = mcpGateway({ pin: { fake: { url: dead, tools, prices: { paid: 0.05, add: 0.01 } } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  const said = await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c1" });
+  assert.equal(said.isError, true);
+  assert.match(textOf(said), /The MCP server fake failed/);
+  assert.deepEqual([spent, entries], [0, []]);
+  const unpriced = mcpGateway({ pin: { fake: { url: dead, tools } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
+  await unpriced.call("fake", "add", {}, { signal: signal(), callId: "c2" });
+  assert.deepEqual(entries, [], "nor marked not metered");
 });

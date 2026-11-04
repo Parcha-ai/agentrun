@@ -74,7 +74,8 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     const pinned = pin[parsed.server]!;
     pinned.tools.push(tool);
     const price = saved.prices && Object.hasOwn(saved.prices, tool.name) ? saved.prices[tool.name] : undefined;
-    if (price !== undefined) (pinned.prices ??= {})[tool.name] = price;
+    // Keyed by a tool's name, which may be an object's own property (`__proto__`): no prototype to fall into.
+    if (price !== undefined) (pinned.prices ??= Object.create(null) as Record<string, number>)[tool.name] = price;
   }
   return pin;
 }
@@ -196,9 +197,15 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** The call itself, to a server whose address is the pinned one. A gate's decision or a paid call's hold goes around
    *  it, in `call` below: the one place every harness's call passes before anything is sent. */
-  const forward = async (server: string, url: string, headers: Record<string, string>, tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult> => {
+  /** `sending`, when given, runs once the server is connected and right before the call leaves: its refusal (a text)
+   *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. */
+  const forward = async (server: string, url: string, headers: Record<string, string>, tool: string, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>): Promise<McpCallResult> => {
     try {
       const upstream = await until(connect(server, url, headers), signal);
+      if (sending && !signal.aborted) {
+        const refused = await sending();
+        if (refused) return said(refused, true);
+      }
       const result = (await upstream.callTool({ name: tool, arguments: args }, { signal, timeout: CALL_MS })) as Record<string, unknown>;
       return said(await textOf(server, tool, result, headers), result.isError === true);
     } catch (error) {
@@ -230,29 +237,35 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const why = unsendable(server, tool);
     if (why) return said(why, true);
     const { url, prices } = pins.get(server)!;
-    const call = () => forward(server, url, credentials.get(server)!.headers ?? {}, tool, args, signal);
+    // Whether the call left for the server: only then is it booked, at its price or as not metered.
+    let went = false;
+    const call = (mark: () => Promise<string | undefined> = async () => undefined) => forward(server, url, credentials.get(server)!.headers ?? {}, tool, args, signal, async () => {
+      const refused = await mark();
+      went = refused === undefined;
+      return refused;
+    });
     const name = mcpToolName(server, tool);
     const label = { tool: name, charged_by: server, call: callId };
     const commit = options.commit?.();
     const price = prices && Object.hasOwn(prices, tool) ? prices[tool] : undefined;
     if (price === undefined) {
       const result = await call();
-      if (commit) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
+      if (commit && went) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
       return result;
     }
     if (!commit) return said(`${name} was not sent: this call has no run to book its price under.`, true);
-    let went = false;
     const paid = await paidCall(name, async () => {
-      // Marked before it is sent, at its price; settled at its price once sent, whatever it answers: its owner says each
-      // call costs that.
-      try {
-        await record(commit, TOOL_STARTED, { ...label, heldUsd: price });
-      } catch (error) {
-        return said(`${name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})`, true);
-      }
-      went = true;
-      const result = await call();
-      await record(commit, TOOL_COST, { ...label, usd: price }).catch(() => undefined);
+      // Held at its price meanwhile; marked right before it leaves, and settled at its price once it left, whatever it
+      // answers: its owner says each call costs that. One that never left (a failed connect, a stop) books nothing.
+      const result = await call(async () => {
+        try {
+          await record(commit, TOOL_STARTED, { ...label, heldUsd: price });
+          return undefined;
+        } catch (error) {
+          return `${name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})`;
+        }
+      });
+      if (went) await record(commit, TOOL_COST, { ...label, usd: price }).catch(() => undefined);
       return result;
     }, () => (went ? price : 0), { usd: price, basis: `the price its owner set for ${name}` });
     return "refused" in paid ? said(paid.refused, true) : paid.result;
@@ -276,15 +289,18 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const id = callId ?? `mcp_${randomUUID()}`;
       if (gate) {
         const name = mcpToolName(server, tool);
-        const commit = options.commit?.();
-        const park: Park = given ?? { commit: commit ?? (() => Promise.reject(new Error("the run is not open"))) };
+        // A call parks only where its harness can end the turn on it (a park with `parked`). Anywhere else the gate's
+        // commit of the request is refused, so an ask leaves no approval waiting, and the call is answered so.
+        const park: Park = given?.parked ? given : { commit: () => Promise.reject(new CannotPark()) };
+        const cannot = said(`The ${name} call needs a person's approval, which this harness can't wait for yet; nothing was sent.`, true);
         let entered: Awaited<ReturnType<Gate["enter"]>>;
         try {
           entered = await gate.enter(name, args, id, park);
         } catch (error) {
+          if (error instanceof CannotPark) return cannot;
           return said(`The ${name} call was not sent: the tool gate failed (${String((error as Error)?.message ?? error).slice(0, 200)}).`, true);
         }
-        if (entered?.parked) return Object.assign(said(entered.text), { [PARKED]: true });
+        if (entered?.parked) return park === given ? Object.assign(said(entered.text), { [PARKED]: true }) : cannot;
         if (entered) return said(entered.text, entered.isError);
         const result = await sent(server, tool, args, id, signal);
         return said(gate.spill(id, result.content.map((block) => block.text).join("\n\n")), result.isError === true);
@@ -295,6 +311,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 }
 
 const PARKED = Symbol("agentrun.mcp.parked");
+/** A park refused: the call came from a harness that cannot end its turn on a parked call. */
+class CannotPark extends Error {}
 /** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it. A
  *  symbol, so it never reaches a harness's MCP client in the answer's JSON. */
 export const isParked = (result: McpCallResult): boolean => (result as { [PARKED]?: true })[PARKED] === true;
@@ -311,7 +329,8 @@ export function mcpRegistrations(gateway: McpGateway): ToolRegistration[] {
         parameters: tool.inputSchema as never,
         execute: async (args, api, context) => {
           // The gate's park is this call's own journal commit, as for every pi tool.
-          const park: Park = { commit: (change) => api.commit(change as never, context) as never };
+          // pi ends the turn on a parked answer itself (below), so its park needs nothing told.
+          const park: Park = { commit: (change) => api.commit(change as never, context) as never, parked: () => undefined };
           const result = await gateway.call(server.name, tool.name, (args ?? {}) as Record<string, unknown>, { signal: context?.abortSignal ?? new AbortController().signal, ...(api?.callId ? { callId: api.callId, park } : {}) });
           const text = result.content.map((block) => block.text).join("\n\n");
           // A parked call ends the turn, as ask_person's does; the gate resumes the session once a person answers.
