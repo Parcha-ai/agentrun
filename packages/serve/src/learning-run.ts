@@ -497,7 +497,7 @@ export class LearningRuns {
     const before = run.meta.learning;
     if (before?.state !== "proposed" || this.closing) return;
     const data = this.options.agents.dir;
-    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { verdict: before.verdict, cost_usd: before.cost_usd, tokens: before.tokens } : {};
+    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { verdict: before.verdict, graded: before.graded, cost_usd: before.cost_usd, tokens: before.tokens } : {};
     // Its end saved, and with it its line in the ledger, which carries what the grade spent (onSaved).
     const end = (state: LearningState, reason: LearningReason | null, detail: string, more: typeof kept = {}) => {
       this.setLearning(run, state, reason, detail, { ...kept, ...more });
@@ -523,11 +523,15 @@ export class LearningRuns {
         }
         kept.verdict = judged.verdict;
         if (!judged.verdict.merge) return await end("dropped", "grader", "The grader's verdict was to keep none of the new notes.");
-        // Kept before the merge: a restart merges on this verdict, and never asks the grader again.
+        // Kept before the merge, with the blobs it judged superseded: a restart merges on this verdict, never asks the
+        // grader again, and checks the same blobs.
+        kept.graded = main.graded;
         this.setLearning(run, "proposed", null, before.detail, kept);
         await this.kernel.save(run);
       }
-      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.");
+      // A verdict kept with no `graded`: a note the proposal supersedes is refused, never marked on a text nobody knows
+      // was read.
+      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.", kept.graded ?? {});
       if ("problems" in merge) return await end("dropped", "checker", `Main no longer takes what the run proposed: ${[...new Set(merge.problems.map((problem) => problem.rule))].join(", ")}.`, { problems: merge.problems });
       if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
       await end("merged", null, "What the run learned is merged into main.", { merged: merge.merged });

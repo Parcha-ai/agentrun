@@ -52,11 +52,11 @@ export type LearningReason = (typeof LEARNING_REASONS)[number];
 export type Tokens = { input: number; cache_read: number; cache_write: number; output: number };
 export const NO_TOKENS: Tokens = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
 /** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
- *  grader's `verdict`, kept before the merge, the merge commit, and what the grade cost (null when unknown, never 0),
- *  which is in no run's totals. */
+ *  grader's `verdict` and the blob of each note it read superseded (`graded`, by file), both kept before the merge, the
+ *  merge commit, and what the grade cost (null when unknown, never 0), which is in no run's totals. */
 export type Learning = {
   state: LearningState; reason: LearningReason | null; detail: string | null; at: string;
-  problems?: Problem[]; verdict?: Verdict; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
+  problems?: Problem[]; verdict?: Verdict; graded?: Record<string, string>; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
 };
 /** A run's learning as its view shows it: the state, why and when. */
 export const learningView = ({ state, reason, detail, at }: Learning) => ({ state, reason, detail, at });
