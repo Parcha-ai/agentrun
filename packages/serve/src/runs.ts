@@ -757,7 +757,10 @@ export class Runs {
     if (end?.status !== "failed") return undefined;
     const message = end.error ?? "The run failed.";
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
-    if (message.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: message.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
+    // Its code is `spend_cap_reached: `, or with a note after it (`spend_cap_reached (out of budget): `, cap.ts); the message is
+    // the words after it.
+    const capped = CAP_REFUSAL_PREFIX.exec(message);
+    if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: message.slice(capped[0].length), retryable: false } };
     return { outcome: "failed", error: { code: "run_failed", message, retryable: false } };
   }
 
