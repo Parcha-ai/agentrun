@@ -641,8 +641,8 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
   // pairs them.
   const calls = new Map<string, { name: string; called: string; done: boolean }>();
-  // Results counted before their call was seen (stored first): that call is done, and counts once.
-  const early = new Set<string>();
+  // Results stored before their call, by `conversation:id`: each counts once its call comes, under its name and rule.
+  const early = new Map<string, { named: string | undefined; result: { text: string; isError: boolean } }>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
   const order = new Map<string, number>();
@@ -667,20 +667,32 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, called: name, done: early.delete(`${conv}:${id}`) });
+        // Its result came first: it counts now, once, under this call's name and by this call's tool's rule.
+        const before = early.get(`${conv}:${id}`);
+        early.delete(`${conv}:${id}`);
+        calls.set(`${conv}:${id}`, { name: key, called: name, done: before !== undefined });
         see(key);
+        if (before) tally(key, callFailed(name, before.result));
       }
     } else if (entry.kind === "pi.tool-result" && message) {
-      const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
-      if (call) call.done = true;
-      else if (str(message.toolCallId)) early.add(`${conv}:${str(message.toolCallId)}`);
+      const id = str(message.toolCallId);
+      const call = calls.get(`${conv}:${id ?? ""}`);
       const named = str(message.toolName);
+      const result = { text: textOf(message), isError: message.isError === true };
+      // A result before its call waits for it, to count under its name and by its rule.
+      if (!call && id) {
+        early.set(`${conv}:${id}`, { named, result });
+        continue;
+      }
+      if (call) call.done = true;
       // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
       const called = call?.called ?? named ?? "";
-      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { text: textOf(message), isError: message.isError === true }));
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, result));
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
+  // A result whose call never came counts by its own name, as any result without a call does.
+  for (const { named, result } of early.values()) tally(named ? metricName(named) : METRIC_NAMES.unnamedTool, callFailed(named ?? "", result));
   for (const row of decisions) meter.decide(row);
   const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
   return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
