@@ -10,8 +10,7 @@
 // to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
 // refusal, an error and a write's or edit's result name a path in the workspace relative to it (`hello.md`), never by
 // the server's data directory (`workspaceRelative`); in a box they name the box's paths.
-import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -24,6 +23,9 @@ import { monidTools } from "./monid.js";
 import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { realOf, workspaceRelative } from "./workspace-paths.js";
+
+export { workspaceRelative } from "./workspace-paths.js";
 
 /** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again. */
 export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never" };
@@ -32,24 +34,44 @@ export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "
 const MAX_BYTES = 50 * 1024;
 const MAX_LINES = 2000;
 
+/** Whether `byte` continues a UTF-8 character (0b10xxxxxx), so a cut before it would split one. */
+const continues = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
+
+/** `bytes` (UTF-8) cut to at most `max` bytes, its tail or its head, at a character boundary: a character the limit
+ *  would split is left out whole, so the text never ends or starts in a U+FFFD. */
+export function cutUtf8(bytes: Uint8Array, max: number, tail: boolean): Uint8Array {
+  if (bytes.length <= max) return bytes;
+  if (tail) {
+    let start = bytes.length - max;
+    while (continues(bytes[start])) start++;
+    return bytes.subarray(start);
+  }
+  // The byte at `end` is the first one left out: while it continues a character, that character goes too.
+  let end = max;
+  while (end > 0 && continues(bytes[end])) end--;
+  return bytes.subarray(0, end);
+}
+
 /** A call's output, held within the tool's limits as it arrives: its tail (bash's) or its head. */
 function bounded(limits: ToolRegistration["outputLimits"]) {
   const maxBytes = limits?.maxBytes ?? MAX_BYTES;
   const maxLines = limits?.maxLines ?? MAX_LINES;
   const tail = limits?.retain === "tail";
+  // Bytes are decoded as one stream: a character whose bytes arrive in two chunks is one character.
+  const decoder = new StringDecoder("utf8");
   let kept = "";
   let cut = false;
   const trim = (text: string): string => {
     const lines = text.split("\n");
     let out = lines.length > maxLines ? (tail ? lines.slice(-maxLines) : lines.slice(0, maxLines)).join("\n") : text;
     const bytes = Buffer.from(out, "utf8");
-    if (bytes.length > maxBytes) out = (tail ? bytes.subarray(bytes.length - maxBytes) : bytes.subarray(0, maxBytes)).toString("utf8");
+    if (bytes.length > maxBytes) out = Buffer.from(cutUtf8(bytes, maxBytes, tail)).toString("utf8");
     if (out !== text) cut = true;
     return out;
   };
   return {
     push(chunk: string | Uint8Array) {
-      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      const text = typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
       if (!tail && cut) return;
       kept += text;
       // Trimmed once it is twice the limit, so a long output costs a bounded amount of memory and work.
@@ -73,44 +95,10 @@ export type ToolResults = Map<string, { text: string; isError: boolean }>;
 /** The tools whose result is pi's own words about a path (`Successfully wrote to <path>`), never a file's text. */
 const SAYS_PATH = new Set(["write", "edit"]);
 
-/**
- * `text` with the workspace's absolute path taken out: `<work>/notes/a.md` reads `notes/a.md`, the workspace itself `.`,
- * a path beside it `../x` (pi's tools resolve a relative path before they refuse it), and pi's refusal ("<path>: outside
- * the workspace <work>") names no directory. `works` is the workspace as the environment names it and as the kernel
- * resolves it (they differ under a symlinked directory). For a refusal, an error, and a write's or edit's result; a
- * read's result is the file's own text and is never changed.
- */
-export function workspaceRelative(text: string, works: readonly string[]): string {
-  const escape = (path: string) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // A name counts only where a path starts (not inside a longer one), and, unless a "/" follows, where it ends (a quote, a
-  // space, a separator or the text's end).
-  const start = "(?<![\\w./~-])";
-  const end = "(?![^'\"\\s,;:)\\]])";
-  let out = text;
-  // Longest first, so a name inside another is taken out before the outer one could take its prefix.
-  for (const work of [...new Set(works)].filter((w) => w.length > 1).sort((a, b) => b.length - a.length)) {
-    const name = `${start}${escape(work)}`;
-    out = out
-      .replace(new RegExp(`outside the workspace ${name}${end}`, "g"), "outside the workspace")
-      .replace(new RegExp(`${name}/`, "g"), "")
-      .replace(new RegExp(`${name}${end}`, "g"), ".");
-    const parent = dirname(work);
-    if (parent.length > 1) out = out.replace(new RegExp(`${start}${escape(parent)}/`, "g"), "../").replace(new RegExp(`${start}${escape(parent)}${end}`, "g"), "..");
-  }
-  return out;
-}
 
 const textOf = (content: unknown): string =>
   Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
 
-/** `path` as the kernel resolves it, or itself when it cannot be resolved. */
-const realOf = (path: string): string => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-};
 
 export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? []): HostTool[] {
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.

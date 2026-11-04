@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { boxMounts, mountSource } from "../dist/run-box.js";
+import { writesHeld } from "../dist/workspace.js";
 import { startServe } from "../dist/index.js";
 import { client, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -19,8 +20,9 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const WORK = "/run/agentrun/run/work";
-/** A value planted in the server's environment, which the box must not hold. */
-const PLANTED = ["planted", "foo", "sentinel"].join("-");
+/** Values planted in the server's environment, which the box must not hold: an unnamed key, OpenAI's, and the four keys
+ *  a tester runs everything with (OpenRouter's, Monid's, Parallel's and Browserbase's), each searched for by value. */
+const PLANTED = Object.fromEntries(["FOO", "OPENAI", "OPENROUTER", "MONID", "PARALLEL", "BROWSERBASE"].map((name) => [`${name}_API_KEY`, ["planted", name.toLowerCase(), "sentinel"].join("-")]));
 
 /** A fake docker first on PATH, with docker listed in AGENTRUN_BOXES, for test `t`. */
 async function fakeDocker(t, vars = {}) {
@@ -34,7 +36,10 @@ async function fakeDocker(t, vars = {}) {
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
   const calls = () => (existsSync(join(state, "argv.jsonl")) ? readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
   const containers = async () => (await readdir(join(state, "containers")).catch(() => [])).filter((name) => name.endsWith(".json")).map((name) => JSON.parse(readFileSync(join(state, "containers", name), "utf8")));
-  return { state, calls, runs: () => calls().filter((args) => args[0] === "run"), removed: () => calls().filter((args) => args[0] === "rm").map((args) => args.at(-1)), containers };
+  // The fake writes a call's argv before it acts on it, so an `rm` is in `removed()` before its container's file is gone:
+  // a wait on a box's destroy waits on both.
+  const gone = (id) => !existsSync(join(state, "containers", `${id}.json`));
+  return { state, calls, runs: () => calls().filter((args) => args[0] === "run"), removed: () => calls().filter((args) => args[0] === "rm").map((args) => args.at(-1)), containers, gone };
 }
 
 function answers(data, runId) {
@@ -103,7 +108,7 @@ test("a mount source is refused when it is, or runs through, a link below the da
 });
 
 test("fake docker: one create per run, with no network, serve's user, work/ alone at its target, the run's labels and the fixed environment as NAME=value; a setting or a request field cannot open the network; destroyed at the run's end", { timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, { AGENTRUN_DOCKER_IMAGE: "registry.example/agentrun-box:1", AGENTRUN_DOCKER_NETWORK: "host", AGENTRUN_BOX_NETWORK: "open", FOO_API_KEY: PLANTED });
+  const docker = await fakeDocker(t, { AGENTRUN_DOCKER_IMAGE: "registry.example/agentrun-box:1", AGENTRUN_DOCKER_NETWORK: "host", AGENTRUN_BOX_NETWORK: "open", ...PLANTED });
   const { api, data } = await serve(t, { faux: PROBE });
   assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true });
   await boxedAgent(api);
@@ -122,7 +127,7 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.match(said[3].text, /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
   assert.ok(!said[3].text.includes(realpathSync(data)), "never the data root");
   assert.equal(said[1].text, "hi");
-  assert.ok(!said[2].text.includes(PLANTED), "the run's environment is not the box's");
+  for (const [name, value] of Object.entries(PLANTED)) assert.ok(!said[2].text.includes(value), `${name}: the run's environment is not the box's`);
   assert.equal(readFileSync(join(data, "runs", runId, "work", "out.txt"), "utf8"), "hi");
   const runs = docker.runs();
   assert.equal(runs.length, 1, "one box for the run's calls");
@@ -136,8 +141,59 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   assert.equal(args[args.indexOf("--entrypoint") + 2], "registry.example/agentrun-box:1", "AGENTRUN_DOCKER_IMAGE");
   for (const never of ["-e", "-v", "--volume", "--privileged", "--env-file", "--cap-add", "-p", "--publish"]) assert.ok(!args.includes(never), never);
   // Its destroy at the run's end: removed by the id its label lists.
-  await until(() => docker.removed().length === 1, "the destroy at the run's end");
+  await until(() => docker.removed().length === 1 && docker.gone(docker.removed()[0]), "the destroy at the run's end");
   assert.deepEqual(await docker.containers(), [], "no container is left");
+});
+
+test("fake docker: read, write and edit run no docker command, on the work/ the box binds; bash runs one docker exec; a run with no bash makes no box", { skip: !writesHeld() && "needs held directory handles (/proc/self/fd)", timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  assert.equal((await api("POST", "/agents", { definition: { id: "files", name: "files", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "edit", "bash"] } })).status, 201);
+  const ran = async (plan) => {
+    const run = await api("POST", "/agents/files/runs", { input: { content: JSON.stringify({ probe: plan }) } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+    return answers(data, run.body.run_id);
+  };
+  const files = [
+    { tool: "write", args: { path: "a.txt", content: "written" } },
+    { tool: "read", args: { path: "a.txt" } },
+    { tool: "edit", args: { path: "a.txt", edits: [{ oldText: "written", newText: "edited" }] } },
+    { tool: "read", args: { path: "a.txt" } },
+  ];
+  const plain = await ran(files);
+  assert.deepEqual(plain.map((a) => [a.tool, a.error, a.text]).filter(([tool]) => tool === "read"), [["read", false, "written"], ["read", false, "edited"]]);
+  assert.deepEqual(docker.calls().filter((args) => args[0] === "run" || args[0] === "exec"), [], "no box made, no command run in one");
+  const said = await ran([...files, { tool: "bash", args: { command: "cat a.txt" } }]);
+  assert.equal(said.at(-1).text, "edited", "bash, in the box, reads what the file tools wrote here");
+  const execs = docker.calls().filter((args) => args[0] === "exec");
+  assert.equal(execs.length, 1, JSON.stringify(execs));
+  assert.ok(execs[0].join(" ").includes("cat a.txt"), "the one exec is bash's");
+  assert.equal(docker.runs().length, 1, "one box, made for bash");
+});
+
+test("fake docker: a run whose earlier process left a box gets that box's left commands killed before its first read, write or edit here, with no create; a fresh run makes no box for them", { skip: !writesHeld() && "needs held directory handles (/proc/self/fd)", timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  assert.equal((await api("POST", "/agents", { definition: { id: "files", name: "files", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "edit", "bash"] } })).status, 201);
+  const go = join(await scratch(t), "go");
+  const run = await api("POST", "/agents/files/runs", { input: { content: JSON.stringify({ probe: [{ wait: go }, { tool: "write", args: { path: "a.txt", content: "resumed" } }, { tool: "read", args: { path: "a.txt" } }] }) } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  const work = join(realpathSync(data), "runs", runId, "work");
+  await until(() => existsSync(work), "the run's work/");
+  // The box an earlier process of the run made, as Docker would list it: its commands may still change work/.
+  const id = "e".repeat(64);
+  const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
+  await mkdir(join(docker.state, "containers"), { recursive: true });
+  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"], ["read", false, "resumed"]]);
+  const execs = docker.calls().filter((args) => args[0] === "exec");
+  assert.equal(execs.length, 1, JSON.stringify(execs));
+  assert.ok(execs[0].join(" ").includes(".pi-transport") && execs[0].join(" ").includes("kill -KILL"), "the one command kills what the earlier process left, before the file tools ran");
+  assert.deepEqual(docker.runs(), [], "taken over: no create");
 });
 
 test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {
@@ -160,7 +216,7 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   assert.deepEqual(docker.runs(), [], "taken over: no create");
   const execs = docker.calls().filter((args) => args[0] === "exec");
   assert.ok(execs[0].join(" ").includes(".pi-transport") && execs[0].join(" ").includes("kill -KILL"), "the first command kills what the earlier process left");
-  await until(() => docker.removed().includes(id), "the destroy at the run's end");
+  await until(() => docker.removed().includes(id) && docker.gone(id), "the destroy at the run's end");
 });
 
 test("fake docker: a bash timeout kills the command's group in the box, though the killed docker exec client left it running", { timeout: 90_000 }, async (t) => {
@@ -204,8 +260,9 @@ test("fake docker: a create that fails is the call's error, never a run on this 
   assert.match(bash.text, /the run's box could not be made: docker could not start a box: docker: Error response from daemon: the fake's start failed/);
   assert.equal(existsSync(join(data, "runs", runId, "work", "out.txt")), false, "nothing ran on this machine");
   assert.equal(docker.runs().length, 1);
-  await until(async () => (await docker.containers()).length === 0, "the left container's destroy");
-  assert.equal(docker.removed().length >= 1, true);
+  // Waited on by its rm and its file, not by polling containers(), which could read a file an rm in flight is removing.
+  await until(() => docker.removed().length >= 1 && docker.removed().every(docker.gone), "the left container's destroy");
+  assert.deepEqual(await docker.containers(), [], "no container is left");
 });
 
 test("fake docker: the start's sweep destroys the box of a run that has ended, and leaves one of a run this store does not know", { timeout: 90_000 }, async (t) => {
@@ -223,7 +280,7 @@ test("fake docker: the start's sweep destroys the box of a run that has ended, a
   await left("b".repeat(64), "run_unknown");
   const second = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
   t.after(() => second.close());
-  await until(() => docker.removed().includes("a".repeat(64)), "the sweep");
+  await until(() => docker.removed().includes("a".repeat(64)) && docker.gone("a".repeat(64)), "the sweep");
   assert.deepEqual(docker.removed(), ["a".repeat(64)]);
   assert.deepEqual((await docker.containers()).map((c) => c.Id), ["b".repeat(64)]);
 });
