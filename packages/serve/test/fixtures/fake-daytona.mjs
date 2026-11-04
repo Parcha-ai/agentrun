@@ -30,14 +30,17 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/tmp\/pi-transport)(?=[/'"\s]|$)
  * organization whose own network policy holds (it takes `networkBlockAll` and sets nothing); `hostileTar`, the bytes
  * every `tar -c` in a box prints instead of its archive (a box that lies on a pull); `failDeletes`, how many DELETEs it
  * answers 500 to first; `failListings`, which listings of a box's directory (the sync layer's `find`, counted from 1:
- * a seed's, then each pull's) it answers 500 to.
+ * a seed's, then each pull's) it answers 500 to. `state.redirect` ({ from, status, location }): a toolbox call to path
+ * `from` is answered with that redirect, as a box that took its toolbox's port could answer. `state.hostile` (default
+ * true when `hostileTar` is given) turns the lying `tar` off and on. A sandbox's `autoStopInterval` is what the last
+ * autostop call set; a stopped sandbox starts again on `/start`.
  */
 export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, failDeletes = 0, failListings = [] } = {}) {
   const root = join(await scratch(t), "daytona");
   mkdirSync(root, { recursive: true });
   const sandboxes = new Map();
   const requests = [];
-  const state = { blocks, failDeletes, listings: 0 };
+  const state = { blocks, failDeletes, listings: 0, redirect: undefined, hostile: Boolean(hostileTar) };
   let base = "";
   let hostileBin;
   if (hostileTar) {
@@ -65,7 +68,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     new Promise((resolve) => {
       const child = spawn("sh", ["-c", inBox(sandbox.id, command)], {
         cwd: boxDir(sandbox.id),
-        env: { PATH: `${hostileBin ? `${hostileBin}:` : ""}${process.env.PATH ?? "/usr/bin:/bin"}`, ...sandbox.env, TMPDIR: join(boxDir(sandbox.id), "tmp") },
+        env: { PATH: `${hostileBin && state.hostile ? `${hostileBin}:` : ""}${process.env.PATH ?? "/usr/bin:/bin"}`, ...sandbox.env, TMPDIR: join(boxDir(sandbox.id), "tmp") },
         stdio: ["ignore", "pipe", "pipe"],
       });
       const parts = [];
@@ -79,6 +82,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     });
 
   const toolbox = async (sandbox, route, url, body, type, res) => {
+    if (state.redirect && url.pathname === state.redirect.from) return void res.writeHead(state.redirect.status, { location: state.redirect.location }).end();
     const path = inBox(sandbox.id, url.searchParams.get("path") ?? "");
     if (route === "process/execute") {
       const { command, timeout } = JSON.parse(body.toString("utf8"));
@@ -137,7 +141,9 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     }
     if (!sandbox) return json(res, 404, { statusCode: 404, message: "sandbox not found" });
     if (segments[3] === "toolbox-proxy-url") return json(res, 200, { url: `${base}/toolbox` });
-    if (segments[3] === "stop") return json(res, 200, {});
+    if (segments[3] === "stop") return (sandbox.state = "stopped", json(res, 200, {}));
+    if (segments[3] === "start") return (sandbox.state = "started", json(res, 200, info(sandbox, true)));
+    if (segments[3] === "autostop" && method === "POST") return (sandbox.autoStopInterval = Number(segments[4]), json(res, 200, {}));
     if (method === "DELETE") {
       if (state.failDeletes > 0) {
         state.failDeletes -= 1;

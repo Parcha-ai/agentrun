@@ -70,6 +70,23 @@ async function upload(server, path, text) {
   return JSON.parse(answer).file_id ?? made.body.file_id;
 }
 
+/** A relay over `fake` in a scratch data root for the runs `ids`; `as(id)` is the fetch that run's process makes with the
+ *  token it was handed, and `make(id)` a sandbox with that run's label, made as the server makes them. */
+async function relayFor(t, fake, ids, ensure = async () => ({ id: "", made: true })) {
+  const root = await scratch(t);
+  const dirOf = (id) => join(root, "runs", id);
+  // Each run's own door token, in its directory, as a run's launch makes it.
+  const tokens = Object.fromEntries(ids.map((id) => [id, `door-token-of-${id}`]));
+  for (const id of ids) {
+    mkdirSync(dirOf(id), { recursive: true });
+    await writeFile(join(dirOf(id), "door-token"), `${tokens[id]}\n`);
+  }
+  const relay = await startBoxRelay({ root, tokenOf: (id) => tokens[id], apiUrl: fake.url, apiKey: KEY, serves: (id) => ids.includes(id), ensure: (id) => ensure(id) });
+  t.after(() => relay.close());
+  const make = async (run) => (await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": run, "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/run/agentrun/run/work" } }) })).json()).id;
+  return { root, relay, make, tokens, as: (id) => relayFetch(root, dirOf(id), id), dirOf };
+}
+
 const fileList = async (api, runId) => (await api("GET", `/runs/${runId}/files`)).body.files.map((file) => file.path).sort();
 
 test("demo: a Daytona place runs read, write, edit and bash in the run's box: work/ seeded in, bash's out.txt in the run's files, the network closed, no key in the box, the box destroyed at the end", { timeout: 180_000 }, async (t) => {
@@ -107,7 +124,8 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   assert.equal(said[7].text.trim(), "1", "the file monid's answer was filed in is in the box");
   // The box's environment: the fixed one, and no key, token or door token.
   const door = (await readFile(join(data, ".door-token"), "utf8")).trim();
-  for (const [name, value] of Object.entries({ KEY, model: planted("model"), token: server.token, door, monid: MONID_KEY })) assert.ok(!said[5].text.includes(value), `${name} reached the box`);
+  const runDoor = (await readFile(join(data, "runs", run.run_id, "door-token"), "utf8")).trim();
+  for (const [name, value] of Object.entries({ KEY, model: planted("model"), token: server.token, door, runDoor, monid: MONID_KEY })) assert.ok(!said[5].text.includes(value), `${name} reached the box`);
   // The run's files: what the box wrote, pulled back; what it removed, removed.
   assert.deepEqual((await fileList(api, run.run_id)).filter((path) => !path.startsWith("evidence/")), ["note.txt", "out.txt"]);
   assert.equal((await api("GET", `/runs/${run.run_id}/files/out.txt`)).body, "hello from the box\n");
@@ -222,6 +240,27 @@ test("a pull a box's archive stops (unreadable) is not a whole copy: the run end
   const [kept] = fake.sandboxes.keys();
   assert.equal(readFileSync(fake.pathOf(kept, "run/agentrun/run/work/out.txt"), "utf8"), "kept");
   assert.ok(existsSync(join(data, "runs", run.run_id, BOX_SYNC_FILE)), "the mark of what did come back is kept");
+  assert.equal(fake.sandboxes.get(kept).autoStopInterval, 15, "a kept box stops after 15 idle minutes: its disk stays, its compute stops");
+});
+
+test("a kept box that Daytona stopped is woken by the next start, pulled once its copy reads, and destroyed", { timeout: 180_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY, hostileTar: Buffer.from("this is not an archive ".repeat(64)) });
+  const data = join(await scratch(t), "agents");
+  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url });
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const firstApi = client(first.baseUrl, first.token);
+  assert.equal((await firstApi("POST", "/agents", { definition: { id: "woken", name: "woken", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
+  const run = await probe(firstApi, "woken", [{ tool: "bash", args: { command: "printf kept > out.txt" } }]);
+  await follow(firstApi, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  await first.close();
+  assert.equal(fake.sandboxes.size, 1, "kept");
+  const [kept] = fake.sandboxes.values();
+  // 15 idle minutes later Daytona stopped it; its archive reads again.
+  kept.state = "stopped";
+  fake.state.hostile = false;
+  const second = await serve(t, { data, faux: PROBE });
+  await until(() => fake.sandboxes.size === 0, "the start's sweep of the kept box");
+  assert.deepEqual(await fileList(second.api, run.run_id), ["out.txt"]);
 });
 
 test("a run found waiting at a start is pulled then: a turn's end whose pull failed before the server went is brought back", { timeout: 180_000 }, async (t) => {
@@ -279,15 +318,12 @@ test("a start pulls and destroys the box of a run that ended while its box was l
 
 test("a file the server files before a run's process opens a box a process before it made is copied in at the open", { timeout: 60_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
-  const root = await scratch(t);
-  await writeFile(join(root, ".door-token"), "door-token-of-the-test\n");
   // The box a run's earlier process made and the server seeded: its mark names it, so the open does not seed it again.
-  const made = await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": "run-again", "agentrun.box": "run", "pi-transport": "1", "pi-transport.workspace": "/run/agentrun/run/work" } }) })).json();
+  const made = { id: "" };
+  const relay = await relayFor(t, fake, ["run-again"], async () => ({ id: made.id, made: false }));
+  made.id = await relay.make("run-again");
   mkdirSync(fake.pathOf(made.id, "run/agentrun/run/work"), { recursive: true });
-  const relay = await startBoxRelay({ root, token: "door-token-of-the-test", apiUrl: fake.url, apiKey: KEY, serves: (id) => id === "run-again", ensure: async () => ({ id: made.id, made: false }) });
-  t.after(() => relay.close());
-  const runDir = join(root, "runs", "run-again");
-  const box = runBox({ relay: root }, { id: "run-again", root, dir: runDir, place: DAYTONA });
+  const box = runBox({ relay: relay.root }, { id: "run-again", root: relay.root, dir: relay.dirOf("run-again"), place: DAYTONA });
   // The new process's first act: a host tool files a long answer, before any coding call opened the box.
   await box.mirror("evidence/monid/answer.json", '{"whole":"answer"}');
   await box.env(BACKGROUND_CONTEXT);
@@ -295,13 +331,52 @@ test("a file the server files before a run's process opens a box a process befor
   assert.equal(readFileSync(fake.pathOf(made.id, "run/agentrun/run/work/evidence/monid/answer.json"), "utf8"), '{"whole":"answer"}');
 });
 
+test("a toolbox answer that redirects is refused and never followed with the key: a box holding its toolbox's port cannot send the relay to another run's sandbox", async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const relay = await relayFor(t, fake, ["run-mine", "run-other"]);
+  const mine = await relay.make("run-mine");
+  const other = await relay.make("run-other");
+  mkdirSync(fake.pathOf(other, "run/agentrun/run/work"), { recursive: true });
+  await writeFile(fake.pathOf(other, "run/agentrun/run/work/secret.txt"), "the other run's secret");
+  for (const status of [302, 303]) {
+    fake.state.redirect = { from: `/toolbox/${mine}/files/download`, status, location: `/toolbox/${other}/files/download?path=/run/agentrun/run/work/secret.txt` };
+    const before = fake.requests.length;
+    const sent = await relay.as("run-mine")(`${fake.toolboxUrl}/${mine}/files/download?path=/run/agentrun/run/work/out.txt`, { headers: { authorization: "Bearer relayed-by-the-server" } });
+    const text = await sent.text();
+    assert.notEqual(sent.status, 200, `${status}: ${text}`);
+    assert.ok(!text.includes("the other run's secret"), `${status}: the other run's file came back`);
+    assert.match(text, /redirect/, `${status}: the refusal says why`);
+    assert.deepEqual(fake.requests.slice(before).filter((r) => r.path.includes(other)).map((r) => `${r.method} ${r.path}`), [], `${status}: the other run's sandbox was never asked`);
+  }
+});
+
+test("a run's relay call takes only that run's own token: run A's process, with the token it was handed, cannot reach run B's box", { timeout: 180_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const { api, data } = await onDaytona(t, fake);
+  assert.equal((await api("POST", "/agents", { definition: { id: "pair", name: "pair", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
+  const plan = [{ tool: "bash", args: { command: "printf x > out.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }];
+  const a = await probe(api, "pair", plan);
+  const b = await probe(api, "pair", plan);
+  await follow(api, a.run_id, ["input_required"], { deadlineMs: 120_000 });
+  await follow(api, b.run_id, ["input_required"], { deadlineMs: 120_000 });
+  const boxOf = (id) => [...fake.sandboxes.values()].find((s) => s.labels["agentrun.run"] === id).id;
+  // The token run A's process was handed: its own file when it has one, else the server-wide one.
+  const own = join(data, "runs", a.run_id, "door-token");
+  const tokenA = readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
+  const relayUrl = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8")).url;
+  const asA = (run) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${tokenA}`, "x-agentrun-target": `${fake.url}/sandbox/${boxOf(run)}` } });
+  const before = fake.requests.length;
+  const theirs = await asA(b.run_id);
+  assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box: ${theirs.status}`);
+  assert.deepEqual(fake.requests.slice(before).filter((r) => r.path.includes(boxOf(b.run_id))).map((r) => `${r.method} ${r.path}`), [], "run B's box was never asked");
+  assert.equal((await asA(a.run_id)).status, 200, "run A's own box answers its own token");
+});
+
 test("the relay: the door token only; a run it holds only; only that run's own sandbox, for a read and its toolbox's programs and files; the key goes nowhere else", async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
-  const root = await scratch(t);
-  await writeFile(join(root, ".door-token"), "door-token-of-the-test\n");
   const mine = { id: "", run: "run-mine" };
-  const relay = await startBoxRelay({ root, token: "door-token-of-the-test", apiUrl: fake.url, apiKey: KEY, serves: (id) => id === "run-mine" || id === "run-other", ensure: async () => ({ id: mine.id, made: true }) });
-  t.after(() => relay.close());
+  const held = await relayFor(t, fake, ["run-mine", "run-other"], async () => ({ id: mine.id, made: true }));
+  const { root, relay } = held;
   assert.deepEqual(JSON.parse(readFileSync(join(root, BOX_RELAY_FILE), "utf8")), { url: relay.url });
   // Two sandboxes, one per run, made with the key as the server makes them.
   const make = async (run) => (await (await fetch(`${fake.url}/sandbox`, { method: "POST", headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" }, body: JSON.stringify({ labels: { "agentrun.run": run, "pi-transport": "1" } }) })).json()).id;
@@ -314,7 +389,7 @@ test("the relay: the door token only; a run it holds only; only that run's own s
   t.after(() => new Promise((resolve) => decoy.close(resolve)));
   const decoyUrl = `http://127.0.0.1:${decoy.address().port}`;
 
-  const relayed = relayFetch(root, "run-mine");
+  const relayed = held.as("run-mine");
   const call = async (method, target, body) => {
     const sent = await relayed(target, { method, headers: { authorization: "Bearer relayed-by-the-server", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: sent.status, body: await sent.json().catch(() => null) };
@@ -344,9 +419,13 @@ test("the relay: the door token only; a run it holds only; only that run's own s
   assert.ok(!elsewhere.includes(`Bearer ${KEY}`), "the key reached no other host");
   // What reached Daytona came with the key, never with the door token or the run's placeholder.
   assert.deepEqual([...new Set(fake.requests.slice(before).filter((r) => r.source === "pi-transport").map((r) => r.authorization))], [`Bearer ${KEY}`]);
-  // The door token is the only way in, and a run the server does not hold has no relay.
+  // The run's own door token is the only way in: no token, another run's token, or a run the server does not hold.
   const bare = await fetch(`${relay.url}/runs/run-mine/daytona`, { headers: { "x-agentrun-target": `${fake.url}/sandbox/${mine.id}` } });
   assert.equal(bare.status, 401);
-  const stranger = await relayFetch(root, "run-stranger")(`${fake.url}/sandbox/${mine.id}`, {});
-  assert.equal(stranger.status, 404);
+  const borrowed = await fetch(`${relay.url}/runs/run-mine/daytona`, { headers: { authorization: `Bearer ${held.tokens["run-other"]}`, "x-agentrun-target": `${fake.url}/sandbox/${mine.id}` } });
+  assert.equal(borrowed.status, 401);
+  mkdirSync(held.dirOf("run-stranger"), { recursive: true });
+  await writeFile(join(held.dirOf("run-stranger"), "door-token"), "a-token-the-server-never-made\n");
+  const stranger = await relayFetch(root, held.dirOf("run-stranger"), "run-stranger")(`${fake.url}/sandbox/${mine.id}`, {});
+  assert.equal(stranger.status, 401);
 });

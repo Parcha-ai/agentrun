@@ -44,6 +44,8 @@ class FakeDaytona {
 	failExecuteContaining: string | undefined;
 	/** Runs before every toolbox command, to hold one back while something else happens. */
 	beforeExecute: ((command: string) => Promise<void>) | undefined;
+	/** A call to path `from` answered with this redirect, as a box that took its toolbox's port could answer. */
+	redirect: { from: string; status: number; location: string } | undefined;
 	/** false: an organization whose own network policy holds (tier 1 or 2), which takes `networkBlockAll` and sets nothing. */
 	honorsBlockAll = true;
 	/** Each new sandbox stays out of the label listing for this many list calls, as Daytona's does for a moment. */
@@ -108,6 +110,10 @@ class FakeDaytona {
 		}
 		if (request.headers.authorization !== `Bearer ${API_KEY}`)
 			return this.#json(response, 401, { message: "bad key" });
+		if (this.redirect !== undefined && url.pathname === this.redirect.from) {
+			response.writeHead(this.redirect.status, { location: this.redirect.location }).end();
+			return;
+		}
 		const failure = this.failures.find((f) => f.times > 0 && f.match(method, url.pathname));
 		if (failure !== undefined) {
 			failure.times -= 1;
@@ -481,6 +487,40 @@ describe("daytona boxes", () => {
 			}
 		},
 	);
+
+	it("refuses a redirect and never follows it with the key: a box that took its toolbox's port cannot send a call to another sandbox", async () => {
+		await withBox(async (mine) => {
+			await withBox(async (other) => {
+				const written = await other.upload(
+					[{ path: "secret.txt", bytes: encoder.encode("the other box's secret") }],
+					context,
+				);
+				if (!written.ok) throw written.error;
+				for (const status of [302, 303]) {
+					fake.redirect = {
+						from: `/toolbox/${mine.id}/files/download`,
+						status,
+						location: `/toolbox/${other.id}/files/download?path=${encodeURIComponent(fake.path("workspace", "secret.txt"))}`,
+					};
+					const before = fake.requests.length;
+					try {
+						const read = await mine.download(["out.txt"], context);
+						const got = read.ok ? decoder.decode(read.value[0]?.bytes ?? new Uint8Array()) : "";
+						expect(got).not.toContain("the other box's secret");
+						expect(read.ok ? "ok" : read.error.message).toMatch(/redirect/);
+						expect(
+							fake.requests
+								.slice(before)
+								.filter((r) => r.path.includes(other.id))
+								.map((r) => `${r.method} ${r.path}`),
+						).toEqual([]);
+					} finally {
+						fake.redirect = undefined;
+					}
+				}
+			});
+		});
+	});
 
 	it("removes a sandbox it could not make ready", async () => {
 		fake.failExecuteContaining = "mkdir";
