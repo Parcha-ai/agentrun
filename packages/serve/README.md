@@ -884,8 +884,9 @@ its `state` is random, bound to the server's name, used once and good for 10 min
 never left this server. It finishes only in the browser that started the sign-in: the start's answer sets a cookie
 for that sign-in alone (named by its state, so two tabs do not replace each other's; `HttpOnly; SameSite=Lax`, path
 the callback, 10 minutes, cleared when it finishes), and a callback without it is `403` with nothing exchanged. So a
-start must come to the address the callback is under: one that came to another (the console opened at `localhost`
-while the server's address is `127.0.0.1`) is `409 wrong_origin`, with `details.open` the console's MCP page there.
+start must come to the address the callback is under: one that came to another (the console opened under another
+name for this machine than the server's own address) is `409 wrong_origin`, with `details.open` the console's MCP
+page there.
 The redirect URI never changes with the address a request came to, so a registered client's stays valid. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
 refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
