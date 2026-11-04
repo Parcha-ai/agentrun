@@ -175,6 +175,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const key = randomBytes(32).toString("base64url");
     // What the provider does with a token count (a free route it may not serve), said once per session, a status only.
     let counted = false;
+    // Whether the provider has refused the session's key (one paid 401): said once.
+    let refused = false;
     const proxy = await startModelProxy({
       policy: anthropicPolicy({
         model: route.models.model,
@@ -198,7 +200,15 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         counted = true;
         options.proxy.log?.("claude-agent: the provider answered count_tokens", { status });
       },
-      ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
+      fetch: async (input, init) => {
+        const answer = await (options.proxy.fetch ?? fetch)(input, init);
+        // A paid request the provider answers 401 is the key refused: said to the harness once, with the provider's words.
+        if (answer.status === 401 && route.onKeyRefused && !refused && new URL(String(input instanceof Request ? input.url : input)).pathname.endsWith("/v1/messages")) {
+          refused = true;
+          route.onKeyRefused(refusalDetail(await answer.clone().text().catch(() => "")));
+        }
+        return answer;
+      },
     }, key);
     const lost = new AbortController();
     const children = new Set<MachineChild>();
@@ -235,4 +245,15 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     };
     return brandMachine(machine);
   };
+}
+
+/** The provider's words in a 401's body: its error's message (Anthropic's `{error: {message}}`, OpenRouter's too), else
+ *  the text; the first line, at most 200 characters. */
+export function refusalDetail(text: string): string {
+  let said: unknown = text;
+  try {
+    const body = JSON.parse(text) as { error?: { message?: unknown } | string; message?: unknown };
+    said = typeof body.error === "object" ? body.error?.message : body.error ?? body.message ?? text;
+  } catch {}
+  return String(typeof said === "string" ? said : text).split("\n")[0]!.trim().slice(0, 200);
 }

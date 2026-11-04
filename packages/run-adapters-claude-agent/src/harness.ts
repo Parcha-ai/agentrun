@@ -455,6 +455,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         onCap: (cap) => {
           if (cap !== 'concurrency') ctx.halt?.(spendCapped(cap));
         },
+        // A refused key fails the turn at the provider's first 401, in the words the CLI would end on after its retries.
+        onKeyRefused: (detail) => ctx.halt?.(new Error(`Failed to authenticate. API Error: 401${detail ? ` ${detail}` : ''}`)),
         // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
         ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-agent gateway: ${message}`, fields) } : {}),
       });
