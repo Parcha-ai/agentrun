@@ -3,6 +3,7 @@
 // is idle in this process and in the next one, and the next message is a turn of its own. The faux adapter, in-memory
 // store; each "process" is a store open and a faux session.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
@@ -56,4 +57,13 @@ test('settleOpenTurn() refuses a session with no open turn', async () => {
   assert.equal(session.state, 'new');
   await assert.rejects(session.settleOpenTurn(), /no turn to settle/);
   await session.close();
+});
+
+test("a settled turn's end is the kernel's abortedOutcome of the session's own stop: settleTurn and faux's settle keep no interrupted end of their own", () => {
+  // Structural, as each adapter's guard: one path for an interrupted turn's end, the kernel's abortedOutcome.
+  for (const file of ['../src/process/settle.ts', '../src/testing.ts']) {
+    const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+    assert.match(source, /abortedOutcome\(AbortSignal\.abort\(new SessionHalt\("interrupted"\)\)\)/, file);
+    assert.doesNotMatch(source, /status:\s*"interrupted"/, file);
+  }
 });
