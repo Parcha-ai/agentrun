@@ -52,7 +52,7 @@ async function processOf(path) {
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
 
 /** serve with codex on a copy of the stand-in (its process found by that copy's path), its model through `gw`. */
-async function codexServe(t, gw) {
+async function codexServe(t, gw, model = "gpt-test") {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyFile(STAND_IN, standIn);
@@ -65,7 +65,7 @@ async function codexServe(t, gw) {
     AGENTRUN_CODEX_STANDIN: "1",
     AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
     AGENT_MODEL_BASE_URL: gw.origin,
-    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL: model,
     AGENT_MODEL_API_KEY: GATEWAY_KEY,
     AGENT_MODEL_PRICE: "1,2,0.5",
   });
@@ -132,6 +132,23 @@ test("through a gateway, codex sends the model id the revision names whole, as p
   gw.release();
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].body.model, "openai/gpt-4o", "the gateway gets the name it was configured with");
+});
+
+test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the gateway's own string, a namespaced one (team/model) included", { timeout: 90_000 }, async (t) => {
+  const gw = await gateway(t);
+  const { api } = await codexServe(t, gw, "team/model");
+  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  assert.equal(offer.available, true, JSON.stringify(offer));
+  assert.equal(offer.default_model, "agent-model/team/model");
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  for (let i = 0; gw.seen.length === 0; i++) {
+    assert.ok(i < 300, "the turn's model request reaches the gateway");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  gw.release();
+  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(gw.seen[0].body.model, "team/model", "the gateway gets its own id, as configured");
 });
 
 /** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
