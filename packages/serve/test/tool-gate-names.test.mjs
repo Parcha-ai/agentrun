@@ -118,3 +118,15 @@ test("an MCP-named call reaches no enter() of this gate's on any harness: the MC
   assert.deepEqual(runGate.extension([registration]).wraps, []);
   assert.equal(entered, 0);
 });
+
+test("a legacy name the tool plane folds into a capability (fetch_page, web_fetch's) is held to that capability's setting: asked where it asks, refused where it denies, and never a settings key of its own", async (t) => {
+  const { LEGACY_NAMES, settingsIssues } = await import("../dist/tool-plane.js");
+  for (const [legacy, target] of Object.entries(LEGACY_NAMES)) {
+    for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(keyOf(harness, legacy), target, `${harness} ${legacy}`);
+    assert.deepEqual(settingsIssues({ [legacy]: { permission: "deny" } }).map((issue) => [issue.field, issue.reason]), [[legacy, "not_allowed"]], `${legacy} is set by ${target}`);
+  }
+  const asked = await onPi(t, { web_fetch: { permission: "ask" } }, "fetch_page");
+  assert.deepEqual([asked.text, asked.ran, asked.kept.map((entry) => entry.data?.tool)], [waitingText("web_fetch"), 0, ["web_fetch"]], "web_fetch: ask parks a fetch_page call");
+  const denied = await onPi(t, { web_fetch: { permission: "deny" } }, "fetch_page");
+  assert.deepEqual([denied.text, denied.ran], [deniedText("web_fetch"), 0], "web_fetch: deny refuses it");
+});
