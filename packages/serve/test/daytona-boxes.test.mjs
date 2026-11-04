@@ -330,6 +330,30 @@ test("a run's box caught pausing is waited for and started again, never replaced
   assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "written after the last pull", "the next turn ran in the same box");
 });
 
+test("a run's box that Daytona archived (or is archiving) while the run waited is restored, never replaced", { timeout: 240_000 }, async (t) => {
+  for (const reads of [0, 3]) {
+    const fake = await daytonaSandboxes(t, { key: KEY });
+    const data = join(await scratch(t), "agents");
+    withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url });
+    const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+    const firstApi = client(first.baseUrl, first.token);
+    assert.equal((await firstApi("POST", "/agents", { definition: { id: "archived", name: "archived", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
+    const run = await probe(firstApi, "archived", [{ tool: "bash", args: { command: "printf one > turn1.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }, { tool: "bash", args: { command: "cat box-only.txt > turn2.txt" } }]);
+    await follow(firstApi, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+    await fileList(firstApi, run.run_id);
+    await first.close();
+    const [box] = fake.sandboxes.values();
+    await writeFile(fake.pathOf(box.id, "run/agentrun/run/work/box-only.txt"), "written after the last pull");
+    fake.archive(box.id, reads);
+    const second = await serve(t, { data, faux: PROBE });
+    assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
+    await follow(second.api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+    assert.equal(fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").length, 1, `${reads}: no second box was made`);
+    assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "written after the last pull", `${reads}: the next turn ran in the same box`);
+    await second.close();
+  }
+});
+
 test("an agent's edit to a file the host filed and mirrored into the box comes back: queued at the open or sent live", { timeout: 180_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
   withEnv(t, { MONID_API_KEY: MONID_KEY });

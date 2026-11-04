@@ -198,6 +198,13 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
       sandbox.state = reads > 0 ? "pausing" : "paused";
       sandbox.settle = reads > 0 ? { reads, to: "paused" } : undefined;
     },
+    /** Daytona's archive of sandbox `id` (it moves a stopped one's disk away); with `reads`, it is `archiving` for that
+     *  many reads first. `/start` restores it. */
+    archive: (id, reads = 0) => {
+      const sandbox = sandboxes.get(id);
+      sandbox.state = reads > 0 ? "archiving" : "archived";
+      sandbox.settle = reads > 0 ? { reads, to: "archived" } : undefined;
+    },
     /** Where a sandbox's box path is on this machine. */
     pathOf: (id, path) => join(boxDir(id), path),
   };
