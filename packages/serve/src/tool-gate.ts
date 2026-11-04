@@ -288,7 +288,8 @@ export class RunGate {
   /** pi's `tools` behind the gate: wraps, by name, for the run's registry, which apply wherever it is selected (every
    *  agent selects it: the root by default, a workflow's model node by name, app.ts). */
   extension(tools: readonly ToolRegistration[]): Extension {
-    const named = [...new Map(tools.map((tool) => [tool.name, tool])).values()];
+    // pi's MCP tools (mcp__<server>__<tool>) are gated by the MCP gateway itself, inside their execute: not wrapped here.
+    const named = [...new Map(tools.filter((tool) => !tool.name.startsWith("mcp__")).map((tool) => [tool.name, tool])).values()];
     return defineExtension({ name: "tool-gate", wraps: named.map((tool) => wrapTool(tool, (inner) => this.wrap(inner))) });
   }
 
