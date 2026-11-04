@@ -513,7 +513,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
 export const LEARNED_HEADING = "# Learned";
 /** What every run that learns is told first under it, notes or none: a run not told it learns saves what the person
  *  asks it to remember in a file, or says it cannot, and that is never kept. */
-const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs.";
+const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs. A secret (a password, key or token) is never kept, so say so instead.";
 /** The lines before the index, and what a run that starts with no note is told in their place. */
 const LEARNED_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing.`;
 const NOTHING_YET = "Nothing learned yet.";

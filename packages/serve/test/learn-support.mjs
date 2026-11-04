@@ -15,7 +15,7 @@ export const onMain = (text, origin = "run") => mergedNote(text, { origin });
 /** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;
 /** What every run that learns is told first under `# Learned`, notes or none: that it learns, and how. */
-export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs.";
+export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs. A secret (a password, key or token) is never kept, so say so instead.";
 /** What `# Learned` says after KEEPS when the run starts with no note. */
 export const NOTHING_YET = "Nothing learned yet.";
 /** The index under `# Learned` in a prompt, after the intro to what was learned, or undefined (no section, or nothing

@@ -138,7 +138,7 @@ test("an empty learning/ in the agent's home before its first run, with no .git,
 
 // The faux harness stands in for claude-agent's and codex's: it says the system prompt the run gives it.
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`a fresh agent's first ${harness} run that learns is told so: # Learned after the instructions says it learns, how, and to tell the person it keeps what they ask, then that nothing is learned yet`, { timeout: 90_000 }, async (t) => {
+  test(`a fresh agent's first ${harness} run that learns is told so: # Learned after the instructions says it learns, how, and to tell the person it keeps what they ask but never a secret, then that nothing is learned yet`, { timeout: 90_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
     const id = `first-${harness}`;
     assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: "Answer the question." }))).status, 201);
@@ -146,6 +146,8 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.deepEqual(pinOf(data, runId), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
     assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
     assert.equal(prompt.split("# Learned").length, 2, "one section");
+    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so.
+    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them you will keep it for later runs\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
   });
 }
 
