@@ -59,7 +59,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
-| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
@@ -198,17 +198,32 @@ through `POST /v2/agents`. Their earlier runs stay readable where you moved them
 
 ## Capacity and health
 
-Each run is a process of its own, about 67 MiB of private memory (measured with the faux model; an independent test of
-the image measured 20 runs at 1.22 GiB), beside the server's own 100 MiB or so. So the server caps the runs it holds at
-once (each run with a live process: working, or waiting for an answer), by default
+Each run is a process of its own, and how much memory it takes depends on its harness. The server admits runs by
+memory: each run that holds a live process (working, or waiting for an answer) reserves its harness's size out of the
+container's limit when it has one (cgroup), else the machine's, less the server's own 128 MiB.
 
-    max_concurrent_runs = max(1, floor((memory − 128 MiB) / 72 MiB))
+| Harness | Reserved per run | Measured per run |
+| --- | --- | --- |
+| pi | 128 MiB | up to 106 MB |
+| codex | 192 MiB | up to 143 MB |
+| claude-agent | 288 MiB | up to 215 MB |
 
-where memory is the container's limit when it has one (cgroup), else the machine's: 5 runs on a 512 MB instance, 12 on
-1 GB, 112 on 8 GB. `--max-runs N` or `AGENTRUN_MAX_RUNS` sets it instead; capabilities report it in
-`limits.max_concurrent_runs`. Over it, `POST /agents/{id}/runs` is `429 rate_limited` with `retry-after` and nothing
-starts: there is no queue, so the client tries again once a run ends. A message to a run already going is never
-refused. A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
+The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
+in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
+once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28. A start that does not fit in what is left is
+`429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
+queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
+on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, and its runs are `409
+agent_not_runnable` with that reason. pi always has one place, however small the host.
+
+`--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
+apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
+(`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
+the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
+memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails
+with why if it was working, and a message to it is `409 agent_not_runnable`.
+
+A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
 counts only its own runs, and a run could be relaunched twice).
 
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
