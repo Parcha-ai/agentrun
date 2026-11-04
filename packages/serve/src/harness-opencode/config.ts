@@ -1,4 +1,4 @@
-// OpenCode's whole config for a session, given in OPENCODE_CONFIG_CONTENT. Written for AgentRun; every key is one the
+// OpenCode's whole config for a session, in a 0600 file OPENCODE_CONFIG names. Written for AgentRun; every key is one the
 // pinned build's config schema holds (an unknown key refuses the start).
 //  - One provider, `openai` (the AI SDK's Responses client), at the session's model proxy with the session's own key,
 //    and one model, the session's, which is also the small model: no request goes to any other.

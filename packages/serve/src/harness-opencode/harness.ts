@@ -6,7 +6,7 @@
 //  1. makes the session's private directories fresh (HOME, XDG config, data, cache and state, tmp): what OpenCode starts
 //     with is never an earlier drive's, only what the session's records hold;
 //  2. starts the session's model proxy (the OpenCode policy) and its MCP server (the host's tools), then OpenCode, whose
-//     config (OPENCODE_CONFIG_CONTENT) points its one provider at the proxy and its one MCP server at the adapter's, turns
+//     config (a 0600 file OPENCODE_CONFIG names) points its one provider at the proxy and its one MCP server at the adapter's, turns
 //     every one of its own tools, agents and side requests off, and gives it the session's instructions as its agent's
 //     prompt;
 //  3. gives OpenCode back its session: the events mirrored so far (`/sync/replay`), or a new session (`POST /session`);
@@ -15,7 +15,7 @@
 //  5. mirrors OpenCode's events into the session's records (`/sync/history`) before every paid model request, before every
 //     `never` tool call, and at each turn's end: no paid request and no call that may not run twice runs ahead of the log.
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { NativeJournal, placeSubmissions, recoveryNote, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
@@ -216,6 +216,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
     mkdirSync(root, { recursive: true, mode: 0o700 });
+    const configFile = join(dirs.config, "agentrun-opencode.json");
 
     const journal = new NativeJournal(ctx);
     const mirrored: SyncEvent[] = (await journal.read<unknown>(SYNC_STREAM)).map((r) => r.data).filter(isSyncEvent);
@@ -360,6 +361,12 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         ...(options.instructions ? { instructions: options.instructions } : {}),
         ...(options.effort ? { effort: options.effort } : {}),
       });
+      // The config, with the model proxy's and the MCP server's keys and the session's instructions, goes in a file only
+      // this user reads, in the drive's private config directory, and OpenCode reads it from OPENCODE_CONFIG (the pinned
+      // build loads that path as its custom config). Not in the environment: one environment string holds at most
+      // 128 KiB on Linux (a longer one fails the spawn with E2BIG), and a process's environment is readable in
+      // /proc/<pid>/environ.
+      writeFileSync(configFile, JSON.stringify(config), { mode: 0o600, flag: "wx" });
       server = await startOpenCodeServer({
         command: options.command.command,
         args: options.command.args,
@@ -380,7 +387,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
           TMPDIR: dirs.tmp,
           GIT_CEILING_DIRECTORIES: base,
           OPENCODE_SERVER_PASSWORD: password,
-          OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+          OPENCODE_CONFIG: configFile,
           OPENCODE_DISABLE_AUTOUPDATE: "1",
           OPENCODE_DISABLE_MODELS_FETCH: "1",
           OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
@@ -580,6 +587,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       if (!ctx.signal.aborted) await mcp.settle(ctx.deadline !== undefined ? Math.max(0, ctx.deadline - Date.now()) : CALLS_SETTLE_MS);
       await mcp.close().catch(() => {});
       await proxy.close().catch(() => {});
+      // The config held the drive's keys: it goes with the drive.
+      rmSync(configFile, { force: true });
     }
   }
 }
