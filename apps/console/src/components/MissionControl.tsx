@@ -1,7 +1,7 @@
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
-import { bounded, cost, when } from "@/lib/format";
+import { cost, soFar, when } from "@/lib/format";
 import type { MissionView } from "@/lib/mission";
 import { cn } from "@/lib/utils";
 import { AnalyticsFilter, MissionAnalytics } from "@/components/MissionAnalytics";
@@ -80,7 +80,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
                   <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{r.title}</span><LearningChips run={r} className="hidden sm:inline-flex" /></span>
                   <span className="hidden shrink-0 text-[13px] text-muted-foreground md:inline">{name(r.agent_id)}</span>
                   {r.ended_at && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
-                  {r.cost && (r.cost.usd !== null || bounded(r.cost)) && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{cost(r.cost)}</span>}
+                  {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{cost(r.cost)}</span>}
                   <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{when(r.created_at)}</span>
                 </a></li>
               ))}</ul>
