@@ -265,7 +265,7 @@ the run's files go to. It gives back:
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
 - Serve, what a run is told of its files (`packages/serve/src/run-manifest.ts`): `firstMessage` adds one line to an
-  agentic run's first message, `Files for this run: inputs/<path> (<size>), ...`, at most `MANIFEST_ENTRIES` (20), from
+  agentic run's first message, `Files for this run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from
   the run's `work/inputs/` as `runs.ts` sends it to the door, on every harness.
 - Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
   (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
@@ -276,7 +276,7 @@ the run's files go to. It gives back:
   (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
   keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` is available when
   it is, and every other box says runs in it are not available yet.
-- Serve, a run's place and its box: a run request's `place: "runner"` only narrows (`resolvePlace`), and the run keeps
+- Serve, a run's place and its box: a run takes its revision's place or the default (`resolvePlace`), and the run keeps
   its resolved `place` (its `serve.json`, `GET /v2/runs/{id}`). In the run's process, `codingSource(place, box?)`
   (`packages/serve/src/coding-tools.ts`) is the boxed coding source: on the runner pi's `read`, `write` and `edit`; in a
   box those and `bash`, each call on pi-transport's `boxEnv` over the run's box. pi's tool table and the other
@@ -340,13 +340,14 @@ or a real `docker` on `PATH` for a server under test.
 7. **Boxed tools**: `boxed-tools.test.mjs` and `run-box.test.mjs` pass. A sandbox run's `bash` `printf hi > out.txt`
    shows in `GET /v2/runs/{id}/files` on pi, claude-agent and codex; the box's environment is `LANG`, `HOME=/tmp` and
    its `PATH`, with no key or token; every `docker run` has `--network none`, `--user` the server's uid:gid, one
-   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; `place: "runner"` on a run makes no box
-   and offers no `bash`; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
+   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; a run request naming `place` is a 422 and
+   makes no run; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
    and nothing is bound; the box is destroyed at completion, cancel and archive, adopted by its label after a crash
    (the left command killed), and swept at start once its run has ended.
 8. **Run files told**: `run-manifest.test.mjs` passes. A run given `notes.txt` is sent "Summarize the attached file."
-   plus `Files for this run: inputs/notes.txt (<n> B).`, reads it and answers with its text; on claude-agent and codex
-   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged.
+   plus `Files for this run: "inputs/notes.txt" (<n> B).`, reads it and answers with its text; on claude-agent and codex
+   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged; a name
+   with `", ` or an RTL override stays inside its quotes, escaped; a link at `work/inputs` lists nothing.
 
 ### Console, import and analytics
 

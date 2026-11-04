@@ -76,12 +76,14 @@ test(`${harness}: a capped run whose process dies mid-request goes on: the cut r
   assert.ok(held.every((usd) => Math.abs(usd - WORST) < 1e-9), `each request's record holds its worst case: ${JSON.stringify(held)}`);
 });
 
-test(`${harness}: a capped run whose process dies mid-request, when the held worst case leaves no room: refused with the cap's message`, { timeout: 120_000 }, async (t) => {
-  // $3 holds the first two requests ($0.002 spent, then $1.6384 held), not a third $1.6384 beside them.
-  const { api, runId } = await cutByCrash(t, harness, 3);
+test(`${harness}: a capped run whose process dies mid-request, when the held worst case leaves no room for another request's least: refused with the cap's message`, { timeout: 120_000 }, async (t) => {
+  // $1.7404 holds the first two requests ($0.002 spent, then $1.6384 held), and leaves $0.10 after them: not the third's
+  // least, 1,024 tokens at $0.0001.
+  const { api, runId } = await cutByCrash(t, harness, 1.7404);
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /could cost up to \$1\.638400, and with \$1\.640400 spent/);
+  // To run it the cap would have to be $1.6404 spent and the next request's least, $0.1024: $1.75 up to the cent.
+  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6404 of its \$1\.7404 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.75 to run it\.$/);
   assert.equal(records(runId, "runner.request").length, 2, "the third request is refused before its record");
 });

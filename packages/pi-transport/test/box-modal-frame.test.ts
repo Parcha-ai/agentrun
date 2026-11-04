@@ -118,9 +118,12 @@ describe("a Modal box and T3's launch frame", () => {
 		const secrets = { MODAL_TOKEN_ID: secret };
 		stopLater(box, "framed");
 		getOrThrow(await launch(box, "framed", { argv: program, stdin, secrets }, context));
+		// fd.2 is the last file the second incarnation writes: once it has text, every file read below is whole.
 		await until("the second incarnation", async () => {
 			const read = getOrThrow(await launchState(box, { v: 1, name: "framed" }, context));
-			return read?.phase === "running" && read.incarnation === 2 && (await fileIn(box, "sec.2")) ? read : undefined;
+			return read?.phase === "running" && read.incarnation === 2 && (await fileIn(box, "fd.2"))?.trim()
+				? read
+				: undefined;
 		});
 		for (const n of [1, 2]) {
 			expect((await fileIn(box, `in.${n}`))?.trim()).toBe(sha(stdin));
@@ -158,7 +161,9 @@ describe("a Modal box and T3's launch frame", () => {
 		const program = ["sh", "-c", "n=$PI_TRANSPORT_INCARNATION; cat | wc -c > in.$n; exec sleep 300"];
 		stopLater(box, "empty");
 		getOrThrow(await launch(box, "empty", { argv: program, secrets }, context));
-		expect((await until("the program's read", () => fileIn(box, "in.1"))).trim()).toBe("0");
+		expect(
+			(await until("the program's read", async () => (await fileIn(box, "in.1"))?.trim() || undefined)).trim(),
+		).toBe("0");
 		getOrThrow(await launchStop(box, { v: 1, name: "empty" }, { graceMs: 1_000 }, context));
 		await box.destroy(context);
 	});
