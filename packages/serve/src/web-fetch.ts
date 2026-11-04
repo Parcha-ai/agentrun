@@ -153,13 +153,16 @@ async function readOnce(url: unknown, parallel: Extract | null | undefined, chec
 
 /** The reads that have ended: only these leave `pages` past its bound (trim). */
 const settled = new WeakSet<Promise<WebRead | WebUnread>>();
-/** `pages` down to PAGES_HELD by dropping its least recently used reads that have ENDED: a read under way stays until it
- *  ends (a caller may be about to share it, and dropping it would read and bill the page again), so the run holds at
- *  most PAGES_HELD ended reads plus the ones still under way, and trims again as each ends. */
+/** `pages` down to PAGES_HELD reads that have ENDED, dropping the least recently used of those first. Only ended reads
+ *  count toward the bound, and only they are dropped: a read under way stays until it ends (a caller may be about to
+ *  share it, and dropping it would read and bill the page again), and it never makes room by pushing out a page that has
+ *  ended. So the run holds at most PAGES_HELD ended reads plus the ones still under way, and trims again as each ends. */
 function trim(pages: Pages): void {
+  let ended = 0;
+  for (const read of pages.values()) if (settled.has(read)) ended++;
   for (const [held, read] of pages) {
-    if (pages.size <= PAGES_HELD) return;
-    if (settled.has(read)) pages.delete(held);
+    if (ended <= PAGES_HELD) return;
+    if (settled.has(read)) (pages.delete(held), ended--);
   }
 }
 
