@@ -401,6 +401,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
   const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
+  const tools = toolsView(env, toolSettings, noBoxReason(boxes)).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool));
   return {
     backend: "local",
     contract: CONTRACT,
@@ -420,7 +421,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
-    tools: toolsView(env, toolSettings, noBoxReason(boxes)).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    tools,
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -449,7 +450,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
-      browser: "none",
+      /** The browser a run's `browser` tool drives: Browserbase's when the tool is available here (tools[]), else none. */
+      browser: tools.some((tool) => tool.name === "browser" && tool.available) ? "browserbase" : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): false until the tool gate lands,
        *  and a save that names one is refused. */
       tool_permissions: false,
