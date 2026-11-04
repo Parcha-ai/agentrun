@@ -1862,9 +1862,11 @@ export class Runs {
     return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
-  /** `Run`, as the contract shows it. */
-  async view(run: Run) {
-    const stored = await this.options.agents.request(() => this.store.readRun(run.id));
+  /** `Run`, as the contract shows it. `known`: its stored row as the caller already has it, so nothing is read; a run
+   *  just written has none worth reading (`{ stored: null }`: it is neither archived nor ended), and its start's answer
+   *  must not read the store once the run exists, since a busy store would then refuse a run that runs. */
+  async view(run: Run, known?: { stored: RunRow | null }) {
+    const stored = known ? (known.stored ?? undefined) : await this.options.agents.request(() => this.store.readRun(run.id));
     // After the read: the run may have moved on while it waited, and every field below is of this one moment.
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
