@@ -510,23 +510,27 @@ test("a build or pull that fails is tried once more, docker preparing meanwhile 
   assert.equal(docker.builds().length, 5);
 });
 
-test("a retry's record that cannot be written leaves none, so no run trusts the first try's deadline, and says so", async (t) => {
+test("a retry's record that cannot be written leaves the first try's, so a waiting run keeps waiting on this server, never runs `docker run` of an image that is not there yet", async (t) => {
   const docker = await fakeDocker(t, { "build-hold": "", "build-fail-once": OFFLINE });
   const data = await scratch(t);
-  const warned = [];
-  const image = await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { retryAfterMs: 2_000, warn: (message) => void warned.push(message) });
-  assert.equal(recordOf(data).state, "preparing");
+  const image = await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { retryAfterMs: 2_000 });
+  const first = recordOf(data);
+  assert.equal(first.state, "preparing");
+  const notes = [];
+  let waited = false;
+  const waiting = awaitImage(data, DEFAULT_DOCKER_IMAGE, BACKGROUND_CONTEXT, (summary) => void notes.push(summary)).finally(() => (waited = true));
+  await until(() => notes.length === 1, "the row");
   // The record is written whole or not at all, through a file beside it: with a directory there, the next write fails.
   const partial = join(data, `${IMAGE_STATE_FILE}.partial`);
   await mkdir(partial);
   await docker.release();
-  // The first try fails; the record of the retry cannot be written, so the first try's is removed, before the retry.
-  await until(() => !existsSync(join(data, IMAGE_STATE_FILE)), "the record removed");
-  assert.equal(docker.builds().length, 1, "before the retry");
-  assert.equal(warned.length, 1, JSON.stringify(warned));
-  assert.match(warned[0], /^the record of the box image's state could not be written \(EISDIR\), so it was removed: runs make their boxes without waiting on it$/);
+  await until(() => image.state().reason === ONCE_MORE, "the retry under way");
+  assert.deepEqual(recordOf(data), first, "the first try's record stays");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(waited, false, "the run still waits: the server that wrote the record runs");
   await rm(partial, { recursive: true });
-  assert.deepEqual(await image.settled, { state: "ready" }, "the retry goes on");
+  assert.deepEqual(await image.settled, { state: "ready" });
+  await waiting;
   assert.deepEqual(recordOf(data), { image: DEFAULT_DOCKER_IMAGE, state: "ready" });
 });
 
