@@ -27,7 +27,7 @@ npx @parcha/agentrun
 Either one starts AgentRun on this machine and opens its console: your coding agent follows [the skill](docs/SKILL.md),
 or [`npx @parcha/agentrun`](packages/agentrun/README.md) does it in one command (Node 22.19+).
 One model key covers every harness: `OPENROUTER_API_KEY` gives pi, Claude Code and Codex agents each a current model.
-Save it in the console's Settings → Model keys, which takes effect at once, or set it where AgentRun starts.
+Save it in the console (Settings → Tool keys → Model keys), which takes effect at once, or set it where AgentRun starts.
 
 ## Run it on a server
 

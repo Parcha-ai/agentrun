@@ -37,7 +37,7 @@ curl -s "$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2/capabilities" | no
 
 `null` means it has no model yet. Ask the person to add one model key, never in this chat: `OPENROUTER_API_KEY` alone
 gives every harness its model (pi, Claude Code and Codex), or `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for one
-provider's own. The simplest place is the console they opened: Settings → Model keys, which takes effect at once, with
+provider's own. The simplest place is the console they opened: Settings → Tool keys → Model keys, which takes effect at once, with
 no restart. Or they set it in the shell that starts AgentRun, then stop it (`kill %1`, or the PID you started) and start
 it again as in step 2. Never print, echo or write a key anywhere. Started this way, the
 person's shell and npm keep the keys they exported in their environment, as they always do; the server itself, and its
