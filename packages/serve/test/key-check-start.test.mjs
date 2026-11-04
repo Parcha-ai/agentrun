@@ -6,13 +6,20 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { calls as bbCalls, KEY as BB_KEY, release as releaseBrowserbase } from "./fixtures/faux-browserbase-check.mjs";
+import { calls as monidCheckCalls } from "./fixtures/faux-monid-check.mjs";
+import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, serve, withEnv } from "./support.mjs";
+import { client, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
-const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_BROWSERBASE_STALL", "AGENTRUN_TEST_FAUX_MONID_STALL"];
+const FAUX_MONID_CHECK = new URL("./fixtures/faux-monid-check.mjs", import.meta.url).pathname;
+const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TEST_FAUX_BROWSERBASE_STALL", "AGENTRUN_TEST_FAUX_MONID_STALL", "AGENTRUN_TEST_FAUX_MONID_CALLS"];
+/** The calls the runs' monid fake filed (faux-monid.mjs, AGENTRUN_TEST_FAUX_MONID_CALLS). */
+const filed = (log) => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
 /** A throwaway wrong key: built here, never a real one. */
 const wrong = () => ["bb", "wrong", randomBytes(8).toString("hex")].join("_");
 const rowOf = (view, id) => view.keys.find((key) => key.id === id);
@@ -51,6 +58,29 @@ test("a Browserbase key the server starts with and Browserbase accepts: accepted
   const row = await checked(api, "browserbase");
   assert.equal(row.check?.state, "accepted", JSON.stringify(row));
   assert.equal((await client(baseUrl)("GET", "/capabilities")).body.tools.find((tool) => tool.name === "browser").available, true);
+});
+
+test("a monid key the server starts with is checked against monid's check fake: one monid refuses leaves its three tools unavailable, saying why; one it accepts leaves them available; the runs' fake sees neither check", async (t) => {
+  for (const [key, available] of [[["monid", "wrong", randomBytes(6).toString("hex")].join("_"), false], [MONID_KEY, true]]) {
+    await t.test(String(available), async (t) => {
+      const log = join(await scratch(t), "monid-calls.jsonl");
+      withEnv(t, { MONID_API_KEY: key, AGENTRUN_TEST_FAUX_MONID_CALLS: log }, KEYS);
+      const before = monidCheckCalls.length;
+      const { api, baseUrl } = await serve(t, { fauxMonid: FAUX_MONID, fauxMonidCheck: FAUX_MONID_CHECK });
+      const row = await checked(api, "monid");
+      assert.equal(row.check?.state, available ? "accepted" : "refused", JSON.stringify(row));
+      const tools = (await client(baseUrl)("GET", "/capabilities")).body.tools.filter((tool) => tool.name.startsWith("monid."));
+      assert.equal(tools.length, 3, JSON.stringify(tools));
+      assert.deepEqual(tools.map((tool) => tool.available), [available, available, available], JSON.stringify(tools));
+      if (!available) {
+        for (const tool of tools) assert.match(tool.reason, /^Monid refused MONID_API_KEY \(401: Missing or invalid API key\) when this server started/, tool.name);
+        assert.equal(row.check.reason, tools[0].reason);
+        assert.ok(!JSON.stringify(row).includes(key), "no part of the key is shown");
+      }
+      assert.deepEqual(monidCheckCalls.slice(before).map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/discover", available]], "one discover, through the check's fake");
+      assert.deepEqual(filed(log), [], "the runs' fake saw no call");
+    });
+  }
 });
 
 test("under faux, a key with no check fake of its own is not checked at the start: the fakes the runs use see the runs' calls alone", async (t) => {
