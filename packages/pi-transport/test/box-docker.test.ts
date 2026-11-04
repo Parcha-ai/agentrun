@@ -146,6 +146,52 @@ describe("docker boxes: privileges", () => {
 			expect(run!.indexOf("--cap-drop")).toBeLessThan(run!.indexOf("--entrypoint"));
 		}));
 
+	it("with dropCapabilities, attach ends a box made without it (an older version's) and finds none; it takes a hardened one, and without the option any", async () => {
+		const directory = realpathSync(mkdtempSync(join(tmpdir(), "pi-transport-docker-attach-")));
+		try {
+			const log = join(directory, "args.log");
+			const script = join(directory, "docker");
+			// inspect answers the container in inspect.json; every call's arguments go to the log, one call a line.
+			writeFileSync(
+				script,
+				`#!/bin/sh\necho "$@" >> ${log}\ncase "$1" in inspect) cat ${join(directory, "inspect.json")} ;; *) echo ok ;; esac\n`,
+				{ mode: 0o755 },
+			);
+			const id = "f".repeat(64);
+			const container = (hostConfig: object) =>
+				writeFileSync(
+					join(directory, "inspect.json"),
+					JSON.stringify({
+						Id: id,
+						State: { Running: true, ExitCode: 0 },
+						Config: {
+							Labels: {
+								"pi-transport.box": "1",
+								"pi-transport.facts": JSON.stringify({ provider: "docker", workspace: "/work" }),
+							},
+						},
+						HostConfig: hostConfig,
+					}),
+				);
+			const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+			const hardenedBoxes = dockerBoxes({ docker: script, dropCapabilities: true });
+			container({ NetworkMode: "none" });
+			const old = await hardenedBoxes.attach(id, context);
+			expect(old.ok && old.value).toBe(undefined);
+			expect(calls().at(-1)).toBe(`rm --force --volumes ${id}`);
+			container({ NetworkMode: "none", CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"] });
+			const current = await hardenedBoxes.attach(id, context);
+			expect(current.ok && current.value?.id).toBe(id);
+			expect(calls().filter((call) => call.startsWith("rm "))).toHaveLength(1);
+			container({ NetworkMode: "none" });
+			const plain = await dockerBoxes({ docker: script }).attach(id, context);
+			expect(plain.ok && plain.value?.id, "without the option, a box is taken as it is").toBe(id);
+			expect(calls().filter((call) => call.startsWith("rm "))).toHaveLength(1);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("without it, a box keeps Docker's default capabilities, as a box whose programs change user needs", () =>
 		scripted({}, LOCAL, async (provider, _directory, calls) => {
 			expect((await provider.create({ maxLifetimeMs: 60_000 }, context)).ok).toBe(true);
@@ -217,6 +263,56 @@ describe("docker boxes: a daemon on another machine binds none of this machine's
 			rmSync(config, { recursive: true, force: true });
 		}
 	});
+
+	it("DOCKER_HOST and DOCKER_CONTEXT both set must both be this machine, whichever the CLI's version takes", async () => {
+		const config = realpathSync(mkdtempSync(join(tmpdir(), "pi-transport-docker-config-")));
+		try {
+			for (const [name, host] of [
+				["desktop", "unix:///run/user/1000/docker.sock"],
+				["builder", "tcp://docker.example:2376"],
+			]) {
+				const dir = join(config, "contexts", "meta", createHash("sha256").update(name).digest("hex"));
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(
+					join(dir, "meta.json"),
+					JSON.stringify({ Name: name, Endpoints: { docker: { Host: host } } }),
+				);
+			}
+			const mounts = async (env: Record<string, string | undefined>) => {
+				const bound: (boolean | undefined)[] = [];
+				await scripted({}, { ...LOCAL, DOCKER_CONFIG: config, ...env }, async (provider) => {
+					bound.push(provider.mounts);
+				});
+				return bound[0];
+			};
+			expect(await mounts({ DOCKER_HOST: "unix:///var/run/docker.sock", DOCKER_CONTEXT: "builder" })).toBe(false);
+			expect(await mounts({ DOCKER_HOST: "tcp://docker.example:2376", DOCKER_CONTEXT: "desktop" })).toBe(false);
+			expect(await mounts({ DOCKER_HOST: "unix:///var/run/docker.sock", DOCKER_CONTEXT: "desktop" })).toBe(true);
+		} finally {
+			rmSync(config, { recursive: true, force: true });
+		}
+	});
+
+	it("a daemon moved to another machine after the provider was made refuses the next spec with mounts, before Docker is asked", () =>
+		scripted({}, LOCAL, async (provider, directory, calls) => {
+			expect(provider.mounts).toBe(true);
+			const saved = process.env.DOCKER_HOST;
+			process.env.DOCKER_HOST = "ssh://builder@docker.example";
+			try {
+				const refused = await provider.create(
+					{ maxLifetimeMs: 60_000, mounts: [{ source: directory, target: "/work" }] },
+					context,
+				);
+				expect(!refused.ok && refused.error.code).toBe("unsupported");
+				expect(!refused.ok && refused.error.message).toMatch(
+					/^the Docker daemon is not on this machine \(DOCKER_HOST=ssh:\/\/builder@docker\.example\)/,
+				);
+				expect(calls()).toEqual([]);
+			} finally {
+				if (saved === undefined) delete process.env.DOCKER_HOST;
+				else process.env.DOCKER_HOST = saved;
+			}
+		}));
 });
 
 async function withScriptedDocker(

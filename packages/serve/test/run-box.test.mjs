@@ -72,6 +72,8 @@ const running = (pid) => {
 };
 /** The values that follow each `name` in `args`. */
 const flag = (args, name) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
+/** What Docker keeps of a box this version made: no network, every capability dropped, no new privilege. */
+const HARDENED = { NetworkMode: "none", CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"] };
 
 async function boxedAgent(api) {
   const made = await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "bash"] } });
@@ -189,7 +191,7 @@ test("fake docker: a run whose earlier process left a box gets that box's left c
   const id = "e".repeat(64);
   const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
   await mkdir(join(docker.state, "containers"), { recursive: true });
-  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
+  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: HARDENED, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"], ["read", false, "resumed"]]);
@@ -221,6 +223,30 @@ test("a Docker daemon on another machine (DOCKER_HOST tcp:// or ssh://) binds no
   }
 });
 
+test("fake docker: a run's box made before every capability was dropped (an older version's) is ended, not taken over, and the run gets a hardened one", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE });
+  await boxedAgent(api);
+  const go = join(await scratch(t), "go");
+  const runId = await probe(api, [{ wait: go }, { tool: "bash", args: { command: "printf fresh > out.txt" } }]);
+  const work = join(realpathSync(data), "runs", runId, "work");
+  await until(() => existsSync(work), "the run's work/");
+  const id = "a".repeat(64);
+  const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
+  await mkdir(join(docker.state, "containers"), { recursive: true });
+  // As an older serve made it: no capability dropped, so as root it could still make a device node in work/.
+  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: { NetworkMode: "none" }, env: [], mounts: [{ source: work, target: WORK }], workdir: WORK }));
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
+  assert.ok(docker.removed().includes(id), "the old box is ended");
+  const [made] = docker.runs();
+  assert.ok(made, "a new box is made");
+  assert.deepEqual([flag(made, "--cap-drop"), flag(made, "--security-opt")], [["ALL"], ["no-new-privileges"]]);
+  assert.equal(readFileSync(join(work, "out.txt"), "utf8"), "fresh");
+  assert.ok(!docker.calls().some((args) => args[0] === "exec" && args.includes(id)), "nothing ran in the old box");
+});
+
 test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {
   const docker = await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
@@ -233,7 +259,7 @@ test("fake docker: a run's box is found by its label and taken over, its left co
   const id = "c".repeat(64);
   const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: WORK, isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
   await mkdir(join(docker.state, "containers"), { recursive: true });
-  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
+  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: HARDENED, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: WORK }], workdir: WORK }));
   await writeFile(go, "");
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);

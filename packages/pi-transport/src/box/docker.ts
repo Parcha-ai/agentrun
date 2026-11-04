@@ -37,8 +37,9 @@ export type DockerBoxesOptions = {
 	/**
 	 * Every box drops every capability (`--cap-drop ALL`) and gains none (`--security-opt no-new-privileges`), for a host
 	 * whose boxes' programs never change user: a box run as root then cannot make a device node in a directory it binds,
-	 * and no setuid or file-capability program gives it a privilege. Default: Docker's own set, which a launcher that
-	 * drops from root to another user (setpriv, runuser) needs.
+	 * and no setuid or file-capability program gives it a privilege. A box `attach` finds that was made without it (by an
+	 * older version) is ended, not attached, so the caller makes a new one. Default: Docker's own set, which a launcher
+	 * that drops from root to another user (setpriv, runuser) needs.
 	 */
 	readonly dropCapabilities?: boolean;
 	/**
@@ -52,7 +53,16 @@ type Inspected = {
 	readonly Id: string;
 	readonly State: { readonly Running: boolean; readonly ExitCode: number };
 	readonly Config: { readonly Labels: Record<string, string> | null };
+	readonly HostConfig?: {
+		readonly CapDrop?: readonly string[] | null;
+		readonly SecurityOpt?: readonly string[] | null;
+	};
 };
+
+/** Whether a container was made as dropCapabilities makes one: every capability dropped, no new privilege. */
+const hardened = (inspected: Inspected): boolean =>
+	(inspected.HostConfig?.CapDrop ?? []).some((cap) => cap.toUpperCase() === "ALL") &&
+	(inspected.HostConfig?.SecurityOpt ?? []).some((opt) => /^no-new-privileges([:=]true)?$/.test(opt));
 
 /** A box that is one Docker container. Its first process is a sleep of the box's lifetime, so Docker ends it. */
 class DockerBox implements Box {
@@ -168,18 +178,20 @@ function parseFacts(label: string | undefined): BoxFacts | undefined {
 const LOCAL_HOST = /^(unix|npipe):\/\//;
 
 /**
- * Where the docker CLI's daemon is, as it decides: DOCKER_HOST when set, else the context DOCKER_CONTEXT names, else the
- * config's `currentContext` (`$DOCKER_CONFIG/config.json`, default `~/.docker`). No setting, a unix socket and the
- * `default` context are this machine; any other address (tcp://, ssh://) is another one, and so is a context whose
- * record (`contexts/meta/<sha256 of its name>/meta.json`) does not name a unix socket or cannot be read. `named` is the
- * setting that points away, and `fix` what brings it back.
+ * Where the docker CLI's daemon is: DOCKER_HOST, the context DOCKER_CONTEXT names, else the config's `currentContext`
+ * (`$DOCKER_CONFIG/config.json`, default `~/.docker`). No setting, a unix socket and the `default` context are this
+ * machine; any other address (tcp://, ssh://) is another one, and so is a context whose record
+ * (`contexts/meta/<sha256 of its name>/meta.json`) does not name a unix socket or cannot be read. With both DOCKER_HOST
+ * and DOCKER_CONTEXT set, both must be this machine. `named` is the setting that points away, and `fix` what brings it
+ * back.
  */
 export function dockerDaemon(env: NodeJS.ProcessEnv): { local: true } | { local: false; named: string; fix: string } {
 	const host = env.DOCKER_HOST ?? "";
-	if (host !== "")
-		return LOCAL_HOST.test(host)
-			? { local: true }
-			: { local: false, named: `DOCKER_HOST=${host}`, fix: "unset DOCKER_HOST" };
+	if (host !== "" && !LOCAL_HOST.test(host))
+		return { local: false, named: `DOCKER_HOST=${host}`, fix: "unset DOCKER_HOST" };
+	// DOCKER_HOST wins over the config's current context; with DOCKER_CONTEXT set too, CLI versions differ on which wins,
+	// so that context must be this machine as well.
+	if (host !== "" && !env.DOCKER_CONTEXT) return { local: true };
 	const config = env.DOCKER_CONFIG || join(homedir(), ".docker");
 	const read = (path: string): unknown => {
 		try {
@@ -265,8 +277,11 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			const network = parseNetwork(spec.network) as { kind: "open" | "none" };
 			const mounts = parseMounts(spec.mounts);
 			if (mounts instanceof BoxError) return err(mounts);
-			if (!daemon.local && mounts.length > 0) {
-				const { named, fix } = daemon;
+			// Checked again at each create: a `docker context use` since the provider was made moves every later call.
+			const now = dockerDaemon(process.env);
+			const away = !daemon.local ? daemon : !now.local ? now : undefined;
+			if (away !== undefined && mounts.length > 0) {
+				const { named, fix } = away;
 				const message = `the Docker daemon is not on this machine (${named}), so it cannot bind this machine's ${mounts[0]!.source}: ${fix} to run boxes on this machine's Docker`;
 				return err(new BoxError("unsupported", message));
 			}
@@ -317,6 +332,21 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (inspected.value === undefined || !inspected.value.State.Running || labels == null) return ok(undefined);
 			const facts = parseFacts(labels[FACTS_LABEL]);
 			if (facts === undefined) return ok(undefined);
+			// A box made before dropCapabilities (an older version, its run resumed) is ended, not taken: what it still runs
+			// ends with it, and the caller makes a box that has none.
+			if (options.dropCapabilities === true && !hardened(inspected.value)) {
+				const removed = await docker.run(["rm", "--force", "--volumes", inspected.value.Id], context);
+				if (!removed.ok) return removed;
+				if (removed.value.exitCode !== 0 && !/no such container/i.test(removed.value.stderr)) {
+					return err(
+						new BoxError(
+							"unknown",
+							`could not remove the unhardened box ${inspected.value.Id}: ${removed.value.stderr.trim()}`,
+						),
+					);
+				}
+				return ok(undefined);
+			}
 			return ok(new DockerBox(docker, inspected.value.Id, facts));
 		},
 
