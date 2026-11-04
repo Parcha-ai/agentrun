@@ -31,12 +31,18 @@ export const ERROR_STATUS = {
   unavailable: 503,
   // This server's own, beside the contract's list (openapi.ts marks them): a tool key its launcher sets, a key saved with
   // no seal key to keep it under, a send to a webhook a 410 turned off, a write to a learning note that names no
-  // version it read, and a message to a run paused at its cap, which takes one once its cap is raised.
+  // version it read, a remote MCP server that asks for a credential, does not speak MCP, or fails, a saved-servers file
+  // that does not read, which is never written over (mcp-servers.ts), and a message to a run paused at its cap, which
+  // takes one once its cap is raised.
   key_set_by_server: 409,
   budget_reached: 409,
   no_sealing_key: 409,
   webhook_off: 409,
   precondition_required: 428,
+  auth_required: 422,
+  not_mcp: 422,
+  upstream_failed: 424,
+  store_unreadable: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

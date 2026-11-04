@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
-import { call, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
@@ -67,8 +67,10 @@ test("setting the password without the box imports nothing", async (t) => {
     assert.deepEqual([made.status, made.json], [201, { signed_in: true }], made.text);
     await sleep(500);
     assert.equal(agentsIn(server.data), 0, `nothing imported for ${JSON.stringify(body)}`);
-    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404, "no offer once the owner is set");
-    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).status, 404, "and no import to report to the owner");
+    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404, "nothing to a browser that is not signed in");
+    // The owner's first page reads it: no import asked is an answer, never a 404 the browser logs as an error.
+    const none = await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } });
+    assert.deepEqual([none.status, none.json], [200, { offer: false }], "and no import to report to the owner");
   }
 });
 
@@ -93,11 +95,16 @@ test("with the box ticked, the sessions arrive as agents after the password is s
 
 test("a server at a public address offers no import, and refuses one asked for", async (t) => {
   const server = await serve(t, { accounts: true, publicUrl: "https://agents.example.test", ...(await machine(t)) });
-  assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404);
+  const offer = await call(server.port, { path: "/v2/setup/import", headers: page(server) });
+  assert.deepEqual([offer.status, offer.json], [200, { offer: false }], "no offer, said as an answer and not a 404");
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { authorization: `Bearer ${server.token}`, ...json }, body: { password: PASSWORD, import: true } });
   assert.equal(made.status, 422, made.text);
   assert.equal(made.json.error.fields[0].field, "import");
   assert.equal(agentsIn(server.data), 0);
+  const set = await call(server.port, { method: "POST", path: "/v2/setup", headers: { authorization: `Bearer ${server.token}`, ...json }, body: { password: PASSWORD } });
+  assert.equal(set.status, 201, set.text);
+  const after = await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(set) } });
+  assert.deepEqual([after.status, after.json], [200, { offer: false }], "nor to its signed-in owner");
 });
 
 test("the counts are a read of the page only: a request with neither the browser's same-origin mark nor this server's Origin is refused", async (t) => {
@@ -134,7 +141,8 @@ test("open setup on an address other than loopback offers no import and refuses 
   const host = bridgeAddress();
   const server = await serve(t, { accounts: true, openSetup: true, host, ...(await machine(t)) });
   const origin = `http://${host}:${server.port}`;
-  assert.equal((await at(host, server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } })).status, 404);
+  const offer = await at(host, server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.deepEqual([offer.status, offer.json], [200, { offer: false }]);
   const asked = await at(host, server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD, import: true } });
   assert.equal(asked.status, 422, asked.text);
   assert.deepEqual([asked.json.error.fields[0].field, asked.json.error.fields[0].reason], ["import", "not_allowed"]);
@@ -145,7 +153,8 @@ test("open setup on an address other than loopback offers no import and refuses 
 
 test("open setup with a public address, though it listens on loopback (behind a proxy), offers no import and refuses one asked for", async (t) => {
   const server = await serve(t, { accounts: true, openSetup: true, publicUrl: "https://agents.example.test", ...(await machine(t)) });
-  assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } })).status, 404);
+  const offer = await call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.deepEqual([offer.status, offer.json], [200, { offer: false }]);
   const asked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
   assert.equal(asked.status, 422, asked.text);
   assert.equal(asked.json.error.fields[0].field, "import");
@@ -353,18 +362,20 @@ const holding = (dir, value) => {
   return found;
 };
 
-test("a server stopped while setup counts a big home's sessions exits within its drain window: the count reads no session for keys", { timeout: 120_000 }, async (t) => {
+test("setup's count of a big home reads none of its sessions for keys: it answers, and the server stopped after it exits", { timeout: 120_000 }, async (t) => {
   const root = await scratch(t);
   const home = join(root, "home");
   const site = join(home, "code", "big");
   mkdirSync(site, { recursive: true });
   claudeSession(home, site, 1);
-  // 200 subagent files of about a megabyte each: a key scan over them takes many seconds, a count's listing none.
-  const notes = Array.from({ length: 20_000 }, (_, i) => `line ${i} of the subagent's notes, read and kept`).join("\n");
-  for (let k = 1; k <= 200; k++) claudeSubagent(home, site, 1, k, { answer: notes });
+  // One subagent's file of about 20 MB under 5,000 names (hard links: 20 MB on disk). A count that reads the sessions for
+  // keys reads every name, about 100 GB, for minutes; a count's listing reads none of them.
+  const notes = Array.from({ length: 400_000 }, (_, i) => `line ${i} of the subagent's notes, read and kept`).join("\n");
+  const first = claudeSubagent(home, site, 1, 1, { answer: notes });
+  for (let k = 2; k <= 5_000; k++) linkSync(first, join(dirname(first), `agent-a${k}.jsonl`));
   const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
   mkdirSync(temp, { recursive: true });
-  // The server's own drain window, set short: it answers SIGTERM within it.
+  // The server's own drain window, set short.
   const [DRAIN, DRAIN_MS] = ["2s", 2_000];
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--drain-timeout", DRAIN], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
@@ -383,13 +394,16 @@ test("a server stopped while setup counts a big home's sessions exits within its
     await sleep(50);
   }
   const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
-  // A server the CLI starts with no owner counts as it starts: stopped while that count runs.
-  const read = await call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
-  assert.ok([200, 202].includes(read.status), read.text);
+  // A server the CLI starts with no owner counts as it starts: a listing answers in moments, a scan would still be reading.
+  const read = () => call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  let found = await read();
+  for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
+  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 1 }], `the count read no subagent's file: ${err}`);
   const stopped = Date.now();
   if (alive) process.kill(-child.pid, "SIGTERM");
-  const outcome = await Promise.race([exited.then(() => "exited"), sleep(DRAIN_MS + 1_500).then(() => "still running")]);
-  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window (the count ${read.status === 202 ? "running" : "done"} when stopped)`);
+  // Unreferenced: the bound holds no exited test's process open.
+  const outcome = await Promise.race([exited.then(() => "exited"), sleep(DRAIN_MS + 10_000, "still running", { ref: false })]);
+  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window`);
 });
 
 test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
@@ -430,6 +444,44 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 }, err);
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
+});
+
+test("setup's import cuts the secrets this server made and keeps, pasted into a session: its webhook signing secret, its two tokens and its sign-in sessions' secret", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  // An earlier start, before accounts: its webhook set, its secret shown once.
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let firstOpen = true;
+  t.after(() => firstOpen && first.close());
+  const api = client(first.baseUrl, first.token);
+  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  assert.equal(set.status, 201, JSON.stringify(set.body));
+  await first.close();
+  firstOpen = false;
+  // This start sets the owner, and with it the sign-in sessions' secret; the sessions are written before the box is ticked.
+  const home = join(root, "home");
+  const site = join(home, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  const server = await serve(t, { data, accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
+  const own = {
+    webhook: set.body.secret,
+    token: server.token,
+    door: readFileSync(join(data, ".door-token"), "utf8").trim(),
+    session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
+  };
+  for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
+  claudeSession(home, site, 2, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}, door ${own.door}` });
+  codexSession(home, site, 3, { prompt: `The session secret is ${own.session}.` });
+  const kept = new Map(Object.entries(own).map(([name, value]) => [name, holding(data, value)]));
+  const ticked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+  assert.deepEqual([ticked.status, ticked.json], [201, { signed_in: true, importing: true }], ticked.text);
+  const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(ticked) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 3, skipped: 0 });
+  // Only the server's own files hold them, as before the import.
+  for (const [name, value] of Object.entries(own)) assert.deepEqual(holding(data, value), kept.get(name), `${name}: no file the import wrote holds it`);
 });
 
 test("a key saved on the Tool keys page is cut out of everything setup's import writes, and so is the server's own key of the same name when it differs: a session's text and title, its subagent's file, and a session named after its file, kept under a redacted- id that the next start's import finds again", { timeout: 90_000 }, async (t) => {
