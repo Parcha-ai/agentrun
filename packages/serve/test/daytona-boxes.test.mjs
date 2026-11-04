@@ -394,14 +394,15 @@ test("a Daytona that neither keeps a domain list nor blocks a box's network gets
 /** The bodies of the creates Daytona was asked for. */
 const creates = (fake) => fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").map((r) => JSON.parse(r.body));
 
-for (const [daytona, options, code] of [
-  ["keeps no domain list (a tier 1 or 2 organization)", { lists: false }, "unsupported"],
-  ["refuses a domain list (403)", { refusesLists: 403 }, "unauthorized"],
-  ["refuses a domain list (400)", { refusesLists: 400 }, "invalid"],
+for (const [daytona, options, code, words] of [
+  ["keeps no domain list (a tier 1 or 2 organization)", { lists: false }, "unsupported", /Daytona did not keep this sandbox's domain list/],
+  ["refuses a domain list (403)", { refusesLists: 403 }, "unauthorized", /not available for your organization's tier/],
+  ["refuses a domain list (400)", { refusesLists: 400 }, "invalid", /not available for your organization's tier/],
 ]) {
-  test(`a Daytona that ${daytona} gets boxes with no network, never open: the run's tool runs, and capabilities say why`, { timeout: 120_000 }, async (t) => {
+  test(`a Daytona that ${daytona} gets boxes with no network, never open: the run's tool runs, capabilities say why, and the log says Daytona's own words`, { timeout: 120_000 }, async (t) => {
     const fake = await daytonaSandboxes(t, { key: KEY, ...options });
-    const { api, data } = await onDaytona(t, fake);
+    const lines = [];
+    const { api, data } = await onDaytona(t, fake, { log: (line) => lines.push(line) });
     assert.equal((await api("POST", "/agents", { definition: { id: "closed", name: "closed", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
     const first = await probe(api, "closed", [{ tool: "bash", args: { command: "printf x > out.txt" } }]);
     await follow(api, first.run_id, ["completed"], { deadlineMs: 90_000 });
@@ -412,13 +413,48 @@ for (const [daytona, options, code] of [
     const offer = (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona");
     assert.equal(offer.network, "none");
     assert.equal(offer.available, true);
-    assert.match(offer.reason, new RegExp(`domain list \\(${code}\\).*tier 3 and 4.*AGENTRUN_BOX_ALLOW=none`));
+    // Available, so `reason` (which says why a box is unavailable) is absent; `network_reason` says why it has no network.
+    assert.equal(offer.reason, undefined);
+    assert.match(offer.network_reason, new RegExp(`domain list \\(${code}\\).*tier 3 and 4.*AGENTRUN_BOX_ALLOW=none`));
+    // The list stays the server's one setting; the log says why Daytona refused, in its words.
+    assert.equal((await api("GET", "/capabilities")).body.places.allow.length, 6);
+    const said = lines.filter((line) => line.includes("event=box_network"));
+    assert.equal(said.length, 1, said.join("\n"));
+    assert.match(said[0], new RegExp(`refused=${code}`));
+    assert.match(said[0], words);
     // The next run's box is asked for blocked at once: the server does not try the list again until it starts again.
     const second = await probe(api, "closed", [{ tool: "bash", args: { command: "true" } }]);
     await follow(api, second.run_id, ["completed"], { deadlineMs: 90_000 });
     assert.deepEqual(creates(fake).slice(2).map((body) => [typeof body.domainAllowList, body.networkBlockAll]), [["undefined", true]]);
   });
 }
+
+test("a run's box made under a wider list is destroyed and made again under a narrower one after a restart, and kept under the same hosts in another order", { timeout: 240_000 }, async (t) => {
+  for (const [later, remade] of [["pypi.org", true], ["GitHub.com, pypi.org", false]]) {
+    const fake = await daytonaSandboxes(t, { key: KEY });
+    const data = join(await scratch(t), "agents");
+    withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url, AGENTRUN_BOX_ALLOW: "pypi.org,github.com" });
+    const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+    const firstApi = client(first.baseUrl, first.token);
+    assert.equal((await firstApi("POST", "/agents", { definition: { id: "narrowed", name: "narrowed", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
+    const run = await probe(firstApi, "narrowed", [{ tool: "bash", args: { command: "printf one > turn1.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }, { tool: "bash", args: { command: "cat turn1.txt > turn2.txt" } }]);
+    await follow(firstApi, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+    await until(async () => (await fileList(firstApi, run.run_id)).includes("turn1.txt"), "the turn's end's pull");
+    await first.close();
+    const [made] = fake.sandboxes.keys();
+    process.env.AGENTRUN_BOX_ALLOW = later;
+    const second = await serve(t, { data, faux: PROBE });
+    assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
+    await follow(second.api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+    assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "one");
+    const lists = creates(fake).map((body) => body.domainAllowList);
+    if (remade) {
+      assert.deepEqual(lists, ["pypi.org,github.com", "pypi.org"], "made again with the narrower list");
+      assert.ok(fake.requests.some((r) => r.method === "DELETE" && r.path.endsWith(`/sandbox/${made}`)), "the wider box was destroyed");
+    } else assert.deepEqual(lists, ["pypi.org,github.com"], "the same hosts: the box is kept");
+    await second.close();
+  }
+});
 
 test("AGENTRUN_BOX_ALLOW=none: a Daytona box is made blocked, as before the list, and capabilities say none with no reason", { timeout: 120_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });

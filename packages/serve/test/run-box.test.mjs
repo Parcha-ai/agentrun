@@ -285,6 +285,42 @@ test("a remote box found at its run's next call: one with no network is kept whe
   assert.deepEqual([made, destroyed], [["none", { allow: ["pypi.org"] }], ["listed", "open"]]);
 });
 
+test("a remote box found with a host list is kept only when its list is the one asked, as a set: another list, or one it does not say, is destroyed and made again", async (t) => {
+  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  const made = [];
+  const destroyed = [];
+  let found;
+  const box = (id, facts) => ({ id, facts: () => ({ provider: "fake", ...facts }), destroy: async () => {
+    destroyed.push(id);
+    if (found?.id === id) found = undefined;
+    return { ok: true, value: undefined };
+  } });
+  const boxes = {
+    list: async () => ({ ok: true, value: found ? [{ id: found.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: found && found.id === id ? found : undefined }),
+    create: async (spec) => {
+      made.push(spec.network);
+      found = box(`made-${made.length}`, { network: "allowlist", allow: spec.network.allow });
+      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: found.id, mark: { entries: [] } }));
+      return { ok: true, value: found };
+    },
+  };
+  const finding = async (id, facts) => {
+    found = box(id, facts);
+    await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: id, mark: { entries: [] } }));
+  };
+  const asked = ["pypi.org", "github.com"];
+  await finding("same", { network: "allowlist", allow: ["github.com", "pypi.org"] });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, asked), { id: "same", made: false });
+  await finding("wider", { network: "allowlist", allow: ["pypi.org", "github.com", "example.com"] });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, asked), { id: "made-1", made: true });
+  await finding("unsaid", { network: "allowlist" });
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, asked), { id: "made-2", made: true });
+  assert.deepEqual(destroyed, ["wider", "unsaid"]);
+  assert.deepEqual(made, [{ allow: asked }, { allow: asked }]);
+});
+
 test("a remote box's refused host list is said as it is refused, before the closed box is made: a closed box that then fails still leaves it said", async (t) => {
   const { ensureRemoteBox } = await import("../dist/run-box.js");
   const runDir = await scratch(t);
@@ -299,9 +335,9 @@ test("a remote box's refused host list is said as it is refused, before the clos
       return { ok: false, error };
     },
   };
-  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, ["pypi.org"], (code) => said.push(code)), /could not be made: no room for a box/);
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, ["pypi.org"], (code, message) => said.push([code, message])), /could not be made: no room for a box/);
   assert.deepEqual(asked, [{ allow: ["pypi.org"] }, "none"]);
-  assert.deepEqual(said, ["unsupported"]);
+  assert.deepEqual(said, [["unsupported", "Daytona did not keep this sandbox's domain list"]]);
 });
 
 test("fake docker: read, write and edit run no docker command, on the work/ the box binds; bash runs one docker exec; a run with no bash makes no box", { skip: !writesHeld() && "needs held directory handles (/proc/self/fd)", timeout: 90_000 }, async (t) => {
