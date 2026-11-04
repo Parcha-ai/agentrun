@@ -20,7 +20,7 @@ import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-d
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -295,8 +295,10 @@ export class LearningRuns {
       let failed = "failed" in seeded ? seeded.failed : undefined;
       if ("seed" in seeded) {
         try {
-          await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown() });
+          const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
+          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+          for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
           failed = said.stopped(STOPPED.notCopied);
@@ -390,15 +392,16 @@ export class LearningRuns {
   }
 
   /** A run that learns, opened again for a follow-up, before its process starts: `work/.learning/` laid again from its
-   *  seed where the run took it away, so the follow-up finds the notes its instructions name where they say. A fault
-   *  leaves it without. */
+   *  seed where the run took it away, so the follow-up finds the notes its instructions name where they say, and the
+   *  learned skills its pin names laid again, fresh, so its process reads each where it was. A fault leaves it without. */
   async onReopen(run: Run): Promise<void> {
     await learningTestHooks.beforeReopen?.(run.dir);
     const dir = join(run.dir, "work", LEARNED_DIR);
-    if (!run.meta.reflect || (await lstat(dir).then(() => true, () => false))) return;
+    if (!run.meta.reflect) return;
     try {
       const pin = await readPin(run.dir);
-      if (pin) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed), this.shown());
+      if (pin && !(await lstat(dir).then(() => true, () => false))) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed), this.shown());
+      if (pin) await layPinnedSkills(join(run.dir, "work"), pin, () => skillsAt(this.options.agents.dir, run.agentId, pin.seed));
     } catch (error) {
       warn(run.id, `opens again without its copy of what its agent learned: ${(error as Error).message}`);
     }
