@@ -12,8 +12,10 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  `needs` `key`, it offers the server's model keys (GET /settings/tool-keys, `kind: "model"`) and saves the one picked
  *  through PUT /settings/tool-keys/{id}, with KeysPage's form, which never holds a value; `onSaved` reads the
  *  capabilities again, and the card goes once they say ready. With `needs` `model`, the server's AGENT_MODEL is the
- *  problem, which no key fixes: it says so. `atRest` is `features.tool_keys.at_rest`. */
-export function ModelKeyCard({ v2, needs, atRest, onSaved }: { v2: Client; needs?: "key" | "model" | null; atRest?: "sealed" | "unavailable"; onSaved?: () => void }) {
+ *  problem, which no key fixes: it says so. `model` is the server's default (`models.default`): when it names a
+ *  provider among the keys (AGENT_MODEL set, its provider's key missing), only that key runs it, so the card offers that
+ *  one alone and names the model. `atRest` is `features.tool_keys.at_rest`. */
+export function ModelKeyCard({ v2, needs, model, atRest, onSaved }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; atRest?: "sealed" | "unavailable"; onSaved?: () => void }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
@@ -27,6 +29,10 @@ export function ModelKeyCard({ v2, needs, atRest, onSaved }: { v2: Client; needs
       .catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(() => { if (needs !== "model") load(); }, [v2, needs]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The default's provider, when the server's default names one of these keys: that key alone runs it.
+  const provider = model?.includes("/") ? model.slice(0, model.indexOf("/")) : undefined;
+  const required = rows?.find((k) => k.id === provider);
+  const offered = required ? [required] : rows;
   const cantStore = atRest === "unavailable" || noSealing;
   const picked = rows?.find((k) => k.id === pick);
   const own = picked?.fields.filter((f) => f.source !== "server") ?? [];
@@ -39,6 +45,8 @@ export function ModelKeyCard({ v2, needs, atRest, onSaved }: { v2: Client; needs
           <h2 className="text-[15px] font-semibold">{needs === "model" ? "This server's default model doesn't run" : "Add a model key to run agents"}</h2>
           {needs === "model"
             ? <p className="text-[13px] text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
+            : required
+            ? <p className="text-[13px] text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
             : <p className="text-[13px] text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>}
           {needs !== "model" && loadError && (
             <div role="alert">
@@ -51,7 +59,7 @@ export function ModelKeyCard({ v2, needs, atRest, onSaved }: { v2: Client; needs
           )}
           {needs !== "model" && rows && !cantStore && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Provider">
-              {rows.map((k) => (
+              {offered!.map((k) => (
                 <Button key={k.id} size="sm" variant={pick === k.id ? "solid" : "primary"} aria-pressed={pick === k.id} onClick={() => { setPick(pick === k.id ? null : k.id); setProblem(null); }}>{k.label}</Button>
               ))}
             </div>

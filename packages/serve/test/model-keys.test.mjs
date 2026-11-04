@@ -67,6 +67,16 @@ test("with no model here, the refusal says what a person does: a model key in Se
   assert.deepEqual([unknown.needs, /no-such-model/.test(unknown.why)], ["model", true], "a model no catalog knows is named");
 });
 
+// A gateway that takes bare ids gets a key's default as it gets the same model named (the part after the provider, its
+// provider pricing it); a host's own AGENT_MODEL goes as its operator set it.
+test("on a gateway that takes bare ids, a key's default goes as the same model named does; AGENT_MODEL goes as configured", async () => {
+  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_GATEWAY_IDS: "bare", OPENAI_API_KEY: "not-a-secret" };
+  const keyed = await chooseModel(gateway, undefined);
+  assert.deepEqual(keyed, await chooseModel(gateway, "openai/gpt-6.1-sol"));
+  assert.deepEqual(keyed, { model: { provider: "agent-model", modelId: "gpt-6.1-sol" }, namedProvider: "openai" });
+  assert.deepEqual((await chooseModel({ ...gateway, AGENT_MODEL: "openai/gpt-6.1-sol" }, undefined)).model.modelId, "openai/gpt-6.1-sol", "an operator's AGENT_MODEL goes as configured");
+});
+
 test("each default is a model pi-ai's catalog lists and prices, of the key's own provider, and not that provider's dearest", () => {
   const models = builtinModels();
   for (const row of MODEL_KEYS) {

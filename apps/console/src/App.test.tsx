@@ -430,7 +430,7 @@ describe("App, the agents' names", () => {
 });
 
 describe("App, the playground when its agents can't be read", () => {
-  it("says the server's refusal as code and message", async () => {
+  it("says the server's refusal in words, with its own message", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     vi.stubGlobal("fetch", async (url: string) => {
       const path = new URL(url, "http://serve.test").pathname;
@@ -445,7 +445,7 @@ describe("App, the playground when its agents can't be read", () => {
     act(() => root!.render(createElement(App)));
     const end = Date.now() + 4000;
     while (!host.textContent?.includes("could not be read") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-    expect(host.querySelector('[role="alert"] p')?.textContent).toBe("The agents could not be read: invalid_cursor: that cursor is not one this server gave");
+    expect(host.querySelector('[role="alert"] p')?.textContent).toBe("The agents could not be read: The server turned the request down. Its words say why: change what they name, then try again. (that cursor is not one this server gave)");
   });
 });
 
@@ -518,6 +518,36 @@ describe("App, the no-model bar", () => {
     const first = await mount("");
     await until(() => !!first.querySelector('section[aria-label="Model key"]'));
     expect(bar(first)).toBeNull();
+  });
+
+  // Every capabilities read goes through one guarded reader: a read the page made earlier that answers after a newer
+  // one (a slow poll, then the next) never puts the older answer back.
+  it("never puts back an older capabilities answer that comes after a newer one", async () => {
+    let ready = false;
+    let hold: ((r: Response) => void) | undefined;
+    let held = false;
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") {
+        const body = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, tool_keys: { routes: true, at_rest: "sealed" } }, models: { source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" } };
+        if (held) { held = false; return new Promise<Response>((resolve) => { hold = resolve; }); }
+        return json(200, body);
+      }
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    held = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    ready = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await until(() => !bar(host));
+    expect(bar(host)).toBeNull();
+    await act(async () => { hold!(json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } }, models: { source: "providers", default: null, ready: false, needs: "key" } })); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(bar(host)).toBeNull();
   });
 
   it("shows nothing while a model is ready", async () => {

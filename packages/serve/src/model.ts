@@ -156,9 +156,12 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
   if (env.AGENT_MODEL_BASE_URL) {
     if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
-    const slash = ref?.indexOf("/") ?? -1;
-    const sent = ref && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? ref.slice(slash + 1) : named;
-    return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
+    // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
+    // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
+    const id = ref ?? ([env[TIER_ENV[tier]], env.AGENT_MODEL].includes(named) ? undefined : named);
+    const slash = id?.indexOf("/") ?? -1;
+    const sent = id && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
+    return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
   if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
   const slash = named.indexOf("/");
