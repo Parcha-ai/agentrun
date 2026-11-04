@@ -141,7 +141,7 @@ test("a paid call the run's stop cuts short, or one that times out, counts at wh
   // A request dearer than the room left is refused for room, naming what is spent: never for a spend unknown.
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.002000, and with \$0\.003000 spent the run would pass its cap of \$0\.0045: the run is out of budget\.$/);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.003 of its \$0\.0045 cap, /, "refused for room, naming the holds as spent (#1539's words)");
 });
 
 test("a paid call monid answers FAILED with no cost, or whose answer is lost, counts at what it was held at too: every charge a call does not say is held, whatever cut it short", async (t) => {
@@ -170,7 +170,7 @@ test("a paid call monid answers FAILED with no cost, or whose answer is lost, co
   await settled();
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.002000, and with \$0\.002000 spent the run would pass its cap of \$0\.0035: the run is out of budget\.$/);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.002 of its \$0\.0035 cap, /, "refused for room, naming the holds as spent (#1539's words)");
 });
 
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */
