@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { MCP_CLIP, mcpGateway } from "../dist/mcp-gateway.js";
+import { MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
@@ -78,6 +78,18 @@ test("a redirect is never followed: the credential goes nowhere else", async (t)
   assert.match(textOf(said), /redirect/);
   assert.ok(!textOf(said).includes(TOKEN));
   assert.equal(fake.log.length, 0, "the redirect's target saw nothing");
+});
+
+test("names that are an object's own properties are servers and tools like any other: the pin and the credentials hold them", async () => {
+  const listed = [{ name: "toString", inputSchema: schema }];
+  const source = { server: (name) => (name === "constructor" ? { url: "http://127.0.0.1:9/mcp", tools: listed } : undefined), headers: () => ({ authorization: `Bearer ${TOKEN}` }) };
+  const pin = mcpPinOf(["mcp:constructor/toString", "mcp:toString/add"], source);
+  assert.deepEqual(Object.keys(pin), ["constructor"]);
+  assert.deepEqual(pin.constructor.tools.map((tool) => tool.name), ["toString"]);
+  assert.deepEqual(Object.keys(mcpCredentialsOf(pin, source)), ["constructor"]);
+  const none = mcpGateway({ pin: {}, credentials: {}, work: () => tmpdir() });
+  assert.match(textOf(await none.call("constructor", "toString", {}, { signal: signal() })), /not a tool of the MCP server constructor/);
+  assert.match(textOf(await none.call("__proto__", "toString", {}, { signal: signal() })), /not a tool/);
 });
 
 test("a server whose address changed, or that is no longer saved, is sent nothing", async (t) => {

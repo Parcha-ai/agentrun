@@ -51,15 +51,17 @@ export const mcpNameOf = (name: string): { server: string; tool: string } | unde
   return match ? { server: match[1]!, tool: match[2]! } : undefined;
 };
 
-/** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. */
+/** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. Keyed by server name
+ *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. */
 export function mcpPinOf(names: readonly string[], source: McpServerSource): McpPin {
-  const pin: McpPin = {};
+  const pin: McpPin = Object.create(null);
   for (const name of names) {
     const parsed = mcpNameOf(name);
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
     if (!parsed || !saved || !tool) continue;
-    (pin[parsed.server] ??= { url: saved.url, tools: [] }).tools.push(tool);
+    if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };
+    pin[parsed.server]!.tools.push(tool);
   }
   return pin;
 }
@@ -67,7 +69,7 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
 /** What a launch hands the run for its pin: each pinned server's URL now, with its headers only when it has not moved. A
  *  server no longer saved is absent. */
 export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCredentials {
-  const out: McpCredentials = {};
+  const out: McpCredentials = Object.create(null);
   for (const [name, pinned] of Object.entries(pin)) {
     const saved = source.server(name);
     if (!saved) continue;
@@ -107,6 +109,8 @@ export type McpGateway = SessionMcp;
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
   const clients = new Map<string, Promise<Upstream>>();
+  const pins = new Map(Object.entries(options.pin));
+  const credentials = new Map(Object.entries(options.credentials));
   /** Each server's last HTTP status, which tells a refused credential from another failure. */
   const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
@@ -188,11 +192,11 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   };
 
   return {
-    servers: Object.entries(options.pin).map(([name, pinned]) => ({ name, tools: pinned.tools })),
+    servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
     async call(server, tool, args, { signal }) {
-      const pinned = options.pin[server];
+      const pinned = pins.get(server);
       if (!pinned?.tools.some((t) => t.name === tool)) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
-      const now = options.credentials[server];
+      const now = credentials.get(server);
       if (!now) return said(`The MCP server ${server} is no longer saved on this server; nothing was sent.`, true);
       if (now.url !== pinned.url) return said(`The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`, true);
       return forward(server, pinned.url, now.headers ?? {}, tool, args, signal);

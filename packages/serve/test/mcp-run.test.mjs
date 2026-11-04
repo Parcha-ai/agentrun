@@ -61,6 +61,19 @@ test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the t
   assert.deepEqual(leaked, [], "no file of the run holds the token");
 });
 
+// The fake's SDK server cannot list a tool named toString itself; mcp-gateway.test.mjs pins one, mcp-route.test.mjs serves one.
+test("pi: a server named like an object's own property (constructor) grants, launches and calls through", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const fake = await addFake(t, api, "constructor");
+  assert.equal((await api("POST", "/agents", agent("proto", { tools: ["mcp:constructor/add"] }))).status, 201);
+  const runId = await runOf(api, "proto", 'Call mcp__constructor__add with {"a":2,"b":3}');
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: 5");
+  assert.equal(rows.find((row) => row.kind === "tool_use")?.summary, "constructor · add");
+  assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]]);
+});
+
 test("pi: the credential reaches only a run whose revision grants one of the server's tools", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP });
   const fake = await addFake(t, api);
