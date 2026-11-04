@@ -302,14 +302,14 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
     const res = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
     return [res.status, res.body.error?.code, res.body.error?.details?.missing];
   };
-  const unset = { name: "browser", nodes: true, calls: false, available: false, reason: `Needs ${Object.keys(values).join(", ")}`, missing: Object.keys(values), harnesses: ["pi"], key: "browserbase" };
+  const unset = { name: "browser", nodes: true, calls: false, available: false, reason: `Needs ${Object.keys(values).join(", ")}`, missing: Object.keys(values), harnesses: ["pi"], permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   assert.deepEqual(await refused(), [409, "agent_not_runnable", { browser: Object.keys(values) }]);
 
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
-  assert.deepEqual(await browser(), { name: "browser", nodes: true, calls: false, available: true, harnesses: ["pi"], key: "browserbase" }, "no restart");
+  assert.deepEqual(await browser(), { name: "browser", nodes: true, calls: false, available: true, harnesses: ["pi"], permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], key: "browserbase" }, "no restart");
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);

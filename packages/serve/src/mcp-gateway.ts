@@ -161,8 +161,9 @@ export interface McpGatewayOptions {
   work: () => string;
   /** For tests: the fetch the upstream client sends with. */
   fetch?: typeof fetch;
-  /** The run's tool gate; none (a test), every call is let go. */
-  gate?: Gate;
+  /** The run's tool gate; none (a test), every call is let go. Its `executor` and `spill`, where it has them, run an
+   *  approved call and pass a result through. */
+  gate?: Pick<Gate, "enter"> & Partial<Pick<Gate, "executor" | "spill">>;
   /** The run's commit to its store, once it is open: a parked call's request, a priced call's mark and charge, and an
    *  unpriced call's "not metered" are written on its root. None: a priced call is refused unsent, as a paid call with
    *  nowhere to book it is (paid-calls.ts). */
@@ -321,7 +322,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   };
 
   // An approved call, run by the gate once a person allows it: through the same path, once.
-  options.gate?.executor("mcp:", async (name, args, callId, signal) => {
+  options.gate?.executor?.("mcp:", async (name, args, callId, signal) => {
     const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
     const result = parsed ? await sent(parsed[1]!, parsed[2]!, (args ?? {}) as Record<string, unknown>, callId, signal) : said(`${name} is not an MCP tool.`, true);
     return { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true };
@@ -344,7 +345,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         const cannot = said(`The ${name} call needs a person's approval, which this harness can't wait for yet; nothing was sent.`, true);
         let entered: Awaited<ReturnType<Gate["enter"]>>;
         try {
-          entered = await gate.enter(name, args, id, park);
+          // The approval card shows the call's declared price, or that it is not metered.
+          const price = pins.get(server)!.prices;
+          entered = await gate.enter(name, args, id, park, { price: price && Object.hasOwn(price, tool) ? price[tool]! : "not metered" });
         } catch (error) {
           if (error instanceof CannotPark) return cannot;
           return said(`The ${name} call was not sent: the tool gate failed (${String((error as Error)?.message ?? error).slice(0, 200)}).`, true);
@@ -352,7 +355,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         if (entered?.parked) return park === given ? Object.assign(said(entered.text), { [PARKED]: true }) : cannot;
         if (entered) return said(entered.text, entered.isError);
         const result = await sent(server, tool, args, id, signal);
-        return said(gate.spill(id, result.content.map((block) => block.text).join("\n\n")), result.isError === true);
+        const text = result.content.map((block) => block.text).join("\n\n");
+        return said(gate.spill ? gate.spill(id, text) : text, result.isError === true);
       }
       return sent(server, tool, args, id, signal);
     },

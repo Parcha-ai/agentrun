@@ -120,18 +120,18 @@ function store() {
   return { entries, commit: () => async (change) => change({ appendEntry: async (_conversation, entry) => entries.push(entry) }) };
 }
 
-test("the gate: each call enters it as mcp:<server>/<tool> with its id and its harness's park; a denied call answers the gate's words and nothing is sent; an allowed one is sent; one with no id is never sent", async (t) => {
+test("the gate: each call enters it as mcp:<server>/<tool> with its id, its harness's park and its price (or not metered); a denied call answers the gate's words and nothing is sent; an allowed one is sent; one with no id is never sent", async (t) => {
   const entered = [];
   const inner = gateOf((tool) => (tool === "mcp:fake/add" ? "deny" : "allow"));
-  const gate = { ...inner, enter: (tool, args, callId, park, ...rest) => (entered.push({ tool, args, callId, park: typeof park?.commit === "function", rest: rest.length }), inner.enter(tool, args, callId, park)) };
+  const gate = { ...inner, enter: (tool, args, callId, park, options) => (entered.push({ tool, args, callId, park: typeof park?.commit === "function", price: options?.price }), inner.enter(tool, args, callId, park, options)) };
   const { fake, gateway } = await setup(t, { gate, prices: { paid: 0.05 }, commit: store().commit });
   const denied = await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal(), callId: "c1" });
   assert.deepEqual(denied, { content: [{ type: "text", text: deniedText("mcp:fake/add") }], isError: true });
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0, "nothing was sent");
   assert.deepEqual(await gateway.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c2" }), { content: [{ type: "text", text: "paid for ada" }] });
   assert.deepEqual(entered, [
-    { tool: "mcp:fake/add", args: { a: 2, b: 3 }, callId: "c1", park: true, rest: 0 },
-    { tool: "mcp:fake/paid", args: { query: "ada" }, callId: "c2", park: true, rest: 0 },
+    { tool: "mcp:fake/add", args: { a: 2, b: 3 }, callId: "c1", park: true, price: "not metered" },
+    { tool: "mcp:fake/paid", args: { query: "ada" }, callId: "c2", park: true, price: 0.05 },
   ]);
   assert.match(textOf(await gateway.call("fake", "paid", { query: "ada" }, { signal: signal() })), /came with no call id/);
   assert.equal(entered.length, 2, "never at the gate");

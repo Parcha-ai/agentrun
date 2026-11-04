@@ -95,7 +95,7 @@ test("/usage by meter for a run whose monid call a crash cut: its cost is unknow
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"], tool_settings: { "monid.run": { permission: "allow" } } }))).status, 201);
   const { body } = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
   for (let i = 0; !(existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"')); i++) {
     assert.ok(i < 400, "the monid call is sent");
