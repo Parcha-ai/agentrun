@@ -40,7 +40,7 @@ export const startedByNpx = (file: string = fileURLToPath(import.meta.url)): boo
 export const NPX_PACKAGE_ENV = "AGENTRUN_NPX_PACKAGE";
 
 /** The package each harness needs beside the server, as an npx line adds it. */
-const HARNESS_PACKAGES = ["@anthropic-ai/claude-agent-sdk", "@openai/codex"];
+const HARNESS_PACKAGES = ["@anthropic-ai/claude-agent-sdk", "@openai/codex", "opencode-ai"];
 
 /** The version of `name` installed where Node would look for it from `from`, or undefined. */
 export function installedHere(name: string, from: string = fileURLToPath(import.meta.url)): string | undefined {
@@ -364,7 +364,7 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
       // serve's own line, which installs the adapter with its pinned CLI, in place of the adapter's (the CLI alone).
       const message = (error as Error).message.replace(opencode.OPENCODE_INSTALL, INSTALL.opencode);
       const said = message.includes("npm install") ? message : `${message} (${INSTALL.opencode})`;
-      throw unavailable(error, said, INSTALL.opencode, `opencode-ai@${opencode.OPENCODE_VERSION}`, npx);
+      throw unavailable(error, said, INSTALL.opencode, `opencode-ai@${opencode.OPENCODE_VERSION}`, npx, env);
     }
   }
   // The shared date line (environment.ts) reaches OpenCode in the session's system prompt (app.ts), as it reaches every
