@@ -13,11 +13,12 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
 const schema = { type: "object" };
-const tools = ["add", "slow_write", "long"].map((name) => ({ name, inputSchema: schema }));
+const tools = ["add", "slow_write", "long", "echo"].map((name) => ({ name, inputSchema: schema }));
 
 async function setup(t, { token = TOKEN, url } = {}) {
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
+  fake.tools.echo = { description: "Echoes what it was sent.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: `seen Bearer ${TOKEN} and ${TOKEN}` }, { type: "image", data: Buffer.from(TOKEN).toString("base64"), mimeType: "image/png" }], structuredContent: { token: TOKEN } }) };
   fake.tools.long = { description: "A long answer.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: "x".repeat(MCP_CLIP + 10) }] }) };
   const work = await mkdtemp(join(tmpdir(), "mcp-gateway-"));
   t.after(() => rm(work, { recursive: true, force: true }));
@@ -54,6 +55,15 @@ test("a refused credential says where to update it and never shows it; an answer
   const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(long)?.[1];
   assert.ok(long.startsWith("x".repeat(MCP_CLIP)) && filed, long.slice(-200));
   assert.equal(JSON.parse(await readFile(join(work, "evidence", "mcp", "fake", filed), "utf8")).content[0].text.length, MCP_CLIP + 10);
+});
+
+test("a server that echoes its credential never shows it: not to the model, not in the run's files", async (t) => {
+  const { gateway, work } = await setup(t);
+  const text = textOf(await gateway.call("fake", "echo", {}, { signal: signal() }));
+  assert.ok(!text.includes(TOKEN) && text.startsWith("seen [redacted] and [redacted]"), text);
+  const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(text)?.[1];
+  assert.ok(filed, "a block that is not text is filed");
+  assert.ok(!(await readFile(join(work, "evidence", "mcp", "fake", filed), "utf8")).includes(TOKEN));
 });
 
 test("a redirect is never followed: the credential goes nowhere else", async (t) => {

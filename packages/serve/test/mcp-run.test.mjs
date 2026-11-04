@@ -85,6 +85,11 @@ test("a save that grants a tool the server does not have is refused, naming the 
   for (const tool of ["add", "slow_write", "delete_thing", "paid"]) assert.ok(said.includes(tool), `the refusal names ${tool}: ${said}`);
   const unknown = await api("POST", "/agents", agent("ghost", { tools: ["mcp:ghost/add"] }));
   assert.equal(unknown.status, 422, JSON.stringify(unknown.body));
+  // A server saved as hands, the name the harnesses keep for their own tools, is never granted.
+  await addFake(t, api, "hands");
+  const reserved = await api("POST", "/agents", agent("own", { harness: "claude-agent", tools: ["mcp:hands/add"] }));
+  assert.equal(reserved.status, 422, JSON.stringify(reserved.body));
+  assert.match(JSON.stringify(reserved.body), /keep for their own tools/);
 });
 
 test("pi: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
