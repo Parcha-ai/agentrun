@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -19,7 +19,8 @@ import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
+import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
@@ -42,8 +43,8 @@ import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
-import { type Place, storedPlace } from "./place.js";
-import { destroyRunBoxes, sweepRunBoxes } from "./run-box.js";
+import { type Place, remotePlace, storedPlace } from "./place.js";
+import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Emitted } from "./webhooks.js";
@@ -87,7 +88,31 @@ const UNREADABLE_TICKS = 10;
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 /** How long serve's calls on a run's box (its destroy, the start's sweep) may take. */
 const BOX_CALL_MS = 60_000;
-const boxContext = () => withAbortSignal(AbortSignal.timeout(BOX_CALL_MS), BACKGROUND_CONTEXT);
+const boxContext = (ms = BOX_CALL_MS) => withAbortSignal(AbortSignal.timeout(ms), BACKGROUND_CONTEXT);
+/** How long a remote box's making and seed, or one pull of its work/, may take: a sandbox's start, then the copy. */
+const REMOTE_SYNC_MS = 15 * 60_000;
+/** How long a read of a run's files waits for the pull its turn's end began. */
+const PULL_WAIT_MS = 120_000;
+
+/** A run's end that waits for its remote box's last pull: its settle is tried again until the pull lands. */
+class PullPending extends Error {}
+
+/** Run directory `dir`'s own door token, made now (mode 0600, never through a link) when it has none. */
+function ensureRunDoorToken(dir: string): string {
+  const held = runDoorToken(dir);
+  if (held) return held;
+  const token = `ar_door_${randomBytes(24).toString("base64url")}`;
+  try {
+    writeFileSync(join(dir, RUN_DOOR_TOKEN), `${token}\n`, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    // Made meanwhile: that one is the run's.
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const made = runDoorToken(dir);
+    if (!made) throw new Error(`the run's door token at ${RUN_DOOR_TOKEN} is not one`);
+    return made;
+  }
+  return token;
+}
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
@@ -238,6 +263,15 @@ export type Run = {
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
+  /** Its own door token (RUN_DOOR_TOKEN), once read or made; absent for a run an older server started, whose door takes
+   *  the server-wide one. */
+  doorToken?: string;
+  /** A remote box's making and seed, asked by the run's process through the relay: one at a time. */
+  boxing?: Promise<{ id: string; made: boolean }>;
+  /** Its remote box's newest pull: a read of its files waits for it. */
+  pulling?: Promise<void>;
+  /** It stood waiting for the person when last marked: a turn's end is the change into that. */
+  waited?: boolean;
 };
 
 const ASKED = "Asked you: ";
@@ -439,7 +473,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -883,15 +917,33 @@ export class Runs {
   /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
    *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
   private sweepOnce(): Promise<void> {
-    const { box, runBoxes } = this.options;
-    if (!box && !runBoxes) return Promise.resolve();
+    const { box, runBoxes, remoteBoxes } = this.options;
+    if (!box && !runBoxes && !remoteBoxes) return Promise.resolve();
     this.swept ??= (async () => {
       const rows = await this.options.agents.request(() => this.store.listRuns());
       // The boxes of sandbox runs, by their label: one whose run has ended, or is archived, is destroyed. A failure only
       // warns: the next start sweeps again, and a box's lifetime bounds it.
+      const ended = new Set(rows.filter((row) => row.state !== "running" || row.archivedAt).map((row) => row.id));
       if (runBoxes) {
-        const ended = new Set(rows.filter((row) => row.state !== "running" || row.archivedAt).map((row) => row.id));
         await sweepRunBoxes(runBoxes, (id) => ended.has(id), boxContext()).catch((error: Error) => warn("-", `its start's sweep of run boxes failed (${error.message}); the next start sweeps again`));
+      }
+      // A remote box of an ended run is pulled first, so what it changed after its run's last pull is kept, and goes only
+      // once that pull landed: one that fails keeps the box for the next start, its lifetime bounding it.
+      if (remoteBoxes) {
+        const dirOf = (id: string) => join(this.options.agents.dir, "runs", id);
+        const pulledFirst = (id: string, boxId: string) =>
+          pullRemoteBox(remoteBoxes, { id, dir: dirOf(id) }, boxContext(REMOTE_SYNC_MS)).then(
+            () => true,
+            async (error: Error) => {
+              warn(id, `its box is kept: its pull failed (${error.message}); the next start tries again`);
+              await this.keepBox(id, boxId);
+              return false;
+            },
+          );
+        // A box kept at a run's end that Daytona stopped once idle is woken first, so this sweep pulls it like the rest.
+        const api = this.options.remoteApi;
+        if (api) await wakeBoxes(api, (id) => ended.has(id)).catch((error: Error) => warn("-", `the stopped boxes of ended runs were not woken (${error.message}); the next start tries again`));
+        await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
       }
       if (!box) return;
       const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
@@ -906,15 +958,98 @@ export class Runs {
   }
 
   /** A sandbox run's box (run-box.ts), destroyed by its label: at every settle, a cancel included, and at archive. A
-   *  failure only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
-  private async dropBox(run: Run): Promise<void> {
-    const { runBoxes } = this.options;
-    if (!runBoxes || run.meta.place?.mode !== "sandbox") return;
+   *  remote box's work/ is pulled first, and its box goes only once that pull brought it back whole (or there is no box).
+   *  A copy that stopped for good (an archive the extractor cannot read, a limit it cannot pass) keeps the box, said in
+   *  the log, its lifetime bounding it, and the run ends. Any other failure at a run's end (`ending`) throws
+   *  PullPending, and the end is tried again; at an archive it only warns, the box kept for the run's end or the next
+   *  start's sweep. A destroy that fails only warns: the next start's sweep tries again, and the box's lifetime bounds it. */
+  private async dropBox(run: Run, ending = false): Promise<void> {
+    const place = run.meta.place;
+    if (place?.mode !== "sandbox") return;
+    const remote = remotePlace(place);
+    const boxes = remote ? this.options.remoteBoxes : this.options.runBoxes;
+    if (!boxes) return;
+    if (remote) {
+      try {
+        await this.pullBox(run, true);
+      } catch (error) {
+        if (error instanceof PullIncomplete && error.lasting) {
+          await this.keepBox(run.id, error.box);
+          return warn(run.id, `its box is kept, not destroyed: ${error.message}; what came back is in its files, and the box stops after ${KEPT_AUTOSTOP_MINUTES} idle minutes, its files kept for the next start's pull`);
+        }
+        const why = `its box's last pull failed (${(error as Error).message})`;
+        if (ending) throw new PullPending(why);
+        return warn(run.id, `${why}; its box is kept for its end`);
+      }
+    }
     try {
-      await destroyRunBoxes(runBoxes, run.id, boxContext());
+      await destroyRunBoxes(boxes, run.id, boxContext());
     } catch (error) {
       warn(run.id, `its box was not destroyed (${(error as Error).message}); the next start sweeps it`);
     }
+  }
+
+  /** A remote box kept because its copy back is not whole: said in the log, and set to stop once idle, so it costs its
+   *  disk alone until the next start's pull (which wakes it) or its lifetime. */
+  private async keepBox(runId: string, boxId: string): Promise<void> {
+    this.options.log?.("box_kept", { run: runId, box: boxId, reason: "pull_incomplete" });
+    const api = this.options.remoteApi;
+    if (api) await keepWhenIdle(api, boxId).catch((error: Error) => warn(runId, `its kept box was not kept from deletion or set to stop when idle (${error.message})`));
+  }
+
+  /** What wakes run `runId`'s remote box when Daytona stopped or paused it (a class that pauses when idle, while the run
+   *  waited for a person): how many it woke. */
+  private wakeOf(runId: string): (() => Promise<number>) | undefined {
+    const api = this.options.remoteApi;
+    return api && (() => wakeBoxes(api, (id) => id === runId));
+  }
+
+  /** Pulls run `run`'s remote box into its work/, after any pull already running: at a turn's end in the background (a
+   *  failure warns, and the next pull brings it), or awaited (`strict`: a failure throws). */
+  private pullBox(run: Run, strict = false): Promise<void> {
+    const boxes = this.options.remoteBoxes;
+    const place = run.meta.place;
+    if (!boxes || !place || !remotePlace(place)) return Promise.resolve();
+    // After any pull already running, and after the box's making and seed when one is under way.
+    const pull = Promise.all([run.pulling, run.boxing?.catch(() => undefined)]).then(async () => {
+      const pulled = await pullRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id));
+      if (pulled) this.options.log?.("box_pulled", { run: run.id, changed: pulled.changed, files: pulled.files, bytes: pulled.bytes, removed: pulled.removed });
+    });
+    const settled = pull.catch((error: Error) => {
+      if (!strict) warn(run.id, `its box's work/ was not pulled at its turn's end (${error.message}); the next pull brings it`);
+    });
+    run.pulling = settled;
+    void settled.finally(() => {
+      if (run.pulling === settled) run.pulling = undefined;
+    });
+    return strict ? pull : settled;
+  }
+
+  /** Waits for the pull run `id`'s turn's end began, if any, up to PULL_WAIT_MS: its files then show what its box wrote. */
+  async pulled(id: string): Promise<void> {
+    const pulling = this.runs.get(id)?.pulling;
+    if (!pulling) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([pulling, new Promise<void>((resolve) => (timer = setTimeout(resolve, PULL_WAIT_MS)))]);
+    clearTimeout(timer);
+  }
+
+  /** Whether run `id` is one this server holds in a remote box and has not ended: the relay serves no other. */
+  servesBox(id: string): boolean {
+    const run = this.runs.get(id);
+    return Boolean(this.options.remoteBoxes && run && !run.outcome && run.meta.place && remotePlace(run.meta.place));
+  }
+
+  /** Run `id`'s remote box, found or made and seeded: what its process asks the relay for at its first tool call. */
+  ensureBox(id: string): Promise<{ id: string; made: boolean }> {
+    const run = this.runs.get(id);
+    const boxes = this.options.remoteBoxes;
+    if (!run || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
+    // After any pull of this run's box, so a seed never meets a pull.
+    run.boxing ??= (run.pulling ?? Promise.resolve())
+      .then(() => ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id)))
+      .finally(() => void (run.boxing = undefined));
+    return run.boxing;
   }
 
   /** The run's box let go (archive, or its process gone after an archive): reaped by the box's own count. */
@@ -933,7 +1068,7 @@ export class Runs {
   /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
    *  now when its process is gone, else when it exits. */
   async archived(): Promise<void> {
-    if (!this.options.box && !this.options.runBoxes) return;
+    if (!this.options.box && !this.options.runBoxes && !this.options.remoteBoxes) return;
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (!row.archivedAt) continue;
       // A run's box needs only the runs this server holds: one it has not read has ended, or was swept at its start.
@@ -963,6 +1098,11 @@ export class Runs {
    *  is told each time it is seen: webhooks.ts queues each wait once, whichever server sees it first. */
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
+    // A turn's end, or a run first read waiting (a start that finds it so, whose last turn's pull may not have landed):
+    // what its remote box changed is pulled into work/ now, and a read of the files waits for it.
+    const waiting = status === "input_required";
+    if (waiting && run.waited !== true) this.pullBox(run);
+    run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
     if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state === "waiting" ? "question" : "stopped" });
@@ -982,8 +1122,18 @@ export class Runs {
 
   // ---- the door -------------------------------------------------------------------------------------------------------
 
-  private headers(json = false): Record<string, string> {
-    return { authorization: `Bearer ${this.options.doorToken}`, ...(json ? { "content-type": "application/json" } : {}) };
+  /** A call to run `run`'s door: with its own door token, or, for a process an older server started, the server-wide one. */
+  private headers(run: Run, json = false): Record<string, string> {
+    run.doorToken ??= runDoorToken(run.dir);
+    return { authorization: `Bearer ${run.doorToken ?? this.options.doorToken}`, ...(json ? { "content-type": "application/json" } : {}) };
+  }
+
+  /** Run `id`'s own door token, the one its calls to the box relay carry; none for a run it does not hold or that has none. */
+  relayToken(id: string): string | undefined {
+    const run = this.runs.get(id);
+    if (!run) return undefined;
+    run.doorToken ??= runDoorToken(run.dir);
+    return run.doorToken;
   }
 
   /** Follow the door's events into an agentic run's rows, again after each drop while the process lives. A workflow
@@ -1012,7 +1162,7 @@ export class Runs {
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
     const reducer = timelineReducer({ path: rowPaths(run.dir) });
-    const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
+    const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(run), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1120,7 +1270,7 @@ export class Runs {
   private async abortTurn(run: Run): Promise<void> {
     if (run.kind === "workflow") return;
     const door = this.doorOf(await this.record(run));
-    if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
+    if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(run, true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   }
 
   /** One request to the door of a run whose process lives, never waking it (toDoor wakes no run that is finishing): again
@@ -1130,7 +1280,7 @@ export class Runs {
     for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
       if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
       const door = this.doorOf(await this.record(run));
-      const res = door ? await fetch(new URL(path, door), { method: body ? "POST" : "GET", headers: this.headers(body !== undefined), body: body && JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null) : null;
+      const res = door ? await fetch(new URL(path, door), { method: body ? "POST" : "GET", headers: this.headers(run, body !== undefined), body: body && JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null) : null;
       const data = res ? ((await res.json().catch(() => null)) as Json | null) : null;
       if (res && res.status < 400) return data;
       if (res && !(res.status === 503 && RETRY_CODES.includes(String(data?.error)))) throw new Error(`the run's door answered ${res.status}`);
@@ -1144,7 +1294,7 @@ export class Runs {
       const door = await this.ensureLive(run, readyMs);
       const res = await fetch(new URL(path, door), {
         method: body === undefined ? "GET" : "POST",
-        headers: this.headers(body !== undefined),
+        headers: this.headers(run, body !== undefined),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(15_000),
       }).catch(() => null);
@@ -1217,10 +1367,13 @@ export class Runs {
     }
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
+    // Its own door token, which its door takes and its calls to the box relay carry: no other run's process holds it.
+    run.doorToken = ensureRunDoorToken(run.dir);
+    const doorTokenFile = join(run.dir, RUN_DOOR_TOKEN);
     const child = spawn(process.execPath, [
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
-      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
+      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", doorTokenFile, "--drain-timeout", drain, // key-gate: loopback-rule the door of a run listens on loopback only, for this server
     ], { stdio, env });
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;
@@ -1288,7 +1441,7 @@ export class Runs {
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
       .catch((error: Error) => {
-        if (!storeBusy(error) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
+        if (!(storeBusy(error) || error instanceof PullPending) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
         // A store still held past the run end's retries: settled again later, not left until the next start.
         const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
         warn(run.id, `not settled: ${error.message}; trying again in ${every / 1000} s`);
@@ -1390,7 +1543,8 @@ export class Runs {
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
-    await this.dropBox(run);
+    // A remote box's last pull lands first: the end is not recorded until its files are in work/.
+    await this.dropBox(run, true);
     // Its end-of-run turn closed, and what the turn wrote set aside before the run reads ended (learning-run.ts).
     await this.learning.beforeSettle(run, outcome);
     const answer = answerOf(run.rows);

@@ -242,10 +242,12 @@ of a process that is gone is not trusted.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
-which binds the run's `work/` and nothing else, with no network and no key. Its `read`, `write` and `edit` work on that
-same `work/`: on this server, where the box binds it and this server holds directory handles (Docker on Linux), else in
-the box. The agent's loop, its log, its model calls and every key stay on the server. An agent says so in its [place](#place); the server
-says which [boxes](#boxes) it has; [a run in a Docker box](#a-run-in-a-docker-box) is what the container gets;
+which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it; either has no network and
+no key. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
+on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
+box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
+Daytona sandbox gets;
 [the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
 end to end. The [published image](#in-the-published-image) cannot host boxes yet.
 
@@ -317,6 +319,48 @@ go through `work/` by path.
   `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
   of a run this data directory does not know is left to its 24-hour lifetime.
 
+### A run in a Daytona box
+
+With `AGENTRUN_BOXES=daytona` and `DAYTONA_API_KEY`, a run whose place is `{"mode": "sandbox", "box": "daytona"}` gets one
+Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with the same tools, path rules, environment,
+`bash` and labels as a Docker box. What differs (its `read`, `write` and `edit` run in the sandbox, as its `bash` does,
+since nothing binds `work/` there):
+
+- The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
+  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes a call for
+  a run only with that run's own door token (`DIR/runs/<id>/door-token`, handed to that run's process alone) and adds
+  the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
+  refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
+  it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
+- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
+  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
+  override, so a run there gets no Daytona box.
+- A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
+  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
+  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
+  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
+  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
+  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run, which the server alone
+  writes; the run's process notes each file it copied in, in `box-mirrored.jsonl` beside it, and a copy back counts
+  those as held by both sides, so an edit the box makes to one comes back.
+- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
+  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
+  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
+  that brought nothing reached) keeps the sandbox, says so in the log (`event=box_kept` with its id), and lets the run
+  end with what did come back. A start pulls a run it finds waiting for the person, and copies back, then destroys, the
+  sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
+- A kept sandbox has Daytona's auto-delete turned off (a sandbox is made with auto-delete at 0, which deletes it as it
+  stops) and is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
+  Daytona's default snapshot, at Daytona's storage price) and no compute; its files stay. The next start wakes it, copies
+  back again, and destroys it once that copy is whole; else its 24-hour lifetime ends it. To remove one sooner, delete
+  the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
+- A run's sandbox that Daytona stopped, paused (a sandbox class that pauses when idle, while the run waits for its
+  person) or archived (a stopped one it moved away) is started again, an archived one restored, when the server next
+  needs it: for the run's next tool call, a copy back, or the start's sweep. One still stopping, pausing or archiving
+  is waited for (a minute at most) first. It is never replaced by a new one, so
+  what only it holds stays.
+- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
+
 ### The box's image
 
 `AGENTRUN_DOCKER_IMAGE` names the image every Docker box starts from, `debian:bookworm-slim` by default: a shell and
@@ -346,8 +390,8 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 
 ### Boxes
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker` boxes ([place](#place)); the
-others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes
+([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -1457,7 +1501,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
   and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
   CSP allows this origin only.
-- Each run's door listens on loopback and takes only the server's door token.
+- Each run's door listens on loopback and takes only that run's own door token (`DIR/runs/<id>/door-token`, 0600, made
+  at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
   server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
   the boxes' keys either ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool the key unlocks

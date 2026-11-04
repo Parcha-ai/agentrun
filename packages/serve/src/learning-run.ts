@@ -19,7 +19,7 @@ import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } fr
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
-import { readJson, RUN_META } from "./files.js";
+import { readJson, RUN_META, runDoorToken } from "./files.js";
 import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, type Turn, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
@@ -766,7 +766,9 @@ export class LearningRuns {
   /** What a run's learning refuses, and cuts from what it says: the secrets this server holds, wherever its launcher put
    *  them, the keys saved on it, what each launch handed the run, and its own tokens. */
   private refused(run: Run): string[] {
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken];
+    // The run's own door token too: its process holds it, so its notes may.
+    const own = run.doorToken ?? runDoorToken(run.dir);
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

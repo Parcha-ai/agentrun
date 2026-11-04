@@ -163,6 +163,11 @@ describe("NeedsYouStrip, keeping track of what started and what is asked", () =>
     expect(html({ live: [{ ...live[0]!, cost: null }] })).toContain("cost not known yet");
     expect(html({ live: [{ ...live[0]!, cost: null }] })).not.toContain("nothing spent yet");
   });
+  it("says a live run's cost so far and how many charges have no price yet, when the server says them", () => {
+    const h = html({ live: [{ ...live[0]!, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0.0123, unpriced: 1 } }] });
+    expect(h).toContain("so far $0.0123 est. · 1 not priced");
+    expect(h).not.toContain("cost not known yet");
+  });
   it("says what could not be read, and keeps what could", () => {
     const h = html({ problem: "The failed runs could not be read: Failed to fetch" });
     expect(h).toContain("The failed runs could not be read: Failed to fetch");
