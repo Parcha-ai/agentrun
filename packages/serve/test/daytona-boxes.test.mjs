@@ -365,6 +365,10 @@ test("a run's relay call takes only that run's own token: run A's process, with 
   const tokenA = readFileSync(existsSync(own) ? own : join(data, ".door-token"), "utf8").trim();
   const relayUrl = JSON.parse(readFileSync(join(data, BOX_RELAY_FILE), "utf8")).url;
   const asA = (run) => fetch(`${relayUrl}/runs/${run}/daytona`, { headers: { authorization: `Bearer ${tokenA}`, "x-agentrun-target": `${fake.url}/sandbox/${boxOf(run)}` } });
+  // Each turn's end pulls its box, and a read of the files waits for that pull: once both are done, nothing else asks
+  // run B's box.
+  await fileList(api, a.run_id);
+  await fileList(api, b.run_id);
   const before = fake.requests.length;
   const theirs = await asA(b.run_id);
   assert.ok([401, 403, 404].includes(theirs.status), `run A reached run B's box: ${theirs.status}`);
