@@ -276,3 +276,174 @@ test("the setup skill's start step ends with the command's error when it fails, 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// npx runs the command through `npm exec`, which runs it through `sh -c`. A signal to npm alone (a process manager's
+// SIGTERM or SIGKILL) ended npm and left the command, and the server, with nobody to stop them. Now, started by npm exec,
+// the command watches that npm: it starts no server once npm is gone, and stops the server when npm goes later. Started
+// any other way it watches nothing: a shell that backgrounds it and exits (`&`, nohup, a tool call's shell) leaves it
+// running, as a shell's rules say. A SIGHUP to the command alone asks the server to stop, as a SIGTERM does.
+const NPM_ENV = { npm_command: "exec", npm_lifecycle_event: "npx", npm_execpath: "/usr/lib/node_modules/npm/bin/npm-cli.js" };
+const strip = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^npm_/i.test(name)));
+async function healthUntil(base, wanted, tries) {
+  for (let i = 0; i < tries; i++) {
+    const up = await fetch(`${base}/v2/health`).then((r) => r.ok, () => false);
+    if (up === wanted) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+// PIDs wrap in minutes on a busy machine, so a number read from a file or kept from earlier may be another process's by
+// now. These tests signal a pid only after reading, in the same step, that it still runs what the test started there
+// (`marker` in its command line), and a process group only when the test made it with setsid and one of its processes
+// still runs the test's command.
+/** A process's command line, or undefined once it is gone: whole (`-ww`), as ps cuts it to 80 columns when its output is no
+ *  terminal, which would cut off the marker. */
+const commandLine = (pid) => {
+  try { return execFileSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; }
+};
+/** Signals `pid` only while it runs `marker`. */
+function killIf(pid, marker, signal = "SIGKILL") {
+  if (pid && commandLine(pid)?.includes(marker)) try { process.kill(pid, signal); } catch {}
+}
+/** Whether `pid` no longer runs `marker` (gone, or its number another's), within 10 s. */
+async function gone(pid, marker) {
+  for (let i = 0; i < 100; i++) {
+    if (!commandLine(pid)?.includes(marker)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+/** A process group this test made with setsid (spawn's `detached`), checked as one now (its pgid is its pid); the kill
+ *  takes it down only while one of its processes still runs `marker`. */
+function ownGroup(child, marker) {
+  const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(child.pid)], { encoding: "utf8" }).trim());
+  assert.equal(pgid, child.pid, "the test's process leads a group of its own");
+  return () => {
+    const members = execFileSync("ps", ["-ww", "-A", "-o", "pgid=,args="], { encoding: "utf8" }).split("\n").filter((line) => Number(line.trim().split(/\s+/)[0]) === pgid);
+    if (members.some((line) => line.includes(marker))) try { process.kill(-pgid, "SIGKILL"); } catch {}
+  };
+}
+/** npm as npx runs the command: it names itself `npm exec …` and runs the command through a waiting `sh -c`, in a group
+ *  of its own. */
+function asNpx(t, bin, env) {
+  const npm = spawn(process.execPath, ["-e", `process.title = "npm exec agentrun --no-open"; const c = require("node:child_process").spawn("sh", ["-c", ${JSON.stringify(`"${process.execPath}" "${bin}" --no-open; :`)}], { stdio: "inherit" }); c.on("exit", (code) => process.exit(code ?? 1)); setInterval(() => {}, 1000);`], { env: { ...env, ...NPM_ENV }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  t.after(ownGroup(npm, bin));
+  return npm;
+}
+
+test("started by npm exec, the command stops the server once that npm is gone, though the shell npm started it with waits on", { timeout: 90_000 }, async (t) => {
+  const { env } = bare(t);
+  const npm = asNpx(t, BIN, strip(env));
+  let out = "";
+  npm.stdout.on("data", (chunk) => (out += chunk));
+  for (let i = 0; !out.includes("\n") && i < 600; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(out)?.[1];
+  assert.ok(base, `the command started: ${out}`);
+  // Only npm goes, as with a SIGKILL to it; its shell and the command are left.
+  npm.kill("SIGKILL");
+  assert.ok(await healthUntil(base, false, 300), "the server stopped within 30 s of npm ending");
+});
+
+test("started directly by a shell that backgrounds it and exits, the command keeps the server running", { timeout: 90_000 }, async (t) => {
+  const { env, home } = bare(t);
+  const log = join(home, "agentrun.log");
+  const pidFile = join(home, "agentrun.pid");
+  // No npm here: the shell starts it in the background, writes its pid, and is gone a little later, once the command is up
+  // and has taken the shell for its parent (as a tool call's shell does).
+  const shell = spawnSync("sh", ["-c", `"${process.execPath}" "${BIN}" --no-open > "${log}" 2>&1 & echo $! > "${pidFile}"; sleep 2`], { env: strip(env) });
+  assert.equal(shell.status, 0);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  t.after(() => killIf(pid, BIN, "SIGTERM"));
+  let base;
+  for (let i = 0; !base && i < 600; i++) {
+    base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(existsSync(log) ? readFileSync(log, "utf8") : "")?.[1];
+    if (!base) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(base, "the command started");
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.ok(await healthUntil(base, true, 10), "the server is still up 3 s after the shell that started it ended");
+  killIf(pid, BIN, "SIGTERM");
+  assert.ok(await healthUntil(base, false, 300), "and stops when its command is stopped");
+});
+
+/** This package alone (no installed server resolves from it), an `npm` on PATH that installs nothing but names a stub
+ *  server's path after `fetchMs`, and the stub: it records its pid, prints the server's lines, runs one agent child that
+ *  counts the SIGTERMs it gets, and on a SIGTERM stops that agent once and waits for it, as the server's own close drains
+ *  its runs. */
+function fetchedSetup(t, { fetchMs = 0 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-fetch-"));
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
+  mkdirSync(join(dir, "fake"));
+  const files = { npm: join(dir, "npm.json"), server: join(dir, "server.json"), terms: join(dir, "agent.terms"), agentPid: join(dir, "agent.pid") };
+  const stub = join(dir, "agentrun-serve");
+  writeFileSync(stub, `#!${process.execPath}
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+const argv = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(files.server)}, JSON.stringify({ argv, pid: process.pid, ppid: process.ppid }));
+const agent = spawn(process.execPath, ["-e", ${JSON.stringify(`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(files.agentPid)}, String(process.pid)); process.on("SIGTERM", () => { fs.appendFileSync(${JSON.stringify(files.terms)}, "TERM\\n"); setTimeout(() => process.exit(0), 500); }); setInterval(() => {}, 1000);`)}], { stdio: "ignore" });
+const port = argv[argv.indexOf("--port") + 1];
+console.log("agentrun-serve on http://127.0.0.1:" + port + "/v2 (stub)");
+console.log("Open http://127.0.0.1:" + port + "/");
+process.on("SIGTERM", () => { agent.kill("SIGTERM"); agent.on("exit", () => process.exit(0)); });
+setInterval(() => {}, 1000);
+`);
+  chmodSync(stub, 0o755);
+  writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(files.npm)}, JSON.stringify(process.argv.slice(2)));
+// The fetch takes ${fetchMs} ms, as a first run's download does.
+setTimeout(() => console.log(${JSON.stringify(stub)}), ${fetchMs});
+`);
+  chmodSync(join(dir, "fake", "npm"), 0o755);
+  const read = (file) => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
+  // One hook, in this order: what the stub started, each signalled only while it still runs the stub or the agent's
+  // script (their pids are in the files), then the files. A stub left running would hold the test's stderr open.
+  t.after(() => {
+    const server = read(files.server);
+    if (server) killIf(JSON.parse(server).pid, stub);
+    const agent = read(files.agentPid);
+    if (agent) killIf(Number(agent), files.agentPid);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, files, stub, bin: join(dir, "pkg", "bin", "agentrun.mjs"), path: join(dir, "fake") };
+}
+async function startFetched(t, setup) {
+  const { env } = bare(t);
+  const child = spawn(process.execPath, [setup.bin, "--no-open"], { env: { ...strip(env), PATH: `${setup.path}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !out.includes("\n") && i < 300 && child.exitCode === null; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const server = existsSync(setup.files.server) ? JSON.parse(readFileSync(setup.files.server, "utf8")) : null;
+  return { child, exited, out: () => out, err: () => err, server };
+}
+
+test("with no server beside it, a SIGTERM or a SIGHUP to the command stops the server, which stops each running agent once", { timeout: 90_000 }, async (t) => {
+  for (const signal of ["SIGTERM", "SIGHUP"]) {
+    const setup = fetchedSetup(t);
+    const run = await startFetched(t, setup);
+    assert.ok(run.server, `the server ran: ${run.out()}${run.err()}`);
+    for (let i = 0; !existsSync(setup.files.agentPid) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    run.child.kill(signal);
+    await Promise.race([run.exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+    assert.ok(await gone(run.server.pid, setup.stub), `${signal}: the server stopped`);
+    assert.ok(await gone(Number(readFileSync(setup.files.agentPid, "utf8")), setup.files.agentPid), `${signal}: its agent stopped`);
+    assert.equal(readFileSync(setup.files.terms, "utf8"), "TERM\n", `${signal}: the agent got one SIGTERM, the server's, and drained`);
+  }
+});
+
+test("started by npm exec with no server beside it, an npm gone while the server is fetched starts no server", { timeout: 90_000 }, async (t) => {
+  const setup = fetchedSetup(t, { fetchMs: 3000 });
+  const { env } = bare(t);
+  const npm = asNpx(t, setup.bin, { ...strip(env), PATH: `${setup.path}:${env.PATH}` });
+  // The fetch has begun: then only npm goes, as with a SIGKILL to it.
+  for (let i = 0; !existsSync(setup.files.npm) && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(existsSync(setup.files.npm), "the fetch began");
+  npm.kill("SIGKILL");
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  assert.equal(existsSync(setup.files.server), false, "no server started once npm was gone");
+});
