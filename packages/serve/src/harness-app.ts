@@ -519,7 +519,8 @@ export function adapterRun(
       const stopped = stopRecord?.stopped_at !== undefined
         ? lastUser !== undefined && lastUser <= placeOf(stopRecord.stopped_at)
         : stopRecord?.stopped_after !== undefined && stopRecord.stopped_after === users;
-      if (session.state === "open_turn" && stopped) await session.settleOpenTurn();
+      // An adapter written before settleOpenTurn has none: its stopped turn is recovered, as before.
+      if (session.state === "open_turn" && stopped && typeof session.settleOpenTurn === "function") await session.settleOpenTurn();
       // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
       // what this open wrote and before any new turn, so the message the turn took reads answered (runs.ts noteAnswer).
       // A turn the person stopped reads interrupted, from the stop record: settled by this open, or by an earlier one that
