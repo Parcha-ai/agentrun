@@ -289,9 +289,10 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): ClaudeP
   if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${named}.`);
   const own = claudeModelId(model);
   if (openRouterOnly("claude-agent", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "claude-agent", named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", id: `anthropic/${openRouterName(own)}` } };
-  // An endpoint the host names takes Anthropic's key alone: OpenRouter's never goes there.
-  if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.", undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+  // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
+  // takes Anthropic's key alone: OpenRouter's never goes there.
   const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : "https://api.anthropic.com";
+  if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.", undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", id: own } };
 }
 
