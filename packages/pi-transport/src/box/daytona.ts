@@ -51,11 +51,15 @@ const OWN_QUERY: Readonly<Record<string, string>> = { [BOX_LABEL]: "1" };
 const WORKSPACE_LABEL = "pi-transport.workspace";
 const LIFETIME_LABEL = "pi-transport.lifetime-ms";
 const OWN_LABELS: ReadonlySet<string> = new Set([BOX_LABEL, WORKSPACE_LABEL, LIFETIME_LABEL]);
+// A box that runs no program now: gone, going, stopped or paused (a class that pauses when idle). A host that needs it
+// again starts it (`/start` takes a stopped or a paused sandbox) and attaches it once it is started.
 const ENDED_STATES: ReadonlySet<string> = new Set([
 	"destroyed",
 	"destroying",
 	"stopped",
 	"stopping",
+	"paused",
+	"pausing",
 	"archived",
 	"archiving",
 	"error",

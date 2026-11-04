@@ -346,10 +346,14 @@ since nothing binds `work/` there):
   that brought nothing reached) keeps the sandbox, says so in the log (`event=box_kept` with its id), and lets the run
   end with what did come back. A start pulls a run it finds waiting for the person, and copies back, then destroys, the
   sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
-- A kept sandbox is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
+- A kept sandbox has Daytona's auto-delete turned off (a sandbox is made with auto-delete at 0, which deletes it as it
+  stops) and is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
   Daytona's default snapshot, at Daytona's storage price) and no compute; its files stay. The next start wakes it, copies
   back again, and destroys it once that copy is whole; else its 24-hour lifetime ends it. To remove one sooner, delete
   the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
+- A run's sandbox that Daytona stopped or paused (a sandbox class that pauses when idle, while the run waits for its
+  person) is started again when the server next needs it: for the run's next tool call, a copy back, or the start's
+  sweep. It is never replaced by a new one, so what only it holds stays.
 - The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
 ### The box's image

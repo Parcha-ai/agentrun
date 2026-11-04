@@ -221,8 +221,8 @@ const keepMark = (runDir: string, mark: SyncMark) => writeDurable(join(runDir, B
 /** The server's side of a remote box: run `run`'s box, found by its label or made, with its work/ seeded once (its mark
  *  says so); its id, and whether it was made now. A found box whose network is not closed is destroyed and made again;
  *  a box whose seed fails is destroyed, and the call fails. */
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context): Promise<{ id: string; made: boolean }> {
-  let box = await attachRunBox(boxes, run.id, context);
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>): Promise<{ id: string; made: boolean }> {
+  let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
   if (box && box.facts().network !== "none") {
     await destroyRunBoxes(boxes, run.id, context);
@@ -279,8 +279,8 @@ const PULL_ROUNDS = 8;
  *  (`if_unchanged`), and what the box removed is removed here too. A pull a limit stopped after it wrote something is
  *  followed by another, which asks only for the rest. Throws when the copy fails (the mark kept), and PullIncomplete when
  *  it is not whole: a caller then keeps the box. */
-export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context): Promise<RemotePull | undefined> {
-  const box = await attachRunBox(boxes, run.id, context);
+export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>): Promise<RemotePull | undefined> {
+  const box = await runningRunBox(boxes, run.id, context, wake);
   if (!box) return undefined;
   const { pullDir } = await import("@parcha/pi-transport/sync");
   const total: RemotePull = { changed: 0, files: 0, bytes: 0, removed: 0 };
@@ -300,6 +300,13 @@ export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: 
     if (stopped.reason === "copy_failed") throw new PullIncomplete(`the copy back from the run's box stopped: ${stopped.message}`, false, box.id);
     if (stopped.reason === "malformed" || !wrote || round >= PULL_ROUNDS) throw new PullIncomplete(`the copy back from the run's box stopped (${stopped.reason}): ${stopped.message}`, true, box.id);
   }
+}
+
+/** The running box labelled with run `runId`; with none running, one `wake` started (Daytona stopped or paused it), else none. */
+async function runningRunBox(boxes: BoxProvider, runId: string, context: Context, wake?: () => Promise<number>): Promise<Box | undefined> {
+  const box = await attachRunBox(boxes, runId, context);
+  if (box || !wake || (await wake()) === 0) return box;
+  return attachRunBox(boxes, runId, context);
 }
 
 /** The running box labelled with run `runId`, if any. */

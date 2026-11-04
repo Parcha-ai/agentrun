@@ -18,8 +18,8 @@ import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOfBody, steersMidTurn } from "./harness.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
-import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, stopWhenIdle, wakeStopped } from "./daytona-api.js";
+import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
+import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, learningView, shortLearning } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
@@ -96,16 +96,6 @@ const PULL_WAIT_MS = 120_000;
 
 /** A run's end that waits for its remote box's last pull: its settle is tried again until the pull lands. */
 class PullPending extends Error {}
-
-/** Run directory `dir`'s own door token (RUN_DOOR_TOKEN), when it has one. */
-function runDoorToken(dir: string): string | undefined {
-  try {
-    const token = readFileSync(join(dir, RUN_DOOR_TOKEN), "utf8").trim();
-    return token && !/\s/.test(token) ? token : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** Run directory `dir`'s own door token, made now (mode 0600, never through a link) when it has none. */
 function ensureRunDoorToken(dir: string): string {
@@ -912,7 +902,7 @@ export class Runs {
           );
         // A box kept at a run's end that Daytona stopped once idle is woken first, so this sweep pulls it like the rest.
         const api = this.options.remoteApi;
-        if (api) await wakeStopped(api, (id) => ended.has(id)).catch((error: Error) => warn("-", `the stopped boxes of ended runs were not woken (${error.message}); the next start tries again`));
+        if (api) await wakeBoxes(api, (id) => ended.has(id)).catch((error: Error) => warn("-", `the stopped boxes of ended runs were not woken (${error.message}); the next start tries again`));
         await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
       }
       if (!box) return;
@@ -964,7 +954,14 @@ export class Runs {
   private async keepBox(runId: string, boxId: string): Promise<void> {
     this.options.log?.("box_kept", { run: runId, box: boxId, reason: "pull_incomplete" });
     const api = this.options.remoteApi;
-    if (api) await stopWhenIdle(api, boxId).catch((error: Error) => warn(runId, `its kept box was not set to stop when idle (${error.message})`));
+    if (api) await keepWhenIdle(api, boxId).catch((error: Error) => warn(runId, `its kept box was not kept from deletion or set to stop when idle (${error.message})`));
+  }
+
+  /** What wakes run `runId`'s remote box when Daytona stopped or paused it (a class that pauses when idle, while the run
+   *  waited for a person): how many it woke. */
+  private wakeOf(runId: string): (() => Promise<number>) | undefined {
+    const api = this.options.remoteApi;
+    return api && (() => wakeBoxes(api, (id) => id === runId));
   }
 
   /** Pulls run `run`'s remote box into its work/, after any pull already running: at a turn's end in the background (a
@@ -975,7 +972,7 @@ export class Runs {
     if (!boxes || !place || !remotePlace(place)) return Promise.resolve();
     // After any pull already running, and after the box's making and seed when one is under way.
     const pull = Promise.all([run.pulling, run.boxing?.catch(() => undefined)]).then(async () => {
-      const pulled = await pullRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS));
+      const pulled = await pullRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id));
       if (pulled) this.options.log?.("box_pulled", { run: run.id, changed: pulled.changed, files: pulled.files, bytes: pulled.bytes, removed: pulled.removed });
     });
     const settled = pull.catch((error: Error) => {
@@ -1010,7 +1007,7 @@ export class Runs {
     if (!run || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
-      .then(() => ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS)))
+      .then(() => ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id)))
       .finally(() => void (run.boxing = undefined));
     return run.boxing;
   }
