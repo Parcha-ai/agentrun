@@ -488,8 +488,9 @@ reads why, and a workflow can branch on it. An agent gets the Page as JSON text;
 default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
 run starts (`409`).
 
-On another harness, every host tool's result stays under the host's bound of 120,000 characters
-(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
+On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
+(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
+saying where it was cut, and flags the call `truncated`. Each CLI adapter tells its CLI to pass a result that long to
 the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
 to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.

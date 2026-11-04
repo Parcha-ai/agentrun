@@ -10,6 +10,7 @@
 //    before the `exec`'s line could be in the rollout.
 // The proxy offers no `exec` while a cell runs and no parallel calls, so one script is live at a time. A model that writes an
 // `exec` anyway makes two live, and then a nested call cannot be told from the other's.
+import { boundResult } from "./host/process.js";
 import { parseLine } from "./rollout.js";
 
 /** The id Codex gives a host tool called from a code-mode script. */
@@ -120,12 +121,15 @@ export type Settled = { kind: "completed"; text: string } | { kind: "failed"; te
 
 /** What a nested call came to. The store's record first, the rollout's completion second: both complete and agreeing, or
  *  one of them, is that outcome; both complete and disagreeing, or a call that started and has no end in either, is
- *  interrupted (its effect is unknown), and a failure the store marks interrupted is interrupted. */
+ *  interrupted (its effect is unknown), and a failure the store marks interrupted is interrupted. They agree when the
+ *  rollout holds what the bridge handed Codex for the stored text: the store's text held to the host's bound
+ *  (`boundResult`), since the store keeps a result whole and Codex got its cut; or the stored text itself, as a session
+ *  written before that bound holds it in both records. */
 export function settle(fact: NestedFact): Settled {
   const { store, rollout } = fact;
   const stored = store?.status === "completed" ? ({ kind: "completed", text: store.text ?? "" } as const) : store?.status === "failed" && !store.interrupted ? ({ kind: "failed", text: store.text ?? "" } as const) : undefined;
   const rolled = rollout ? ({ kind: rollout.ok ? "completed" : "failed", text: rollout.text } as const) : undefined;
-  if (stored && rolled) return stored.kind === rolled.kind && stored.text === rolled.text ? stored : { kind: "interrupted" };
+  if (stored && rolled) return stored.kind === rolled.kind && (rolled.text === stored.text || rolled.text === boundResult(stored.text).text) ? stored : { kind: "interrupted" };
   return stored ?? rolled ?? { kind: "interrupted" };
 }
 
