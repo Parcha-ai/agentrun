@@ -88,7 +88,10 @@ const clickLikeAPerson = async (tab, p) => {
 
 const USER = "alice";
 const PASS = "Pa55-w0rd!";
-const SPY = `window.__sent = []; (() => { const send = WebSocket.prototype.send; WebSocket.prototype.send = function (data) { try { if (typeof data === "string") { const m = JSON.parse(data); if (m.type !== "hello") window.__sent.push(m); } } catch {} return send.call(this, data); }; })();`;
+/** Test-only: holds each frame's decode in the viewer this long, as a loaded machine does (F21: a click sent before the viewer had drawn a frame maps to no point on the page and is dropped). */
+const FRAME_DELAY_MS = Number(process.env.LIVE_VIEW_TEST_FRAME_DELAY_MS) || 0;
+const SLOW_FRAMES = FRAME_DELAY_MS ? `(() => { const decode = window.createImageBitmap; window.createImageBitmap = (...args) => new Promise((go) => setTimeout(go, ${FRAME_DELAY_MS})).then(() => decode(...args)); })();` : "";
+const SPY = `window.__sent = []; (() => { const send = WebSocket.prototype.send; WebSocket.prototype.send = function (data) { try { if (typeof data === "string") { const m = JSON.parse(data); if (m.type !== "hello") window.__sent.push(m); } } catch {} return send.call(this, data); }; })();${SLOW_FRAMES}`;
 /** The messages as one line each: what a reader compares. */
 const short = (m) => m.type === "mouse" ? `mouse ${m.action} ${m.x},${m.y} ${m.button} n=${m.clickCount} mod=${m.modifiers ?? 0}` : m.type === "key" ? `key ${m.action} ${JSON.stringify(m.key)} ${m.code} vk=${m.windowsVirtualKeyCode} text=${JSON.stringify(m.text ?? null)} mod=${m.modifiers ?? 0}` : JSON.stringify(m);
 
