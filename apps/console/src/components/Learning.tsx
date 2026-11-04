@@ -277,7 +277,7 @@ function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: A
   };
   return (
     <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? agent.definition.learning === true} onChange={(v) => void flip(v)}
-      busy={busy} disabled={disabled} server={server} noWrite={!(agent.definition.tools ?? []).includes("write")}
+      busy={busy} disabled={disabled} server={server}
       problem={trouble ? <ProblemCard problem={failed(trouble, "the agent", "Learning was not changed.")} className="mt-2" /> : null} />
   );
 }

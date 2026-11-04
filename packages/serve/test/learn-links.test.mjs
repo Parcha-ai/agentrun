@@ -56,11 +56,11 @@ test("a link planted at the agent's learning folder after the run started: the e
   settled(one.view, one.rows, "dropped", "reflect_failed");
   assert.deepEqual(tree(seederAside), seederBefore, "nothing written through the link");
 
-  // The check of what the turn wrote: planted while the turn holds, once its copy was laid from the real folder.
+  // The check of what the turn answered: planted while the turn holds, once its seed was read through the real folder.
   const reflect = join(dir, "reflect");
   await made(api, learner("proposer", { instructions: `Reflect once ${reflect} exists.`, plan: PLAN }));
   const proposer = await started(api, "proposer");
-  await until("the turn's copy is laid", () => JSON.parse(readFileSync(join(data, "runs", proposer, "serve.json"), "utf8")).reflect?.laid === true);
+  await until("the turn is asked", async () => (await api("GET", `/runs/${proposer}/timeline`)).body.rows?.some((row) => row.agent_label === "learning" && row.kind === "user_message"));
   const proposerAside = join(dir, "proposer-learning");
   plant(data, "proposer", proposerAside);
   const proposerBefore = tree(proposerAside);

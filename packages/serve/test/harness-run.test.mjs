@@ -166,7 +166,7 @@ test("a request whose price is unknown makes the run's cost unknown, never 0", {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "unpriced", "Price unknown.");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 1 });
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null);
 });
 
@@ -196,7 +196,7 @@ test("a request admitted and cut by a crash is booked once, unknown: on resume t
   await killRun(data, runId);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "After the cut.");
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 3 }, "the first, the cut one (unknown), and the one after: once each");
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 3, so_far_usd: 0.006, unpriced: 1 }, "the first, the cut one (unknown), and the one after: once each");
   assert.equal(storeCount(data, runId, "adapter.request"), 3);
 });
 
@@ -216,7 +216,7 @@ test("a run cancelled while its harness's request is out, and never opened again
   }
   assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
   const { rows } = await follow(api, runId, ["cancelled"], { deadlineMs: 55_000 });
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 2 }, "the first at its cost, and the cut one, its cost unknown");
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 2, so_far_usd: 0.002, unpriced: 1 }, "the first at its cost, and the cut one, its cost unknown");
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "the carried-back cost is unknown, never the first request's alone");
 });
 
@@ -244,7 +244,7 @@ test("a run opened again whose new opening has a request of unknown price reads 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 4 });
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 4, so_far_usd: 0.003, unpriced: 1 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
 

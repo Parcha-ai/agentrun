@@ -192,5 +192,7 @@ export default function reply(context, faux) {
   if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
+  // Asked at a learning run's end what to keep (learn/reflect.ts reflectPrompt): nothing.
+  if (last.startsWith("The task is done. Before the run ends")) return faux.message("No notes.");
   return faux.message(`On ${last}: done.`);
 }

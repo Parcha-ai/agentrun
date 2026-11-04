@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { env } from 'node:process';
 import { after, test } from 'node:test';
-import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { createHarnessRunner, HOST_RESULT_MAX_CHARS } from '@parcha/agentrun-kernel';
 import { foldSession, openDrive } from '@parcha/agentrun-kernel/kernel';
 import { journalRecords, NativeJournal } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
@@ -165,12 +165,12 @@ test("code mode: a model that writes a new exec while a cell still runs: a never
 });
 
 /** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
-async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found', yielded = false, failFirst = false } = {}) {
+async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found', yielded = false, failFirst = false, chargeText = 'charged' } = {}) {
   let charged = 0;
   let looked = 0;
   let holding;
   const held = new Promise((resolve) => { holding = resolve; });
-  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return failFirst && charged === 1 ? { text: 'declined by the bank', isError: true } : { text: 'charged' }; } };
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return failFirst && charged === 1 ? { text: 'declined by the bank', isError: true } : { text: chargeText }; } };
   const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: lookupText }; } };
   const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
   const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((r) => setTimeout(r, 800)); return { text: 'slept' }; } };
@@ -391,6 +391,31 @@ test("recovery note: a tool's recorded output is data, not the harness's words: 
 
 /** A model that, after the resume, writes a new exec that charges again with the same arguments, once. */
 const recharge = (seen, n) => (!seen.some((b) => JSON.stringify(b.input ?? []).includes('call_again')) ? [exec('call_again', `text(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)]);
+
+/** A never call's result past the host's bound (HOST_RESULT_MAX_CHARS): Codex got its cut, the session keeps it whole. */
+const BIG_CHARGE = `charged ${'x'.repeat(130_000)}`;
+/** recharge, with the script measuring what the re-issued call returned to it, since Codex cuts every tool output in the
+ *  model's history to its own budget: what the script received, its length and whether it carries the cut line. */
+const rechargeMeasured = (seen, n) => (!seen.some((b) => JSON.stringify(b.input ?? []).includes('call_again')) ? [exec('call_again', `const r = JSON.stringify(await tools.charge({ amount: 5 })); text('measured ' + r.length + ' cut ' + /\\[cut at \\d+ of \\d+ characters\\]/.test(r) + ' recorded ' + r.includes('Recorded earlier in this turn'));`)] : [say(n)]);
+const measured = (seen) => /measured (\d+) cut (true|false) recorded (true|false)/.exec(toldAbout(seen, 'call_again').join('\n'));
+
+for (const yielded of [false, true]) {
+  const how = yielded ? 'a yielded script' : 'a script';
+  test(`code mode: ${how}'s never call whose result is past the host's bound, completed before a crash and re-issued after the resume, is answered from the log and not run again`, { skip, timeout: 300_000 }, async () => {
+    const r = await crashed(rechargeMeasured, { chargeText: BIG_CHARGE, yielded });
+    assert.equal(r.charged(), 1, 'the never tool ran once: its records agree though Codex got the cut text and the session the whole');
+    const m = measured(r.seen);
+    assert.ok(m, `the script reported what it got: ${toldAbout(r.seen, 'call_again').join('\n').slice(0, 300)}`);
+    assert.equal(m[3], 'true', 'answered from the log');
+  });
+  test(`code mode: ${how}'s re-issued never call, answered from the log, gets a result held to the host's bound, as the bridge holds one`, { skip, timeout: 300_000 }, async () => {
+    const r = await crashed(rechargeMeasured, { chargeText: BIG_CHARGE, yielded });
+    const m = measured(r.seen);
+    assert.ok(m, `the script reported what it got: ${toldAbout(r.seen, 'call_again').join('\n').slice(0, 300)}`);
+    assert.ok(Number(m[1]) <= HOST_RESULT_MAX_CHARS + 200, `held to the bound: the script got ${m[1]} characters (JSON included)`);
+    assert.equal(m[2], 'true', 'with the cut line');
+  });
+}
 
 test("code mode: a second crash in the same interrupted turn, after the first recovery answered the cut-off exec: a never call re-issued then is still answered from the log", { skip, timeout: 300_000 }, async () => {
   const r = await crashed(recharge, { again: true });

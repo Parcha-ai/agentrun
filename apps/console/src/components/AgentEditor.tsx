@@ -282,7 +282,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!workflow && !starting && caps.places && <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []} onChange={set} error={fieldError("place")} warning={fieldWarning("place")} />}
-              {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} tools={caps.tools} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
+              {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
             </div>
           )}
 
