@@ -201,6 +201,8 @@ export default function reply(context, faux) {
   // 497 characters, after "Model request failed: ") and the text's (1997), 20 of its characters before each; and one that echoes the key base64-encoded (timeline-key-words.test.mjs holds
   // CUT_KEY as a key).
   if (first.includes("Fail across the cut")) return faux.message("", { stopReason: "error", errorMessage: `${"a".repeat(455)}${CUT_KEY}${"b".repeat(1977 - 455 - CUT_KEY.length)}${CUT_KEY} end` });
+  // The key echoed with a line break in its middle, as a provider that wraps long lines would.
+  if (first.includes("Fail with a wrapped key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${CUT_KEY.slice(0, 18)}\n${CUT_KEY.slice(18)} is not valid"}` });
   if (first.includes("Fail echoing an encoded key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${Buffer.from(CUT_KEY).toString("base64")} is not valid"}` });
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve, withEnv } from "./support.mjs";
-import { withoutLoopback } from "../dist/key-refusal.js";
+import { redacted, withoutLoopback } from "../dist/key-refusal.js";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const KEY = `not-a-secret-${"openrouter-key"}`;
@@ -168,7 +168,7 @@ const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 /** Each run of 8 characters of `value`: none may be anywhere a person reads. */
 const pieces = (value) => Array.from({ length: value.length - 7 }, (_, i) => value.slice(i, i + 8));
 
-for (const [what, content] of [["across the summary's and the text's cut", "Fail across the cut."], ["base64-encoded", "Fail echoing an encoded key."]]) {
+for (const [what, content] of [["across the summary's and the text's cut", "Fail across the cut."], ["base64-encoded", "Fail echoing an encoded key."], ["with a line break in its middle (its summary is its first line)", "Fail with a wrapped key."]]) {
   test(`an agentic run's error echoing a held key ${what}: no 8 characters of it on the Timeline or in the run's error`, { timeout: 60_000 }, async (t) => {
     withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
     const { api } = await serve(t);
@@ -203,4 +203,13 @@ test("a bare loopback address with its port (a refused connection to serve's pro
   assert.equal(withoutLoopback("connect ECONNREFUSED [::1]:39543 again"), "connect ECONNREFUSED a local address again");
   assert.equal(withoutLoopback("it runs on localhost"), "it runs on localhost");
   assert.equal(withoutLoopback("see localhost.run:443"), "see localhost.run:443");
+});
+
+// Redaction reads no more of an error than serve can show (a Timeline row's 2000 characters, plus room for the longest
+// held secret in its widest encoded form), so a long error costs no more than a short one, whatever it holds.
+test("redaction of a 400 KB error made to be slow to scan (repeated github_pat_) takes under 200 ms", () => {
+  const started = performance.now();
+  redacted("github_pat_".repeat(36_400), [CUT_KEY]);
+  const took = performance.now() - started;
+  assert.ok(took < 200, `${took.toFixed(0)} ms`);
 });
