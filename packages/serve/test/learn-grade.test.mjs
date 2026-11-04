@@ -24,19 +24,22 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  // Each in words: the grader's own reason; where the reason is the host's (it refused the answer), the grader's word on
+  // the note it did not keep; an answer that held neither said as one that could not be read.
   const cases = [
-    ["Grade: drop.", "grader", { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }],
-    ["Grade: sly.", "grader", { merge: false, reason: "the grader said merge, but did not keep every item", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }],
-    ["Grade: garbage.", "grader", { merge: false, reason: "the grader's verdict could not be read", items: [] }],
-    ["Grade: fail.", "grade_failed", undefined],
+    ["Grade: drop.", "grader", { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: A note is about the one case it came from."],
+    ["Grade: sly.", "grader", { merge: false, reason: "the grader said merge, but did not keep every item", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: It is about one case."],
+    ["Grade: garbage.", "grader", { merge: false, reason: "the grader's verdict could not be read", items: [] }, "Not kept: learning stopped (the review of the new notes gave an answer that could not be read)."],
+    ["Grade: fail.", "grade_failed", undefined, "Not kept: learning stopped (the review of the new notes gave no answer)."],
   ];
-  for (const [rule, reason, verdict] of cases) {
+  for (const [rule, reason, verdict, detail] of cases) {
     const id = rule.toLowerCase().replace(/[^a-z]+/g, "-").replace(/-$/, "");
     await made(api, learner(id, { instructions: rule, plan: PLAN }));
     const runId = await started(api, id);
     const { view, rows } = await ended(api, runId);
     assert.equal(view.result.final_answer, "Job answer.");
     settled(view, rows, "dropped", reason);
+    assert.equal(view.learning.detail, detail, rule);
     const { learning } = await savedOf(data, runId);
     assert.deepEqual(learning.verdict, verdict, rule);
     assert.equal(git(repoOf(data, id), ["rev-list", "--count", "main"]), "1", `${rule}: nothing merged`);
@@ -163,7 +166,7 @@ for (const at of ["proposed", "reflecting"]) {
     assert.deepEqual([saved.learning.state, saved.learning.verdict], ["proposed", undefined], "nothing was decided");
     if (at === "reflecting") {
       // A server that went after the run settled and before its check: what the turn wrote is set aside, not yet checked.
-      writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "The end-of-run turn ended; what it wrote waits to be checked." } }));
+      writeFileSync(join(data, "runs", runId, "serve.json"), JSON.stringify({ ...saved, learning: { ...saved.learning, state: "reflecting", reason: null, detail: "Looking back on this run…" } }));
       rmSync(join(data, "runs", runId, "learning-proposal.json"));
       assert.ok(existsSync(join(data, "runs", runId, "learning-turn", "check-units.md")), "the turn's copy is set aside");
     }

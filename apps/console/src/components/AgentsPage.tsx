@@ -85,7 +85,7 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
         let saved;
         try {
           if (!agent) {
-            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, decisionProvider: caps.decisionProvider }));
+            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
             go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;
