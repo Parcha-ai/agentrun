@@ -213,7 +213,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
-    const limited = verdict && "outputTokensMax" in verdict && Number.isSafeInteger(verdict.outputTokensMax) && verdict.outputTokensMax! > 0 ? verdict.outputTokensMax : undefined;
+    // The output limit the host admits it with goes into its body. A limit that is no whole number of tokens above 0 (a
+    // fraction, 0, a negative, NaN) can't be sent, so the request is refused before anything is written: dropping it would
+    // send the request with no limit at all. Only a verdict with no limit sends the request with none.
+    const limited = verdict && "outputTokensMax" in verdict ? verdict.outputTokensMax : undefined;
+    if (limited !== undefined && !(Number.isSafeInteger(limited) && limited > 0)) throw end("refused", `the request was not sent: its output limit (${String(limited)}) is not a whole number of tokens above 0`);
     // A stop or a pause that came while the host was checking: nothing was written for this request, so it is refused, not
     // sent. After the write below it is committed (refusing it then would leave a recorded request that was never sent).
     const late = options.stopped?.() ?? failed ?? options.draining?.();

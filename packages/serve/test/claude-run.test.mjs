@@ -274,16 +274,22 @@ test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted),
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "priced at Anthropic's id in the catalog, never unknown for the dotted name");
 });
 
-test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's ceiling, it is refused before anything is sent", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's least, it is refused before anything is sent, in plain words", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
   const { api } = await claudeServe(t, fake, {}, "claude-haiku-4.5");
-  // claude-haiku-4-5's output ceiling at $5 a million is well past a tenth of a cent.
+  // claude-haiku-4-5 at $5 a million output tokens: the least a request may be limited to, its answer's 1,024 tokens,
+  // costs $0.00512 before its input, past a tenth of a cent.
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["failed"], { deadlineMs: 120_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
+  // Named as the catalog shows it, and nothing spent or held: the cap to raise to is the least.
+  const words = /^Not sent: this run's cap of \$0\.001 can't cover one Claude Haiku 4\.5 \(latest\) request \(at least \$(\d+\.\d\d)\)\. Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(ended.error.message);
+  assert.ok(words, ended.error.message);
+  assert.equal(words[2], words[1]);
+  assert.ok(Number(words[1]) >= 0.00512, `the least covers the answer's 1,024 tokens: $${words[1]}`);
   assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
 });
 
