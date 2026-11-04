@@ -127,7 +127,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const coding = codingSource(place, box);
   // Its remote MCP servers, as its first launch pinned them, with the credentials this launch handed it (mcp-gateway.ts).
   const pinned = (await readJson(join(where.root, MCP_PIN))) as McpPin | null;
-  const gateway = pinned && Object.keys(pinned).length ? mcpGateway({ pin: pinned, credentials: mcpCredentials(), work: () => where.work }) : undefined;
+  // Its records (a held ask, a priced call's mark and charge, an unpriced call's "not metered") go on the run's root, once
+  // the run is open.
+  let runHarness: Harness | undefined;
+  const commit = () => runHarness && (<T>(change: (tx: unknown) => Promise<T>) => runHarness!.commit(change as never, BACKGROUND) as Promise<T>);
+  const gateway = pinned && Object.keys(pinned).length ? mcpGateway({ pin: pinned, credentials: mcpCredentials(), work: () => where.work, commit }) : undefined;
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
   // installed first so it comes before every other extension's and the instructions.
@@ -166,7 +170,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord);
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
-    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
+    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness)), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
   searchOn(models);
@@ -205,7 +209,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     if (mcp.length) registry.install(defineExtension({ name: "mcp", tools: mcp }));
     tools.push(...mcp);
     const instructions = [await promptOf(learned, Object.keys(revision.body.skills), where.work), guidance].filter(Boolean).join("\n\n");
-    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
+    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => ((runHarness = durable.harness), settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};
   const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, durableDecisions, nodeRunner, taskScope }, { EffectFailure, inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([

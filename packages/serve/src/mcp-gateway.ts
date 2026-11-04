@@ -12,12 +12,22 @@
 //  - A call is never sent twice: each harness records its intent before it reaches here (pi-durable's tool intent,
 //    Claude's PreToolUse), and one a crash cut off is answered interrupted there. An aborted call aborts upstream.
 //  - Every failure is a result the model reads, naming the server and never a header.
+//  - Every call passes the run's tool gate first (tool-gate.ts), as `mcp:<server>/<tool>`: a denied one is refused, and
+//    one set to ask is parked: its answer is the gate's waiting text, marked parked (isParked), and the harness ends the
+//    turn, as for any tool. Nothing is sent. Once a person allows it, the gate runs it through the executor this gateway
+//    registers (`mcp:`), once, and resumes the session with its result.
+//  - A tool its owner priced (the server's `prices`) is held at that price under the run's cap and booked as the run's
+//    tool cost, as any paid call (cap.ts paidCall): refused unsent when the cap cannot take it. A tool with no price runs,
+//    marked "not metered" on the run's root (TOOL_UNMETERED), outside the run's cost.
 import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel";
+import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
+import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
+import { type Gate, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
 import { writeInWork } from "./workspace.js";
 
@@ -32,14 +42,14 @@ export const MAX_RESPONSE = 4 * 1024 * 1024;
 /** The longest one upstream call may take. */
 export const CALL_MS = 120_000;
 
-/** Each pinned server: its URL then, and the granted tools as it listed them. */
-export type McpPin = Record<string, { url: string; tools: McpTool[] }>;
+/** Each pinned server: its URL then, the granted tools as it listed them, and the prices its owner declared for them. */
+export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number> }>;
 /** The pipe's entry: each granted server's URL now, and its credential's headers when that URL is the pinned one. */
 export type McpCredentials = Record<string, { url: string; headers?: Record<string, string> }>;
 
 /** The servers saved on this server (mcp-servers.ts), as a launch reads them. */
 export interface McpServerSource {
-  server(name: string): { url: string; tools: readonly McpTool[] } | undefined;
+  server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
   /** The server's credential, opened now: its headers, or undefined when it has none or it does not open. */
   headers(name: string): Record<string, string> | undefined;
 }
@@ -58,7 +68,10 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
     if (!parsed || !saved || !tool) continue;
-    (pin[parsed.server] ??= { url: saved.url, tools: [] }).tools.push(tool);
+    const pinned = (pin[parsed.server] ??= { url: saved.url, tools: [] });
+    pinned.tools.push(tool);
+    const price = saved.prices?.[tool.name];
+    if (price !== undefined) (pinned.prices ??= {})[tool.name] = price;
   }
   return pin;
 }
@@ -88,9 +101,17 @@ export interface McpGatewayOptions {
   work: () => string;
   /** For tests: the fetch the upstream client sends with. */
   fetch?: typeof fetch;
+  /** The run's tool gate; none (a test), every call is let go. */
+  gate?: Gate;
+  /** The run's commit to its store, once it is open: a parked call's request, a priced call's mark and charge, and an
+   *  unpriced call's "not metered" are written on its root. None: a priced call is refused unsent, as a paid call with
+   *  nowhere to book it is (paid-calls.ts). */
+  commit?: () => Park["commit"] | undefined;
 }
 
-export type McpGateway = SessionMcp;
+/** The gateway: a session's servers, and a call that takes the gate's `park` of the harness it came from (its journal's
+ *  commit, and how it ends a parked call's turn); none, the run's root commit. */
+export type McpGateway = Omit<SessionMcp, "call"> & { call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string; park?: Park }): Promise<McpCallResult> };
 
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
@@ -176,18 +197,92 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     }
   };
 
+  /** A record on the run's root, through its commit. */
+  const record = (commit: Park["commit"], kind: string, data: Record<string, string | number | null>) => commit(async (tx) => void (await (tx as { appendEntry(conversation: number, entry: unknown): Promise<unknown> }).appendEntry(ROOT_CONVERSATION_ID, { kind, data })));
+
+  /** Why `tool` of `server` cannot be sent now, or undefined. */
+  const unsendable = (server: string, tool: string): string | undefined => {
+    const pinned = options.pin[server];
+    if (!pinned?.tools.some((t) => t.name === tool)) return `${tool} is not a tool of the MCP server ${server} in this run.`;
+    const now = options.credentials[server];
+    if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
+    if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
+    return undefined;
+  };
+
+  /** A call the gate let go: a priced one under the run's cap and booked, an unpriced one marked not metered. */
+  const sent = async (server: string, tool: string, args: Record<string, unknown>, callId: string, signal: AbortSignal): Promise<McpCallResult> => {
+    const why = unsendable(server, tool);
+    if (why) return said(why, true);
+    const { url, prices } = options.pin[server]!;
+    const call = () => forward(server, url, options.credentials[server]!.headers ?? {}, tool, args, signal);
+    const name = mcpToolName(server, tool);
+    const label = { tool: name, charged_by: server, call: callId };
+    const commit = options.commit?.();
+    const price = prices?.[tool];
+    if (price === undefined) {
+      const result = await call();
+      if (commit) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
+      return result;
+    }
+    if (!commit) return said(`${name} was not sent: this call has no run to book its price under.`, true);
+    let went = false;
+    const paid = await paidCall(name, async () => {
+      // Marked before it is sent, at its price; settled at its price once sent, whatever it answers: its owner says each
+      // call costs that.
+      try {
+        await record(commit, TOOL_STARTED, { ...label, heldUsd: price });
+      } catch (error) {
+        return said(`${name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})`, true);
+      }
+      went = true;
+      const result = await call();
+      await record(commit, TOOL_COST, { ...label, usd: price }).catch(() => undefined);
+      return result;
+    }, () => (went ? price : 0), { usd: price, basis: `the price its owner set for ${name}` });
+    return "refused" in paid ? said(paid.refused, true) : paid.result;
+  };
+
+  // An approved call, run by the gate once a person allows it: through the same path, once.
+  options.gate?.executor("mcp:", async (name, args, callId, signal) => {
+    const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
+    const result = parsed ? await sent(parsed[1]!, parsed[2]!, (args ?? {}) as Record<string, unknown>, callId, signal) : said(`${name} is not an MCP tool.`, true);
+    return { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true };
+  });
+
   return {
     servers: Object.entries(options.pin).map(([name, pinned]) => ({ name, tools: pinned.tools })),
-    async call(server, tool, args, { signal }) {
-      const pinned = options.pin[server];
-      if (!pinned?.tools.some((t) => t.name === tool)) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
-      const now = options.credentials[server];
-      if (!now) return said(`The MCP server ${server} is no longer saved on this server; nothing was sent.`, true);
-      if (now.url !== pinned.url) return said(`The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`, true);
-      return forward(server, pinned.url, now.headers ?? {}, tool, args, signal);
+    async call(server, tool, args, { signal, callId, park: given }) {
+      const why = unsendable(server, tool);
+      if (why) return said(why, true);
+      const gate = options.gate;
+      // A parked call is answered and resumed by its id, the harness's own: a call with none is never parked.
+      if (gate && !callId) return said(`The ${mcpToolName(server, tool)} call was not sent: it came with no call id, so it cannot wait for a person's approval.`, true);
+      const id = callId ?? `mcp_${randomUUID()}`;
+      if (gate) {
+        const name = mcpToolName(server, tool);
+        const commit = options.commit?.();
+        const park: Park = given ?? { commit: commit ?? (() => Promise.reject(new Error("the run is not open"))) };
+        let entered: Awaited<ReturnType<Gate["enter"]>>;
+        try {
+          entered = await gate.enter(name, args, id, park);
+        } catch (error) {
+          return said(`The ${name} call was not sent: the tool gate failed (${String((error as Error)?.message ?? error).slice(0, 200)}).`, true);
+        }
+        if (entered?.parked) return Object.assign(said(entered.text), { [PARKED]: true });
+        if (entered) return said(entered.text, entered.isError);
+        const result = await sent(server, tool, args, id, signal);
+        return said(gate.spill(id, result.content.map((block) => block.text).join("\n\n")), result.isError === true);
+      }
+      return sent(server, tool, args, id, signal);
     },
   };
 }
+
+const PARKED = Symbol("agentrun.mcp.parked");
+/** Whether the gateway's answer is a call the gate parked for a person's approval: the harness ends the turn on it. A
+ *  symbol, so it never reaches a harness's MCP client in the answer's JSON. */
+export const isParked = (result: McpCallResult): boolean => (result as { [PARKED]?: true })[PARKED] === true;
 
 /** pi's tools for the gateway's servers: each granted tool under its wire name (`mcp__<server>__<tool>`), with the pinned
  *  description and schema, never run again after a crash. */
@@ -199,9 +294,13 @@ export function mcpRegistrations(gateway: McpGateway): ToolRegistration[] {
         description: tool.description || tool.title || `${tool.name}, a tool of the MCP server ${server.name}.`,
         replay: "unsafe",
         parameters: tool.inputSchema as never,
-        execute: async (args, _api, context) => {
-          const result = await gateway.call(server.name, tool.name, (args ?? {}) as Record<string, unknown>, { signal: context?.abortSignal ?? new AbortController().signal });
-          return forModel(result.content.map((block) => block.text).join("\n\n"), { isError: result.isError === true });
+        execute: async (args, api, context) => {
+          // The gate's park is this call's own journal commit, as for every pi tool.
+          const park: Park = { commit: (change) => api.commit(change as never, context) as never };
+          const result = await gateway.call(server.name, tool.name, (args ?? {}) as Record<string, unknown>, { signal: context?.abortSignal ?? new AbortController().signal, ...(api?.callId ? { callId: api.callId, park } : {}) });
+          const text = result.content.map((block) => block.text).join("\n\n");
+          // A parked call ends the turn, as ask_person's does; the gate resumes the session once a person answers.
+          return isParked(result) ? forModel(text, { control: { terminate: true } }) : forModel(text, { isError: result.isError === true });
         },
       }) as unknown as ToolRegistration,
     ),

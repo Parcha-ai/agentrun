@@ -863,8 +863,7 @@ An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`
 (`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
 saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
 `mcp__<server>__<tool>`, is over 52 characters. pi and claude-agent run them (`features.mcp_client.harnesses`); on
-another harness the save warns that they are not bound there yet, and a run is refused. Until the tool gate lands, a
-grant means the tool runs.
+another harness the save warns that they are not bound there yet, and a run is refused.
 
 - **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
   and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
@@ -888,6 +887,21 @@ grant means the tool runs.
   in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
   client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
   resumed run and never sent again.
+- **The gate.** Every call passes the run's one tool gate as `mcp:<server>/<tool>`, on every harness. Set
+  `mcp:<server>/<tool>` or, for all of a server's tools, `mcp:<server>/*` to `allow`, `ask` or `deny` in
+  `PUT /v2/settings/tools` or an agent's `definition.tool_settings` (the agent's exact key, then its server-wide key,
+  then the server's two, then the default). An MCP tool with no setting asks. A denied call is refused and the model
+  reads why; nothing is sent. An asked call parks, as any tool's does: its turn ends, nothing is sent, and the run
+  reads `input_required` with `pending.kind: "approval"`, the tool, its arguments and its price (or "not metered"),
+  until the owner answers `POST /v2/runs/{id}/approvals/{approval_id}` from their password session. Allowed, the run
+  sends the call once and resumes with its result; denied, it resumes with the refusal. A restart while a call is
+  parked loses nothing.
+- **Prices.** `PUT /v2/settings/mcp-servers/{name}` takes `prices`, each tool's price in USD a call
+  (`{"prices": {"search": 0.01}}`; a finite number, 0 or more, for a tool the server lists; else `422`). A priced call
+  is held at its price under the run's `max_cost_usd`, refused unsent when the cap cannot take it, and booked as the
+  run's tool cost (a `Tool cost` row, the `tools` meter of `GET /usage`). A tool with no price runs "not metered": a
+  row says so, the run's usage row counts it (`not_metered`), and `GET /usage`'s `tools` line counts the calls
+  (`not_metered_calls`); it is outside the run's cost and its cap. A run keeps the prices its first launch saw.
 - **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks

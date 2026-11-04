@@ -280,10 +280,11 @@ export function spentIn(storeFile: string): number | null {
 }
 
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
+ *  `notMetered`, the tool calls it ran with no price (TOOL_UNMETERED),
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
  *  conversation as its settled timeline prices it. A mark is never a charge here (the cap's alone). Never for a live
  *  run: its process holds the store exclusively. */
-export function metersIn(storeFile: string): { tools: number | null; tokens: number | null } {
+export function metersIn(storeFile: string): { tools: number | null; tokens: number | null; notMetered?: number } {
   if (!existsSync(storeFile)) return { tools: 0, tokens: null };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
@@ -299,7 +300,8 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
     const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
     const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0 };
+    const notMetered = usage?.usage?.not_metered;
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, ...(notMetered ? { notMetered } : {}) };
   } finally {
     db.close();
   }

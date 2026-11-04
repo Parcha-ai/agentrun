@@ -603,7 +603,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     server: (name) => {
       try {
         const saved = mcpServers.get(name);
-        return { url: saved.url, tools: saved.tools.map(({ name: tool, title, description, input_schema, annotations }) => ({ name: tool, ...(title ? { title } : {}), ...(description ? { description } : {}), inputSchema: input_schema as Record<string, unknown>, ...(annotations ? { annotations: annotations as Record<string, unknown> } : {}) })) };
+        return { url: saved.url, tools: saved.tools.map(({ name: tool, title, description, input_schema, annotations }) => ({ name: tool, ...(title ? { title } : {}), ...(description ? { description } : {}), inputSchema: input_schema as Record<string, unknown>, ...(annotations ? { annotations: annotations as Record<string, unknown> } : {}) })), ...(saved.prices ? { prices: saved.prices } : {}) };
       } catch {
         return undefined;
       }
@@ -1133,7 +1133,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, { tools: number | null; tokens: number | null }>();
+  const endedMeters = new Map<string, { tools: number | null; tokens: number | null; notMetered?: number }>();
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -1158,6 +1158,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const group = url.searchParams.get("group_by") ?? "meter";
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
+    // Tool calls run with no price (an MCP tool its owner set none for): outside every cost, counted on `tools`.
+    let notMetered = 0;
     const total = { usd: 0, unpriced: 0 };
     // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
     // passes as $0.
@@ -1179,9 +1181,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, the rest `tokens`, both from the same records: a
       // live run's rows (a call still marked is no charge), else its store as it ended (a call a crash cut makes `tools`
       // unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null } : metersOf(row);
+      const meters = group !== "meter" ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, notMetered: live.rows.find((one) => one.kind === "usage")?.usage?.not_metered ?? 0 } : metersOf(row);
+      notMetered += meters?.notMetered ?? 0;
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 ? [["tools", meters.tools] as [string, number | null]] : [])];
+      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(meters.tools !== 0 || meters.notMetered ? [["tools", meters.tools] as [string, number | null]] : [])];
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
       // never passes as $0.
       for (const [name, part] of parts) {
@@ -1200,7 +1203,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
       from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
-      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), usd: round(line.usd), unpriced_runs: line.unpriced, ...(group === "meter" && key === "tools" && notMetered ? { not_metered_calls: notMetered } : {}) })),
       account: null,
     };
   }
