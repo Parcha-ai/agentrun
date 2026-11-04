@@ -7,8 +7,8 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { BOUND_TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, explainsView, settingsIssues, ToolSettings } from "../dist/tool-plane.js";
+import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
+import { CAPABILITIES, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, resolveCapability, explainsView, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -177,11 +177,14 @@ test("a pi agent that names no model and picks native search runs on a server wh
   assert.equal(run.status, 202, JSON.stringify(run.body));
 });
 
-test("settings are checked before anything is kept: an unknown capability, a provider not offered for it, and a permission, which waits for the tool gate", () => {
+test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", () => {
   assert.deepEqual(settingsIssues({ web_search: { provider: "exa-keyless" }, web_fetch: {} }), []);
-  assert.deepEqual(settingsIssues({ browser: { provider: "native" } }).map((i) => [i.field, i.reason]), [["browser", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ browser: { provider: "native" } }).map((i) => [i.field, i.reason]), [["browser.provider", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ fetch_pages: {} }).map((i) => [i.field, i.reason]), [["fetch_pages", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ web_fetch: { provider: "native" } }).map((i) => [i.field, i.reason, i.message]), [["web_fetch.provider", "not_an_option", "web_fetch.provider is one of kernel, parallel"]]);
-  assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_yet", "permissions arrive with the tool gate"]]);
+  assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings"), []);
+  assert.deepEqual(settingsIssues({ web_search: { permission: "never" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_an_option", "definition.tool_settings.web_search.permission is one of allow, ask, deny"]]);
+  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.")), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, and its legacy names");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
@@ -203,9 +206,9 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   ]);
 
   for (const [body, fields] of [
-    [{ browser: { provider: "native" } }, [["browser", "not_allowed"]]],
+    [{ browser: { provider: "native" } }, [["browser.provider", "not_allowed"]]],
     [{ web_search: { provider: "kernel" } }, [["web_search.provider", "not_an_option"]]],
-    [{ web_fetch: { provider: "kernel", permission: "ask" } }, [["web_fetch.permission", "not_yet"]]],
+    [{ web_fetch: { provider: "kernel", permission: "maybe" } }, [["web_fetch.permission", "not_an_option"]]],
   ]) {
     const refused = await api("PUT", "/settings/tools", body);
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, fields], JSON.stringify(body));
@@ -229,17 +232,18 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual(made.body.definition.tool_settings, { web_search: { provider: "native" } });
   const own = (await api("GET", "/agents/searcher")).body;
   meets("/agents/{agent_id}", "get", own);
+  const allowed = (askable = true) => ({ permission: "allow", permission_from: "default", default_permission: "allow", permissions: askable ? ["allow", "ask", "deny"] : ["allow", "deny"] });
   assert.deepEqual(own.tools, [
-    { name: "read" },
-    { name: "web_fetch", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
-    { name: "fetch_page", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
-    { name: "web_search", provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
+    { name: "read", ...allowed() },
+    { name: "web_fetch", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "fetch_page", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "web_search", ...allowed(), provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
   ], "capabilities' order; its own pick over the server's, which is its default");
   assert.equal((await api("GET", "/agents")).body.agents[0].tools, undefined, "the projection is the one agent's read alone");
   const coded = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["web_search"] }));
   assert.equal(coded.status, 201, JSON.stringify(coded.body));
-  assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
-  for (const [tool_settings, field, reason] of [[{ web_search: { permission: "deny" } }, "definition.tool_settings.web_search.permission", "not_yet"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person", "not_allowed"]]) {
+  assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", ...allowed(), provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
+  for (const [tool_settings, field, reason] of [[{ web_search: { permission: "maybe" } }, "definition.tool_settings.web_search.permission", "not_an_option"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person.provider", "not_allowed"]]) {
     const refused = await api("POST", "/agents", agent("refused", { tools: ["web_search"], tool_settings }));
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [[field, reason]]], JSON.stringify(tool_settings));
   }

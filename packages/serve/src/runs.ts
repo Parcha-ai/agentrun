@@ -35,6 +35,7 @@ import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, mo
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, type PendingApproval, permissionOf, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -157,7 +158,14 @@ type RunMeta = {
   /** A run whose cost was unknown when it ended: the sum of its charges whose cost is known, and how many have none
    *  (costsofar/1), as its view said then, so a list row read from the store says it too. */
   cost_so_far?: SoFar;
+  /** A person's answer to each tool call that waited for approval (tool-gate.ts), by its id: the first one wins, and
+   *  the run's process reads it here. A cancel marks one still waiting canceled. */
+  approvals?: Record<string, ApprovalAnswer>;
 };
+/** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
+ *  process acted on the answer. */
+type Approval = { id: string; tool: string; call_id: string; args_preview: string; requested_at: string; resolved?: true };
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled"; note?: string; answered_at: string };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -204,6 +212,8 @@ export type Run = {
   rows: TimelineEvent[];
   /** The person's messages the run took, and how each one's turn ended (turns.ts): its end is read from them. */
   turns: Turns;
+  /** Its tool calls that waited for a person's approval, read from its store's entries, by id. */
+  approvals?: Map<string, Approval>;
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
@@ -332,11 +342,45 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
+/** Notes the tool calls that wait for approval in `entries` (the run's stored entries), and those whose answer its process
+ *  acted on. */
+function noteApprovals(run: Run, entries: readonly unknown[]): void {
+  for (const value of entries) {
+    if (!isObject(value) || value.kind !== APPROVAL_ENTRY || !isObject(value.data) || typeof value.data.id !== "string") continue;
+    const data = value.data;
+    run.approvals ??= new Map();
+    const known = run.approvals.get(data.id as string);
+    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_preview: String(data.args_preview ?? ""), requested_at: String(data.requested_at) });
+    else if (data.phase === "resolved" && known) known.resolved = true;
+  }
+}
+/** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
+const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
+/** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. Park mode's calls are
+ *  never held open (tool-gate.ts). */
+const approvalOf = (run: Run): PendingApproval | undefined => {
+  const waiting = waitingApproval(run);
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: waiting.args_preview, requested_at: waiting.requested_at, held: false } : undefined;
+};
+/** One answered (allow or deny) whose answer the run's process has not acted on yet. */
+const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && run.meta.approvals[a.id]!.decision !== "canceled");
+/** The row after each tool call that waited for approval, beside its result's row. */
+function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">): TimelineEvent[] {
+  if (!run.approvals?.size) return [...rows];
+  const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
+  const waiting = waitingApproval(run);
+  return rows.flatMap((row) => {
+    const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
+    if (!approval) return [row];
+    const summary = `${approval === waiting ? "Waiting for your approval" : "Asked your approval"}: ${approval.tool} ${clip(approval.args_preview, 400)}`;
+    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW as TimelineEvent["kind"], summary, text: approval.args_preview, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(approval.args_preview, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+  });
+}
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
  *  last meaningful row is its answer when that row is one, a final answer's or a text row's. */
 const importAnswerOf = (rows: readonly TimelineEvent[]) => {
@@ -448,6 +492,11 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (!run.rows.length) return { status: "queued", state: "working" };
   if (stopped(run)) return { status: "input_required", state: "idle" };
   if (!users) return { status: "queued", state: "working" };
+  // A tool call parked for approval (tool-gate.ts) waits for the person; once answered, its process acts on it.
+  if (run.kind === "agentic" && run.submitted === 0 && !run.working) {
+    if (waitingApproval(run)) return { status: "input_required", state: "waiting" };
+    if (actingOn(run)) return { status: "working", state: "working" };
+  }
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
   if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
@@ -709,7 +758,10 @@ export class Runs {
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
+      ...(isObject(stored?.approvals) ? { approvals: stored.approvals as Record<string, ApprovalAnswer> } : {}),
     };
+    // A turn's origin a server before this one set is not known to be the turn running now: it goes.
+    await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
     // follow-up (learning-run.ts onLoad).
     if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
@@ -828,13 +880,14 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteTurns(run, entries, submissions);
+    noteApprovals(run, entries);
     this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withOverCap(labelled(run.meta.reflect, withAsks(rows.filter((r) => !QUIET.test(r.id)))), run.meta.max_cost_usd);
+    run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run)), run.meta.max_cost_usd);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -875,6 +928,8 @@ export class Runs {
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.submitted > 0) return undefined;
     if (run.turns.open > 0 || stopped(run)) return undefined;
+    // A tool call waits for a person's approval, or for its answer to be acted on: the run goes on after it.
+    if (waitingApproval(run) || actingOn(run)) return undefined;
     const end = run.turns.end();
     if (end?.status === "answered") return { outcome: "completed" };
     if (end?.status !== "failed") return undefined;
@@ -1191,12 +1246,12 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state === "waiting" ? "question" : "stopped" });
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
    *  has (settle, persistLater, reopen). What it already queued it queues no more. */
-  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "stopped" }): Emitted | undefined {
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" }): Emitted | undefined {
     if (!this.options.notify || !marker) return undefined;
     try {
       return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
@@ -1278,7 +1333,9 @@ export class Runs {
         // snapshot of them on a (re)connect (pi-durable-disk's `inputs`), read as their whole state.
         const submissions = events.flatMap((e) => (e.type === "submission" && e.record !== undefined ? [e.record] : []));
         const inputs = events.find((e) => e.type === "snapshot" && Array.isArray(e.inputs))?.inputs as unknown[] | undefined;
-        noteTurns(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])), submissions, inputs);
+        const entries = events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : []));
+        noteTurns(run, entries, submissions, inputs);
+        noteApprovals(run, entries);
         reducer.apply(events as never);
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
         // as the settled read counts it, never one in flight.
@@ -1365,9 +1422,11 @@ export class Runs {
   }
 
   /** One request to the door of a run whose process lives, never waking it (toDoor wakes no run that is finishing): again
-   *  while it opens or parks. `turnOrigin`: who sent a turn this request sends (learning-run.ts's REFLECT_ORIGIN), for
-   *  the per-tool gate to take once this server has one; nothing reads it until then. */
+   *  while it opens or parks. `turnOrigin`: who sent a turn this request sends (learning-run.ts's REFLECT_ORIGIN), kept in
+   *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts's carve-out); a person's message
+   *  removes it. */
   private async toLiveDoor(run: Run, path: string, body?: Json, turnOrigin?: TurnOrigin): Promise<Json | null> {
+    if (turnOrigin) await writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`);
     for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
       if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
       const door = this.doorOf(await this.record(run));
@@ -1457,7 +1516,10 @@ export class Runs {
     // in the serve.json its start writes (start); resolving here is for a run made before that. A description with no secret
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
-    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
+    // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person).
+    const settings = this.options.toolSettings?.() ?? {};
+    const fresh = run.tooling ? planeFor(served, run.tooling, settings, { capped: run.meta.max_cost_usd !== undefined }) : {};
+    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served, { fresh, permission: (name) => permissionOf(name, settings as never, (run.tooling?.overrides ?? {}) as never) }) : fresh;
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
       void this.saveMeta(run).catch(() => undefined);
@@ -1948,6 +2010,8 @@ export class Runs {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
+    // A person's message: no turn from here on is the server's own reflect turn (tool-gate.ts's carve-out).
+    await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -2092,6 +2156,22 @@ export class Runs {
     return true;
   }
 
+  /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): kept in the run's serve.json before
+   *  it returns, the first answer winning (the same one again changes nothing; another is 409, `already_answered`). The
+   *  run's process reads it there, runs or refuses the call, and resumes; a run with no process gets one. */
+  async approve(run: Run, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
+    const given = run.meta.approvals?.[id];
+    if (!given && !run.approvals?.has(id)) throw new ApiError("not_found", `The run ${run.id} has no tool call ${id} waiting for approval.`);
+    if (given) {
+      if (given.decision === decision) return;
+      throw new ApiError("not_continuable", `The tool call ${id} was already ${given.decision === "canceled" ? "canceled with its run" : `answered: ${given.decision}`}.`, { details: { reason: "already_answered", decision: given.decision } });
+    }
+    run.meta.approvals = { ...run.meta.approvals, [id]: { decision, ...(note ? { note } : {}), answered_at: new Date().toISOString() } };
+    await this.saveMeta(run);
+    this.refresh(run);
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
+  }
+
   /** Record the cancel and signal the run. An agentic run reads `cancelled` from here on (the first end a run comes to is
    *  its last: nothing its turn writes later moves it), and is carried back so once its process has exited; a workflow
    *  run reads it once it is carried back, with how its workflow stopped. */
@@ -2101,6 +2181,12 @@ export class Runs {
     // Finishing is already ending with its outcome (an answer, a failure, the cap): a run's first end is its last.
     if (run.outcome || run.finishing) return false;
     run.cancel = true;
+    // A tool call that waits for approval is canceled with its run: an answer after this one is refused.
+    const waiting = waitingApproval(run);
+    if (waiting) {
+      run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "canceled", answered_at: new Date().toISOString() } };
+      await this.saveMeta(run).catch((error: Error) => warn(run.id, `its canceled approval is not saved: ${error.message}`));
+    }
     if (run.kind === "agentic") {
       run.finishing = "cancelled";
       run.endedAt = new Date().toISOString();
@@ -2240,7 +2326,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
-      pending: status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,

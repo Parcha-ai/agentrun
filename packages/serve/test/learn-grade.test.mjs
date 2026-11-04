@@ -341,7 +341,7 @@ test("GET /v2/usage books a run's tool charge as tools and a grade as learning, 
   assert.ok(grade > 0, "the grade cost something");
   // A run on claude-agent whose monid call charged $0.003, on a key saved through the settings API.
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved } })).status, 204);
-  await made(api, agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"] }));
+  await made(api, agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"], tool_settings: { "monid.discover": { permission: "allow" }, "monid.inspect": { permission: "allow" }, "monid.run": { permission: "allow" } } }));
   const enriched = await started(api, "enrich", "hi");
   await follow(api, enriched, ["completed"], { deadlineMs: 55_000 });
   const cost = async (runId) => (await api("GET", `/runs/${runId}`)).body.cost.usd;

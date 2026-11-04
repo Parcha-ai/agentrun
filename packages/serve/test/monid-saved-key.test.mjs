@@ -46,7 +46,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
     return [res.status, res.body.error?.code, res.body.error?.details?.missing];
   };
 
-  assert.equal((await api("POST", "/agents", agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: MONID }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: MONID, tool_settings: Object.fromEntries(MONID.map((name) => [name, { permission: "allow" }])) }))).status, 201);
   assert.deepEqual(await refusal("enrich"), [409, "agent_not_runnable", MISSING], "no key yet");
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved } })).status, 204);
 
