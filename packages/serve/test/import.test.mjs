@@ -564,6 +564,36 @@ test("an import that cannot open this server's webhook secret (no seal key, or a
   assert.equal(reader.listRuns().length, 1, "imported all the same");
 });
 
+test("what an import says on stderr goes through the cut its other lines do: a data directory whose path holds a key prints it as [redacted], once", async (t) => {
+  const root = await scratch(t);
+  // A key of the environment's, in the data directory's path, as a folder named after one would hold it.
+  const value = `not-a-secret-${randomBytes(12).toString("hex")}`;
+  const data = join(root, `agents-${value}`);
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let open = true;
+  t.after(() => open && server.close());
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  await server.close();
+  open = false;
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1);
+  const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
+  // No seal key: the webhook's secret does not open, and the line naming its file is said.
+  for (const args of [["--dry-run"], []]) {
+    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, OPENAI_API_KEY: value }, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.ok(![ran.stdout, ran.stderr].some((text) => text.includes(value)), `${args}: the key is printed`);
+    const lines = ran.stderr.split("\n").filter((line) => line.includes("event=webhook_secret"));
+    assert.equal(lines.length, 1, `${args}: ${ran.stderr}`);
+    assert.ok(lines[0].includes(`file=${join(root, "agents-[redacted]", "webhook.json")}`), lines[0]);
+  }
+});
+
 test("this repository's own source, imported as a session's output, has nothing cut from it", async (t) => {
   const repo = new URL("../../../", import.meta.url).pathname;
   const files = [];
