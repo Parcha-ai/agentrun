@@ -11,6 +11,8 @@ import { NoModelBanner } from "@/components/NoModelBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
+import { NeedsYouStrip } from "@/components/NeedsYouStrip";
+import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
 import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
@@ -18,11 +20,13 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, type RunsFilter } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
-import { appendRuns } from "@/lib/idempotency";
+import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
+import { hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
+import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { toolChoices } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
 
@@ -163,6 +167,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
   const [missionReading, setMissionReading] = useState(false);
+  // What needs a person on Mission Control: the runs asking a question, the failures of the last day, the runs at work;
+  // read with the page, and again every 10 seconds while it is open. `ownRun`: whether anything of the owner's has run.
+  const [needs, setNeeds] = useState<Needs | null>(null);
+  const [needsProblem, setNeedsProblem] = useState<string | null>(null);
+  const [ownRun, setOwnRun] = useState<boolean | null>(null);
+  const [needsTry, setNeedsTry] = useState(0);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -248,6 +258,16 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The settings pages this server has: tool keys (their routes), and tools (a capability with a choice of provider).
   const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length ? ["tools" as const] : []), ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
+  // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
+  // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
+  const templateKeys = useRef(keeper()).current;
+  const tryIt = async (t: Template) => {
+    const harness = templateHarness(editorCaps.harnesses);
+    if (!harness) return "This server has no model to run it on yet.";
+    try { const id = await tryTemplate(v2, t, harness, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
+  };
+  // How many runs came from an import (the start-here panel says so); `imported` is the import in progress.
+  const importedRuns = (mission?.analytics.by_source ?? []).filter((g) => g.source !== "live").reduce((n, g) => n + g.runs, 0);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
@@ -276,13 +296,67 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
     Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
-      .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
+      .then(([s, r]) => {
+        if (!live) return;
+        setMission(missionFrom(s, r.runs));
+        // Whether anything of the owner's has run, decided by a read of every agent; once it has, it stays so. The range
+        // and agent filters show only once it has, so a filter never brings the start-here panel back.
+        if (!statsAgent) setOwnRun((held) => held || hasOwnRun(r.runs, s.analytics.by_source));
+      })
       .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
       .finally(() => { if (live) setMissionReading(false); });
     return () => { live = false; };
   }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
+  useEffect(() => {
+    if (where.section !== "mission") return;
+    let live = true;
+    // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
+    const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
+    const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working")])
+      .then((reads) => {
+        if (!live) return;
+        const day = Date.now() - 86_400_000;
+        setNeedsProblem(mergeNeeds(null, reads).problem);
+        setNeeds((prev) => {
+          const { needs: next } = mergeNeeds(prev, reads);
+          return { asking: next.asking.filter((r) => r.pending), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
+        });
+      });
+    // Never two reads at once: the next starts 10 s after the last has settled, so an older one can't land last.
+    const stop = pollSettled(read, 10_000);
+    return () => { live = false; stop(); };
+  }, [v2, where.section, needsTry]);
+  // A key per run: an answer whose reply was lost keeps its key while another run is answered, so its retry is the same send.
+  const answerKeys = useRef(keepersByRun()).current;
+  // After an action the strip reads again in a moment, so an answered question or a run started again leaves it.
+  const later = () => setTimeout(() => setNeedsTry((n) => n + 1), 2500);
+  const answer = async (runId: string, text: string) => {
+    try { await sendOnce(answerKeys(runId), runId, text, v2.sendMessage); later(); return null; } catch (e) { return problemOf(e); }
+  };
+  // A run is started again with its own whole first message (read from its timeline: a run's read carries no input),
+  // its effort and its spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same
+  // start; the runs that started are said, so they're never offered again.
+  const againKeys = useRef(new Map<string, string>()).current;
+  const runAgain = async (rs: readonly Run[]) => {
+    const started: string[] = [];
+    try {
+      for (const r of rs) {
+        const first = r.kind === "workflow" ? undefined : (await v2.getTimeline(r.run_id)).rows.find((row) => row.kind === "user_message");
+        const start = rerunBody(r, first?.text);
+        if ("refusal" in start) throw new Error(start.refusal);
+        const key = againKeys.get(r.run_id) ?? uuid();
+        againKeys.set(r.run_id, key);
+        await v2.startRun(r.agent_id, start.body, key);
+        started.push(r.run_id);
+      }
+      later(); return { started, problem: null };
+    } catch (e) { if (started.length) later(); return { started, problem: problemOf(e) }; }
+  };
+  const stop = async (runId: string) => {
+    try { await v2.stop(runId); later(); return null; } catch (e) { return problemOf(e); }
+  };
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -341,7 +415,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
+                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
+                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
+                startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns} /> : undefined} />
             </div>
           </div>
         : where.section === "playground"
