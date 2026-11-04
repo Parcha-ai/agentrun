@@ -470,7 +470,8 @@ describe("daytona boxes", () => {
 			fake.honorsDomainList = true;
 		}
 		const before = fake.requests.length;
-		const cidr = await provider().create(spec({ network: { allow: ["pypi.org", "10.0.0.0/8"] } }), context);
+		const range = "10.0.0.0/8"; // key-gate: denylist a CIDR the provider refuses
+		const cidr = await provider().create(spec({ network: { allow: ["pypi.org", range] } }), context);
 		expect(cidr.ok ? "ok" : cidr.error.code).toBe("unsupported");
 		expect(fake.requests.slice(before).filter((r) => r.method === "POST" && r.path === "/api/sandbox")).toEqual([]);
 	});

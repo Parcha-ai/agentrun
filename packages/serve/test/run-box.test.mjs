@@ -242,7 +242,8 @@ test("an AGENTRUN_BOX_ALLOW that is not a list of host names refuses the start, 
   const takes = "AGENTRUN_BOX_ALLOW is a comma list of host names (such as pypi.org or *.pythonhosted.org), or none for no network";
   assert.equal(await refused("*"), `${takes}: "*" is not a host name (a box never reaches every host)`);
   assert.equal(await refused("pypi.org,*"), `${takes}: "*" is not a host name (a box never reaches every host)`);
-  for (const bad of ["10.0.0.0/8", "169.254.169.254", "::1", "pypi.org:443", "https://pypi.org", "pypi", "*.org.*", "a b.com"]) assert.equal(await refused(`github.com,${bad}`), `${takes}: ${JSON.stringify(bad)} is not a host name`);
+  const ranges = ["10.0.0.0/8", "169.254.169.254"]; // key-gate: denylist addresses the setting refuses
+  for (const bad of [...ranges, "::1", "pypi.org:443", "https://pypi.org", "pypi", "*.org.*", "a b.com"]) assert.equal(await refused(`github.com,${bad}`), `${takes}: ${JSON.stringify(bad)} is not a host name`);
   assert.equal(await refused(", ,"), `${takes}; it is ", ,"`);
   assert.equal(await refused(Array.from({ length: 101 }, (_, i) => `h${i}.example.com`).join(",")), "AGENTRUN_BOX_ALLOW names 101 hosts; it takes at most 100");
 });
