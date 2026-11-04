@@ -507,6 +507,33 @@ test("pi: after a stopped turn's commentary and a follow-up answered with nothin
   assert.equal(await answer(client(two.baseUrl, two.token), runId), "", "and on the next server, read from the run's store");
 });
 
+test("a write that names its file by an absolute path in the workspace reads by its name there (hello.md) in the tool rows and the Saved row; a path outside the run's directory stays as given; the call's arguments are kept", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "absolute", "Write by the absolute path.", "claude-agent", ["write"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(await readFile(join(data, "runs", runId, "work", "hello.md"), "utf8"), "hello");
+  const shown = rows.filter((r) => ["tool_use", "tool_result", "phase"].includes(r.kind) && !/^Released|session/.test(r.summary ?? "")).map((r) => [r.kind, r.summary]);
+  assert.deepEqual(shown.slice(0, 4), [["tool_use", "Wrote hello.md"], ["tool_result", "Wrote hello.md: ok"], ["phase", "Saved hello.md"], ["tool_use", "Wrote /elsewhere/away.md"]], JSON.stringify(shown));
+  assert.match(shown[4]?.[1] ?? "", /^Wrote \/elsewhere\/away\.md failed: /, "a path outside the run's directory stays as given");
+  assert.equal(shown.length, 5, JSON.stringify(shown));
+  assert.equal(rows.find((r) => r.kind === "phase" && /^Saved/.test(r.summary))?.path, "hello.md", "the Saved row's file, by its name in the workspace");
+  // Display only: the call's own arguments, as the harness sent them, are the input preview.
+  assert.match(rows.find((r) => r.kind === "tool_use")?.tool_input_preview ?? "", new RegExp(`${join(data, "runs", runId, "work", "hello.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("a codex or pi run whose write names a relative path reads the same as before: Wrote <name>, Saved <name>", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "relative-codex", "Write then read.", "codex", ["write", "read"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.deepEqual(rows.filter((r) => r.tool_name === "write" || /^Saved/.test(r.summary ?? "")).map((r) => r.summary), ["Wrote note.txt", "Wrote note.txt: ok", "Saved note.txt"]);
+  // pi, on the faux model: its write names report.md.
+  assert.equal((await api("POST", "/agents", agent("relative-pi", { tools: ["write"] }))).status, 201);
+  const pi = await api("POST", "/agents/relative-pi/runs", { input: { content: "Write the report." } });
+  assert.equal(pi.status, 202, JSON.stringify(pi.body));
+  const piRows = (await follow(api, pi.body.run_id, ["completed"], { deadlineMs: 55_000 })).rows;
+  assert.deepEqual(piRows.filter((r) => r.tool_name === "write" || /^Saved/.test(r.summary ?? "")).map((r) => r.summary), ["Wrote report.md", "Wrote report.md: ok", "Saved report.md"]);
+});
+
 test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");

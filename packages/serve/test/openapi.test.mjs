@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { decisionRows } from "../dist/decision-rows.js";
 import { homeOf } from "../dist/files.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
@@ -62,6 +63,7 @@ test("every route the server serves is in the document, and every operation in i
 test("the contract's operations are as vendored; this server's own are added and marked x-agentrun-serve", async (t) => {
   const { doc } = await served(t);
   const vendored = new Map(operations(VENDORED).map(({ path, method, op }) => [`${method} ${path}`, op]));
+  assert.ok(vendored.has("put /agents/{agent_id}/definition") && doc.paths["/agents/{agent_id}/definition"].put["x-agentrun-serve-changed"], "PUT definition is a changed operation, its bodies checked below");
   const own = [];
   for (const { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
@@ -80,6 +82,25 @@ test("the contract's operations are as vendored; this server's own are added and
     // for whether it is required and what it says, and the rest as vendored.
     assert.ok(doc.info["x-agentrun-serve"].changed.includes(`${method.toUpperCase()} ${path}`), `${op.operationId} is listed as changed`);
     for (const mark of Object.values(changes)) assert.match(mark, /^[a-z]+\/\d+$/);
+    if (op.operationId === "createFile") {
+      // upload/2: the contract's JSON body kept as the first choice and the raw bytes beside it; its parameters kept, then
+      // path, content_type and sha256; its responses kept but for 201's description, and 415 added; the rest as vendored.
+      assert.deepEqual(Object.keys(changes).sort(), ["parameters", "requestBody", "responses"]);
+      assert.deepEqual(Object.keys(op.requestBody.content), ["application/json", "application/octet-stream", "*/*"]);
+      assert.deepEqual(op.requestBody.content["application/json"], original.requestBody.content["application/json"]);
+      assert.equal(op.requestBody.required, original.requestBody.required);
+      assert.deepEqual(op.parameters.slice(0, original.parameters.length), original.parameters);
+      assert.deepEqual(op.parameters.slice(original.parameters.length).map((p) => [p.name, p.in, p.required]), [["path", "query", false], ["content_type", "query", false], ["sha256", "query", false]]);
+      const { description: _d, ...created } = op.responses["201"];
+      const { description: _e, ...vendoredCreated } = original.responses["201"];
+      assert.deepEqual(created, vendoredCreated, "201's answer is the contract's FileUpload");
+      assert.deepEqual(Object.keys(op.responses).filter((code) => !(code in original.responses)), ["415"]);
+      for (const code of Object.keys(original.responses).filter((code) => code !== "201")) assert.deepEqual(op.responses[code], original.responses[code], code);
+      const { requestBody: _a, parameters: _b, responses: _c, ...same } = rest;
+      const { requestBody: _f, parameters: _g, responses: _h, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "createFile is the contract's but for upload/2");
+      continue;
+    }
     if (op.operationId === "getTimeline") {
       // A page's limit: the contract's parameters, then this server's one, and the rest as vendored.
       assert.deepEqual(Object.keys(changes), ["limit"]);
@@ -102,6 +123,16 @@ test("the contract's operations are as vendored; this server's own are added and
     assert.deepEqual(Object.keys(changes).sort(), ["If-Match", "requestBody"]);
     const schema = (o) => o.requestBody.content["application/json"].schema;
     assert.deepEqual(schema(op).oneOf[0], schema(original), "the contract's body is one of the two");
+    if (path === "/agents/{agent_id}/definition") {
+      // Exactly one of PUT definition's two bodies: the contract's, or this server's {definition, skills?, note?}.
+      assert.deepEqual(changes, { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" });
+      const definition = { id: "a", version: 2, name: "a", instructions: "x", skills: [], tools: [] };
+      const problems = (value) => schemaProblems(doc, schema(op), value);
+      assert.deepEqual(problems(definition), [], "the contract's body");
+      assert.deepEqual(problems({ definition, skills: { "cite/SKILL.md": "# Cite" }, note: "why" }), [], "this server's body");
+      assert.notDeepEqual(problems({ ...definition, definition }), [], "never both at once");
+      assert.notDeepEqual(problems({ note: "why" }), [], "never neither");
+    }
     const plain = (params) => params.map(({ required, description, ...p }) => (p.name === "If-Match" ? p : { required, description, ...p }));
     assert.deepEqual(plain(op.parameters), plain(original.parameters));
     const { requestBody: _a, parameters: _b, ...same } = rest;
@@ -371,4 +402,22 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
   assert.ok(shape, "the document gives system_file_forbidden's details");
   assert.deepEqual(schemaProblems(doc, shape, forbidden.error.details), [], JSON.stringify(forbidden.error));
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Error" }, forbidden), []);
+});
+
+test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
+  const { doc } = await served(t);
+  // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
+  const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("@parcha/pi-durable-agent/timeline")), "utf8");
+  const union = /export type TimelineKind =([^;]+);/.exec(declaration.replace(/\/\*[\s\S]*?\*\//g, ""))?.[1] ?? "";
+  const declared = [...union.matchAll(/"([a-z_]+)"/g)].map(([, kind]) => kind);
+  assert.ok(declared.includes("decision") && declared.includes("usage"), `the timeline's kinds are read: ${declared}`);
+  const kinds = doc.components.schemas.TimelineKind;
+  assert.deepEqual([...kinds.enum].sort(), [...declared].sort(), "a client that validates rows against the document takes every kind this server serves");
+  assert.equal(kinds["x-agentrun-serve"], "decision-rows/1");
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("TimelineKind.decision"), "info names it among the marked properties");
+  // A decision row as this server builds it, a batched sift with many sources, meets the served row: its kind and its caps.
+  const answers = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`item_${i}`, { type: "noul", noul: 0.9 }]));
+  const evidence = Array.from({ length: 100 }, (_, i) => ({ url: `https://example.org/filing/${i}?sig=${i}`, title: `Filing ${i}`, excerpts: [], scope: "call" }));
+  const [row] = decisionRows([{ id: "d1", at: "2026-10-29T23:00:00.000Z", node: "sift_docs", kind: "sift", request: { index: 0, count: 1 }, status: "answered", answers, evidence, cost_usd: null }]);
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, { ...row, seq: 0 }), []);
 });

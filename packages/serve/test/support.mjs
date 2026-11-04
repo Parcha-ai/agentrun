@@ -151,7 +151,8 @@ export async function startRun(api, id, content, extra = {}, skills) {
   return run.body;
 }
 
-/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until` and settled. */
+/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
+ *  once its page is final, any other status on the first page that leaves no change behind it. */
 export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
   const view = new Map();
   const pages = [];
@@ -165,7 +166,9 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
     for (const id of page.drop) view.delete(id);
     for (const row of page.rows) view.set(row.id, row);
     after = page.next_after;
-    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more && (page.unchanged || page.rows.length === 0);
+    // A page's status and its rows are read together, so a page with no more to come has every row up to that status. A
+    // second, empty page to confirm it would only return when its long poll runs out.
+    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more;
     if (until.includes(page.status) && settled) break;
     assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}: last ${page.status}/${page.state}`);
   }
