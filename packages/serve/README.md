@@ -909,7 +909,8 @@ A run's input files. Send one in one call, its bytes the body and its path in th
 curl -s "$AGENTRUN_BASE_URL/files?path=plan.md" -H "authorization: Bearer $AGENTRUN_API_KEY" --data-binary @plan.md
 ```
 
-It answers `201` with the file `ready`: its `file_id`, `size_bytes` (the body's length) and `sha256` (the body's own).
+It answers `201` with the file, `ready`, under `file`: its `file_id`, `size_bytes` (the body's length) and `sha256`
+(the body's own).
 Its `content_type` is the query's `content_type`, else the request's own type when it names one (not
 `application/octet-stream`, not curl's `application/x-www-form-urlencoded`), else its path's extension's, as a run's files
 are served (`plan.md` is `text/markdown; charset=utf-8`), else `application/octet-stream`. A `sha256` in the query is

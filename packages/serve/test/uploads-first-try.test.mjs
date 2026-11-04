@@ -281,3 +281,23 @@ test("a pending file deleted between its PUT's read and its first write answers 
   };
   await assert.rejects(uploads.receive(file.file_id, [Buffer.from("ok")]), (error) => error.code === "not_found" && error.status === 404);
 });
+
+test("a run naming something that is not a file id is told what it sent, cut to 40 characters, and where a file id comes from", async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("bad-ids"))).status, 201);
+  const long = "x/".repeat(30);
+  const sent = ["", 42, null, { a: 1 }, long, "\u{1f600}".repeat(50)];
+  const answer = await api("POST", "/agents/bad-ids/runs", { input: { content: "Hello." }, file_ids: sent });
+  assert.equal(answer.status, 422, JSON.stringify(answer.body));
+  const tail = ", not a file id: use the file_id an upload answered (POST /v2/files answers it under file.file_id).";
+  assert.deepEqual(answer.body.error.fields.map((f) => [f.field, f.reason, f.message]), [
+    ["file_ids[0]", "wrong_type", `file_ids[0] is ""${tail}`],
+    ["file_ids[1]", "wrong_type", `file_ids[1] is 42${tail}`],
+    ["file_ids[2]", "wrong_type", `file_ids[2] is null${tail}`],
+    ["file_ids[3]", "wrong_type", `file_ids[3] is {"a":1}${tail}`],
+    // Its JSON is 62 characters: the first 39, then an ellipsis.
+    ["file_ids[4]", "wrong_type", `file_ids[4] is "${"x/".repeat(19)}…${tail}`],
+    // Cut by characters, never inside a surrogate pair.
+    ["file_ids[5]", "wrong_type", `file_ids[5] is "${"\u{1f600}".repeat(38)}…${tail}`],
+  ]);
+});
