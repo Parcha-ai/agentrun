@@ -10,7 +10,10 @@
 //    one more request through this proxy, checked the same way;
 //  - SOCKS5 BIND and UDP ASSOCIATE are refused by name, and so is an HTTP upgrade;
 //  - a run has a cap on connections open at once and a budget of connections in all, each refused by name;
-//  - a log line holds the host, the port, the address and the class, never a path, a query, a header or a body.
+//  - a log line holds the host, the port, the address and the class, never a path, a query, a header or a body;
+//  - with a host list (`allow`), a host off it, an IP literal and any port but 80 and 443 are refused before any lookup,
+//    so a name off the list never leaves the host (no DNS channel out); a listed name then meets the address rule as
+//    any other does.
 // It holds no key. `close()` ends every connection and removes the socket.
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns";
@@ -50,15 +53,49 @@ export interface EgressProxyOptions {
   /** More addresses to refuse as this host's, beside the interfaces read at each dial (a test's seam: it can only refuse
    *  more). */
   alsoLocal?: () => readonly string[];
+  /** The only hosts reached, as parseAllow takes them: exact names, or `*.suffix` for the names below one. Set, every
+   *  other host, any IP literal and any port but 80 and 443 are refused 403 (SOCKS reply 2, class `not-listed`) before
+   *  any lookup. Absent, every public host is reached. */
+  allow?: string | readonly string[];
+  /** What a refusal for a host off the list says to do, after its words (the caller's, which knows its settings): printable
+   *  ASCII, since it goes into the status line; anything else refuses the start. */
+  allowHint?: string;
 }
+
+/** A host list's entry: a name of two labels or more, or `*.` and such a name. */
+const ENTRY = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/** A host list from its entries, or a comma list of them: each lowercased, its trailing dot dropped, the repeats gone.
+ *  Throws for an entry that is not a name of two labels or more, or `*.` and one (an address, a port, a URL, a bare `*`). */
+export function parseAllow(entries: string | readonly string[]): string[] {
+  const list = (typeof entries === "string" ? entries.split(/[\s,]+/) : entries).map((entry) => entry.trim()).filter((entry) => entry !== "");
+  const out: string[] = [];
+  for (const entry of list) {
+    const name = entry.toLowerCase().replace(/\.$/, "");
+    if (!ENTRY.test(name) || addressBytes(name.replace(/^\*\./, "")) !== undefined) {
+      throw new Error(`the network list's entry ${JSON.stringify(entry)} is not a name with at least two labels, or *. and one`);
+    }
+    if (!out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/** Whether `host` is on `list`: an exact name, or below a `*.suffix`; in any case, and without a trailing dot. */
+const listedHost = (list: readonly string[], host: string): boolean => {
+  const name = host.toLowerCase().replace(/\.$/, "");
+  return list.some((entry) => (entry.startsWith("*.") ? name.endsWith(entry.slice(1)) && name.length > entry.length - 1 : name === entry));
+};
+
+/** The ports a host list opens: plain HTTP and HTTPS. */
+const LISTED_PORTS = [80, 443];
 
 export interface EgressProxy {
   readonly socketPath: string;
   close(): Promise<void>;
 }
 
-/** Why a connection was not made, besides an address class. */
-type Refusal = { status: number; reason: string; socks: number };
+/** Why a connection was not made, besides an address class; `words`, the reason phrase in place of the class's. */
+type Refusal = { status: number; reason: string; socks: number; words?: string };
 
 const HOP = new Set(["connection", "proxy-connection", "keep-alive", "proxy-authorization", "proxy-authenticate", "te", "trailer", "upgrade", "transfer-encoding"]);
 
@@ -80,6 +117,25 @@ const hostOf = (text: string) => JSON.stringify(text.slice(0, 255));
 
 export async function startEgressProxy(options: EgressProxyOptions): Promise<EgressProxy> {
   const { socketPath, maxTunnels, maxConnections, log } = options;
+  const allow = options.allow === undefined ? undefined : parseAllow(options.allow);
+  // The hint goes into a status line, which carries printable ASCII only: Node refuses anything else there (an em dash
+  // included), and a control character would end the line.
+  if (options.allowHint !== undefined && !/^[\x20-\x7e]*$/.test(options.allowHint)) throw new Error("the egress proxy's allowHint holds a character a status line cannot carry: printable ASCII only");
+  const hinted = (words: string) => (options.allowHint ? `${words}: ${options.allowHint}` : words);
+  /** The refusal of a target off the host list, or undefined: checked before any lookup. */
+  const offList = (host: string, port: number): Refusal | undefined => {
+    if (allow === undefined) return undefined;
+    // A phrase holds only a plain host: anything else is named as such.
+    const shown = /^[A-Za-z0-9._:-]+$/.test(host) ? host : "the host";
+    const words = addressBytes(host) !== undefined
+      ? hinted(`${shown} is an address, not a name on this box's network list`)
+      : !listedHost(allow, host)
+        ? hinted(`${shown} is not on this box's network list`)
+        : !LISTED_PORTS.includes(port)
+          ? `${shown}:${port} is not open on this box's network list, which takes ports 80 and 443 only`
+          : undefined;
+    return words === undefined ? undefined : { status: 403, reason: "not-listed", socks: 2, words };
+  };
   const lookup: EgressLookup = options.lookup ?? ((hostname, opts, callback) => dnsLookup(hostname, opts, callback));
   const dial = options.dial ?? ((address: string, port: number) => netConnect({ host: address, port }));
   const sockets = new Set<Duplex>();
@@ -133,6 +189,11 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
 
   /** Resolve, check, admit and dial: the upstream socket once it connects, or the refusal. */
   const reach = async (kind: string, host: string, port: number): Promise<{ socket: Socket; address: string } | { refused: Refusal }> => {
+    const unlisted = offList(host, port);
+    if (unlisted) {
+      log(`egress ${kind} host=${hostOf(host)} port=${port} ip=- class=${unlisted.reason}`);
+      return { refused: unlisted };
+    }
     const target = await resolve(host);
     if ("refused" in target) {
       log(`egress ${kind} host=${hostOf(host)} port=${port} ip=${target.address ?? "-"} class=${target.refused.reason}`);
@@ -156,12 +217,12 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
   // HTTP: CONNECT, and plain requests in absolute form.
   const http = createHttpServer();
   const refuseRaw = (socket: Duplex, refusal: Refusal) => {
-    const body = `egress refused: ${refusal.reason}\n`;
-    socket.end(`HTTP/1.1 ${refusal.status} Egress refused: ${refusal.reason}\r\nx-egress-refused: ${refusal.reason}\r\ncontent-type: text/plain\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n\r\n${body}`);
+    const body = `${refusal.words ?? `egress refused: ${refusal.reason}`}\n`;
+    socket.end(`HTTP/1.1 ${refusal.status} ${refusal.words ?? `Egress refused: ${refusal.reason}`}\r\nx-egress-refused: ${refusal.reason}\r\ncontent-type: text/plain\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n\r\n${body}`);
   };
   const refuse = (res: ServerResponse, refusal: Refusal) => {
-    const body = `egress refused: ${refusal.reason}\n`;
-    res.writeHead(refusal.status, `Egress refused: ${refusal.reason}`, { "x-egress-refused": refusal.reason, "content-type": "text/plain", "content-length": Buffer.byteLength(body), connection: "close" });
+    const body = `${refusal.words ?? `egress refused: ${refusal.reason}`}\n`;
+    res.writeHead(refusal.status, refusal.words ?? `Egress refused: ${refusal.reason}`, { "x-egress-refused": refusal.reason, "content-type": "text/plain", "content-length": Buffer.byteLength(body), connection: "close" });
     res.end(body);
   };
 
