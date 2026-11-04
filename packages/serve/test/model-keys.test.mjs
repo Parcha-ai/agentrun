@@ -108,11 +108,11 @@ test("a model key's PUT or DELETE changes capabilities' models.needs on the next
   const { api } = await serve(t, { faux: undefined });
   const ready = async () => { const { ready, needs } = (await api("GET", "/capabilities")).body.models; return [ready, needs]; };
   assert.deepEqual(await ready(), [false, "key"]);
-  assert.equal((await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: made() } })).status, 204);
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: made() } })).status, 204);
   assert.deepEqual(await ready(), [true, null], "saved: a revision that names no model runs, with no restart");
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "auto" } })).status, 200);
   assert.deepEqual(await ready(), [true, null], "a tool-settings write keeps it");
-  assert.equal((await api("DELETE", "/settings/tool-keys/openrouter")).status, 204);
+  assert.equal((await api("DELETE", "/settings/tool-keys/openai")).status, 204);
   assert.deepEqual(await ready(), [false, "key"], "deleted: none again");
 });
 
@@ -122,9 +122,9 @@ test("overlapping model key writes leave capabilities' models.needs agreeing wit
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, MODEL_VARS);
   const { api } = await serve(t, { faux: undefined });
   for (let round = 0; round < 12; round++) {
-    const writes = [api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: made() } }), api("DELETE", "/settings/tool-keys/openrouter")];
+    const writes = [api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: made() } }), api("DELETE", "/settings/tool-keys/openai")];
     await Promise.all(writes);
-    const set = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openrouter").fields[0].set;
+    const set = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openai").fields[0].set;
     const { ready, needs } = (await api("GET", "/capabilities")).body.models;
     assert.deepEqual([ready, needs], set ? [true, null] : [false, "key"], `round ${round}: the key is ${set ? "set" : "not set"}`);
   }
@@ -142,12 +142,13 @@ test("a model key saved with no restart: a server with none says no model runs a
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
 
   const value = made();
-  assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: value } })).status, 204);
-  const model = "anthropic/claude-sonnet-5-5";
+  // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: value } })).status, 204);
+  const model = "openai/gpt-6.1-sol";
   assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null }, "no restart");
   const offered = (await api("GET", "/capabilities")).body.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
-  const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "anthropic");
-  assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "claude-agent"].filter((id) => offered.includes(id)), [{ name: "ANTHROPIC_API_KEY", set: true, source: "stored" }]]);
+  const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openai");
+  assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "codex"].filter((id) => offered.includes(id)), [{ name: "OPENAI_API_KEY", set: true, source: "stored" }]]);
   const started = await api("POST", "/agents/plain/runs", { input: { content: "What is six times seven?" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
@@ -159,6 +160,6 @@ test("a model key saved with no restart: a server with none says no model runs a
   holdsNone(lines.join("\n"), formsOf(value), "the log");
   for (const file of filesUnder(data)) holdsNone(readFileSync(file), formsOf(value), file);
 
-  assert.equal((await api("DELETE", "/settings/tool-keys/anthropic")).status, 204);
+  assert.equal((await api("DELETE", "/settings/tool-keys/openai")).status, 204);
   assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" }, "deleted, none again");
 });
