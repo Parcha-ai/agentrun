@@ -4,6 +4,7 @@ import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
+import type { McpServer } from "@/lib/mcp";
 import type { ToolChoice } from "@/lib/toolSettings";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
@@ -58,6 +59,9 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
     }
   };
   useEffect(() => { void load(); }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The saved MCP servers, for the Tools step's MCP groups.
+  const [mcpServers, setMcpServers] = useState<McpServer[] | null | "failed">(null);
+  useEffect(() => { if (caps.mcp) v2.listMcpServers().then((r) => setMcpServers(r.servers), () => setMcpServers("failed")); }, [v2, caps.mcp]);
   // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never
   // reads as failed. The page shows the write's own answer; the refresh brings the ETag and the history. When the refresh
   // finds another current revision (made current here, or saved in another tab), the form reloads with it, so a later save
@@ -80,7 +84,7 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
-    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => void load()}
+    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} mcpServers={mcpServers} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => void load()}
       onSave={async (fields, note) => {
         let saved;
         try {

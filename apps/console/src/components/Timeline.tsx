@@ -2,6 +2,7 @@ import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, Loa
 import { useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
+import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, type Step, steps } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
@@ -24,8 +25,10 @@ const title = (row: TimelineRow) => {
 };
 /** How long a tool took: "27 ms", or "3.5 s" from a second on. */
 const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+/** A tool's name as the label says it: an MCP server's tool as `<server> · <tool>`, any other as the harness names it. */
+const tool = (name: string | null) => (name ? mcpToolLabel(name) ?? name : null);
 const label = (row: TimelineRow) =>
-  ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
+  ({ user_message: "You", thinking: "Thinking", tool_use: tool(row.tool_name) ?? "Tool", tool_result: tool(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
 
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
  *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */
