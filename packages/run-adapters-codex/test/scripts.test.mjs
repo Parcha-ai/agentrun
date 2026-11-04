@@ -200,3 +200,11 @@ test("a completed call's result past the host's bound: the store keeps it whole,
   const other = `charged ${'y'.repeat(130_000)}`;
   assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(other).text))), { kind: 'interrupted' }, 'a cut of another text still disagrees');
 });
+
+test("a session written before the host's bound: both records hold the same uncut result past it, and the call is completed", () => {
+  // Before #1527 the bridge handed Codex the whole result, so an older session's rollout holds the same text the store
+  // does, past HOST_RESULT_MAX_CHARS. Matching records are a completed call, so arm answers a re-issued never call from
+  // the log and it does not run again.
+  const whole = `charged ${'x'.repeat(130_000)}`;
+  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(whole))), { kind: 'completed', text: whole }, 'both records, the same uncut text');
+});
