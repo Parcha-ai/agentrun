@@ -137,14 +137,19 @@ export function nodeTiers(nodes: readonly Record<string, unknown>[]): Tier[] {
   return TIERS.filter((tier) => tiers.has(tier));
 }
 
+/** A `{dot.path}` the DSL fills in from the state when the node runs. */
+const TEMPLATE = /\{[a-zA-Z0-9_.$]+\}/;
+
 /** `tiers` with those a workflow's `llm` calls name (`args.tier`, else default) added: an `llm` call completes on the
- *  model of its tier, as a model node does. */
+ *  model of its tier, as a model node does. A tier the state fills in when the call runs (`"{requestedTier}"`, or args
+ *  filled in whole) may be any of the three, so it adds all three. */
 export function llmTiers(nodes: readonly Record<string, unknown>[], tiers: readonly Tier[]): Tier[] {
   const all = new Set(tiers);
   for (const node of nodes) {
     if (node.node !== "call" || node.via !== "tool" || node.tool !== "llm") continue;
-    const tier = (node.args as { tier?: unknown } | undefined)?.tier;
-    all.add((TIERS as readonly unknown[]).includes(tier) ? (tier as Tier) : "default");
+    const tier = typeof node.args === "string" ? node.args : (node.args as { tier?: unknown } | undefined)?.tier;
+    if (typeof tier === "string" && TEMPLATE.test(tier)) TIERS.forEach((each) => all.add(each));
+    else all.add((TIERS as readonly unknown[]).includes(tier) ? (tier as Tier) : "default");
   }
   return TIERS.filter((tier) => all.has(tier));
 }
