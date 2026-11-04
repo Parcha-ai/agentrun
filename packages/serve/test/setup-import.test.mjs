@@ -67,8 +67,10 @@ test("setting the password without the box imports nothing", async (t) => {
     assert.deepEqual([made.status, made.json], [201, { signed_in: true }], made.text);
     await sleep(500);
     assert.equal(agentsIn(server.data), 0, `nothing imported for ${JSON.stringify(body)}`);
-    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404, "no offer once the owner is set");
-    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).status, 404, "and no import to report to the owner");
+    assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404, "nothing to a browser that is not signed in");
+    // The owner's first page reads it: no import asked is an answer, never a 404 the browser logs as an error.
+    const none = await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } });
+    assert.deepEqual([none.status, none.json], [200, { offer: false }], "and no import to report to the owner");
   }
 });
 
@@ -93,11 +95,16 @@ test("with the box ticked, the sessions arrive as agents after the password is s
 
 test("a server at a public address offers no import, and refuses one asked for", async (t) => {
   const server = await serve(t, { accounts: true, publicUrl: "https://agents.example.test", ...(await machine(t)) });
-  assert.equal((await call(server.port, { path: "/v2/setup/import", headers: page(server) })).status, 404);
+  const offer = await call(server.port, { path: "/v2/setup/import", headers: page(server) });
+  assert.deepEqual([offer.status, offer.json], [200, { offer: false }], "no offer, said as an answer and not a 404");
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { authorization: `Bearer ${server.token}`, ...json }, body: { password: PASSWORD, import: true } });
   assert.equal(made.status, 422, made.text);
   assert.equal(made.json.error.fields[0].field, "import");
   assert.equal(agentsIn(server.data), 0);
+  const set = await call(server.port, { method: "POST", path: "/v2/setup", headers: { authorization: `Bearer ${server.token}`, ...json }, body: { password: PASSWORD } });
+  assert.equal(set.status, 201, set.text);
+  const after = await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(set) } });
+  assert.deepEqual([after.status, after.json], [200, { offer: false }], "nor to its signed-in owner");
 });
 
 test("the counts are a read of the page only: a request with neither the browser's same-origin mark nor this server's Origin is refused", async (t) => {
@@ -134,7 +141,8 @@ test("open setup on an address other than loopback offers no import and refuses 
   const host = bridgeAddress();
   const server = await serve(t, { accounts: true, openSetup: true, host, ...(await machine(t)) });
   const origin = `http://${host}:${server.port}`;
-  assert.equal((await at(host, server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } })).status, 404);
+  const offer = await at(host, server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.deepEqual([offer.status, offer.json], [200, { offer: false }]);
   const asked = await at(host, server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: PASSWORD, import: true } });
   assert.equal(asked.status, 422, asked.text);
   assert.deepEqual([asked.json.error.fields[0].field, asked.json.error.fields[0].reason], ["import", "not_allowed"]);
@@ -145,7 +153,8 @@ test("open setup on an address other than loopback offers no import and refuses 
 
 test("open setup with a public address, though it listens on loopback (behind a proxy), offers no import and refuses one asked for", async (t) => {
   const server = await serve(t, { accounts: true, openSetup: true, publicUrl: "https://agents.example.test", ...(await machine(t)) });
-  assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } })).status, 404);
+  const offer = await call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.deepEqual([offer.status, offer.json], [200, { offer: false }]);
   const asked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
   assert.equal(asked.status, 422, asked.text);
   assert.equal(asked.json.error.fields[0].field, "import");

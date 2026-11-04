@@ -198,8 +198,12 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(box(host)).toBeNull();
   });
 
-  it.each([[404, "a server that offers no import"], [403, "a read the server refuses"]])("shows no box for %i, %s, and asks no more", async (status) => {
-    const { importRead } = server({ offer: [status, missing("/v2/setup/import")] });
+  it.each([
+    [200, "a server that offers no import", { offer: false }],
+    [404, "an older server that offers no import", undefined],
+    [403, "a read the server refuses", undefined],
+  ] as [number, string, unknown][])("shows no box for %i, %s, and asks no more", async (status, _, body) => {
+    const { importRead } = server({ offer: [status, body ?? missing("/v2/setup/import")] });
     const host = await render();
     // Past a poll's wait: no second read.
     await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
