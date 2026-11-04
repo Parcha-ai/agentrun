@@ -14,6 +14,13 @@ export const onMain = (text, origin = "run") => mergedNote(text, { origin });
 
 /** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;
+/** What every run that learns is told first under `# Learned`, notes or none: that it learns, and how. */
+export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs.";
+/** What `# Learned` says after KEEPS when the run starts with no note. */
+export const NOTHING_YET = "Nothing learned yet.";
+/** The index under `# Learned` in a prompt, after the intro to what was learned, or undefined (no section, or nothing
+ *  learned yet). pi's system prompt closes the instructions with `</instructions>`. */
+export const learnedIn = (prompt) => /\n# Learned\n\n(?:[^\n]*\n\n)?What you learned in earlier runs[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** An agent with learning on and no tool: its end-of-run turn answers with the notes `plan` ([file, text] pairs) holds,

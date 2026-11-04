@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
+import { copyOf, ended, git, KEEPS, LEARN, learnedIn, learner, NOTHING_YET, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf } from "./learn-support.mjs";
 import { scratch, serve } from "./support.mjs";
 
 const FILE = "check-units.md";
@@ -24,8 +24,6 @@ const readsOf = (rows, path) => {
   const calls = new Set(rows.filter((row) => row.kind === "tool_use" && row.tool_name === "read" && row.tool_input_preview === path).map((row) => row.tool_use_id));
   return rows.filter((row) => calls.has(row.tool_use_id) && row.kind === "tool_result").map((row) => row.tool_status);
 };
-/** The index under `# Learned` in a prompt, or undefined. */
-const learnedIn = (prompt) => /\n# Learned\n\n[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`on ${harness}, with no write tool, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, answers with a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
@@ -41,6 +39,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const answer = first.view.result.final_answer;
     assert.ok(answer.includes("Say your prompt.") && !answer.includes("Reflected."), `the answer is the job's, never the turn's: ${answer}`);
     assert.equal(learnedIn(answer), undefined, "run 1 had nothing learned");
+    assert.ok(answer.includes(`\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), `run 1 is told it learns, and that nothing is learned yet: ${answer}`);
     settled(first.view, first.rows, "merged");
     assert.equal(first.view.learning.detail, "Learned: Check units");
     // What it learned is on its learning block, in its view and in every list; it used no note: the one it tried to read

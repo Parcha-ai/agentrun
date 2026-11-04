@@ -8,7 +8,7 @@ import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, savedOf, settled, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { learningTestHooks } from "../dist/learning.js";
 import { agent, call, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -24,8 +24,6 @@ const added = (text) => {
   const lines = text.split("\n").slice(0, -1);
   return `@@ -0,0 +1,${lines.length} @@\n${lines.map((one) => `+${one}\n`).join("")}`;
 };
-/** The index under `# Learned` in a prompt, or undefined. */
-const learnedIn = (prompt) => /\n# Learned\n\n[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 
 test("a person sees what the agent learned and controls it: the view, the log by run and by person, a run's diff and its drop, an edit, a create and a retire through preconditions, the checks on a person's note, and the next run reading the result", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, data, token } = await serve(t, { learning: "on", faux: LEARN });
