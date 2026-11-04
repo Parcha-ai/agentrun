@@ -82,11 +82,13 @@ test(`pi: two follow-ups to a run that answered, the second sent while the first
   await until("the answered run's process let go", async () => { const r = recordOf(data, runId); return r !== null && r.status !== "running"; });
   const first = api("POST", `/runs/${runId}/messages`, { content: "Go on." });
   await atLaunch;
-  // Sent while the first's reopen is held: the run already reads open again.
+  // Sent while the first's reopen is held: the run already reads open again. Held long enough for a turn to answer.
   const second = api("POST", `/runs/${runId}/messages`, { content: "And then?" });
-  await sleep(1_000);
+  await sleep(3_000);
   release();
-  assert.deepEqual([(await first).status, (await second).status], [202, 202]);
+  const [a, b] = [await first, await second];
+  // Both are taken: neither is refused as a run that finished, whichever reached the run first.
+  assert.deepEqual([a.status, b.status], [202, 202], `${JSON.stringify(a.body)} ${JSON.stringify(b.body)}`);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary).sort(), ["You: And then?", "You: Go on.", "You: hi"]);
   assert.deepEqual(resumedRows(rows), [], `two follow-ups, the second during the first's reopen: no "Resumed" phase: ${shown(rows)}`);
