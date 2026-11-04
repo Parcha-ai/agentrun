@@ -32,13 +32,14 @@ export function learnedPlace(path: string): LearnedPlace | undefined {
 /** Whether `name` is a good name for a folder of `kind`. */
 export const learnedName = (kind: LearnedPlace["kind"], name: string): boolean => (kind === "skill" ? SKILL_NAME : WORKFLOW_NAME).test(name);
 
-/** Why a `SKILL.md` for the skill `name` is out of shape; empty when it is not. Its front matter names the folder's
- *  name and a description, a folded or literal block value read as one line. */
-export function skillProblems(text: string, name: string): string[] {
+/** A SKILL.md's or a draft README's front matter: its lines, where it closes (the index of its closing `\n---\n`, in
+ *  `lf`, the text with LF line ends) and each key's value, a folded or literal block value read as one line. A string
+ *  is why there is none. */
+function frontOf(text: string): { lf: string; end: number; value: (key: string) => string | undefined } | string {
   const lf = text.replace(/\r\n/g, "\n");
-  if (!lf.startsWith("---\n")) return ["it does not start with front matter"];
+  if (!lf.startsWith("---\n")) return "it does not start with front matter";
   const end = lf.indexOf("\n---\n", 3);
-  if (end < 0) return ["its front matter is not closed"];
+  if (end < 0) return "its front matter is not closed";
   const lines = lf.slice(4, end).split("\n");
   const value = (key: string): string | undefined => {
     const at = lines.findIndex((line) => line.startsWith(`${key}:`));
@@ -48,10 +49,53 @@ export function skillProblems(text: string, name: string): string[] {
     for (const line of lines.slice(at + 1)) if (/^\s+\S/.test(line)) more.push(line.trim()); else break;
     return (/^[>|][-+]?$/.test(own) ? more.join(" ") : own).replace(/^(["'])(.*)\1$/, "$2").trim();
   };
+  return { lf, end, value };
+}
+
+/** Why a `SKILL.md` for the skill `name`, or a draft's `README.md` for the workflow `name`, is out of shape; empty when
+ *  it is not. Its front matter names the folder's name and a description. */
+export function skillProblems(text: string, name: string): string[] {
+  const front = frontOf(text);
+  if (typeof front === "string") return [front];
   const out: string[] = [];
-  if (value("name") !== name) out.push(`name is not the folder's name, ${name}`);
-  if (!value("description")) out.push("description is missing or empty");
+  if (front.value("name") !== name) out.push(`name is not the folder's name, ${name}`);
+  if (!front.value("description")) out.push("description is missing or empty");
   return out;
+}
+
+/** Whether a SKILL.md or a draft's README.md sets `status`, which only the host does (`held`). */
+export const setsStatus = (text: string): boolean => {
+  const front = frontOf(text);
+  return typeof front !== "string" && front.value("status") !== undefined;
+};
+
+/** A skill or a draft the grader held for its owner's OK: its SKILL.md, or its draft's README.md, says `status:
+ *  pending`. No run is given a held skill or workflow until a person approves it. */
+export const isHeld = (text: string): boolean => {
+  const front = frontOf(text);
+  return typeof front !== "string" && front.value("status") === "pending";
+};
+
+/** `text`, a SKILL.md or a draft's README.md, as the host merges one the grader held for its owner's OK: `status:
+ *  pending` last in its front matter, with LF line ends. Throws on a text with no front matter, which the checker never
+ *  passes. */
+export function held(text: string): string {
+  const front = frontOf(text);
+  if (typeof front === "string") throw new Error(`it cannot be held: ${front}`);
+  return `${front.lf.slice(0, front.end)}\nstatus: pending${front.lf.slice(front.end)}`;
+}
+
+/** A draft's `README.md` as the host writes it, from the workflow's name and the one-line description its block gives. */
+export const readmeOf = (name: string, description: string): string => `---\nname: ${name}\ndescription: ${description}\n---\n`;
+
+/** A workflow block's two files: its `description:` front matter written as the draft's README.md (readmeOf), and the
+ *  JSON after it as its workflow.json. A block with no front matter, or none that says what the draft is for, gives a
+ *  README with no description, which the checker refuses; what the JSON holds is the checker's to judge. */
+export function draftFiles(name: string, block: string): { json: string; readme: string } {
+  const front = frontOf(block);
+  if (typeof front === "string") return { json: block, readme: readmeOf(name, "") };
+  const description = (front.value("description") ?? "").replace(/\s+/g, " ").trim();
+  return { json: front.lf.slice(front.end + "\n---\n".length), readme: readmeOf(name, description) };
 }
 
 /** The refusal for a draft that names a tool when the host gave no tool list: the check fails closed. */

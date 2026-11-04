@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
-import { draftProblems, type DraftReader, learnedName, learnedPlace, type LearnedPlace, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { draftProblems, type DraftReader, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -25,17 +25,22 @@ export const CAPS = Object.freeze({
   supersedes: 8,
   /** Changed paths in one run; over it nothing else is read. */
   changes: 64,
-  /** One skill's SKILL.md, or one workflow draft's workflow.json or README.md. */
-  file: 32_768,
+  /** One skill's SKILL.md, or one workflow draft's workflow.json: one grader reads each whole beside the notes, so the
+   *  most a run proposes stays within its prompt (grade.ts GRADE_CAPS.prompt). */
+  file: 16_384,
+  /** One draft's README.md, which the host writes from the one-line description its block gives. */
+  readme: 1_024,
   /** Skills one run adds or changes. */
   skills: 1,
+  /** Workflow drafts one run adds or changes. */
+  workflows: 1,
 });
 
 /** The rule a problem breaks. SPEC.md lists each. */
 export type Rule =
   | "too_many_files" | "outside" | "file_name" | "file_mode" | "encoding" | "edited" | "deleted" | "exists" | "too_large"
   | "too_many_notes" | "invisible_unicode" | "secret_shape" | "secret_value" | "note" | "status" | "supersedes" | "index_full"
-  | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "no_tool_list" | "executable_node";
+  | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "too_many_workflows" | "no_tool_list" | "executable_node";
 
 /** One problem with what a run proposed, printable as it is. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
@@ -134,8 +139,9 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
 }
 
 /** What a run may write of a skill or a workflow draft (`place`), by itself: a good folder name, never a deletion, a
- *  regular file within CAPS.file, its text as textOf takes it, and in shape: a skill's front matter (skillProblems), a
- *  draft the DSL validates against `tools` with no node that runs code (draftProblems), a README that says something. */
+ *  regular file within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a skill's
+ *  front matter (skillProblems), with no `status`, which is the host's; a draft the DSL validates against `tools` with
+ *  no node that runs code (draftProblems); a README that names its folder and says what the draft is for. */
 function learnedChecked(change: Change, place: LearnedPlace, refused: (text: string) => boolean, input: CheckInput, add: Add): void {
   const { path } = change;
   nameScanned(path, refused, add);
@@ -143,15 +149,17 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (change.status === "deleted") return add("deleted", "a run never deletes a skill or a workflow", path);
   if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
   const size = change.size ?? change.bytes?.length ?? 0;
-  if (size > CAPS.file) return add("too_large", `${size} bytes; the cap is ${CAPS.file}`, path);
+  const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;
+  if (size > cap) return add("too_large", `${size} bytes; the cap is ${cap}`, path);
   const text = textOf(path, change.bytes, refused, add);
   if (text === undefined) return;
-  if (place.kind === "skill") for (const reason of skillProblems(text, place.name)) add("skill", reason, path);
-  else if (place.kind === "workflow") {
+  if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
     for (const { rule, detail } of draftProblems(input.dsl, text, input.tools)) add(rule, detail, path);
+    return;
   }
-  else if (text.trim() === "") add("workflow", "the README is empty", path);
+  for (const reason of skillProblems(text, place.name)) add(place.kind === "skill" ? "skill" : "workflow", reason, path);
+  if (place.kind === "skill" && setsStatus(text)) add("status", "a run never sets a skill's status: the host does, when it holds one for its owner's OK", path);
 }
 
 /** The checks one note's file passes by itself (SPEC.md), as a person writes it through the host: its name, the note cap,
@@ -208,6 +216,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   for (const change of changes) one(change);
   if (added > CAPS.newNotes) add("too_many_notes", `${added} new notes; the cap is ${CAPS.newNotes} a run`);
   if (skills.length > CAPS.skills) add("too_many_skills", `${skills.length} skills added or changed; a run adds or changes at most ${CAPS.skills}`);
+  if (workflows.size > CAPS.workflows) add("too_many_workflows", `${workflows.size} workflow drafts added or changed; a run adds or changes at most ${CAPS.workflows}`);
   // A skill is what every later run reads as how to do the job: only a run that did it writes one.
   if (input.outcome !== "completed") for (const path of skills) add("skill_outcome", `the run's outcome is ${input.outcome ?? "not known"}: only a completed run adds or changes a skill`, path);
   // A draft is its workflow.json and its README.md, together, as the folder will hold them.
