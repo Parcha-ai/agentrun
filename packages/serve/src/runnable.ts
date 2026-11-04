@@ -14,7 +14,8 @@ import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, 
 import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { wireName } from "./catalog.js";
-import { mcpNameOf } from "./mcp-gateway.js";
+import { mcpHeaderProblem, mcpNameOf } from "./mcp-gateway.js";
+import type { McpTool } from "@parcha/agentrun-kernel";
 
 /** The harnesses an agent's MCP tools run on here. */
 export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent", "codex"];
@@ -64,7 +65,7 @@ export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly string[] | undefined } = {}): Promise<Blocker[]> {
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly McpTool[] | undefined } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. */
@@ -96,13 +97,16 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       if (tool.startsWith("mcp:")) {
         const field = `definition.tools[${index}]`;
         const named = mcpNameOf(tool);
-        const listed = named && mcp?.(named.server);
+        const saved = named && mcp?.(named.server);
+        const listed = saved && saved.map((t) => t.name);
+        const declared = saved && named ? mcpHeaderProblem(saved.find((t) => t.name === named.tool)?.inputSchema) : undefined;
         if (!named) out.push({ field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool });
         // claude-agent's own tools are its MCP server `hands`: a remote server of that name could never be called there.
         else if (named.server === "hands") out.push({ field, reason: "not_an_option", message: `${tool} names the MCP server hands, a name the harnesses keep for their own tools: save the server under another name.`, host: false, tool });
         else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.slice(0, -1).join(", ")} and ${MCP_HARNESSES.at(-1)} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
         else if (!listed) out.push({ field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool });
         else if (!listed.includes(named.tool)) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool });
+        else if (declared) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server}'s tool ${named.tool} declares a header it cannot send: ${declared}.`, host: false, tool });
         else if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) out.push({ field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool });
         return;
       }
