@@ -18,7 +18,7 @@ import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { FileTail } from "@parcha/agentrun-kernel/process";
-import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
+import type { AcquireMachine, CallHooks, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import type { SessionMcp } from "@parcha/agentrun-kernel";
 import { mcpRoute, parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
@@ -221,7 +221,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let announced: string | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
-    let barrier: ((callId: string) => Promise<boolean>) | undefined;
+    let calls: CallHooks | undefined;
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({
@@ -250,7 +250,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(price ? { price } : {}),
-      ...(options.mcp ? { mcp: mcpRoute(recorded(options.mcp, ctx, (callId) => barrier?.(callId) ?? Promise.resolve(false))) } : {}),
+      ...(options.mcp ? { mcp: mcpRoute(recorded(options.mcp, ctx, () => calls)) } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
     }, key);
@@ -267,7 +267,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelKey: key,
       announcedExec: () => announced,
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
-      onCallBarrier: (given) => void (barrier = given),
+      onCalls: (given) => void (calls = given),
       ...(search || options.mcp ? {
         configure: (config: Record<string, TomlValue>) => {
           if (search) config.web_search = "live";

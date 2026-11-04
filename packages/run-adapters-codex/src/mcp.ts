@@ -12,7 +12,7 @@
 import type { McpCallResult, SessionMcp } from "@parcha/agentrun-kernel";
 import type { TomlValue } from "./config.js";
 import type { DriveContext } from "./host/kernel.js";
-import { BuiltinCalls, toolKey } from "./host/process.js";
+import { BuiltinCalls, type CallHooks, toolKey } from "./host/process.js";
 
 /** What a call answers when its line never reached the log: nothing was sent, and it may be made again. */
 const LAGGING = "Not sent: the session's log had not caught up with this call yet. Nothing reached the MCP server; make the same call again.";
@@ -35,18 +35,22 @@ const said = (text: string, isError: boolean): McpCallResult => ({ content: [{ t
 /** `mcp` with each call recorded in the drive's session as a built-in's, `mcp__<server>__<tool>` under Codex's call id:
  *  its intent once `barrier` has its line in the log and before it is sent, its outcome once it answers. A call id the
  *  records already hold is answered from them. */
-export function recorded(mcp: SessionMcp, ctx: DriveContext, barrier: (callId: string) => Promise<boolean>): SessionMcp {
+export function recorded(mcp: SessionMcp, ctx: DriveContext, hooks: () => CallHooks | undefined): SessionMcp {
   const calls = new BuiltinCalls(ctx);
   return {
     servers: mcp.servers,
     async call(server, tool, args, context) {
       const callId = context.callId;
       if (!callId) return said("Not sent: the call carried no call id to record it by. Nothing reached the MCP server.", true);
+      const name = `mcp__${server}__${tool}`;
+      // A call the interrupted turn already completed, re-issued by a rewritten script under a new id: answered from the log.
+      const again = hooks()?.recovered(name, args);
+      if (again !== undefined) return said(again, false);
       let start;
       try {
         // The call's own line in the log before its intent, as a built-in's (code-mode.ts holds the barrier).
-        if (!ctx.isMemoized(toolKey(callId)) && !(await barrier(callId))) return said(LAGGING, true);
-        start = await calls.begin({ callId, name: `mcp__${server}__${tool}`, input: args, replay: "never" });
+        if (!ctx.isMemoized(toolKey(callId)) && !(await (hooks()?.barrier(callId) ?? false))) return said(LAGGING, true);
+        start = await calls.begin({ callId, name, input: args, replay: "never" });
       } catch {
         return said("Not sent: the session could not record the call. Nothing reached the MCP server.", true);
       }

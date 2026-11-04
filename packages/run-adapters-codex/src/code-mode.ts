@@ -111,9 +111,10 @@ export function codeMode(deps: CodeModeDeps) {
   /** The script a nested call is tied to now, as the log and the proxy's latest answer have it. */
   const tieNow = () => scripts.tie(machine.announcedExec?.(), (id) => logged.has(id));
 
-  /** A call Codex runs without the harness (a remote MCP server's tool, mcp.ts) passes this before its intent: its own line
-   *  in the log, as the harness's barrier has it; a script's nested call, its script's, tied to it (`admit`). */
-  machine.onCallBarrier?.(async (callId) => {
+  /** A call Codex runs without the harness (a remote MCP server's tool, mcp.ts): the barrier it passes before its intent (its
+   *  own line in the log, as the harness's barrier has it; a script's nested call, its script's, tied to it by `admit`), and
+   *  after a recovery the log's answer for a `never` call the interrupted turn completed, re-issued under a new id. */
+  machine.onCalls?.({ recovered: (tool, args) => answeredAgain(tool, args), barrier: async (callId) => {
     if (NESTED_CALL.test(callId)) {
       if (!(await admit(callId))) return false;
       const exec = execOf.get(callId);
@@ -128,7 +129,7 @@ export function codeMode(deps: CodeModeDeps) {
     }
     deps.log("codex: declined a call whose function_call line is not in the log", { callId });
     return false;
-  });
+  } });
 
   /** A `never` nested call: wait for its script's line, as the harness's barrier waits for a call's own. True: admitted. */
   const admit = async (callId: string): Promise<boolean> => {
@@ -172,6 +173,15 @@ export function codeMode(deps: CodeModeDeps) {
     }
   };
 
+  /** A `never` call the log holds a completed outcome for, re-issued after a recovery: its answer from the log, taken once. Held
+   *  to the host's bound as the bridge holds a call's result (`boundResult`): the log keeps the result whole. */
+  function answeredAgain(tool: string, args: unknown, callId?: string): string | undefined {
+    const again = recovered.get(callKey(tool, args))?.shift();
+    if (!again) return undefined;
+    deps.log("codex: answered a never call from the log: it completed before the interruption", { ...(callId ? { callId } : {}), tool: again.tool });
+    return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text;
+  }
+
   /** The cell a dangling call waited on, when it is code mode's `wait` (a function call named `wait` with a `cell_id`, and no host tool of
    *  that name); otherwise `undefined`. */
   const waitedCell = (c: Dangling): string | undefined => {
@@ -201,12 +211,8 @@ export function codeMode(deps: CodeModeDeps) {
           const tool = deps.bridge.get(String(p.tool));
           // After a recovery, a `never` call the log already holds a completed outcome for, called again (a script that was cut short and
           // written again re-issues every call it made): answered from the log, run no more.
-          const again = tool?.replay === "never" ? recovered.get(callKey(tool.name, p.arguments))?.shift() : undefined;
-          if (again) {
-            deps.log("codex: answered a never call from the log: it completed before the interruption", { callId, tool: again.tool });
-            // Held to the host's bound as the bridge holds a call's result (`boundResult`): the log keeps the result whole.
-            return { contentItems: [{ type: "inputText", text: boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text }], success: true };
-          }
+          const again = tool?.replay === "never" ? answeredAgain(tool.name, p.arguments, callId) : undefined;
+          if (again !== undefined) return { contentItems: [{ type: "inputText", text: again }], success: true };
           if (NESTED_CALL.test(callId)) {
             if (tool?.replay === "never" && !ctx.isMemoized(toolKey(callId)) && !(await admit(callId))) return declined;
             const tie = tieNow();
