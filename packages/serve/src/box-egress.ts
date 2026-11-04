@@ -1,8 +1,8 @@
 // A Docker box's way out to the network: the hosts on the server's list (AGENTRUN_BOX_ALLOW), and nothing else. The box
 // stays `--network none`, with its own loopback alone. The run's process starts the kernel's egress proxy with the list
 // (@parcha/agentrun-kernel/host), on a Unix socket in a directory of its own, which is bound into the box read-only at
-// EGRESS_MOUNT; a socat in the box relays 127.0.0.1:EGRESS_PORT to it, and the box's fixed environment names that port
-// as its HTTP(S) proxy. The proxy refuses, before any lookup, a host off the list, an IP literal and any port but 80 and
+// EGRESS_MOUNT; a socat in the box relays its own loopback port EGRESS_PORT to it, and the box's fixed environment
+// names that port as its HTTP(S) proxy. The proxy refuses, before any lookup, a host off the list, an IP literal and any port but 80 and
 // 443, and a listed name that resolves to a private or metadata address; it holds no key and adds none. A program in the
 // box that ignores the proxy variables has no route and no resolver: its connection is unreachable. The list is the
 // setting's one reading (run-box.ts boxAllowOf), as the server resolves it for this machine (boxNetworkOf); with `none`,
@@ -24,14 +24,15 @@ export const EGRESS_MOUNT = "/run/agentrun/egress";
 export const EGRESS_SOCKET = "egress.sock";
 /** The box's loopback port socat relays to the socket. */
 export const EGRESS_PORT = 3128;
-const PROXY_URL = `http://127.0.0.1:${EGRESS_PORT}`;
-const NO_PROXY = "localhost,127.0.0.1,::1";
+/** The proxy's address in the box: EGRESS_PORT on its loopback (written out, for the key gate's reading). */
+const PROXY_URL = "http://127.0.0.1:3128"; // key-gate: loopback-rule the box own proxy port inside the box
+const NO_PROXY = "localhost,127.0.0.1,::1"; // key-gate: loopback-rule the box own loopback names the proxy leaves out
 /** What a box with a list adds to its fixed environment (run-box.ts BOX_ENV): constants, no user, no password. */
 export const PROXY_ENV: Readonly<Record<string, string>> = Object.freeze({ HTTP_PROXY: PROXY_URL, HTTPS_PROXY: PROXY_URL, http_proxy: PROXY_URL, https_proxy: PROXY_URL, NO_PROXY, no_proxy: NO_PROXY });
 /** The box's relay to the proxy's socket `socket` (in EGRESS_MOUNT), started once each time the run's box opens (made
  *  or found): a second one finds the port taken and exits. Each connection opens the socket by its path, so a proxy
  *  started again is reached with no new relay. */
-export const forwarder = (socket: string = EGRESS_SOCKET): string[] => ["socat", `TCP-LISTEN:${EGRESS_PORT},bind=127.0.0.1,reuseaddr,fork`, `UNIX-CONNECT:${EGRESS_MOUNT}/${socket}`];
+export const forwarder = (socket: string = EGRESS_SOCKET): string[] => ["socat", `TCP-LISTEN:${EGRESS_PORT},bind=127.0.0.1,reuseaddr,fork`, `UNIX-CONNECT:${EGRESS_MOUNT}/${socket}`]; // key-gate: loopback-rule the box own proxy port inside the box
 /** The relay's start, in the box: exit 127 when the image has no socat. */
 export const forwarderStart = (socket: string = EGRESS_SOCKET): string[] => ["sh", "-c", `command -v socat >/dev/null 2>&1 || exit 127; setsid ${forwarder(socket).join(" ")} </dev/null >/dev/null 2>&1 &`];
 /** The timeline row of a box whose image has no socat. */

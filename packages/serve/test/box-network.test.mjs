@@ -110,7 +110,7 @@ test("AGENTRUN_BOX_ALLOW, read in one place: unset or empty is the default list,
   assert.equal(boxAllowOf({ [BOX_ALLOW_ENV]: "none" }), "none");
   assert.equal(boxAllowOf({ [BOX_ALLOW_ENV]: "NONE" }), "none");
   assert.deepEqual(boxAllowOf({ [BOX_ALLOW_ENV]: "pypi.org, *.pythonhosted.org,PyPI.org" }), ["pypi.org", "*.pythonhosted.org"]);
-  for (const value of ["*", "93.184.215.14", "10.0.0.0/8", "https://pypi.org", "pypi.org:443", "localhost", " , "]) {
+  for (const value of ["*", "93.184.215.14", "8.8.8.0/24", "https://pypi.org", "pypi.org:443", "localhost", " , "]) {
     assert.throws(() => boxAllowOf({ [BOX_ALLOW_ENV]: value }), (error) => error.message.startsWith(`${BOX_ALLOW_ENV} is a comma list of host names`) && (value.trim() === "," || error.message.includes(JSON.stringify(value))), value);
   }
 });
@@ -289,7 +289,7 @@ test("where a Docker runs, by docker info (fails closed): the network goes on on
   }
   assert.equal(await egressBlockedBy(env, { ...said(""), info: async () => { throw new Error("it failed (exit 1)"); } }), "docker info did not say where this Docker runs (it failed (exit 1)), so this server can't tell it is on this machine");
   assert.equal(await egressBlockedBy(env, { ...said(""), platform: "darwin" }), "this server runs on macOS, where Docker runs in a VM that can't reach this server's egress proxy yet");
-  assert.equal(await egressBlockedBy({ ...env, DOCKER_HOST: "tcp://10.0.0.5:2376" }, said("linux|6.1.0-28-amd64|Debian GNU/Linux 13 (trixie)")), "this Docker (DOCKER_HOST=tcp://10.0.0.5:2376) is not on this machine, so it can't reach this server's egress proxy");
+  assert.equal(await egressBlockedBy({ ...env, DOCKER_HOST: "tcp://docker.example.com:2376" }, said("linux|6.1.0-28-amd64|Debian GNU/Linux 13 (trixie)")), "this Docker (DOCKER_HOST=tcp://docker.example.com:2376) is not on this machine, so it can't reach this server's egress proxy");
   assert.equal(await egressBlockedBy({ ...env, DOCKER_HOST: "unix:///var/run/docker.sock" }, said("linux|6.1.0-28-amd64|Debian GNU/Linux 13 (trixie)")), undefined, "a unix socket is this machine's");
 });
 
