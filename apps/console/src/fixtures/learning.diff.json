@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/runs/01a1a4cb-1f7d-7331-af5c-5086065311f5/learning/diff"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "base": "f0f289bcaac87dc5120707ac15e30af95364e449",
+    "head": "e804a608ac0ff46a77037a4bf9efbc4ef3cec012",
+    "files": [
+      {
+        "path": "MEMORY.md",
+        "status": "modified",
+        "patch": "@@ -1 +1 @@\n-- [Shopify refund policy path](shopify-refund-policy-path.md) — On a Shopify store the refund policy is at /policies/refund-policy\n+- [Try /policies/refund-policy first](try-policies-refund-policy-first.md) — Open /policies/refund-policy before any other page; fall back to /pages/returns\n"
+      },
+      {
+        "path": "shopify-refund-policy-path.md",
+        "status": "modified",
+        "patch": "@@ -2,6 +2,8 @@\n name: Shopify refund policy path\n description: On a Shopify store the refund policy is at /policies/refund-policy\n type: reference\n+status: superseded\n+superseded_by: try-policies-refund-policy-first.md\n ---\n Shopify stores serve their refund policy at `/policies/refund-policy`.\n \n"
+      },
+      {
+        "path": "try-policies-refund-policy-first.md",
+        "status": "added",
+        "patch": "@@ -0,0 +1,11 @@\n+---\n+name: Try /policies/refund-policy first\n+description: Open /policies/refund-policy before any other page; fall back to /pages/returns\n+type: feedback\n+supersedes: [shopify-refund-policy-path.md]\n+---\n+Open `https://<shop>/policies/refund-policy` first. It answered at once on Taylor Stitch and Brooklinen.\n+\n+**Why:** most of these shops run on Shopify, which always serves that path.\n+\n+**How to apply:** fetch it before any search. Only if it's a 404, try `/pages/returns`, then the links in the site's footer.\n"
+      }
+    ]
+  }
+}
