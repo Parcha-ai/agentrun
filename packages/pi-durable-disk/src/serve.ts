@@ -175,6 +175,16 @@ const callsOf = (record: { model?: readonly unknown[] } | undefined): boolean =>
   (((record?.model?.[0] as { content?: unknown } | undefined)?.content as { type?: string }[] | undefined) ?? []).some((b) => b?.type === "toolCall");
 
 /** Start listening; requests are answered once `attach` hands over the open run. */
+/** The inputs a door's snapshot carries, from a conversation's input submissions in id order: the newest one settled
+ *  (done, or unanswered after it was placed) and every one after it. */
+export function snapshotInputs<T extends { readonly status: string; readonly entry?: unknown }>(records: readonly T[]): T[] {
+  let newest = -1;
+  records.forEach((record, at) => {
+    if ((record.status === "done" || record.status === "unanswered") && record.entry !== undefined) newest = at;
+  });
+  return records.slice(Math.max(newest, 0));
+}
+
 export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   const base = options.context ?? BACKGROUND_CONTEXT;
   const bind = options.host ?? "127.0.0.1";
@@ -280,20 +290,16 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
    *  which messages are still open and how the newest one's turn ended. */
   async function inputsOf(conversationId: ConversationId, context: Context): Promise<unknown[]> {
     const storage = run!.store.storage;
-    // In id order (an older pi-durable scans no other way): the newest settled input and every one after it.
-    let tail: Extract<SubmissionRecord, { type: "input" }>[] = [];
+    // In id order (an older pi-durable scans no other way).
+    const inputs: Extract<SubmissionRecord, { type: "input" }>[] = [];
     for (let cursor: unknown; ; ) {
       const page = await storage.scanSubmissions({ conversationId }, 100, cursor as never, context);
-      for (const record of page.items) {
-        if (record.type !== "input") continue;
-        if ((record.status === "done" || record.status === "unanswered") && record.entry !== undefined) tail = [record];
-        else tail.push(record);
-      }
+      for (const record of page.items) if (record.type === "input") inputs.push(record);
       if (page.next === undefined) break;
       cursor = page.next;
     }
     const out: unknown[] = [];
-    for (const record of tail) {
+    for (const record of snapshotInputs(inputs)) {
       const answer = record.status === "done" ? (await storage.entry(record.answer, context))?.entry : undefined;
       // A done one with its answer's text, and whether that answer asked for tools (a tool ended the turn).
       out.push(record.status === "done" ? { ...record, answer_text: answerTextOf(answer), answer_calls: callsOf(answer) } : record);
