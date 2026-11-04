@@ -98,9 +98,16 @@ export function pathProblem(path: string): string | undefined {
 }
 
 /** What a request sent, as its JSON (a string quoted), cut to 40 characters (an ellipsis the 40th when it is longer):
- *  by code points, so a surrogate pair is never split. */
+ *  by code points, so a surrogate pair is never split. A value JSON.stringify cannot write (nested past the stack, as a
+ *  parsed body can be) is named as such: describing a bad value never fails the refusal. */
 const shown = (value: unknown): string => {
-  const chars = [...(JSON.stringify(value) ?? String(value))];
+  let json: string;
+  try {
+    json = JSON.stringify(value) ?? String(value);
+  } catch {
+    return "a value too deep to show";
+  }
+  const chars = [...json];
   return chars.length > 40 ? `${chars.slice(0, 39).join("")}\u2026` : chars.join("");
 };
 
