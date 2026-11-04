@@ -43,12 +43,16 @@ export async function keepWhenIdle(api: DaytonaApi, id: string, minutes = KEPT_A
 /** The states a run's box is woken from: stopped (a kept box after its idle stop) and paused (a class that pauses when
  *  idle, while its run waits for a person). `/start` takes either. */
 const ASLEEP: ReadonlySet<unknown> = new Set(["stopped", "paused"]);
+/** On its way to one of those: waited for (SETTLE_MS at most), then started. */
+const SETTLING: ReadonlySet<unknown> = new Set(["stopping", "pausing"]);
+const SETTLE_MS = 60_000;
 
 type Listed = { id?: unknown; state?: unknown; labels?: Record<string, unknown> };
 
 /** Starts every stopped or paused run box whose run `pick` names, and waits until each runs: a box kept at a run's end
  *  that Daytona stopped, which the start's sweep then pulls like any other, or a run's box that paused while it waited.
- *  How many. */
+ *  One still stopping or pausing is waited for first; one that has not settled in SETTLE_MS throws, so its caller keeps
+ *  it and never makes another in its place. How many run now. */
 export async function wakeBoxes(api: DaytonaApi, pick: (runId: string) => boolean): Promise<number> {
   const stopped: string[] = [];
   let cursor: string | undefined;
@@ -60,11 +64,16 @@ export async function wakeBoxes(api: DaytonaApi, pick: (runId: string) => boolea
     const items = Array.isArray(page) ? page : (page?.items ?? []);
     for (const item of items) {
       const run = item.labels?.["agentrun.run"];
-      if (typeof item.id === "string" && ASLEEP.has(item.state) && item.labels?.["agentrun.box"] === "run" && typeof run === "string" && pick(run)) stopped.push(item.id);
+      if (typeof item.id === "string" && (ASLEEP.has(item.state) || SETTLING.has(item.state)) && item.labels?.["agentrun.box"] === "run" && typeof run === "string" && pick(run)) stopped.push(item.id);
     }
     cursor = Array.isArray(page) ? undefined : (page?.nextCursor ?? undefined);
   } while (cursor);
+  let woken = 0;
   for (const id of stopped) {
+    const state = await settled(api, id);
+    if (state === undefined) continue;
+    woken++;
+    if (state === "started") continue;
     const started = await daytonaCall(api, "POST", `/sandbox/${encodeURIComponent(id)}/start`);
     if (!started.ok) throw new Error(`Daytona answered ${started.status} to the start of a kept box`);
     for (const end = Date.now() + WAKE_MS; ; ) {
@@ -75,5 +84,17 @@ export async function wakeBoxes(api: DaytonaApi, pick: (runId: string) => boolea
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
   }
-  return stopped.length;
+  return woken;
+}
+
+/** Sandbox `id`'s state once it is no longer stopping or pausing; undefined when it is gone. Throws past SETTLE_MS. */
+async function settled(api: DaytonaApi, id: string): Promise<unknown> {
+  for (const end = Date.now() + SETTLE_MS; ; ) {
+    const read = await daytonaCall(api, "GET", `/sandbox/${encodeURIComponent(id)}`);
+    if (read.status === 404) return undefined;
+    const state = read.ok ? ((await read.json().catch(() => null)) as Listed | null)?.state : undefined;
+    if (state !== undefined && !SETTLING.has(state)) return state;
+    if (Date.now() > end) throw new Error(`a run's box was still ${String(state)} after ${SETTLE_MS / 1000} s: it is kept, and nothing is made in its place`);
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
 }

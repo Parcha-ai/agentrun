@@ -10,7 +10,8 @@
 // it with work/, pulls work/ back at each turn's end and once more before the run's end is recorded, and destroys it
 // after that pull; the run's process reaches it through the relay, which holds the key. What the run's own host tools
 // file in work/ meanwhile (writeInWork) is copied into the box too, so its tools read it.
-import { lstat, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { appendFile, lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
@@ -40,8 +41,14 @@ export const DEFAULT_DOCKER_IMAGE = "debian:bookworm-slim";
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
 
-/** A remote box's sync mark in its run's directory: the box's id and the listing its seed or last pull left. */
+/** A remote box's sync mark in its run's directory: the box's id and the listing its seed or last pull left. The
+ *  server alone writes it. */
 export const BOX_SYNC_FILE = "box-sync.json";
+/** What the run's process copied into its remote box after the seed (a file its host tools filed in work/): one JSON line
+ *  per file, `{path, sha256, bytes}`, appended by that process alone. The mark has one writer, the server, so the
+ *  process never writes it; a pull folds these lines into the mark it compares against, for paths the mark lacks, so
+ *  the box's later edit of such a file comes back instead of reading as a change the server made. */
+export const BOX_MIRRORED_FILE = "box-mirrored.jsonl";
 
 type Mount = NonNullable<BoxSpec["mounts"]>[number];
 
@@ -107,10 +114,11 @@ export function runBox(given: BoxSource | (() => Promise<BoxProvider>), run: { i
       if (!ended.ok) throw new Error(`the run's box could not be taken over: ${ended.error.message}`);
     }
     if (filed.size) {
-      const files = [...filed].map(([path, bytes]) => ({ path: posix.join(BOX_WORK, path), bytes }));
+      const queued = [...filed];
       filed.clear();
-      const sent = await box.upload(files, context);
-      if (!sent.ok) mirrorFailed(files.map((file) => file.path).join(", "), sent.error);
+      const sent = await box.upload(queued.map(([path, bytes]) => ({ path: posix.join(BOX_WORK, path), bytes })), context);
+      if (!sent.ok) mirrorFailed(queued.map(([path]) => path).join(", "), sent.error);
+      else for (const [path, bytes] of queued) await mirrored(run.dir, path, bytes);
     }
     return { box, env: boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv };
   };
@@ -166,10 +174,39 @@ export function runBox(given: BoxSource | (() => Promise<BoxProvider>), run: { i
             if (!box) return void filed.set(path, bytes);
             const sent = await box.upload([{ path: posix.join(BOX_WORK, path), bytes }], BACKGROUND);
             if (!sent.ok) throw sent.error;
+            await mirrored(run.dir, path, bytes);
           },
         }
       : {}),
   };
+}
+
+/** Notes in BOX_MIRRORED_FILE that `bytes` at `path` (below work/) went into the run's box: one appended line. */
+async function mirrored(runDir: string, path: string, bytes: Uint8Array): Promise<void> {
+  const line = { path, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length };
+  await appendFile(join(runDir, BOX_MIRRORED_FILE), `${JSON.stringify(line)}\n`, { mode: 0o600 });
+}
+
+/** `mark` with each file the run's process mirrored into the box since (BOX_MIRRORED_FILE) that it lacks: as the bytes
+ *  both sides held, so the box's edit of it is a change to fetch and this machine's copy is not a change of its own. */
+async function withMirrored(runDir: string, mark: Manifest): Promise<Manifest> {
+  const text = await readFile(join(runDir, BOX_MIRRORED_FILE), "utf8").catch(() => "");
+  const held = new Set(mark.entries.map((entry) => entry.path));
+  const added = new Map<string, Manifest["entries"][number]>();
+  for (const line of text.split("\n")) {
+    let entry: { path?: unknown; sha256?: unknown; bytes?: unknown };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof entry.path !== "string" || typeof entry.sha256 !== "string" || typeof entry.bytes !== "number" || held.has(entry.path)) continue;
+    // The newest line for a path wins; its listed fields never match the box's, so the pull lists it as changed.
+    added.set(entry.path, { path: entry.path, kind: "file", bytes: entry.bytes, sha256: entry.sha256, mode: 0o644, mtime: "0" });
+  }
+  if (!added.size) return mark;
+  const entries = [...mark.entries, ...added.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { entries, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) };
 }
 
 /** Said in the run's process log: a file the host tools filed in work/ that its remote box did not get. */
@@ -286,7 +323,8 @@ export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: 
   const total: RemotePull = { changed: 0, files: 0, bytes: 0, removed: 0 };
   for (let round = 1; ; round++) {
     const kept = await markOf(run.dir);
-    const pulled = await pullDir(box, { from: BOX_WORK, to: join(run.dir, "work"), ...(kept?.box === box.id ? { since: kept.mark } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
+    const since = kept?.box === box.id ? await withMirrored(run.dir, kept.mark) : undefined;
+    const pulled = await pullDir(box, { from: BOX_WORK, to: join(run.dir, "work"), ...(since ? { since } : {}), mirrorDeletes: true, overwrite: "if_unchanged" }, context);
     if (!pulled.ok) throw new Error(`the run's files could not be copied back from its box: ${pulled.error.message}`);
     // What it wrote is whole and in the mark, a stopped pull's too: the next pull asks only for the rest.
     await keepMark(run.dir, { box: box.id, mark: pulled.value.mark });

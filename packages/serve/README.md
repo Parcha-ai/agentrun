@@ -339,7 +339,9 @@ since nothing binds `work/` there):
   run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
   never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
   has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
-  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run.
+  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run, which the server alone
+  writes; the run's process notes each file it copied in, in `box-mirrored.jsonl` beside it, and a copy back counts
+  those as held by both sides, so an edit the box makes to one comes back.
 - The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
   is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
   is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
@@ -353,7 +355,8 @@ since nothing binds `work/` there):
   the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
 - A run's sandbox that Daytona stopped or paused (a sandbox class that pauses when idle, while the run waits for its
   person) is started again when the server next needs it: for the run's next tool call, a copy back, or the start's
-  sweep. It is never replaced by a new one, so what only it holds stays.
+  sweep. One still stopping or pausing is waited for (a minute at most) first. It is never replaced by a new one, so
+  what only it holds stays.
 - The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
 ### The box's image
