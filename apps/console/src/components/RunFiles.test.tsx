@@ -1,5 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactViewer } from "./RunFiles";
 import type { RunFile } from "@/lib/v2";
@@ -123,5 +124,18 @@ describe("ArtifactViewer, Rendered or Raw", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(ArtifactViewer, { file: at("photo.png", "image/png"), text: "", onClose: () => {} })));
     expect(host.querySelector('[role="radiogroup"]')).toBeNull();
+  });
+});
+
+// On a phone (375 px) the header's one row can't hold the file's name, the Rendered / Raw toggle, Copy and Download: the
+// toggle takes a row of its own below them under the sm breakpoint, so Copy and Download stay on screen.
+describe("ArtifactViewer, on a narrow screen", () => {
+  const md = { path: "hello.md", size_bytes: 30, modified_at: "2026-11-04T20:57:00Z", content_type: "text/markdown" } as RunFile;
+  const header = () => { const html = renderToStaticMarkup(createElement(ArtifactViewer, { file: md, text: "# A", onClose: () => {} })); return html.slice(html.indexOf("<header"), html.indexOf("</header>")); };
+  it("lets the header wrap, and gives the toggle a full row of its own, last, below sm", () => {
+    const h = header();
+    expect(/^<header class="([^"]*)"/.exec(h)![1].split(" ")).toContain("flex-wrap");
+    const row = /<div class="([^"]*)"><div class="[^"]*" role="radiogroup" aria-label="View">/.exec(h);
+    expect(row?.[1].split(" ")).toEqual(expect.arrayContaining(["basis-full", "order-last", "sm:basis-auto", "sm:order-none"]));
   });
 });
