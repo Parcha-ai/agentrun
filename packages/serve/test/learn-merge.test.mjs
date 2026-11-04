@@ -236,6 +236,28 @@ test("a turn that adds nothing is dropped as empty, and the run's answer stands"
   assert.equal(git(repoOf(data, "idle"), ["rev-list", "--count", "main"]), "1");
 });
 
+test("a note that holds the run's own door token is refused as secret_value: no git object and nothing the run shows holds it", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  const go = join(await scratch(t), "go");
+  await made(api, learner("doorman", { instructions: `Answer once ${go} exists.` }));
+  const runId = await started(api, "doorman");
+  // The token the run's own door takes, which its process holds, asked to be kept as a person (or the run) could ask.
+  for (let i = 0; !existsSync(join(data, "runs", runId, "door-token")); i++) {
+    assert.ok(i < 600, "the run is launched");
+    await sleep(50);
+  }
+  const token = readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: `Remember for next time: The door takes ${token}` });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  writeFileSync(go, "");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "checker");
+  const { learning } = await savedOf(data, runId);
+  assert.ok(learning.problems.some((problem) => problem.rule === "secret_value" && problem.path === "remembered.md"), JSON.stringify(learning.problems));
+  assert.ok(!objects(repoOf(data, "doorman")).includes(token), "no git object holds the token");
+  assert.ok(!JSON.stringify(learning).includes(token), "the run's learning view does not hold it");
+});
+
 test("nothing the run put in its copy of the folder is read: links planted there, to a file or a folder, and a note written there, while the turn holds; only the turn's answer merges, and the links' target's text is nowhere", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const outside = await scratch(t);

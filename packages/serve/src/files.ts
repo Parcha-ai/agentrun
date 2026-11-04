@@ -1,6 +1,6 @@
 // The small JSON files the server reads and writes beside the agent store.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, fsyncSync, openSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,6 +14,22 @@ export const RUN_CANCELLED = "cancelled";
 /** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
  *  or exits: found at a start, the server went down while it launched the run. */
 export const RUN_LAUNCHING = "launching";
+/** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
+export const DOOR_TOKEN_FILE = ".door-token";
+/** A run's own door token, in its directory, made at its first launch and handed to its process alone (its
+ *  `--serve-token-file`): the server's calls to that run's door carry it, and so do that run's calls to the box relay
+ *  (box-relay.ts), which takes a call for a run only with that run's token. */
+export const RUN_DOOR_TOKEN = "door-token";
+
+/** Run directory `dir`'s own door token (RUN_DOOR_TOKEN), when it has one. */
+export function runDoorToken(dir: string): string | undefined {
+  try {
+    const token = readFileSync(join(dir, RUN_DOOR_TOKEN), "utf8").trim();
+    return token && !/\s/.test(token) ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
 

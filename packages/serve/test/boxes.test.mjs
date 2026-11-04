@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
@@ -15,6 +14,9 @@ import { BOX_IDS, BOX_KEYS, boxesLog, boxRegistry, VM_PROVIDER } from "../dist/b
 import { SERVER_LOCK } from "../dist/server-lock.js";
 import { startServe } from "../dist/index.js";
 import { FAUX, scratch, withEnv } from "./support.mjs";
+// A fake Daytona API on loopback (each request kept in `seen`, `answer` writing the response); daytona-boxes.test.mjs
+// runs whole sandboxes on the same fixture.
+import { fakeDaytona } from "./fixtures/fake-daytona.mjs";
 
 const VM = VM_PROVIDER.id;
 const DAYTONA_KEY = "DAYTONA_API_KEY";
@@ -37,17 +39,6 @@ async function fakeDocker(t, body) {
 const ANSWERS = 'case "$1" in version) echo 27.3.1; exit 0 ;; esac\nexit 1';
 const FAILS = "echo 'RAW-DOCKER-STDERR permission denied on the daemon socket' >&2\nexit 1";
 
-/** A fake Daytona API on loopback: each request is kept in `seen`, and `answer` writes the response (or none). */
-async function fakeDaytona(t, answer) {
-  const seen = [];
-  const server = createServer((req, res) => {
-    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
-    answer(req, res);
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
-  return { url: `http://127.0.0.1:${server.address().port}/api`, seen };
-}
 /** Daytona as it answers a box that does not exist: 404 to the key it takes, 401 to any other, with a body that echoes
  *  what it was sent. */
 const takes = (key) => (req, res) => {
