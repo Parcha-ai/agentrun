@@ -252,6 +252,26 @@ describe("the owner's session", () => {
   });
 });
 
+describe("setup's import status", () => {
+  it("reads a 200 that says there is no offer as none, and still a 404 or 403 from an older server", async () => {
+    const answers: [number, unknown][] = [
+      [200, { offer: false }],
+      [404, { error: { code: "not_found", message: "no route /v2/setup/import", retryable: false } }],
+      [403, { error: { code: "forbidden", message: "this read must come from this server's page", retryable: false } }],
+    ];
+    const { fn, calls } = fakeFetch(() => json(...answers.shift()!));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([null, null, null]);
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(Array(3).fill("GET /v2/setup/import"));
+  });
+  it("passes an offer and an import's state through as the server says them", async () => {
+    const answers: unknown[] = [{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }];
+    const { fn } = fakeFetch(() => json(200, answers.shift()));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }]);
+  });
+});
+
 describe("follow's pace", () => {
   it("waits at least minDelayMs between polls, even when the server says poll_after_ms 0 on unchanged pages", async () => {
     const page = running.body as unknown as TimelinePage;
