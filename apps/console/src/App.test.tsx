@@ -21,6 +21,7 @@ describe("route", () => {
   it("opens Settings → Tool keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
+    expect(route("#/settings/webhook")).toEqual({ section: "settings", settings: "webhook" });
   });
   it("reads the runs list's filters from the address and writes them back the same way, so a reload keeps them", () => {
     expect(route("#/runs?status=failed")).toEqual({ section: "runs", status: "failed" });
@@ -118,6 +119,8 @@ describe("App, Settings", () => {
       if (path === "/v2/capabilities") return json(200, { harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
+      if (path === "/v2/settings/webhook") return json(200, { configured: false });
+      if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: [] });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
@@ -196,6 +199,26 @@ describe("App, Settings", () => {
     expect(page.host.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Settings");
     expect(page.host.querySelector("h1")?.textContent).toBe("Tool keys");
     expect(page.host.textContent).toContain("MONID_API_KEYnot set");
+  });
+
+  it("opens Settings → Webhook at #/settings/webhook on a server with the webhook routes, with a tab to each settings page", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, webhooks: { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" } }, "#/settings/webhook");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
+    expect(page.asked).toContain("GET /v2/settings/webhook");
+    const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
+    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["Webhook", "#/settings/webhook", "page"]]);
+  });
+
+  it("has a tab for each of the three settings pages on a server with tool keys, a choice of provider and the webhook routes", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, webhooks: { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" } }, "#/settings/webhook", choiceTools);
+    expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
+    const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
+    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["Webhook", "#/settings/webhook", "page"]]);
+  });
+
+  it("has no Webhook tab on a server without the webhook routes", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
+    expect(page.host.querySelector('nav[aria-label="Settings"]')).toBeNull();
   });
 
   it("reads the capabilities again after a key is saved, so the tools it unlocks are offered without a reload", async () => {

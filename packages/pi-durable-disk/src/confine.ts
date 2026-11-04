@@ -28,8 +28,11 @@ export type RefusalReason = "outside_work" | "changed";
 
 /**
  * A file operation named a path that is not under the workspace (`outside_work`), or one whose components changed
- * while it was being resolved (`changed`). pi turns it into a failed tool result that names the path. Its `code` is pi's
- * `permission_denied`.
+ * while it was being resolved (`changed`). pi turns it into a failed tool result whose text is the message, and the
+ * message names no path: pi's tools resolve a path against the workspace before they ask for it, so the path asked
+ * for, the workspace and where a link resolves to are all the host's own, which a model on a server must not read.
+ * `path` keeps the path asked for. An app that shows a refusal names the path its caller gave, telling the refusal by
+ * its type and `reason`, never by the message's text. Its `code` is pi's `permission_denied`.
  */
 export class PathOutsideWorkError extends FileError {
   readonly reason: RefusalReason;
@@ -269,7 +272,7 @@ export class Pin {
 }
 
 const changed = (path: string) =>
-  new PathOutsideWorkError(path, "changed", `${path}: a component of the path changed while it was being resolved, so the operation was refused`);
+  new PathOutsideWorkError(path, "changed", "a component of the path changed while it was being resolved, so the operation was refused");
 
 /** A root's canonical path, as a pattern that matches it whole in a path or a message, and the name the caller gave it. */
 export interface RootName {
@@ -320,10 +323,7 @@ export class Confinement {
     const canonical = follow ? await canonicalize(abs) : join(await canonicalize(dirname(abs)), basename(abs));
     const roots = access === "write" ? [this.work, ...this.#handed] : [this.work, ...this.#handed, ...this.readOnly];
     const root = roots.find((candidate) => inside(canonical, candidate));
-    if (root === undefined) {
-      const where = canonical === abs ? "" : ` (it resolves to ${canonical})`;
-      throw new PathOutsideWorkError(original, "outside_work", `${original}: outside the workspace ${this.work}${where}`);
-    }
+    if (root === undefined) throw new PathOutsideWorkError(original, "outside_work", "outside the workspace");
     return { canonical, root };
   }
 
@@ -336,7 +336,7 @@ export class Confinement {
       // a handed directory itself (a tool removing the temp dir it was given): pinned as an entry of the read-only root that
       // holds it, so it can go; the workspace root never can
       const holder = this.#handed.has(root) ? this.readOnly.find((candidate) => dirname(root) === candidate) : undefined;
-      if (holder === undefined) throw new PathOutsideWorkError(original, "outside_work", `${original}: the workspace root itself cannot be removed or renamed`);
+      if (holder === undefined) throw new PathOutsideWorkError(original, "outside_work", "the workspace root itself cannot be removed or renamed");
       return new Pin(await walk(holder, [], "none", canonical, this.byPath), canonical, basename(root), false, { byPath: this.byPath, path: holder, names: this.#names });
     }
     const name = names.pop() ?? "";

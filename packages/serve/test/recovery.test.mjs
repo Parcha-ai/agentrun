@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { startServe } from "../dist/index.js";
+import { ledgerOf, reflectRows } from "./learn-support.mjs";
 import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -81,14 +82,15 @@ async function killRun(pid) {
   }
 }
 
-test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes", async (t) => {
+test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes; its timeline says it resumed after a crash", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await killRun(pid);
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
-  const { last } = await follow(api, runId, ["completed"]);
+  const { last, rows } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
+  assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after a crash"], "one stored row, kept by the settle's read");
   assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
   assert.equal(storeRun(data, runId).state, "completed");
   assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
@@ -98,15 +100,16 @@ test("a run whose process died with its server is relaunched on its directory by
 
 // A server that goes down while it copies what a learning run's agent learned: before the copy starts, or once it is
 // whole and pinned but its learning not yet saved. The run's input is saved before the copy, so the next server relaunches
-// it with its first message; a copy it finds unsaved goes, so the run starts again with nothing learned.
+// it with its first message; a copy it finds unsaved goes, so the run starts again with nothing learned, and asks no
+// end-of-run turn though its agent has a write tool (a seeded run of it does: the control).
 const HOLD_SEED = new URL("./fixtures/hold-seed.mjs", import.meta.url).href;
 for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "dropped", reason: "seed_failed" }]]) {
-  test(`a server killed while a learning run's seed is copied (${seam}): the next one relaunches the run with its first message, and it completes with nothing learned`, async (t) => {
+  test(`a server killed while a learning run's seed is copied (${seam}): the next one relaunches the run with its first message, and it completes with nothing learned and no end-of-run turn`, async (t) => {
     const data = join(await scratch(t), "agents");
     const signal = join(await scratch(t), "held");
     const first = await serverProcess(data, { execArgv: ["--import", HOLD_SEED], env: { AGENTRUN_TEST_HOLD_SEED: seam, AGENTRUN_TEST_HOLD_SIGNAL: signal } });
     t.after(() => first.child.kill("SIGKILL"));
-    assert.equal((await first.api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
+    assert.equal((await first.api("POST", "/agents", agent("learner", { learning: true, tools: ["write"] }))).status, 201);
     // The start waits on the held copy, so it never answers: the run is found by its directory once the copy holds.
     const starting = first.api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } }).catch(() => undefined);
     let runDir = "";
@@ -121,14 +124,32 @@ for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "drop
     assert.equal(storeRun(data, runId).state, "running");
     assert.equal(existsSync(join(runDir, "learning.json")), seam === "afterPin", "a pin only once the copy was whole");
     const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-    t.after(() => next.close());
+    // Closed in the body, before the data directory's hook removes it: the control run below learns, and its check and
+    // grade still write into its directory after it reads completed. close() returns once they ended.
+    let closed;
+    const stop = () => (closed ??= next.close());
+    t.after(stop);
     const api = client(next.baseUrl, next.token);
-    await follow(api, runId, ["completed"]);
+    const { rows } = await follow(api, runId, ["completed"]);
     const read = (await api("GET", `/runs/${runId}`)).body;
     assert.equal(read.result.final_answer, "Soon.", "its first message reached it");
     assert.deepEqual(read.learning && { state: read.learning.state, reason: read.learning.reason }, learning);
     assert.equal(existsSync(join(runDir, "learning.json")), false, "no pin");
     assert.equal(existsSync(join(runDir, "work", ".learning")), false, "no copy of the notes");
+    // Nothing seeded, so no end-of-run turn: none asked, none saved, no row of one.
+    assert.equal(reflectRows(rows).length, 0, "no end-of-run turn");
+    assert.equal(JSON.parse(await readFile(join(runDir, "serve.json"), "utf8")).reflect, undefined, "none saved");
+    if (learning) {
+      // Its end is in the ledger once, after its serve.json: /v2/stats counts it.
+      assert.deepEqual(ledgerOf(data).filter((line) => line.run === runId).map((line) => [line.state, line.reason]), [["dropped", "seed_failed"]]);
+      assert.equal((await api("GET", "/stats")).body.learning.dropped.seed_failed, 1);
+    }
+    // The control: a run of the same agent that is seeded asks its end-of-run turn.
+    const control = (await api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } })).body.run_id;
+    await follow(api, control, ["completed"]);
+    const saved = JSON.parse(await readFile(join(data, "runs", control, "serve.json"), "utf8"));
+    assert.equal(typeof saved.reflect?.after, "number", JSON.stringify(saved));
+    await stop();
   });
 }
 
@@ -320,6 +341,22 @@ test("a start that needs the place of a cancelled run whose adopted process will
   assert.equal(answer.status, 429, JSON.stringify(answer.body));
   assert.ok(waited >= 3_000, `it waited for the place being given back: ${waited} ms`);
   assert.ok(waited < 8_000, `and answered by its deadline, never hanging on a process that will not go: ${waited} ms`);
+});
+
+test("a run whose live process the next server adopts holds its harness's memory there: a start that needs it is 429, one that fits the rest starts", async (t) => {
+  const { data, runId } = await crashMidRun(t, "Take your time.");
+  // 384 MB: 256 for runs, 128 of it the adopted pi run's.
+  const was = process.constrainedMemory;
+  process.constrainedMemory = () => 384 * 2 ** 20;
+  t.after(() => void (process.constrainedMemory = was));
+  const api = await adopting(t, data, runId, { fauxHarness: new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname, drainTimeout: "5s" });
+  await untilState(api, runId, ["working", "working"]);
+  assert.equal((await api("POST", "/agents", agent("mid", { harness: "codex" }))).status, 201);
+  const refused = await api("POST", "/agents/mid/runs", { input: { content: "hi" } });
+  assert.deepEqual([refused.status, refused.body.error?.details?.harness, refused.body.error?.details?.free_mb], [429, "codex", 128], JSON.stringify(refused.body));
+  const fits = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(fits.status, 202, JSON.stringify(fits.body));
+  await follow(api, fits.body.run_id, ["completed"]);
 });
 
 test("Idempotency-Key answers outlive a restart for the retention capabilities state", async (t) => {

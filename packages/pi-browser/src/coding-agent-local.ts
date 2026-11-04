@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { publicFetch } from "./core/public-fetch.js";
-import { READ_MAX_CHARS, readPage } from "./core/read-page.js";
+import { READ_MAX_CHARS, readPage, thousands } from "./core/read-page.js";
 import type { EvidenceRecord, EvidenceSink } from "./core/evidence.js";
 import type { WebBackup } from "./core/web.js";
 
@@ -62,7 +62,7 @@ export function httpBackup(options: { lookup?: (host: string) => Promise<string[
       if (answer.status < 200 || answer.status >= 300) throw Object.assign(new Error(`the page answered ${answer.status}`), { status: answer.status });
       if (!/html/i.test(answer.contentType)) return answer.body!;
       const page = await readPage(answer.body!, answer.url, signal ? { signal } : {});
-      return page.truncated ? `${page.text}\n\n(Cut: the page is ${page.html_chars!.toLocaleString("en-US")} characters of HTML, and only its first ${READ_MAX_CHARS.toLocaleString("en-US")}, scripts and styles aside, were read.)` : page.text;
+      return page.truncated ? `${page.text}\n\n(Cut: the page is ${thousands(page.html_chars!)} characters of HTML, and only its first ${thousands(READ_MAX_CHARS)}, scripts and styles aside, were read.)` : page.text;
     },
   };
 }

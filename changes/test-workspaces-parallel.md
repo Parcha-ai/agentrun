@@ -1,0 +1,9 @@
+---
+packages: repo
+kind: ci
+---
+**`npm test` runs the workspaces' tests several at once, and `npm run test:changed` runs only what a change reaches**
+- `npm test` runs up to 6 workspaces at once (a quarter of the cores), the slowest first, where it ran all 16 one after another. On a 48-core machine a full run goes from 17 minutes to about 4.5, the length of the slowest workspace (`@parcha/agentrun-serve`). Each workspace's output is printed whole when it ends, under a line with its result and time, and the run ends with a table of every workspace's result and time and exits nonzero when one failed. `AGENTRUN_TEST_JOBS=<n>` sets how many run at once; `AGENTRUN_TEST_JOBS=1` runs them one by one, in the old order, with their output live.
+- The script owns the machine's budget: at most one test file per core runs at once across all the workspaces (`AGENTRUN_TEST_TOTAL=<n>` sets another total, for a shared machine). Each workspace running gets its share, as `--test-concurrency` for a `node --test` script (one that sets a lower value keeps it), and as `TEST_CONCURRENCY` and `VITEST_MAX_WORKERS` otherwise. The default number of workspaces at once is a quarter of the total.
+- Ctrl-C stops every workspace's processes. A process a workspace's tests leave running when they end is killed, and the workspace's result line says so.
+- `npm run test:changed` runs the workspaces with a file changed since the merge base with `origin/main` (committed, staged, unstaged or new), plus every workspace that depends on one of them. A changed file outside the workspaces, such as `package-lock.json`, `tsconfig.base.json` or a script under `scripts/`, runs them all; Markdown files, `changes/` and `docs/` run none. It prints each workspace it picked and why. `npm run test:changed -- --base <ref>` compares with another base.

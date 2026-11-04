@@ -1,5 +1,6 @@
-export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number };
-export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string };
+export type StartBody = { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] };
+/** `fileIds`: the files the run names (uploaded with POST /v2/files), copied into its `inputs/` before it starts. */
+export type StartForm = { text: string; revision?: string; effort?: string; maxCostUsd?: string; fileIds?: string[] };
 
 /** The body of `POST /v2/agents/{id}/runs` from the form. An agentic run's input is its first message, `{content}`; a
  *  workflow run's is its typed input, as JSON. A workflow run takes no spend cap (the server refuses one). */
@@ -19,6 +20,7 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
     if (!Number.isFinite(cap) || cap <= 0) return { ok: false, field: "max_cost_usd", message: "A spend cap is a positive number of dollars." };
     body.max_cost_usd = cap;
   }
+  if (f.fileIds?.length) body.file_ids = [...f.fileIds];
   return { ok: true, body };
 }
 

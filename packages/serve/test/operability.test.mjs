@@ -31,7 +31,7 @@ async function bin(t, data, args = [], env = {}) {
   return { child, seen, base, exited: new Promise((resolve) => child.once("exit", (code) => resolve(code))) };
 }
 
-test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and the run goes on at the next start", { timeout: 90_000 }, async (t) => {
+test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and the run goes on at the next start; its timeline says it resumed after the server stopped", { timeout: 90_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const go = join(data, "..", "go");
   const server = await bin(t, data, ["--drain-timeout", "2s"]);
@@ -48,12 +48,15 @@ test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and 
   assert.equal(code, 0, server.seen.err);
   assert.ok(took < 2_000 + 3_000, `it exited ${took} ms after SIGTERM, past its 2 s drain`);
   assert.equal(alive(pid), false, "the run's process exited with it");
+  const left = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
   const again = client(next.baseUrl, next.token);
   await writeFile(go, "");
-  await follow(again, run.run_id, ["completed"]);
+  const { rows } = await follow(again, run.run_id, ["completed"]);
   assert.equal((await again("GET", `/runs/${run.run_id}`)).body.result.final_answer, "Now.");
+  assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after the server stopped"], "one stored row, kept by the settle's read");
 });
 
 test("the image drains within Docker's 10 s grace, and Compose gives the stop more than the drain", async () => {
