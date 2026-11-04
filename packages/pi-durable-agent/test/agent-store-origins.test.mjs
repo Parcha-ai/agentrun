@@ -11,7 +11,7 @@ import { scratch } from "./support.mjs";
 const A = { kind: "agentic", instructions: "Answer.", skills: { "read/SKILL.md": "Read.\n" }, tools: ["read"] };
 const rows = (dir, sql) => {
   const db = new DatabaseSync(path.join(dir, "store.sqlite"), { readOnly: true });
-  try { return db.prepare(sql).all(); } finally { db.close(); }
+  try { return db.prepare(sql).all().map((row) => ({ ...row })); } finally { db.close(); }
 };
 const runDirs = (dir) => readdirSync(path.join(dir, "runs")).sort();
 
