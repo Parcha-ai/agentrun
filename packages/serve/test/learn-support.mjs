@@ -14,6 +14,10 @@ export const onMain = (text, origin = "run") => mergedNote(text, { origin });
 
 /** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;
+/** What every run that learns is told first under `# Learned`, notes or none: that it learns, and how. */
+export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs. A secret (a password, key or token) is never kept, so say so instead.";
+/** What `# Learned` says after KEEPS when the run starts with no note. */
+export const NOTHING_YET = "Nothing learned yet.";
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** An agent with learning on and no tool: its end-of-run turn answers with the notes `plan` ([file, text] pairs) holds,
@@ -78,9 +82,16 @@ export const turnOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs"
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 
-/** What a prompt holds under `# Learned`, to the end of the run's instructions (pi's system prompt closes them with
- *  `</instructions>`), or undefined: as the run's pin keeps it (`section`). */
-export const learnedIn = (prompt) => /\n# Learned\n\n([\s\S]*?)(?:\n<\/instructions>|$)/.exec(prompt)?.[1];
+/** What a prompt holds under `# Learned` after KEEPS, to the end of the run's instructions (pi's system prompt closes
+ *  them with `</instructions>`): as the run's pin keeps it (`section`). Undefined when there is no `# Learned` that
+ *  opens with KEEPS, or it says nothing is learned yet. */
+export const learnedIn = (prompt) => {
+  const head = `\n# Learned\n\n${KEEPS}\n\n`;
+  const at = prompt.indexOf(head);
+  if (at < 0) return undefined;
+  const section = /^([\s\S]*?)(?:\n<\/instructions>|$)/.exec(prompt.slice(at + head.length))[1];
+  return section === NOTHING_YET ? undefined : section;
+};
 /** The notes a section under `# Learned` gives whole, in order, by their headings, `## <name> (<file>)`. */
 export const wholeIn = (section) => [...(section ?? "").matchAll(/^## .* \(([A-Za-z0-9][A-Za-z0-9._-]*\.md)\)$/gm)].map((match) => match[1]);
 

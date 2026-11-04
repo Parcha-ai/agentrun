@@ -7,8 +7,10 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { judgeProposal } from "../dist/grade.js";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, LEARN, learner, ledgerOf, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
@@ -27,7 +29,7 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
   // Each in words: the grader's own reason; where the reason is the host's (it refused the answer), the grader's word on
   // the note it did not keep; an answer that held neither said as one that could not be read.
   const cases = [
-    ["Grade: drop.", "grader", { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: A note is about the one case it came from."],
+    ["Grade: drop.", "grader", { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: It is about one case."],
     ["Grade: sly.", "grader", { merge: false, reason: "the grader said merge, but did not keep every item", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: It is about one case."],
     ["Grade: garbage.", "grader", { merge: false, reason: "the grader's verdict could not be read", items: [] }, "Not kept: learning stopped (the review of the new notes gave an answer that could not be read)."],
     ["Grade: fail.", "grade_failed", undefined, "Not kept: learning stopped (the review of the new notes gave no answer)."],
@@ -131,6 +133,43 @@ test("a server secret the user's message holds across the point it is shortened 
   for (let i = 0; i + 12 <= token.length; i++) assert.ok(!shown.includes(token.slice(i, i + 12)), `no 12 characters of the token, from its ${i}th: ${token.slice(i, i + 12)}`);
   const [asked] = JSON.parse(proposal).asked;
   assert.ok(asked.startsWith("Look at this.") && asked.includes("[redacted]") && asked.length <= 1_000, `what the user said is kept, cut of the token and shortened: ${asked.slice(0, 40)}`);
+});
+
+test("a grade on the model the server names for grading carries the server's key, which the server holds unlisted as it holds every secret: the gateway is sent that key, never none", { timeout: 60_000 }, async (t) => {
+  // The model gateway: each Responses request answered with a verdict that keeps the note, its key and model noted.
+  const keys = [];
+  const models = [];
+  const verdict = JSON.stringify({ merge: true, reason: "Each note is general and new.", items: [{ file: "check-units.md", decision: "keep", origin: "run", why: "It holds as a general rule." }] });
+  const gateway = createServer(async (req, res) => {
+    keys.push(req.headers.authorization);
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    models.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}").model);
+    const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: verdict, annotations: [] }] };
+    const events = [
+      { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
+      { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: verdict },
+      { type: "response.output_item.done", output_index: 0, item },
+      { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } } },
+    ];
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
+  });
+  await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  // As the server's own environment holds it (secrets.ts withSecrets): the key is there to read, and lists as nothing.
+  const key = `not-a-secret-${"gateway"}-${randomBytes(8).toString("hex")}`;
+  const env = { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gateway.address().port}`, AGENT_MODEL: "gpt-test", AGENT_MODEL_PRICE: "1,2" };
+  Object.defineProperty(env, "AGENT_MODEL_API_KEY", { value: key, enumerable: false });
+  assert.ok(!Object.keys(env).includes("AGENT_MODEL_API_KEY") && env.AGENT_MODEL_API_KEY === key);
+  const judged = await judgeProposal({
+    runId: "named-grade", agent: { instructions: "Answer the question." }, main: { active: [], superseded: [], graded: {} },
+    proposed: [{ file: "check-units.md", text: PLAN[0][1] }], gradeModel: "gpt-strong", env, signal: new AbortController().signal,
+  });
+  assert.deepEqual(keys, [`Bearer ${key}`], "the gateway got the server's key");
+  assert.deepEqual(models, ["gpt-strong"], "on the model named for grading");
+  assert.equal(judged.verdict?.merge, true, JSON.stringify(judged));
 });
 
 test("with no independent judge there is no injection screen: Jev is never asked, the grader alone decides, and the run merges", { timeout: 120_000 }, async (t) => {

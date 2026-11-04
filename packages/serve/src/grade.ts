@@ -165,7 +165,10 @@ export function graderAuth(provider: RunProvider) {
 async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost, named: string | undefined): Promise<Complete> {
   let chosen;
   if (named) {
-    const picked = await runModels({ ...env, AGENT_MODEL_STRONG: named }, undefined, ["strong"]);
+    // The strong tier named over `env` itself, never a copy of it: the server's keys are properties that do not list
+    // (secrets.ts withSecrets), so a spread would leave every one out. runModels and pi-ai's auth read each by name.
+    const tiered = Object.create(env, { AGENT_MODEL_STRONG: { value: named, enumerable: true } }) as NodeJS.ProcessEnv;
+    const picked = await runModels(tiered, undefined, ["strong"]);
     chosen = { models: picked.models, model: picked.byTier.get("strong")! };
   } else if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
     const choice = claudeModel(env, agent.model);

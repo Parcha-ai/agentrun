@@ -534,14 +534,15 @@ export async function layLearned(dir: string, seed: Seed, shown: Shown): Promise
 /** How a run reads what it learned (learnedOf): the server's learning budget, in bytes; whether its agent has the read
  *  tool; the host's secrets, which every text is cut of. */
 export type LearnedOptions = { budget: number; read: boolean; shown: Shown };
-/** The lines that open a run's `# Learned`, and the one that names `.learning/` to an agent that can read it. */
-const KEPT = `Follow a note when it applies to what you are doing. At the end of the run you are asked what to keep, and only your answer then is kept: a file you write in \`${LEARNED_DIR}/\` is not.`;
+/** The lines before what a run learned, under `# Learned` after LEARNS, and the one that names `.learning/` to an agent
+ *  that can read it. */
+const KEPT = "Follow a note when it applies to what you are doing.";
 const WHOLE_INTRO = `What you learned in earlier runs: each note whole, newest first. ${KEPT}`;
 const SOME_INTRO = `What you learned in earlier runs: the index, one line per note, then the newest notes whole. ${KEPT}`;
 const INDEX_INTRO = `What you learned in earlier runs, one line per note. ${KEPT}`;
 const READ_LINE = `The notes not given whole here are files in \`${LEARNED_DIR}/\` in your working directory: open one with the read tool when it applies.`;
 /** How a pin an earlier server wrote, the index alone, was read: its intro then. */
-const EARLIER_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing. At the end of the run you are asked what to keep, and only your answer then is kept: a file you write in \`${LEARNED_DIR}/\` is not.`;
+const EARLIER_INTRO = `What you learned in earlier runs, one line per note. Each note is a file in \`${LEARNED_DIR}/\` in your working directory: open one when it applies to what you are doing.`;
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** A note as a run reads it whole: its name and file, its description, then its body, each cut of the host's secrets. */
@@ -624,11 +625,19 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
 
 /** The heading of what a run learned, in its instructions. */
 export const LEARNED_HEADING = "# Learned";
+/** What every run that learns is told first under it, notes or none: a run not told it learns saves what the person
+ *  asks it to remember in a file, or says it cannot, and that is never kept. */
+const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs. A secret (a password, key or token) is never kept, so say so instead.";
+/** What a run that starts with no note is told in place of what it learned. */
+const NOTHING_YET = "Nothing learned yet.";
 
-/** A run's instructions, with what its pin in `runDir` says it learned after them, under `# Learned`. The one path for
- *  every harness (app.ts): pi's system prompt, claude-agent's and codex's instructions. */
+/** A run's instructions, with `# Learned` after them when its pin in `runDir` says it learns: that it learns, then what
+ *  the pin says it learned, or that it has learned nothing yet. A run with no pin (its agent does not learn, its seed
+ *  failed, a workflow's run) is never asked what to keep, so it is told nothing. The one path for every harness
+ *  (app.ts): pi's system prompt, claude-agent's and codex's instructions. */
 export async function withLearned(runDir: string, instructions: string): Promise<string> {
   const pin = await readPin(runDir);
-  const section = pin?.section ?? (pin?.learned?.trim() ? `${EARLIER_INTRO}\n\n${pin.learned.trim()}` : undefined);
-  return section ? `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${section}` : instructions;
+  if (!pin) return instructions;
+  const section = pin.section ?? (pin.learned?.trim() ? `${EARLIER_INTRO}\n\n${pin.learned.trim()}` : undefined);
+  return `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section ?? NOTHING_YET}`;
 }

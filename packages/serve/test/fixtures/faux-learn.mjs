@@ -20,10 +20,11 @@
 // no note, "Grade: drop <file>." keeps every note but that one and merges none, "Grade: pending <file>." keeps that one
 // to wait for its owner's OK (decision pending, origin you) and the rest, "Grade: risky <file>." keeps that one as the
 // run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: you <file>." keeps that one as what
-// the user asked in their own words (decision keep, origin you), and the rest, "Grade: sly." says merge and keeps
+// the user asked in their own words (decision keep, origin you), and the rest, "Grade: shop <file>." drops that one on
+// General with the user's origin (a weak grader's call on a shop's policy) and merges none, "Grade: sly." says merge and keeps
 // none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
-// whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason that names
-// <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
+// and a why whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason and a
+// why that name <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
 // (or the call is aborted). With
 // AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader answers only once it is aborted; set to
 // `never`, it never answers at all, aborted or not. Each grader call is filed as a line in the file
@@ -108,11 +109,15 @@ function verdictOf(rules, files, faux) {
   const risky = /Grade: risky (\S+\.md)\./.exec(rules)?.[1];
   // "Grade: you <file>.": a note that keeps what the user asked, kept active with the user's origin.
   const theirs = /Grade: you (\S+\.md)\./.exec(rules)?.[1];
+  // "Grade: shop <file>.": what the user asked to remember, dropped on General as one shop's policy, as a weak grader
+  // does; the verdict then merges nothing.
+  const shop = /Grade: shop (\S+\.md)\./.exec(rules)?.[1];
+  if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", origin: "run", why: "It holds as a general rule." })) }));
   const kept = (file) => keep && file !== dropped;
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
-    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", origin: "you", why: "The user asked to keep it." } : { file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : "It is about one case." })),
+    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", origin: "you", why: "The user asked to keep it." } : { file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : saying ? `It is about ${saying} alone, which no later run can use. Drop it.` : long ? "It is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it." : "It is about one case." })),
   }));
 }
 

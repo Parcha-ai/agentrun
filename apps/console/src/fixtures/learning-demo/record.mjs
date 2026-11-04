@@ -1,7 +1,7 @@
 // Records the learning demo's server answers for the console's fixtures, on a server seeded by seed.mjs:
 // what the Learning tab reads, a person's edit that loses to a change made meanwhile (412), a note the checks refuse
 // (400), the edit made again on the newest version, a retire, an agent with no notes whose switch turns learning on, and
-// two of its runs. Usage: node record.mjs <server url> <data dir> <out dir> (apps/console/src/fixtures)
+// two of its runs, and what one of them changed. Usage: node record.mjs <server url> <data dir> <out dir> (apps/console/src/fixtures)
 // Each file is {request, status, headers, body} as the server answered; no token or password is written.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -32,6 +32,9 @@ const runs = await rec("learning.runs", "GET", `${A}/runs?limit=50`);
 const runOf = (shop) => runs.body.runs.find((r) => r.title.includes(shop)).run_id;
 await rec("learning.run-brooklinen", "GET", `/runs/${runOf("brooklinen")}`);
 await rec("learning.run-allbirds", "GET", `/runs/${runOf("allbirds")}`);
+// What Brooklinen's run changed, with the run as read beside it (a pair: the run page's "What it changed").
+await rec("learning.diff-run", "GET", `/runs/${runOf("brooklinen")}`);
+await rec("learning.diff", "GET", `/runs/${runOf("brooklinen")}/learning/diff`);
 await rec("learning.stats", "GET", `/stats?agent=refund-finder`);
 
 // A person opens the note to edit it; meanwhile someone else saves a change to it.

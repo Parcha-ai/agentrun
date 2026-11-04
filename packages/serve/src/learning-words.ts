@@ -99,7 +99,7 @@ export const said = {
   empty: "Nothing new to remember from this run.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
   unparsed: "Not kept: its notes weren't in the expected format.",
-  /** The grader's reason, its first sentence. */
+  /** The grader's word on why it kept nothing (a dropped note's why, or its reason), its first sentence. */
   grader: (reason: string) => `Not kept: ${firstSentence(reason) || "it was not judged worth remembering."}`,
   /** The checks refused what the run wrote, at its end. */
   checker: (problems: readonly Pick<Problem, "rule">[]) => problems.some((problem) => MUST_NOT_STORE.has(problem.rule))
@@ -122,12 +122,13 @@ export const said = {
  *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
  *  did not keep every note). Found by asking it, so they follow it. */
 const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
-/** Why a verdict kept nothing, in a person's words: the grader's own reason, or when the reason is parseVerdict's own,
- *  the grader's word on the first note it did not keep; an answer that held neither is said as such. */
+/** Why a verdict kept nothing, in a person's words: the grader's word on the first note it did not keep, since its
+ *  reason may open on a note it kept; when it dropped none, or gave one no word, its own reason, unless that is
+ *  parseVerdict's own; an answer that held neither is said as such. */
 export function notKept(verdict: Pick<Verdict, "reason" | "items">): string {
-  if (!OWN_REASONS.has(verdict.reason)) return said.grader(verdict.reason);
   const why = verdict.items.find((item) => !item.keep)?.why;
-  return why ? said.grader(why) : said.stopped(STOPPED.unread);
+  if (why) return said.grader(why);
+  return OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
 }
 
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, or why the
