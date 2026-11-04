@@ -233,6 +233,8 @@ test("a server closed during the import at setup stops it between sessions and w
   await sleep(1_500);
   assert.equal(count(), atClose, "no run written after close");
   assert.equal(existsSync(join(data, ".import-at-setup")), atClose < 40, "the yes is kept while the import is unfinished");
+  // Waited for, not ended: the stopped import answered what it took, and the yes keeps it (setup wrote it empty).
+  if (atClose < 40) assert.equal(JSON.parse(readFileSync(join(data, ".import-at-setup"), "utf8") || "{}").runs, atClose, "the import stopped between sessions and said so");
 });
 
 test("a setup with the box ticked still being answered when the server closes starts no import after close: the yes waits for the next start", { timeout: 60_000 }, async (t) => {
@@ -404,6 +406,49 @@ test("setup's count of a big home reads none of its sessions for keys: it answer
   // Unreferenced: the bound holds no exited test's process open.
   const outcome = await Promise.race([exited.then(() => "exited"), sleep(DRAIN_MS + 10_000, "still running", { ref: false })]);
   assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window`);
+});
+
+test("a server stopped while setup still lists a home's session files exits at once: the count, which writes nothing, is ended, not waited for", { timeout: 120_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "many");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  // 120,000 empty session files: a count lists and stats every one before it reads any, for seconds.
+  const many = join(home, ".claude", "projects", "-many");
+  mkdirSync(many, { recursive: true });
+  for (let k = 0; k < 120_000; k++) writeFileSync(join(many, `${k}.jsonl`), "");
+  const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
+  mkdirSync(temp, { recursive: true });
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
+  // stderr is whole only at "close" (after "exit", once its stdio has drained).
+  const closed = new Promise((resolve) => child.once("close", resolve));
+  t.after(async () => {
+    if (alive) process.kill(-child.pid, "SIGKILL");
+    await exited;
+  });
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 30_000; !/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.test(out); ) {
+    assert.ok(Date.now() < deadline, `the server started: ${out}${err}`);
+    await sleep(50);
+  }
+  const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
+  // A server the CLI starts with no owner counts as it starts: stopped while that count still lists.
+  const read = await call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.deepEqual([read.status, read.json], [202, { counting: true }], read.text);
+  const stopped = Date.now();
+  if (alive) process.kill(-child.pid, "SIGTERM");
+  // Unreferenced: the bound holds no exited test's process open.
+  const outcome = await Promise.race([exited.then(() => "exited"), sleep(5_000, "still running", { ref: false })]);
+  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM, the count still listing`);
+  await closed;
+  assert.doesNotMatch(err, /the count of this machine's sessions failed/, "an ended count is no failed one");
 });
 
 test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
