@@ -21,6 +21,10 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, responsesEndpoint, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
+import { reported } from "./fixtures/custody-report.mjs";
+// A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
+// (fixtures/custody-report.mjs), never from the answer.
+process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname;
@@ -233,7 +237,7 @@ test("started by its launcher, no process of its user holds a secret in its envi
   // environment, its pipe closed.
   const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
-  const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
+  const report = reported(run.run_id);
   for (const name of SECRET_NAMES) assert.equal(report.handed[name], name === "OPENAI_API_KEY" ? digest(secrets[name]) : "none", `${name} handed to the run's process`);
   assert.deepEqual(heldBy(report.handed), ["OPENAI_API_KEY"], "exactly its model's key");
   assert.deepEqual(report.inEnv, [], "no secret in the run's process's environment, so none in a child's");
@@ -280,7 +284,7 @@ test("under its launcher, a tool key saved through the settings API reaches the 
   const handed = async () => {
     const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
     await follow(api, run.run_id, ["completed"]);
-    return { id: run.run_id, ...JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer) };
+    return { id: run.run_id, ...reported(run.run_id) };
   };
   const report = await handed();
   assert.deepEqual(Object.fromEntries(["MONID_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"].map((name) => [name, report.handed[name]])), {
@@ -373,7 +377,7 @@ process.on("SIGUSR2", async () => {
   const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...unlocked, "OPENAI_API_KEY"].includes(name) ? digest(secrets[name]) : "none"]));
   const report = async (call, runId, after) => {
     await follow(call, runId, ["completed"], { after, deadlineMs: 60_000 });
-    return JSON.parse((await call("GET", `/runs/${runId}`)).body.result.final_answer).handed;
+    return reported(runId).handed;
   };
   const runs = {};
   for (const [id, [tools, unlocked]] of Object.entries(agents)) {
@@ -593,7 +597,7 @@ const custodyReport = async (api, id) => {
   const { status, body } = await api("POST", `/agents/${id}/runs`, { input: { content: "Report." } });
   assert.equal(status, 202, JSON.stringify(body));
   await follow(api, body.run_id, ["completed"]);
-  return { id: body.run_id, ...JSON.parse((await api("GET", `/runs/${body.run_id}`)).body.result.final_answer) };
+  return { id: body.run_id, ...reported(body.run_id) };
 };
 
 /** Holds a turn of `runId` in its process, so the process is up while every process is read. */
@@ -909,7 +913,7 @@ test("a secret is handed over byte for byte, never read as shell: one full of sh
   assert.equal((await api("POST", "/agents", { definition: { id: "bytes", version: 1, name: "bytes", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
   const { body: run } = await api("POST", "/agents/bytes/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
-  const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
+  const report = reported(run.run_id);
   assert.equal(report.handed.AGENT_MODEL_API_KEY, digest(hostile), "the run got it byte for byte");
   assert.deepEqual(readdirSync(dir).filter((name) => name.startsWith("PWNED")), [], "nothing in it ran");
 });

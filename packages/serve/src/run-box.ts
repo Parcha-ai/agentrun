@@ -2,8 +2,9 @@
 // is the record (a bound box's read, write and edit run on this machine: bound-files.ts). A run's process that starts
 // again finds it by that label and first kills the commands the process before it left running. Serve destroys it at
 // every settle (a cancel included) and at archive, and its start sweeps the boxes of runs that have ended. A box gets the
-// run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it) and no network.
-// pi-transport is an optional peer of this package: it is loaded only for a run whose place is a box.
+// run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it), no network,
+// and limits on its CPUs, memory and processes. pi-transport is an optional peer of this package: it is loaded only for a
+// run whose place is a box.
 //
 // Docker's box is made here, in the run's process, as this server's user, with work/ bound. A Daytona box is remote: it
 // cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), seeds
@@ -19,6 +20,7 @@ import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context"
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
 import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
+import { awaitImage, boxImageOf } from "./box-image.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
 import { readJson, writeDurable } from "./files.js";
 import { FAUX_ENV } from "./model.js";
@@ -34,9 +36,55 @@ export const BOX_ENV: Readonly<Record<string, string>> = Object.freeze({ LANG: "
 export const BOX_LIFETIME_MS = 24 * 60 * 60_000;
 /** A bash command's timeout when the model names none. */
 export const BASH_TIMEOUT_MS = 300_000;
-/** The image a Docker box starts from. */
-export const DOCKER_IMAGE_ENV = "AGENTRUN_DOCKER_IMAGE";
-export const DEFAULT_DOCKER_IMAGE = "debian:bookworm-slim";
+/** The image a Docker box starts from (box-image.ts, where the server makes it ready). */
+export { DEFAULT_DOCKER_IMAGE, DOCKER_IMAGE_ENV } from "./box-image.js";
+/** The settings that bound a Docker box; unset, their defaults: enough for a build, and safe on a laptop, where one run's
+ *  runaway build or fork bomb would otherwise starve everything else. */
+export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
+export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
+export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
+/** 2 CPUs' time: a CFS quota (pi-transport's Docker provider), which holds whatever CPU count Docker's VM has. */
+export const DEFAULT_BOX_CPUS = 2;
+/** 4 GiB, swap included (--memory-swap the same). */
+export const DEFAULT_BOX_MEMORY = "4g";
+/** Processes and threads at once. */
+export const DEFAULT_BOX_PIDS = 1024;
+
+/** A Docker box's limits, as pi-transport's Docker provider takes them. */
+export type BoxLimits = { cpus: number; memory: string; pidsLimit: number };
+
+/** The fewest CPUs a quota gives: the kernel's least quota is 1 ms of each 100 ms period. A quota is also a whole number of
+ *  µs, so a count too large for one (or a long string of digits, which reads as Infinity) is refused too. */
+const MIN_BOX_CPUS = 0.01;
+const MIB = 1024 * 1024;
+/** A size's units as Docker reads them, each 1024 of the one before. */
+const SIZE_UNITS: Readonly<Record<string, number>> = { b: 1, k: 1024, m: MIB, g: 1024 * MIB };
+/** The least memory Docker gives a container. */
+const MIN_BOX_MEMORY = 6 * MIB;
+/** The most processes a cgroup may be given (the kernel's PID_MAX_LIMIT); above it, every create fails. */
+const MAX_BOX_PIDS = 4_194_304;
+
+/** A Docker box's limits from `env`: each setting's value, or its default when unset or empty. A value that is not one, or
+ *  that every create would fail on (less than a 1 ms quota, less memory than Docker gives, more processes than the kernel
+ *  allows), throws, naming its setting: the start checks them (startServe), so no run meets one. */
+export function boxLimitsOf(env: NodeJS.ProcessEnv): BoxLimits {
+  const read = (name: string, what: string, takes: (value: string) => boolean): string | undefined => {
+    const value = env[name];
+    if (!value) return undefined;
+    if (!takes(value)) throw new Error(`${name} is ${what}; it is ${JSON.stringify(value)}`);
+    return value;
+  };
+  const cpus = read(BOX_CPUS_ENV, "a number of CPUs of at least 0.01, such as 2 or 1.5", (value) => /^\d+(\.\d+)?$/.test(value) && Number(value) >= MIN_BOX_CPUS && Number.isSafeInteger(Math.round(Number(value) * 100_000)));
+  const memory = read(BOX_MEMORY_ENV, "a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g", (value) => {
+    const size = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(value);
+    // Its bytes as Docker reads them, and pi-transport's Docker provider: the number times the unit, the fraction dropped.
+    const bytes = size ? Math.floor(Number(size[1]) * SIZE_UNITS[size[2].toLowerCase()]) : 0;
+    return Number.isSafeInteger(bytes) && bytes >= MIN_BOX_MEMORY;
+  });
+  const pids = read(BOX_PIDS_ENV, "a whole number from 1 to 4194304, such as 1024", (value) => /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= MAX_BOX_PIDS);
+  return { cpus: cpus === undefined ? DEFAULT_BOX_CPUS : Number(cpus), memory: memory ?? DEFAULT_BOX_MEMORY, pidsLimit: pids === undefined ? DEFAULT_BOX_PIDS : Number(pids) };
+}
+
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
@@ -72,9 +120,14 @@ export async function boxMounts(root: string, runDir: string, place: Place): Pro
   return [{ source: await mountSource(root, join(runDir, "work")), target: agentWorkDir(runDir, place) }];
 }
 
+/** The provider runs' boxes come from, and what a create of its box waits on first (`ready`, run-box below). */
+export type RunBoxes = BoxProvider & { ready?: BoxReady };
+
 /** The provider runs' boxes come from: under `--faux` with a faux box, its module's; else Docker on this machine, run as
- *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's. */
-export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root: string): Promise<BoxProvider> {
+ *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's, within the
+ *  box limits the server's settings give (boxLimitsOf), and whose create first waits while the server pulls its image
+ *  (box-image.ts). */
+export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root: string): Promise<RunBoxes> {
   const faux = env[FAUX_ENV] ? env[FAUX_BOX_ENV] : undefined;
   if (faux) return fauxBoxes(faux, root);
   if (place.mode !== "sandbox" || place.box !== "docker") throw new Error(`runs in the ${place.mode === "sandbox" ? place.box : "runner"} place have no box`);
@@ -82,32 +135,39 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
   const user = process.getuid && process.getgid ? `${process.getuid()}:${process.getgid()}` : undefined;
   // With no capability and no way to gain one (no program in a run's box changes user): as root (serve run as uid 0) a
   // box could otherwise make a device node in work/.
-  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}), dropCapabilities: true });
+  const image = boxImageOf(env);
+  return { ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true }), ready: (context, note) => awaitImage(root, image, context, note) };
 }
+
+/** What a run's box create waits on first, `note` taking its one timeline row: the server's pull of the Docker image
+ *  (box-image.ts). A faux box has no image, so none. */
+export type BoxReady = (context: Context, note: (summary: string) => Promise<void> | void) => Promise<void>;
 
 /** The tests' faux box provider, from its module. */
 export const fauxBoxes = async (module: string, root: string): Promise<BoxProvider> =>
   ((await import(pathToFileURL(module).href)) as { default: (root: string) => BoxProvider }).default(root);
 
 /** A run's box, as its tools' environment: found by its label or made on the first call, once; made again on the call
- *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. `mirror`, on a remote
- *  box: copies a file the run's host tools filed in work/ (at `path`, relative to it) into the box, now when the box is open,
- *  else at its open. */
-export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
+ *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. Before a local box is
+ *  made, its provider's `ready` is waited on (its image), and the call that opens it gives the `note` for its timeline
+ *  row; a remote box is the server's to make (ensureRemoteBox), and never waits on that. `mirror`, on a remote box: copies
+ *  a file the run's host tools filed in work/ (at `path`, relative to it) into the box, now when the box is open, else at
+ *  its open. */
+export type RunBox = { env(context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
 
 /** Where a run's box comes from: a provider of this process's own (Docker, or the tests' faux box), or, for a remote box,
  *  the server's relay in data root `relay`. A bare function is a provider of this process's own. */
-export type BoxSource = { provider: () => Promise<BoxProvider> } | { relay: string };
+export type BoxSource = { provider: () => Promise<RunBoxes> } | { relay: string };
 
-export function runBox(given: BoxSource | (() => Promise<BoxProvider>), run: { id: string; root: string; dir: string; place: Place }): RunBox {
+export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: string; root: string; dir: string; place: Place }): RunBox {
   const source: BoxSource = typeof given === "function" ? { provider: given } : given;
   let held: Promise<{ env: ExecutionEnv; box: Box }> | undefined;
   // What the host tools filed while no box was open in this process: a box a process before it made has no seed now, so
   // these go in when it opens (and to a new box, whose seed carries them anyway, again: the same bytes).
   const filed = new Map<string, Uint8Array>();
-  const open = async (context: Context): Promise<{ env: ExecutionEnv; box: Box }> => {
+  const open = async (context: Context, note: (summary: string) => Promise<void> | void): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
-    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run.dir, run.id, context) : await localRunBox(await source.provider(), run, context);
+    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run.dir, run.id, context) : await localRunBox(await source.provider(), run, context, note);
     if (!made) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
@@ -122,8 +182,8 @@ export function runBox(given: BoxSource | (() => Promise<BoxProvider>), run: { i
     }
     return { box, env: boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv };
   };
-  const opened = (context: Context) => {
-    held ??= open(context).catch((error: unknown) => {
+  const opened = (context: Context, note: (summary: string) => Promise<void> | void = () => undefined) => {
+    held ??= open(context, note).catch((error: unknown) => {
       held = undefined;
       throw error;
     });
@@ -131,7 +191,7 @@ export function runBox(given: BoxSource | (() => Promise<BoxProvider>), run: { i
   };
   let binds: Promise<boolean> | undefined;
   let checked: Promise<void> | undefined;
-  const env = async (context: Context): Promise<ExecutionEnv> => (await opened(context)).env;
+  const env = async (context: Context, note?: (summary: string) => Promise<void> | void): Promise<ExecutionEnv> => (await opened(context, note)).env;
   return {
     // The bind's source, or what a remote box is seeded from: a path another harness names under it is the same file in
     // the box (coding-tools.ts boxPath).
@@ -214,10 +274,20 @@ function mirrorFailed(paths: string, error: Error): void {
   process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${paths} filed in work/ but not copied into the run's box: ${error.message}` })}\n`);
 }
 
-/** A box of this process's provider: the run's, by its label, or one made now with work/ bound. */
-async function localRunBox(boxes: BoxProvider, run: { id: string; root: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean }> {
+/** A box of this process's provider: the run's, by its label, or one made now with work/ bound, once its image is in
+ *  (the provider's `ready`, `note` writing the one timeline row while it is built or pulled). */
+async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir: string; place: Place }, context: Context, note: (summary: string) => Promise<void> | void): Promise<{ box: Box; made: boolean }> {
   const found = await attachRunBox(boxes, run.id, context);
   if (found) return { box: found, made: false };
+  // A box made while the server builds or pulls its image waits for the image, not for a `docker run` that pulls it.
+  if (boxes.ready) {
+    try {
+      await boxes.ready(context, note);
+    } catch (error) {
+      if (context.abortSignal?.aborted) throw error;
+      throw new Error(`the run's box could not be made: ${(error as Error).message}`);
+    }
+  }
   const spec: BoxSpec = {
     env: BOX_ENV, workspace: agentWorkDir(run.dir, run.place), mounts: await boxMounts(run.root, run.dir, run.place),
     labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,

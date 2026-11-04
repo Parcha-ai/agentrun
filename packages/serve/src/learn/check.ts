@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
-import { draftProblems, type DraftReader, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { draftProblems, type DraftReader, frontKeys, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -40,7 +40,8 @@ export const CAPS = Object.freeze({
 export type Rule =
   | "too_many_files" | "outside" | "file_name" | "file_mode" | "encoding" | "edited" | "deleted" | "exists" | "too_large"
   | "too_many_notes" | "invisible_unicode" | "secret_shape" | "secret_value" | "note" | "status" | "supersedes" | "index_full"
-  | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "too_many_workflows" | "no_tool_list" | "executable_node";
+  | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "too_many_workflows" | "no_tool_list" | "executable_node"
+  | "skill_front_matter" | "skill_status";
 
 /** One problem with what a run proposed, printable as it is. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
@@ -75,6 +76,9 @@ export type CheckInput = {
   readonly tools?: readonly string[];
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
   readonly dsl?: DraftReader;
+  /** The skills' and drafts' files whose text in the run's seed has a status (a person retired it, or it waits for its
+   *  owner's OK): a run never changes those. A draft's is its README.md. */
+  readonly kept?: readonly string[];
 };
 /** `ok` when `problems` is empty; then `notes` are the new notes, each in shape. */
 export type ProposalCheck = { readonly ok: boolean; readonly problems: Problem[]; readonly notes: ProposedNote[] };
@@ -151,6 +155,9 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   const size = change.size ?? change.bytes?.length ?? 0;
   const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;
   if (size > cap) return add("too_large", `${size} bytes; the cap is ${cap}`, path);
+  // A person's call stands: a skill or a draft whose seed text has a status (retired, or waiting for its owner's OK).
+  const readmeOf = `${path.slice(0, path.lastIndexOf("/"))}/README.md`;
+  if (input.kept?.includes(path) || (place.kind === "workflow" && input.kept?.includes(readmeOf))) return add("skill_status", "a person retired it, or it waits for its owner's OK: a run never changes it", path);
   const text = textOf(path, change.bytes, refused, add);
   if (text === undefined) return;
   if (place.kind === "workflow") {
@@ -159,6 +166,10 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
     return;
   }
   for (const reason of skillProblems(text, place.name)) add(place.kind === "skill" ? "skill" : "workflow", reason, path);
+  // Its front matter says what it is and nothing more: Claude Code reads directives (a hook is a shell command) from any
+  // other key. `status` has its own rule.
+  const extra = (frontKeys(text) ?? []).filter((key) => !LEARNED_KEYS.includes(key) && key !== "status");
+  if (extra.length) add("skill_front_matter", `its front matter sets ${extra.join(", ")}: a learned ${place.kind === "skill" ? "skill" : "workflow"} sets name and description alone`, path);
   if (place.kind === "skill" && setsStatus(text)) add("status", "a run never sets a skill's status: the host does, when it holds one for its owner's OK", path);
 }
 

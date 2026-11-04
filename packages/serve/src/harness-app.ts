@@ -159,10 +159,14 @@ export function adapterRun(
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
     // at): the worst case the cap holds for it, which the runner records, and counts it at if its cost never comes in.
     const limit = answer?.outputTokensMax;
-    const hold = cap?.worstOf?.({ ...request, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
+    const admitted = { ...request, ...(limit === undefined ? {} : { outputTokensMax: limit }) };
+    const hold = cap?.worstOf?.(admitted);
     inFlight.admitted(hold);
     if (hold === undefined && limit === undefined) return undefined;
-    return { ...(hold === undefined ? {} : { holdUsd: hold }), ...(limit === undefined ? {} : { outputTokensMax: limit }) };
+    // Stopped part way by its client, it counts by what streamed (cap.ts stoppedOf), never more than its hold (the runner).
+    const stoppedOf = cap?.stoppedOf;
+    const stopped = hold !== undefined && stoppedOf ? { stoppedUsd: (streamed: number) => stoppedOf(admitted, streamed) ?? hold } : {};
+    return { ...(hold === undefined ? {} : { holdUsd: hold }), ...(limit === undefined ? {} : { outputTokensMax: limit }), ...stopped };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */
@@ -191,7 +195,8 @@ export function adapterRun(
   let text = "";
   let calls: ToolCall[] = [];
   // The turn's answer entry so far (its last request with text and no call), the MESSAGE its turn took, and whether the
-  // instance is stopping (a drain, a fence, a park: no one's stop, so the turn it cuts gets no end and is resumed).
+  // instance is stopping (a drain, a fence, a park: no one's stop, so the turn it cuts gets no end, and the next open
+  // resumes it if the session still holds it open, or restores its end, as onOpen's `restored`, if the session ended it).
   let answer: number | undefined;
   let taking: string | undefined;
   let draining = false;
@@ -418,7 +423,8 @@ export function adapterRun(
           capRefused = false;
           const pending = open.size > 0;
           // The turn's end, in the commit of its last entries (flush's one commit): the run's end is read from it alone
-          // (turns.ts). A turn the instance's own stop cut gets none: the next open resumes it.
+          // (turns.ts). A turn the instance's own stop cut gets none: the next open resumes it while the session holds it
+          // open, or restores its end from the root (completed with its answer) when the session had ended it.
           const cut = draining && why === undefined && status === "interrupted";
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
@@ -469,8 +475,8 @@ export function adapterRun(
     },
     async abort(ctx: DoorContext) {
       if (!attached) emit = ctx.emit;
-      // The instance stopping (a drain, a fence, a park) is no one's stop: the turn it cuts gets no end and the next open
-      // resumes it, and the messages waiting stay, for the next open to send.
+      // The instance stopping (a drain, a fence, a park) is no one's stop: the turn it cuts gets no end, the next open
+      // resumes it (or restores its end, when the session had ended it), and the messages waiting stay, for it to send.
       if (ctx.reason === "stop") {
         draining = true;
         if (!turn) return "idle";

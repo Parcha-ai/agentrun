@@ -19,7 +19,7 @@
 // The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { buildIndex, gradedFiles, held, INDEX_FILE, type IndexEntry, type LearnedNote, learnedPlace, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
+import { buildIndex, gradedItems, held, INDEX_FILE, type IndexEntry, type LearnedNote, learnedPlace, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
 import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel, claudeProvider, codexModel, codexProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
@@ -255,7 +255,8 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
     const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed, ...(files.length ? { files } : {}), ...(input.asked ? { asked: input.asked } : {}) });
     const grader = await graderModel(env, agent, cost, input.gradeModel);
     const answer = await bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
-    return { verdict: parseVerdict(answer.text, gradedFiles(proposed, files)), cost };
+    // The items with their texts: a note the run marked risky waits whatever the grader says (parseVerdict).
+    return { verdict: parseVerdict(answer.text, gradedItems(proposed, files)), cost };
   } catch (error) {
     signal.throwIfAborted();
     return { reason: "grade_failed", error: error as Error, cost };

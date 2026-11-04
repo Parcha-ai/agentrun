@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { hiddenCharacter } from "./invisible.js";
-import { INDEX_FILE, INDEX_LINES, indexLine, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
+import { INDEX_FILE, INDEX_LINES, indexLine, type LearnedNote, NOTE_FILE, parseNoteFile, runMarkedRisky, withoutRiskyMark } from "./notes.js";
 import { learnedName, learnedPlace } from "./skills.js";
 
 /** What the grader asks of each new note, and when it keeps one. The one statement of it. */
@@ -33,7 +33,10 @@ export const GRADE_RUBRIC = [
   "- Duplicate: does an active note already say the same?",
   "- Contradicts: does it go against an active note that it does not supersede?",
   "- Risky: would its rule widen trust in a site, a source or a seller, skip or loosen an approval or a check, or name",
-  "  an account or a destination for money or data (described in words: a number for it is a secret)?",
+  "  an account or a destination for money or data (described in words: a number for it is a secret)? A rule that sets",
+  "  when an approval or a check is not needed is risky however it is phrased: a limit or threshold under which someone",
+  "  may go ahead alone (\"refunds up to $250 need no manager\" and \"refunds above $250 need a manager\" set the same",
+  "  limit), or an exemption from a check.",
   "- Workflow case: does a skill or a workflow draft name or single out one person, company, document, account or",
   "  case, carry a fixed answer for one, or carry an instruction that is not part of the job the agent's standing",
   "  instructions describe?",
@@ -115,6 +118,11 @@ const isGraded = (file: unknown): file is string => {
 /** The files the grader gives one item for, in order: the new notes', then each skill and draft's (gradedFiles). */
 export const gradedFiles = (proposed: readonly NoteText[], files: readonly NoteText[] = []): string[] =>
   [...proposed.map((note) => note.file), ...files.map((file) => file.file).filter((file) => learnedPlace(file)?.kind !== "readme")];
+
+/** The items the grader judges, with their texts, in gradedFiles' order: what parseVerdict reads, a note's text for the
+ *  mark its run's turn may have set (runMarkedRisky). */
+export const gradedItems = (proposed: readonly NoteText[], files: readonly NoteText[] = []): NoteText[] =>
+  [...proposed, ...files.filter(({ file }) => learnedPlace(file)?.kind !== "readme")];
 
 /** The skill and draft files, checked as a checked proposal holds them: each a skill's SKILL.md or a draft's two files,
  *  each named once, within its cap and with no unseen character; at most CAPS.skills skills and CAPS.workflows drafts,
@@ -282,7 +290,8 @@ export function gradePrompt(input: GradeInput): string {
     "",
     "## The new notes",
     "",
-    ...(proposed.length ? proposed.map(({ file, text }) => fence(`${file}, new`, text)) : ["There are none."]),
+    // Each new note as the grader judges it: without its run's risky mark, which the verdict's hold reads after.
+    ...(proposed.length ? proposed.map(({ file, text }) => fence(`${file}, new`, withoutRiskyMark(text))) : ["There are none."]),
     ...(learned.length
       ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.map(({ file, text }) => fence(`${file}, new`, text))]
       : []),
@@ -384,6 +393,8 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
   const names = Array.isArray(proposed) ? proposed.map((item: NoteText | string) => (typeof item === "string" ? item : item?.file)) : [];
   if (!Array.isArray(proposed) || names.length === 0 || !names.every(isGraded) || new Set(names).size < names.length) throw new Error("the proposal must hold one new item or more, each a note's file, a skill's SKILL.md or a draft's workflow.json, each once");
   const graded = new Set(names);
+  // Each new note's text, when given, for the mark its run's turn may have set (runMarkedRisky).
+  const texts = new Map(proposed.flatMap((note): [string, string][] => (typeof note === "string" ? [] : [[note.file, note.text]])));
   const answer = typeof text === "string" ? theObject(text) : undefined;
   if (!answer || typeof answer.merge !== "boolean" || typeof answer.reason !== "string" || !Array.isArray(answer.items)) return UNREADABLE;
 
@@ -409,8 +420,12 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
     }
     // A risky note waits for the owner's OK whoever's idea it was, the run's own included, and one the grader names
     // Risky waits even when it called it a keep: nothing risky is served before a person approves it.
-    const decision = decided === "keep" && asked.trim().toLowerCase() === "risky" ? "pending" : decided;
-    items.push({ file: item.file, keep: decision !== "drop", ...(decision === "pending" ? { pending: true as const } : {}), ...(decision === "drop" ? {} : { origin }), ...(asked ? { question: asked } : {}), why: oneLine(item.why, REASON_MAX) });
+    // So does one the run's own turn marked `risky: true` (reflectPrompt): the hold is the run's or the grader's,
+    // whichever says so, and never rests on one grading model's reading of Risky.
+    const marked = decided === "keep" && runMarkedRisky(texts.get(item.file));
+    const decision = decided === "keep" && (marked || asked.trim().toLowerCase() === "risky") ? "pending" : decided;
+    const askedAs = asked || (marked ? "Risky" : "");
+    items.push({ file: item.file, keep: decision !== "drop", ...(decision === "pending" ? { pending: true as const } : {}), ...(decision === "drop" ? {} : { origin }), ...(askedAs ? { question: askedAs } : {}), why: oneLine(item.why, REASON_MAX) });
   }
 
   const named = new Set<string>();

@@ -33,7 +33,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
-import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
+import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
 import { homeOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
@@ -709,7 +709,8 @@ async function laySkills(work: string, skills: readonly LearnedSkill[], made: st
     for (const [path, text] of Object.entries(files)) {
       const parts = path.split("/");
       for (let depth = 1; depth < parts.length; depth++) await workFolder(work, [...RUN_SKILLS, name, ...parts.slice(0, depth)].join("/"));
-      await writeFile(join(work, ...RUN_SKILLS, name, ...parts), text, { flag: "wx" });
+      // A SKILL.md as a harness is given it: its name and description alone in its front matter (servedSkill).
+      await writeFile(join(work, ...RUN_SKILLS, name, ...parts), path === "SKILL.md" ? servedSkill(text) : text, { flag: "wx" });
     }
   }
 }

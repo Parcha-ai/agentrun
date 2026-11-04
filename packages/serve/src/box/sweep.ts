@@ -44,8 +44,9 @@ export function startTimeOf(pid: number): string | undefined {
   }
 }
 
-/** The record's writer is gone: no process has its pid, or the one that has it started at another time (a reused pid). */
-function writerGone(writer: BoxRecord["writer"] | undefined): boolean {
+/** The record's writer is gone: no process has its pid, or the one that has it started at another time (a reused pid).
+ *  box-image.ts asks the same of the server that wrote the image's record. */
+export function writerGone(writer: BoxRecord["writer"] | undefined): boolean {
   if (!writer || !Number.isSafeInteger(writer.pid) || writer.pid <= 0) return true;
   return startTimeOf(writer.pid) !== writer.startTime;
 }

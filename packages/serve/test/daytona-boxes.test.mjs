@@ -94,7 +94,7 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   withEnv(t, { MONID_API_KEY: MONID_KEY });
   const server = await onDaytona(t, fake, { fauxMonid: FAUX_MONID });
   const { api, data } = server;
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true });
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready" });
   const made = await api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: DAYTONA, tools: ["read", "write", "edit", "bash", "monid.discover"] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings, []);

@@ -83,6 +83,20 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
 }
 
 describe("the Learning tab's notes", () => {
+  it("tells apart two runs started in the same second that learned notes, when it has no title for them", async () => {
+    // UUIDv7s from the same millisecond: the same leading digits, different random tails.
+    const [A, B] = ["01a1a869-ce4e-7cf5-abf8-c5407893934a", "01a1a869-ce4e-7d11-9a02-3f6b0e21d7c5"];
+    const log: AgentLearning["log"] = { items: [
+      { by: { run: B }, commit: "c2", at: "2026-11-04T21:14:01Z", reason: "Kept.", files: [MINE, "MEMORY.md"] },
+      { by: { run: A }, commit: "c1", at: "2026-11-04T21:14:00Z", reason: "Kept.", files: [FIRST, "MEMORY.md"] },
+    ], total: 2, next_cursor: null };
+    const t = await open(agent(true), { learning: async () => view({ log }), runs: [] });
+    const label = (name: string, id: string) => t.card(name)!.querySelector(`a[href="#/runs/${id}"]`)?.textContent ?? "";
+    const [a, b] = [label("Try /policies/refund-policy first", A), label("Keep it to three lines", B)];
+    expect(a).toMatch(/^run \S+$/);
+    expect(b).toMatch(/^run \S+$/);
+    expect(a).not.toBe(b);
+  });
   it("shows each note in use with its type, its body, the run that learned it and how many runs used it", async () => {
     const t = await open(agent(true));
     expect(t.text()).toContain("What it has learned");

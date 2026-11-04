@@ -6,7 +6,7 @@
 // agent's queue. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse
 // (a note holding a secret among them) is never kept anywhere.
 import { join } from "node:path";
-import { type Change, checkProposal, draftFiles, GRADE_CAPS, parseReflection, type Problem, redactSecrets, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
+import { type Change, checkProposal, draftFiles, GRADE_CAPS, learnedStatus, parseReflection, type Problem, redactSecrets, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
 import { homeOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, git, type Proposal, PROPOSAL, readBlobs, readSeed, type Turn, withAgentRepo } from "./learning.js";
 
@@ -71,7 +71,9 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   ];
   // The workflow DSL reads a draft, and is loaded only when there is one to read.
   const dsl = files.some(({ file }) => file.endsWith("/workflow.json")) ? await import("@parcha/agentrun-dsl") : undefined;
-  const checked = checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes, refuseValues: input.refuse, ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(dsl ? { dsl } : {}) });
+  // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
+  const kept = [...held.texts].filter(([file, text]) => (file.endsWith("/SKILL.md") || file.endsWith("/README.md")) && learnedStatus(text) !== "active").map(([file]) => file);
+  const checked = checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(dsl ? { dsl } : {}) });
   if (checked.problems.length) return { state: "dropped", reason: "checker", problems: checked.problems };
   if (!checked.notes.length && !files.length) return { state: "dropped", reason: "empty" };
   // Each message cut of the host's secrets whole first, and only then shortened: a secret the cut fell inside would
