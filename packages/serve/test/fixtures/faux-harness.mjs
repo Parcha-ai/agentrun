@@ -35,6 +35,13 @@ export function script(spec) {
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   // One answer that asks for two tools, as a model writing two files in one turn does, then the closing answer.
   if (/Write two files in one answer\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001 }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
+  // Codex's shape: a request that only says something (its tool call is the harness's own, which the host never
+  // sees), then the host's tool, then the answer.
+  // The same turn, its first answer empty (only whitespace, which the timeline reads as an empty answer).
+  // The same turn, its commentary first, then an empty answer, then the call: every earlier answer is a text_block.
+  if (/Comment, say nothing, then write\./.test(text)) return [{ say: "I'll check first.", usd: 0.001 }, { say: " ", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
+  if (/Say nothing, then write\./.test(text)) return [{ say: " ", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
+  if (/Comment, then write\./.test(text)) return [{ say: "I'll write note.md.", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   // Reads outside the run: a path up out of its directory, and an absolute one elsewhere, both refused.
   if (/Read outside the run\./.test(text)) return [{ call: "read", args: { path: "../../.token" }, usd: 0.001 }, { call: "read", args: { path: "/etc/hostname" }, usd: 0.001 }, { say: "Read none.", usd: 0.001 }];
   // As the Claude CLI sends a path: absolute, under its working directory, which is the run's work/ (the run's
