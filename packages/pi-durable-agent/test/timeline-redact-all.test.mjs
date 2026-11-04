@@ -131,3 +131,19 @@ for (const [how, kind, start, delta] of [["thinking", "thinking", "thinking_star
     assert.deepEqual(leaks(reducer.rows()), [], shown(reducer.rows()));
   });
 }
+
+// A host that passes only `redact` (no redactLive): a key whose tail has not streamed yet cannot be found, so the live
+// block holds back its trailing word until whitespace follows it or the block ends.
+for (const [how, kind, start, delta] of [["thinking", "thinking", "thinking_start", "thinking_delta"], ["text", "text", "text_start", "text_delta"]]) {
+  test(`with only redact, a live ${how} block where a key's head has streamed and then its tail: no update shows any part of it`, () => {
+    const reducer = timelineReducer({ conversationId: 1, redact });
+    reducer.apply([{ type: "message_start", message: { role: "assistant", content: [] } }]);
+    const updates = [
+      reducer.apply([{ type: "message_update", usage: {}, changes: [{ type: start, contentIndex: 0, block: { type: kind, [kind]: "" } }, { type: delta, contentIndex: 0, delta: `Using ${KEY.slice(0, 20)}` }] }]),
+      reducer.apply([{ type: "message_update", usage: {}, changes: [{ type: delta, contentIndex: 0, delta: `${KEY.slice(20)} now. Done` }] }]),
+    ];
+    for (const update of updates) assert.deepEqual(leaks(update.rows), [], shown(update.rows));
+    assert.deepEqual(leaks(reducer.rows()), [], shown(reducer.rows()));
+    assert.ok(reducer.rows().some((r) => /\[redacted\] now\./.test(r.text ?? "")), shown(reducer.rows()));
+  });
+}
