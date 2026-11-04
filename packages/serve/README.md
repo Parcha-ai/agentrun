@@ -59,10 +59,10 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
-| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
-| `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
+| `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. The server keeps its data directory until its runs' processes have exited (up to this and a second), and says so as it stops; a server started on the same `--data` meanwhile waits for it, saying so, then starts. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -198,17 +198,32 @@ through `POST /v2/agents`. Their earlier runs stay readable where you moved them
 
 ## Capacity and health
 
-Each run is a process of its own, about 67 MiB of private memory (measured with the faux model; an independent test of
-the image measured 20 runs at 1.22 GiB), beside the server's own 100 MiB or so. So the server caps the runs it holds at
-once (each run with a live process: working, or waiting for an answer), by default
+Each run is a process of its own, and how much memory it takes depends on its harness. The server admits runs by
+memory: each run that holds a live process (working, or waiting for an answer) reserves its harness's size out of the
+container's limit when it has one (cgroup), else the machine's, less the server's own 128 MiB.
 
-    max_concurrent_runs = max(1, floor((memory − 128 MiB) / 72 MiB))
+| Harness | Reserved per run | Measured per run |
+| --- | --- | --- |
+| pi | 128 MiB | up to 106 MB |
+| codex | 192 MiB | up to 143 MB |
+| claude-agent | 288 MiB | up to 215 MB |
 
-where memory is the container's limit when it has one (cgroup), else the machine's: 5 runs on a 512 MB instance, 12 on
-1 GB, 112 on 8 GB. `--max-runs N` or `AGENTRUN_MAX_RUNS` sets it instead; capabilities report it in
-`limits.max_concurrent_runs`. Over it, `POST /agents/{id}/runs` is `429 rate_limited` with `retry-after` and nothing
-starts: there is no queue, so the client tries again once a run ends. A message to a run already going is never
-refused. A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
+The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
+in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
+once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28. A start that does not fit in what is left is
+`429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
+queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
+on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, and its runs are `409
+agent_not_runnable` with that reason. pi always has one place, however small the host.
+
+`--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
+apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
+(`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
+the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
+memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails
+with why if it was working, and a message to it is `409 agent_not_runnable`.
+
+A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
 counts only its own runs, and a run could be relaunched twice).
 
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
@@ -291,6 +306,10 @@ go through `work/` by path.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
+- It has no capability and can gain none (`--cap-drop ALL`, `--security-opt no-new-privileges`), so even as root (a
+  server run as uid 0) it cannot make a device node in `work/`. Its Docker daemon must be this machine's: where
+  `DOCKER_HOST`, or the docker context, names another machine (tcp://, ssh://), no box is made, since that daemon would
+  bind its own paths, and the refusal says which setting to undo.
 - The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
   after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
   the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
@@ -399,7 +418,10 @@ A run is refused before it starts, `409 agent_not_runnable`, saying which, for a
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
-it is never off, and a model node that names its own thinking level keeps it.
+it is never off, and a model node that names its own thinking level keeps it. An agentic run started with an `effort` also
+gets a short note on how to work, right after its instructions, on every harness (`src/effort-guidance.ts`): `low`
+answers directly, `medium` plans briefly and checks once, `high` plans each part, fills the gaps and reviews. A run
+started with none gets no note.
 
 ## Tools
 
@@ -418,7 +440,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)): `{url}` in, a Page out, `{ok, url, status, title, text, truncated?, original_chars?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, offset?, next_offset?, html_chars?, converted?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else keyless through Exa, or through Parallel where it is picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
@@ -437,16 +459,33 @@ A call tool that fails on its own (an unreadable PDF, a model's refusal) fails i
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
 stops the run.
 
-`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
-every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
-link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
-and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
-refused, as is any scheme but http(s). A URL on a port other than 80 or 443 is refused before the guard is asked. A
-body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000 characters and the links at 200, absolute
-http(s) only. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
-reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool",
-tool: "web_fetch"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
-table cannot run that way is refused before the run starts (`409`).
+`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is
+resolved, every address it resolves to is checked, and the connection is dialled at the address checked, so a
+loopback, private, link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`,
+`::ffff:127.0.0.1` and the like), a name such as `localhost`, a public name that resolves to one of them and a
+redirect to one are all refused, as is any scheme but http(s). A URL on a port other than 80 or 443, or longer than
+4,096 characters, is refused before the guard is asked. A body is at most 5 MiB and a fetch at most 30 s. A Page holds
+a part of the page's text: about `max_chars` characters from `offset` (20,000 by default, at least 200, at most
+50,000; a quote or a line break counts two, as the JSON answer holds it, and a part holds one character at least, so
+it always advances), its length as `chars`. A part that is not the whole page says so: `truncated` while more follows,
+`next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's extract gives it
+only for a page shorter than it was asked for), and for an agent a line after the JSON says which characters these are
+and the call that reads on. A page whose HTML is longer than 1,000,000 characters (scripts and styles aside) is cut
+before it is read: every part gives `html_chars`, the page's whole length, and no `original_chars`, its text is the
+start of the page, and the last part's line says `The page was cut at 1,000,000 characters of HTML before reading; the
+rest wasn't read.` `converted: "text"` says the text is the page's plain text, its conversion to markdown having run
+out of time. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000
+characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
+reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via:
+"tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by
+default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
+run starts (`409`).
+
+On another harness, every host tool's result stays under the host's bound of 120,000 characters
+(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
+the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
+to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
+`web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
 
 ### Search and fetch
 
@@ -697,7 +736,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
 | `POST /files`, `PUT /files/{id}`, `GET /files`, `GET` and `DELETE /files/{id}` | [Uploads](#uploads): a file sent in one call (`POST /v2/files?path=...`, its bytes the body), or reserved and then sent (`PUT /v2/files/{id}`); the server's uploads listed, read and deleted. |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
-| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. The query bounds `analytics` alone. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the learning ledger and the runs this server holds ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; a poll never answers `home_busy` (`stale: true` marks a last whole view). An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -747,14 +786,16 @@ folders kept, before the run's process starts, whatever its harness; a name alre
 `docs-2/`), the same for the same files in the same order. The run reads them as any file of its workspace, and
 `GET /v2/runs/{id}/files` lists them. An agentic run is told of them in its first message, on every harness: after the
 input's `content` and a blank line, one line,
-`Files for this run: inputs/notes.txt (32 B), inputs/docs/plan.md (1.5 KB).`, each file by the path the run's tools take
-and its size, at most 20 and then how many more, and never past what the run's door takes in one message (fewer named,
-then only how many). That is the message the harness gets, so it is the timeline's first `user_message`; the run's
-`input` stays as it was sent. A run given no files is sent its `content` as it is. A deleted upload stays in the runs
-that copied it; a run started after names it in vain. Each upload is kept in `DIR/files/<file_id>/`, 0600. A start
-clears the temp files a crashed upload left (`.incoming.*.tmp` in `DIR/files/`, `bytes.*.tmp` in a file's folder), each
-only when it is a regular file (a `DIR/files/` that is a link is not swept), and logs `event=uploads_swept removed=N`. `upload.expires_at`, which the contract
-requires, is advisory and not enforced in this release: a `PUT` after it is still taken.
+`Files for this run: "inputs/notes.txt" (32 B), "inputs/docs/plan.md" (1.5 KB).`, each file by the path the run's tools
+take, quoted as a JSON string with a control, format or separator character as its `\uXXXX` escape (so no name forges an
+entry or reorders the line), and its size, at most 20 and then how many more, and never past what the run's door takes
+in one message (fewer named, then only how many). That is the message the harness gets, so it is the timeline's first
+`user_message`; the run's `input` stays as it was sent. A run given no files is sent its `content` as it is. A deleted
+upload stays in the runs that copied it; a run started after names it in vain. Each upload is kept in
+`DIR/files/<file_id>/`, 0600. A start clears the temp files a crashed upload left (`.incoming.*.tmp` in `DIR/files/`,
+`bytes.*.tmp` in a file's folder), each only when it is a regular file (a `DIR/files/` that is a link is not swept), and
+logs `event=uploads_swept removed=N`. `upload.expires_at`, which the contract requires, is advisory and not enforced in
+this release: a `PUT` after it is still taken.
 
 ## Agent home
 
@@ -1025,7 +1066,8 @@ auto-memory format:
 - `MEMORY.md`, the index a run reads, one line per active note: `- [name](file.md) — description`, built by the server;
 - one file per note, `<slug>.md`: front matter with `name`, `description` and `type` (`user`, `feedback`, `project` or
   `reference`), and optionally `status: superseded` or `retired` with `superseded_by` (no status: active), then the
-  note's text. The server parses it and builds the index (`src/notes.ts`).
+  note's text. The server parses it and builds the index with its own code, in [`src/learn/`](src/learn/SPEC.md),
+  whose `SPEC.md` is the folder's contract.
 
 The folder is plain git with `main` checked out. The agent's first run that learns makes it, with one commit on `main`
 holding an empty `MEMORY.md`; an agent that does not learn never gets one. The server is its only writer. Every git
@@ -1049,11 +1091,59 @@ The server reads the commit with git plumbing, never the working tree. What it h
 run: when the folder cannot be made or read, or its notes copied, the run starts with nothing learned. A host without
 git 2.40 or later is one such fault, said once on stderr.
 
-The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went:
-`{state: "seeded", reason: null, detail: null, at}` for a run that started from what its agent learned,
-`{state: "dropped", reason: "seed_failed", detail, at}` for one that started with nothing, and `null` for a run that does
-not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
-imported run). Nothing writes to `main` after its first commit yet: what a run learns stays in the run.
+### What a run learns
+
+When a run that learns answers or fails, the server asks the same session one more turn before it lets the run go,
+whatever its harness: one message through the run's door under the fixed request id `learn-reflect-<run id>`, so a
+server that restarts mid-turn asks again and the run takes it once. The server alone sends it, with the origin
+`reflect`; no request field sets it. Before it, `work/.learning/` is laid again from the seed, so only the turn's own
+writes count. The message (`reflectPrompt`, in `src/learn/reflect.ts`) names that folder as `.learning/`, relative to the run's
+work, where every harness's file tools resolve it (no host path, which a box would not see), the note format, that a memory is replaced by a new note with `supersedes: [old.md]` and never edited or deleted, that the
+server rebuilds `MEMORY.md`, how many index lines are left (200 less the active notes), that writing nothing is fine,
+and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
+labelled `learning`, and the run's answer stays the job's.
+
+As the run settles, before it reads ended and before a follow-up can open it again, the server moves the turn's
+`work/.learning/` whole, with one rename, to `runs/<id>/learning-turn/`, outside the run's work; a follow-up finds
+`work/.learning/` laid again from the seed. Once the run has ended, in the agent's queue, the server reads what the turn
+left from that snapshot alone, never from the work: the folder's top only, each entry with lstat and never a link
+followed, at most 4096 bytes of a note, and never past 64 changed paths. `checkProposal` (`src/learn/check.ts`) refuses, before anything is written anywhere, an edited or deleted note, a path
+that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
+setting `status`, a `supersedes` naming a note that is not active, more than 8 notes superseded, more than 8 new notes
+or a note over 4096 bytes, an index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or
+holding one of the server's own secrets (the launcher's, the keys and tokens in its environment, its API and door
+tokens), in a note or its name.
+`MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
+
+Then one grader decides, one grade at a time per agent: `gradePrompt` (`src/learn/grade.ts`), which holds `GRADE_RUBRIC`, the rubric's one
+statement, asked of the agent's own model,
+bounded (3 minutes), against `main` as it is then, and read by `parseVerdict`, which fails closed. The grader reads each
+active note's index line, the whole text only of the notes the proposal supersedes, and the new notes, so its prompt
+stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
+run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
+grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
+`learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
+
+A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each note they supersede marked
+`status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
+in line. Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
+the commit the merge was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
+merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
+refused as `exists`. A server that goes between steps picks the run up at its next start, once.
+
+The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason}` in run lists) says how it went: `seeded`, then
+`reflecting` during the turn and until what it wrote is checked, `proposed` while it is graded, and `merged`, or
+`dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `no_write_tool`, `cancelled`,
+`crashed`, `reflect_timeout`, `reflect_failed`, `empty`, `propose_failed`, `checker`, `screen`, `screen_down`,
+`grader`, `grade_failed`; `tool_denied` is reserved for a tool gate this server does not have yet). It is `null` for a
+run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
+workflow's or an imported run). Once it is proposed, merged or dropped (`seed_failed` included), the run's timeline has
+one row of kind `learning` that says so. Each run's learning end is written once to the learning ledger,
+`DATA/learning-usage.jsonl`, one line `{run, agent, state, reason, at, cost, tokens}` (`cost` and `tokens` the grade's,
+null when unknown, 0 when nothing was graded), after its `serve.json` holds it; a server that went between the two writes
+it at its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+`agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
+`learning` meter on `GET /usage` reads the same lines.
 
 ## Spend cap
 

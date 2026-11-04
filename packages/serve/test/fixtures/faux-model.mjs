@@ -108,6 +108,15 @@ export default function reply(context, faux) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
     return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
+  // Reads each path its first message lists with read, one per turn, then says so; "once <file> exists" holds the first
+  // read until the test has made that file (and planted what the reads need).
+  const reads = /^Read these paths(?: once (\S+) exists)?: (.*)$/s.exec(first);
+  if (reads) {
+    const paths = JSON.parse(reads[2]);
+    const call = () => faux.message(faux.toolCall("read", { path: paths[results] }), { stopReason: "toolUse" });
+    if (results >= paths.length) return faux.message("Read them.");
+    return reads[1] && results === 0 ? untilExists(reads[1]).then(call) : call();
+  }
   // Fetches each URL its first message lists with fetch_page (or the tool it names), one per turn, then says so.
   const fetches = /^Fetch these pages(?: with (\w+))?: (.*)$/s.exec(first);
   if (fetches) {

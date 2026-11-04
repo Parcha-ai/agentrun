@@ -147,8 +147,13 @@ describe("a box runtime that exports the launcher's names", () => {
 			'env > seen-env; sha256sum | cut -c1-64 > in; cat <&"$PI_TRANSPORT_SECRETS_FD" | sha256sum | cut -c1-64 > sec; exec sleep 300',
 		];
 		const started = getOrThrow(await launch(box, "exported", { argv: program, stdin, secrets }, context));
-		expect((await until("its stdin", () => fileIn(box, "in")))?.trim()).toBe(sha(stdin));
-		expect((await until("its secrets", () => fileIn(box, "sec")))?.trim()).toBe(sha(JSON.stringify(secrets)));
+		// The shell creates `in` and `sec` empty before the pipeline writes them: each wait is for the hash, not the file.
+		expect((await until("its stdin", async () => (await fileIn(box, "in"))?.trim() || undefined))?.trim()).toBe(
+			sha(stdin),
+		);
+		expect((await until("its secrets", async () => (await fileIn(box, "sec"))?.trim() || undefined))?.trim()).toBe(
+			sha(JSON.stringify(secrets)),
+		);
 		const encoded = [Buffer.from(stdin).toString("base64"), Buffer.from(JSON.stringify(secrets)).toString("base64")];
 		for (const marker of [token, secret, ...encoded])
 			expect(processesHolding(marker), marker.slice(0, 8)).toEqual([]);
@@ -184,7 +189,9 @@ describe("a box runtime that exports the launcher's names", () => {
 		const started = getOrThrow(
 			await launch(box, "shellvars", { argv: program, stdin, secrets: { A: "secret-value" } }, context),
 		);
-		expect((await until("its stdin", () => fileIn(box, "in")))?.trim()).toBe(sha(stdin));
+		expect((await until("its stdin", async () => (await fileIn(box, "in"))?.trim() || undefined))?.trim()).toBe(
+			sha(stdin),
+		);
 		const log = (await fileIn(box, `${started.directory}/out.log`)) ?? "";
 		expect(log).not.toContain("PS4MARK");
 		expect(log).not.toMatch(/LD_PRELOAD|cannot be preloaded/);
@@ -214,7 +221,7 @@ describe("the C library's own unsecure variables in the box runtime", () => {
 		const { box } = await aBox(Object.fromEntries(set.map((name) => [name, value(name)])));
 		const program = ["sh", "-c", "env > seen-env; exec sleep 300"];
 		const started = getOrThrow(await launch(box, "libc", { argv: program }, context));
-		await until("the program's environment", () => fileIn(box, "seen-env"));
+		await until("the program's environment", async () => (await fileIn(box, "seen-env")) || undefined);
 		const dir = started.directory;
 		for (const file of ["launcher.pid", "watch.pid", "pid.1"]) {
 			const pid = readFileSync(join(dir, file), "utf8").trim();
