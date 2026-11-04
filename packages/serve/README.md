@@ -308,6 +308,10 @@ go through `work/` by path.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
+- It has no capability and can gain none (`--cap-drop ALL`, `--security-opt no-new-privileges`), so even as root (a
+  server run as uid 0) it cannot make a device node in `work/`. Its Docker daemon must be this machine's: where
+  `DOCKER_HOST`, or the docker context, names another machine (tcp://, ssh://), no box is made, since that daemon would
+  bind its own paths, and the refusal says which setting to undo.
 - The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
   after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
   the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
@@ -416,7 +420,10 @@ A run is refused before it starts, `409 agent_not_runnable`, saying which, for a
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
-it is never off, and a model node that names its own thinking level keeps it.
+it is never off, and a model node that names its own thinking level keeps it. An agentic run started with an `effort` also
+gets a short note on how to work, right after its instructions, on every harness (`src/effort-guidance.ts`): `low`
+answers directly, `medium` plans briefly and checks once, `high` plans each part, fills the gaps and reviews. A run
+started with none gets no note.
 
 ## Tools
 

@@ -125,7 +125,7 @@ test("live Docker (pi): bash runs in the box, and write, read and edit on the wo
   assert.deepEqual([id, uid, gid, cwd], ["ID=debian", String(process.getuid()), String(process.getgid()), "/run/agentrun/run/work"]);
   assert.match(at(11), /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
   assert.ok(!at(11).includes(canonical), "never the data root");
-  assert.match(at(9), /: outside the workspace \/run\/agentrun\/run\/work/, "a host path is refused, never mapped");
+  assert.match(at(9), /: outside the workspace(\n<\/harness>)?$/, "a host path is refused as given, never mapped, and no other path is named");
   await until(() => docker("ps", "--all", "--quiet", "--filter", `label=agentrun.run=${runId}`).trim() === "", "the box's destroy at the run's end");
 });
 
