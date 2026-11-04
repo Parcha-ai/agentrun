@@ -639,7 +639,8 @@ A tool's key comes from one of two places. The server's own environment, through
 `typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
 provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
 `"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
-default model ([models](#models)); its `harnesses` are pi and the provider's own harness, of those this server runs. `GET
+default model ([models](#models)); its `harnesses` are pi and the harnesses that talk to that provider's API (OpenAI's:
+codex and opencode), of those this server runs. `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
 `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only what capabilities show
 this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
@@ -1225,14 +1226,14 @@ the model's input and cache-write prices (the provider may bill any of the input
 sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
 ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
-own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent and codex written into its body
+own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent, codex and opencode written into its body
 by the model proxy (`max_tokens` and `thinking.budget_tokens`, or `max_output_tokens`). The limit is what it is held at,
 so the cap stays exact. A request is refused only when what is left cannot buy its least: 1,024
 tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
 where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
 a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
-server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
+server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent, codex and opencode uses; there
 the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
 by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself

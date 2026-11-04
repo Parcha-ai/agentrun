@@ -6,7 +6,8 @@
 // A refusal says what kind of thing it refused, never a value from the request (the proxy reports it to the client). A
 // body may carry only the keys the pinned build sends (test/fixtures/responses-request-*.json, recorded behind a scripted
 // gateway), `store` is always false, `include` may ask only for the encrypted reasoning a stateless request replays, and
-// the model is the session's. `max_output_tokens` is clamped. No tool the provider runs on its own passes (one is
+// the model is the session's. `max_output_tokens` is clamped, and under a spend cap limited further to what is left of
+// the cap can buy (the host's ticket, through `limitOutput`). No tool the provider runs on its own passes (one is
 // refused), and a function tool that is not one of the session's (`hands_<host tool>`, OpenCode's name for the adapter's
 // MCP tools) is dropped, so the model is offered exactly the host's tools.
 //
@@ -223,6 +224,32 @@ function watchCalls(onCall: (call: WatchedCall) => void): { chunk(text: string):
   };
 }
 
+/** The tokens a request keeps for its answer when a spend cap limits its output. */
+export const ANSWER_TOKENS_LEAST = 1024;
+/** What a reasoning request at each effort is allowed for its reasoning beside its answer, when its output is limited:
+ *  OpenAI's reasoning shares `max_output_tokens` and takes no budget, so a limit under its reasoning comes back
+ *  incomplete with no answer. The figures are codex's (pi-ai's thinking budgets by level, xhigh at high's). */
+export const REASONING_TOKENS_ALLOWED: Readonly<Record<string, number>> = Object.freeze({ minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384 });
+
+/** The output tokens a Responses body asks for at most: its `max_output_tokens`, as `apply` clamped it. */
+export function responsesOutputAsked(body: Record<string, unknown>): number | undefined {
+  const asked = body.max_output_tokens;
+  return typeof asked === "number" && Number.isSafeInteger(asked) && asked > 0 ? asked : undefined;
+}
+
+/** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
+ *  allowance when it reasons. */
+export function responsesOutputLeast(body: Record<string, unknown>): number {
+  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : (REASONING_TOKENS_ALLOWED[effort] ?? 0));
+}
+
+/** A Responses body with its output limited to `max` tokens, reasoning included: never raised, and never longer. */
+export function limitResponsesOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
+  const asked = responsesOutputAsked(body);
+  return { ...body, max_output_tokens: asked === undefined ? max : Math.min(asked, max) };
+}
+
 export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools.map((name) => `${TOOL_PREFIX}${name}`));
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
@@ -260,6 +287,10 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
     usageOf,
     watch: options.onCall ? () => watchCalls(options.onCall!) : undefined,
     modelOf: () => options.model,
+    // Under a spend cap the host admits each request with what is left can buy, which goes into max_output_tokens.
+    outputAsked: responsesOutputAsked,
+    outputLeast: responsesOutputLeast,
+    limitOutput: limitResponsesOutput,
     serverInputOverhead: responsesServerInputOverhead,
   };
 }

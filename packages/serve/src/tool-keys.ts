@@ -41,7 +41,7 @@ export const TOOL_KEYS = [
   // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
   { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
   // A model provider's key (model.ts' MODEL_KEYS, which give each its default model): every run gets it, as the
-  // launcher's model keys reach every run. Its harnesses are pi and the harness that is the provider's own.
+  // launcher's model keys reach every run. Its harnesses are pi and those that talk to the provider's API (MODEL_KEYS).
   ...MODEL_KEYS.map(({ id, label, field, harnesses }) => ({ id, kind: "model" as const, label, fields: [field] as const, unlocks: [] as const, harnesses })),
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);

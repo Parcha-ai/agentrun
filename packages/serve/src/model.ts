@@ -36,10 +36,10 @@ export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
  *  from, each with the model a run gets on its key when neither its revision nor the host names one: the provider's
  *  capable everyday model, not its dearest (Claude Sonnet 5.5 and GPT-6.1 Sol, each $2 in and $10 out per million
  *  tokens; through OpenRouter, the same Sonnet). `harnesses`: those that run on the key, pi on any model of it and the
- *  harness that is the provider's own. */
+ *  harnesses that talk to that provider's own API (OpenAI's: codex and opencode). */
 export const MODEL_KEYS = [
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: [DEFAULT_HARNESS, "claude-agent"] },
-  { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, "codex"] },
+  { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, "codex", "opencode"] },
   { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/anthropic/claude-sonnet-5.5", harnesses: [DEFAULT_HARNESS] },
 ] as const;
 
@@ -48,14 +48,15 @@ export const MODEL_KEYS = [
 export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${MODEL_KEYS.map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
 
 /** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`), as it talks to
- *  Anthropic's endpoint only; codex an OpenAI model, or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL),
- *  as it takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
+ *  Anthropic's endpoint only; codex and opencode an OpenAI model, or a gateway's own id (no provider, through
+ *  AGENT_MODEL_BASE_URL), as each takes that gateway for its OpenAI-compatible endpoint (adapters.ts' codexProvider).
+ *  On the faux harness every harness runs the run's model. */
 export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string): boolean {
   if (harness === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV]) return true;
   const slash = id.indexOf("/");
   const provider = slash > 0 ? id.slice(0, slash) : undefined;
   if (harness === "claude-agent") return provider === "anthropic";
-  if (harness === "codex") return provider === "openai" || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
+  if (harness === "codex" || harness === "opencode") return provider === "openai" || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
   return true;
 }
 
