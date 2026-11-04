@@ -588,3 +588,46 @@ test("a runner's pause before the node's prompt was placed: the next process res
   const placed = resumed.submissions.filter((s) => resumed.placed.has(s.id)).map((s) => s.text);
   assert.equal(placed[0], request.user, 'the paused node resumes with its own prompt');
 });
+
+test("an interrupt that lands while send() is still recording the prompt: the session reads open_turn after the stopped turn, and the next message is sent alone", async () => {
+  const spec = { key: 'step:abort-submit', label: 'abort', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const folded = async () => foldSession(spec.key, await store.read(spec.key));
+  // The session's writer, with the prompt's submission held at its append until the test lets it go.
+  const inner = await store.open(spec.key);
+  let held;
+  const reached = new Promise((resolve) => { held = resolve; });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+    if (records.some((r) => r.kind === 'kernel.submission' && r.data?.text === 'go')) { held(); await gate; }
+    return inner.append(records);
+  } };
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer, models, signal: new AbortController().signal, onEvent: () => {} });
+  const sending = a.send('go');
+  await reached;
+  // The stop lands while the prompt is being recorded: no turn is running yet.
+  await a.interrupt();
+  release();
+  await sending;
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  const stopped = await folded();
+  const go = stopped.submissions.find((s) => s.text === 'go');
+  assert.ok(go && !stopped.placed.has(go.id), 'setup: the stopped prompt was recorded and never placed');
+  // As serve's stop does: a turn the session still holds open after the stop is settled.
+  const afterStop = a.state;
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = await folded();
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
+  assert.deepEqual(
+    { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), placed, modelSaw },
+    { afterStop: 'open_turn', pending: [], placed: ['and now?'], modelSaw: ['echo: and now?'] },
+    'a stop during the prompt\'s record leaves the turn open to settle, and the stopped prompt is never sent',
+  );
+});
