@@ -57,13 +57,15 @@ export function cost(c: Cost | null | undefined): string {
 export type LinkedFiles = { paths: readonly string[]; from?: string };
 
 /** The run file a relative link names, resolved from `from` as a browser would (./, ../, %20; no query or fragment), or
- *  null when it names none. A path from the root (/x) is the server's, never a run file. */
+ *  null when it names none (a link no URL parser takes included). A path from the root (/x) is the server's, never a run
+ *  file. The folder is a path, not a URL: each of its names is encoded, so a #, ? or % in one is a character of it. */
 function runFile(href: string, files: LinkedFiles): string | null {
   if (href.startsWith("/") || href.startsWith("#")) return null;
-  const at = new URL(href, `file:///${files.from ? `${files.from.replace(/\/*$/, "")}/` : ""}`);
-  let path: string;
-  try { path = decodeURIComponent(at.pathname.slice(1)); } catch { return null; }
-  return files.paths.includes(path) ? path : null;
+  const from = files.from ? `${files.from.replace(/\/*$/, "").split("/").map(encodeURIComponent).join("/")}/` : "";
+  try {
+    const path = decodeURIComponent(new URL(href, `file:///${from}`).pathname.slice(1));
+    return files.paths.includes(path) ? path : null;
+  } catch { return null; }
 }
 
 /** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames).
