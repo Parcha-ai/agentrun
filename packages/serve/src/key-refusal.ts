@@ -1,7 +1,7 @@
 // A model provider that refuses the run's key (401) says so in a person's words, naming the key and where to set it,
-// in place of the provider's raw answer as each harness passes it on: pi-ai's (`401: {"message":"User not found"}`),
-// the Claude CLI's ("Failed to authenticate. API Error: 401 User not found") and Codex's ("unexpected status 401
-// Unauthorized: User not found, url: ..."). Formed where a run's error is (runs.ts), so it holds on every harness.
+// in place of the provider's raw answer as each harness passes it on. Formed where a run's error is (runs.ts), so it
+// holds on every harness. Only the shapes the harnesses give count (REFUSED); a 401 anywhere else in an error (a
+// count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { hostModel, MODEL_KEYS, openRouterOnly } from "./model.js";
 
@@ -43,16 +43,24 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
-/** `text`, a run's error, in a person's words when it is a provider's 401 for `key`, with no value of `secrets` in it;
- *  undefined when it is not one. */
+/** A provider's 401 as each harness puts it, at the start of the run's error:
+ *  - pi-ai: `401: <body>` (its OpenAI-shaped APIs, OpenRouter's chat completions among them), `401 <body>` (Anthropic's
+ *    SDK), or `<provider> API error (401): <body>` (its Responses API, serve's gateway's `agent-model API error (401): …`);
+ *  - the Claude CLI, named by its adapter: `claude-agent: Failed to authenticate. API Error: 401 <message>`;
+ *  - the Codex binary, named by its adapter: `codex: unexpected status 401 Unauthorized: <message>, url: …`.
+ *  The match ends at the status, and the provider's words follow it. */
+const REFUSED = /^(?:401\b|[^:\n]*\berror \(401\)|(?:claude-agent: )?(?:Failed to authenticate\. )?API Error: 401\b|(?:codex: )?unexpected status 401\b)/;
+
+/** `text`, a run's error, in a person's words when it is a provider's 401 for `key` (REFUSED), with no value of
+ *  `secrets` in it; undefined when it is not one. */
 export function keyRefusal(text: string | undefined, key: RunKey | undefined, secrets: readonly string[] = []): string | undefined {
   if (!text || !key) return undefined;
   // Every held key's value out of the whole text first: cut afterwards, a key the provider echoed across the cut would
   // keep its start in the words.
   const said = secrets.reduce((out, secret) => (secret.length >= 8 ? out.split(secret).join("[redacted]") : out), text);
-  const at = /(?:^|\D)401(?:\D|$)/.exec(said);
+  const at = REFUSED.exec(said);
   if (!at) return undefined;
-  const detail = detailOf(said.slice(at.index + at[0].indexOf("401") + 3));
+  const detail = detailOf(said.slice(at[0].length));
   const where = key.saved ? "set it where AgentRun starts, or save it in Settings → Model keys." : "set it where AgentRun starts.";
   return `${key.who} refused ${key.field} (401${detail ? `: ${detail}` : ""}): ${where}`;
 }
