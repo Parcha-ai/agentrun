@@ -829,6 +829,63 @@ missing names to where its key is saved. `agentrun-serve import` opens the saved
 cuts each out of what it writes, as it cuts a key-shaped variable of its environment; one that does not open there is
 not known, so not cut, and the import says so.
 
+## MCP servers
+
+Add a remote MCP server once, with its credential, and see its tools before you keep it. Agents granting its tools
+come in a later version; this is the API that saves the server.
+
+```sh
+curl -X POST "$BASE/v2/settings/mcp-servers/preview" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url": "https://mcp.example.com/mcp", "auth": {"type": "bearer", "token": "..."}}'
+curl -X PUT "$BASE/v2/settings/mcp-servers/example" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url": "https://mcp.example.com/mcp", "auth": {"type": "bearer", "token": "..."}}'
+```
+
+`POST /v2/settings/mcp-servers/preview` takes `{url, auth}` (or `{name}` for a saved server) and connects over
+Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`): the 2026-07-28 revision first, a
+2025-era server through its `initialize`. It answers the revision agreed (`protocol`), the server's `server_info`, any
+`instructions` and every tool `tools/list` gives, all pages, each with its name, title, description, `input_schema`,
+`output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
+(or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
+value}}` (up to 8). `oauth` is refused for now (`422`, reason `not_yet`). `url` is `https`, or `http` on loopback.
+
+What can go wrong, told apart:
+
+- `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
+  metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
+- `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).
+- `422 input_invalid`, field `url`, reason `redirect`: the server answered a redirect. None is followed, so a
+  credential goes only to the address you gave; the message names where it points.
+- `424 upstream_failed`: the server could not be reached, did not answer within 15 s (30 s for the whole listing),
+  answered 5xx or more than 4 MiB at once, or failed to list its tools; `details.status` is its HTTP status, if any.
+
+A server is kept with at most 500 tools and 1 MiB of tool names, descriptions and schemas: past either, the listing
+stops at that page and the answer is `422 input_invalid` (field `url`, reason `too_many_tools` or `tools_too_large`),
+naming the limit and how many tools were read.
+
+`PUT /v2/settings/mcp-servers/{name}` previews the same way, then keeps the server: its URL, the tools it listed (the
+snapshot an agent will be shown) and its credential. A name is lowercase letters, digits and dashes, starting with a
+letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. Each credential header's value is
+sealed like a [tool key](#tool-keys): AES-256-GCM under `AGENTRUN_SEAL_KEY`, bound to the server's name and the header,
+in `DIR/mcp-servers.json` (0600, written whole, synced and renamed), which holds no value in the clear. With no seal key,
+a server that takes a credential is `409 no_sealing_key`, before anything is contacted; one with `auth.type` none is
+kept. A `PUT` that sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's
+origin stay the same: a saved credential never goes to another origin unless you send it again.
+
+`GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `seal_key_missing`
+(no seal key now) or `unreadable` (sealed under another key, or damaged: a `PUT` with the credential seals it again),
+null for `auth.type` none. No read, log line or error shows a credential; a server's error text is cut of the values
+sent before it is shown. `POST .../{name}/refresh` lists the tools again with the saved URL and credential, keeps them,
+and answers `{added, removed, changed, server}`: `changed` names a tool whose title, description, schemas or
+annotations differ. `DELETE .../{name}` forgets the server and its credential. A saved-servers file that does not read (damaged, or
+another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
+route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
+says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
+
+`test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
+answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
+method, tool and whether an `Authorization` header came, never its value.
+
 ## Webhooks
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
@@ -907,6 +964,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
+| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
@@ -925,7 +983,8 @@ A run's input files. Send one in one call, its bytes the body and its path in th
 curl -s "$AGENTRUN_BASE_URL/files?path=plan.md" -H "authorization: Bearer $AGENTRUN_API_KEY" --data-binary @plan.md
 ```
 
-It answers `201` with the file `ready`: its `file_id`, `size_bytes` (the body's length) and `sha256` (the body's own).
+It answers `201` with the file, `ready`, under `file`: its `file_id`, `size_bytes` (the body's length) and `sha256`
+(the body's own).
 Its `content_type` is the query's `content_type`, else the request's own type when it names one (not
 `application/octet-stream`, not curl's `application/x-www-form-urlencoded`), else its path's extension's, as a run's files
 are served (`plan.md` is `text/markdown; charset=utf-8`), else `application/octet-stream`. A `sha256` in the query is
