@@ -3,12 +3,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { BOX_IDS } from "../dist/boxes.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, scratch, withEnv } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);
@@ -20,20 +20,18 @@ const AWKWARD = "Ab+cD/ef=Gh+iJ/kl=Mn+oP/qr=St+uV/wx==";
 
 /** The bin on `data`, its stdout kept; resolves once it printed its banner. */
 async function bin(t, data, args = [], env = {}) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   t.after(() => child.exitCode === null && child.kill("SIGKILL"));
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));
   child.stderr.on("data", (chunk) => (seen.err += chunk));
-  for (let i = 0; !/^Open /m.test(seen.out); i++) {
-    assert.ok(i < 200 && child.exitCode === null, `the server did not start: ${seen.out}${seen.err}`);
-    await sleep(50);
-  }
+  await printed(child, /^Open /m);
   const base = /AGENTRUN_BASE_URL=(\S+)/.exec(seen.out)[1];
   return { child, seen, base, exited: new Promise((resolve) => child.once("exit", (code) => resolve(code))) };
 }
 
-test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and the run goes on at the next start", { timeout: 90_000 }, async (t) => {
+test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and the run goes on at the next start; its timeline says it resumed after the server stopped", { timeout: 90_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const go = join(data, "..", "go");
   const server = await bin(t, data, ["--drain-timeout", "2s"]);
@@ -50,12 +48,15 @@ test("on SIGTERM with a run busy, the bin exits within its --drain-timeout, and 
   assert.equal(code, 0, server.seen.err);
   assert.ok(took < 2_000 + 3_000, `it exited ${took} ms after SIGTERM, past its 2 s drain`);
   assert.equal(alive(pid), false, "the run's process exited with it");
+  const left = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
   const again = client(next.baseUrl, next.token);
   await writeFile(go, "");
-  await follow(again, run.run_id, ["completed"]);
+  const { rows } = await follow(again, run.run_id, ["completed"]);
   assert.equal((await again("GET", `/runs/${run.run_id}`)).body.result.final_answer, "Now.");
+  assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after the server stopped"], "one stored row, kept by the settle's read");
 });
 
 test("the image drains within Docker's 10 s grace, and Compose gives the stop more than the drain", async () => {
@@ -110,7 +111,7 @@ test("the stored token is printed on the boot that made it, and on no later one"
   assert.equal(second.seen.out.includes(token) || second.seen.out.includes(token.slice(0, 12)), false, "the second boot prints no token value");
 });
 
-const LINE = /^at=\S+ event=(boxes|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
+const LINE = /^at=\S+ event=(boxes|harness_offers|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
 const fields = (line) => Object.fromEntries([...line.matchAll(/([a-z_]+)=("[^"]*"|\S+)/g)].map(([, k, v]) => [k, v.replace(/^"|"$/g, "")]));
 
 test("one log line per request (method, path without its query, status, ms), per run start and end, and per refused credential; never a token", async (t) => {
@@ -142,7 +143,7 @@ test("one log line per request (method, path without its query, status, ms), per
   assert.deepEqual(of("boxes").map((b) => [b.available, b.unavailable]), [["none", BOX_IDS.join(",")]]);
 });
 
-test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, run and refused-credential lines stay", async (t) => {
+test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, harness offers, run and refused-credential lines stay", async (t) => {
   withEnv(t, { AGENTRUN_LOG: "quiet" });
   const lines = [];
   const server = await startServe({ data: join(await scratch(t), "agents"), port: 0, faux: FAUX, log: (line) => lines.push(line) });
@@ -152,7 +153,7 @@ test("AGENTRUN_LOG=quiet turns the request lines off; the boxes, run and refused
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   await follow(api, run.run_id, ["completed"]);
   await client(server.baseUrl)("GET", "/runs");
-  assert.deepEqual(lines.map((line) => fields(line).event), ["boxes", "run_started", "run_ended", "auth_failed"]);
+  assert.deepEqual(lines.map((line) => fields(line).event), ["boxes", "harness_offers", "run_started", "run_ended", "auth_failed"]);
 });
 
 test("the bin writes the log lines to stdout", { timeout: 60_000 }, async (t) => {

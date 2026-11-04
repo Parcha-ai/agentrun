@@ -189,3 +189,52 @@ test('an image past Jev\'s 1568 px side is refused before sending to a typesafe/
   await ask(sent.fetch, 'liquid/d1', png(1569, 400));
   assert.equal(sent.seen.length, 2);
 });
+
+/** What `deciding` does within `ms`: answered, rejected with its code, or still waiting. */
+async function within(ms, deciding) {
+  let timer;
+  const settled = deciding.then(() => 'answered', (error) => `rejected ${error?.code ?? error?.name}`);
+  return Promise.race([settled, new Promise((resolve) => { timer = setTimeout(() => resolve('still waiting'), ms); })]).finally(() => clearTimeout(timer));
+}
+
+test("the image check runs inside the request's deadline and ends on its cancel: a catalog that never answers holds it no longer", async () => {
+  const images = { '<p>': { bytes: PNG, mime: 'image/png', ref: 'pages/acme/1.png' } };
+  const request = { label: 'x', kind: 'judge', state: { page: '<p>' }, questions: QUESTIONS, model: 'liquid/d1', images };
+  // The catalog never answers (it waits on its own signal, whose 10 s bound is longer than any here); nothing else is sent.
+  const posts = [];
+  const silent = (url, init) => {
+    if (String(url).includes('/v1/models')) return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    posts.push(String(url));
+    return Promise.reject(new Error('sent'));
+  };
+  const cancel = new AbortController(); setTimeout(() => cancel.abort(), 50);
+  let started = Date.now();
+  assert.equal(await within(1500, openrouterProvider({ ...settings, takesImages: undefined, fetch: silent }).decide(request, ctx({ signal: cancel.signal, deadlineMs: null }))), 'rejected aborted');
+  assert.ok(Date.now() - started < 1000, 'cancelled at once, not after the catalog gives up');
+  started = Date.now();
+  assert.equal(await within(1500, openrouterProvider({ ...settings, takesImages: undefined, timeoutMs: 200, fetch: silent }).decide(request, ctx({ deadlineMs: null }))), 'rejected timeout');
+  assert.ok(Date.now() - started < 1000, 'cut at the provider timeout');
+  // A host's own check that never ends is cut at the decision's deadline too.
+  assert.equal(await within(1500, openrouterProvider({ ...settings, takesImages: () => new Promise(() => {}), fetch: silent }).decide(request, ctx({ deadlineMs: 100 }))), 'rejected timeout');
+  assert.deepEqual(posts, [], 'nothing was sent');
+});
+
+test("through judgeFromProviders, a node's timeoutMs that cuts the image check is timeout and unsent, never a decision for review", async () => {
+  const posts = [];
+  const silent = (url, init) => {
+    if (String(url).includes('/v1/models')) return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    posts.push(String(url));
+    return Promise.reject(new Error('sent'));
+  };
+  const provider = openrouterProvider({ ...settings, takesImages: undefined, fetch: silent });
+  const judge = judgeFromProviders({ providers: { openrouter: provider }, default: 'openrouter', deadlineMs: 60_000, loadImage: async () => ({ bytes: PNG, mime: 'image/png' }) });
+  const ask = { label: 'x', kind: 'judge', state: { page: '<p>' }, questions: QUESTIONS, model: 'liquid/d1', images: { '<p>': 'pages/acme/1.png' } };
+  let caught;
+  assert.equal(await within(1500, judge({ ...ask, timeoutMs: 50 }).catch((error) => { caught = error; throw error; })), 'rejected timeout');
+  assert.equal(caught.unsent, true, 'it says nothing was sent');
+  // The run's own cancel there is aborted, and unsent too.
+  const cancel = new AbortController(); setTimeout(() => cancel.abort(), 50);
+  assert.equal(await within(1500, judge({ ...ask, signal: cancel.signal }).catch((error) => { caught = error; throw error; })), 'rejected aborted');
+  assert.equal(caught.unsent, true);
+  assert.deepEqual(posts, [], 'nothing was sent');
+});

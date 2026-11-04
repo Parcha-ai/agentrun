@@ -10,13 +10,13 @@
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
@@ -107,6 +107,9 @@ export interface ClaudeAgentAdapterOptions {
    *  then admits. Each search the provider reports is booked at `CLAUDE_WEB_SEARCH_USD` on top of `price`, into the
    *  session's cost and so its spend cap. WebFetch stays off (it would fetch from the CLI's own process). Default off. */
   webSearch?: boolean;
+  /** With `webSearch`: the input tokens a search request may read in beyond its body, added to its input bound, so a cap
+   *  can hold it (`inputTokensMax`). Absent, a search request has no input bound. */
+  webSearchAllowance?: number;
   /** Diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /**
@@ -155,17 +158,31 @@ export function claudeAgentCliPins(): { sha256?: string; version: string } {
   return sha256 ? { sha256, version: CLAUDE_CODE_VERSION } : { version: CLAUDE_CODE_VERSION };
 }
 
-/** The CLI at `path`, checked against the pins: its path, or the typed reason it is not the pinned build. */
+/** The CLI at `path`, checked against the pins: its path, or the typed reason it is not the pinned build. Its sha256 is
+ *  read a chunk at a time, never the whole CLI in memory, and a check that passed holds for this process while the CLI
+ *  stays the same file, unchanged (the kernel's checkedOnce): a host that checks it for each model it resolves, and a
+ *  run's process that makes its adapter, check it once. */
 export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgentCliPins()): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
   if (!path) return new ClaudeAgentNotInstalled(`no CLI of @anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} for ${platformSuffix()} (its platform package, an optional dependency npm installs with it), and no cliPath`, CLAUDE_AGENT_SDK_INSTALL);
-  let bytes: Buffer;
+  // Hashed a chunk at a time, and once per CLI in this process while it stays the same file (the kernel's pinned-binary).
+  return checkedOnce(path, JSON.stringify(pins), () => checkCli(path, pins), (result) => !(result instanceof Error));
+}
+
+/** The CLI at `path` against `pins`' sha256 and version. */
+function checkCli(path: string, pins: { sha256?: string; version: string }): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
   try {
-    bytes = readFileSync(path);
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    accessSync(path, constants.R_OK);
   } catch {
     return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
   }
   if (pins.sha256) {
-    const found = createHash("sha256").update(bytes).digest("hex");
+    let found: string;
+    try {
+      found = sha256OfFile(path);
+    } catch {
+      return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
+    }
     if (found !== pins.sha256) return new ClaudeAgentPinMismatch("cli_sha256", pins.sha256, found, path);
   }
   let version: string;
@@ -353,7 +370,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           hooks: io.models,
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
-          ...(webSearch ? { webSearch: true } : {}),
+          ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
@@ -392,13 +409,13 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; args?: unknown; reason?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
           calls.end(e.callId);
-          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}) });
+          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}), ...(e.truncated === true ? { truncated: true as const } : {}) });
         }
         // A call the CLI refused itself (a tool the session doesn't have): shown as a call that failed, by the name the
         // model gave. The CLI's transcript, mirrored to the store, keeps the refusal.
@@ -414,7 +431,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const open = (attempt = 0) => openDrive({ writer, signal: io.signal, live, attempt });
       let drive = await open();
       const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+      // A turn is open while the session holds input no turn placed, or a turn with no end (its recovery note).
+      const holdsTurn = (folded: typeof initial) => Boolean(recoveryNote(folded)) || pendingSubmissions(folded).length > 0;
+      let state: AdapterSession["state"] = holdsTurn(initial)
         ? "open_turn"
         : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
 
@@ -434,7 +453,12 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             } catch (error) {
               // Stopped by the session or its host: interrupted. Halted by anything else (a spend cap, the mirror, a refused
               // spawn): failed, naming why.
-              if (current.signal.aborted) outcome = abortedOutcome(current.signal, io.signal);
+              if (current.signal.aborted) {
+                outcome = abortedOutcome(current.signal, io.signal);
+                // A stop that landed before this turn ran (while send() was still recording its prompt) found no turn to
+                // stop, and reads the session as it was: the turn is open now, its prompt pending, so it reads open_turn.
+                state = holdsTurn(current.state()) ? "open_turn" : "idle";
+              }
               // The CLI exited mid-turn: the drive is rebuilt from the log and the turn resumes, a few times.
               else if (error instanceof Restart && attempt < RESTARTS) drive = await open(attempt + 1);
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
@@ -466,6 +490,14 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           await ready();
           void run();
         },
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to settle");
+          await ready();
+          // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
+          // and the next turn carries no recovery of this one. Nothing is sent.
+          await settleTurn(drive);
+          state = "idle";
+        },
         async turnEnd() {
           if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
           return running;
@@ -480,6 +512,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             if (drainMs > 0) await calls.idle(drainMs);
             drive.halt?.(new SessionHalt("interrupted"));
             await running?.catch(() => {});
+            // The turn it stopped is still open in the session (an interrupt writes no end, and a prompt it stopped before
+            // the harness placed it is still pending): open_turn, so a host that is done with it settles it here.
+            if (holdsTurn(drive.state())) state = "open_turn";
           } finally {
             // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
             calls.clear();

@@ -25,13 +25,12 @@ const editor = (slug: string, extra: Partial<React.ComponentProps<typeof AgentEd
 // recorded timeline and reads its recorded record.
 const recordedRun = (id: string) => runNames.map(runFixture).find((f) => f.run.run_id === id)!;
 
-// An agent's page over its recorded agent and runs, with the server's efforts; with `analytics`, a server whose stats
-// carry the sample analytics.
-const agentPage = (slug: string, { runs = true, tab, analytics = false }: { runs?: boolean; tab?: "workflow" | "analytics"; analytics?: boolean } = {}) => {
+// An agent's page over its recorded agent and runs, with the server's efforts, and stats carrying the sample analytics.
+const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "workflow" | "analytics" } = {}) => {
   const v2 = {
     getAgent: async () => ({ agent: agentFixture(slug), etag: null }),
     listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }),
-    statsOver: async () => statsWith(analytics ? ANALYTICS : undefined),
+    statsOver: async () => statsWith(ANALYTICS),
     getTimeline: async (id: string) => recordedRun(id).page,
     getRun: async (id: string) => recordedRun(id).run,
   };
@@ -47,7 +46,7 @@ export const ListError: Story = { render: () => page(<AgentsList agents={null} e
 export const AgentRuns: Story = { render: () => agentPage("invoice-checker") };
 export const AgentNoRuns: Story = { render: () => agentPage("invoice-checker", { runs: false }) };
 export const AgentWorkflowGraph: Story = { render: () => agentPage("support-triage", { tab: "workflow" }) };
-export const AgentAnalytics: Story = { render: () => agentPage("invoice-checker", { tab: "analytics", analytics: true }) };
+export const AgentAnalytics: Story = { render: () => agentPage("invoice-checker", { tab: "analytics" }) };
 export const NewAgent: Story = { render: () => page(<AgentEditor agent={null} caps={editorCaps} onSave={async () => null} onBack={noop} />) };
 export const EditContext: Story = { render: () => editor("invoice-checker") };
 export const EditTools: Story = { render: () => editor("invoice-checker", { step: "tools" }) };
@@ -57,5 +56,5 @@ export const EditConflict: Story = { render: () => editor("invoice-checker", { p
 export const EditInvalidHarness: Story = { render: () => editor("invoice-checker", { step: "settings", problem: asProblem("write.definition-invalid-harness") }) };
 export const EditWorkflow: Story = { render: () => editor("support-triage") };
 // A save the server took that this host can't run yet: what its answer's warnings said, above the form and at the field.
-export const SavedWithWarnings: Story = { render: () => page(<AgentEditor agent={{ ...agentFixture("invoice-checker"), warnings: [{ field: "definition.model", reason: "not_set_up_here", message: "pi-ai finds no key for openai in this environment (OpenAI API key): set it where agentrun-serve starts." }] }} revisions={revisionsOf("invoice-checker")} caps={editorCaps} step="settings" onSave={async () => null} onBack={noop} />) };
+export const SavedWithWarnings: Story = { render: () => page(<AgentEditor agent={{ ...agentFixture("invoice-checker"), warnings: [{ field: "definition.model", reason: "not_set_up_here", message: "No OpenAI key here for openai/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts." }] }} revisions={revisionsOf("invoice-checker")} caps={editorCaps} step="settings" onSave={async () => null} onBack={noop} />) };
 export const Phone: Story = { render: () => editor("invoice-checker", { step: "settings" }), globals: { viewport: { value: "mobile1" } } };

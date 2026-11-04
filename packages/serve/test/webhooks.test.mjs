@@ -3,18 +3,19 @@
 // tried again, then logged as failed; a pending one goes on after a restart; a 410 turns the webhook off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
+import { openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { nextMoment } from "../dist/runs.js";
-import { signatureOf, Webhooks } from "../dist/webhooks.js";
+import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
+import { client, FAUX, follow, printed, scratch, serve, startRun, withEnv } from "./support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -233,16 +234,24 @@ test("a message whose redelivery is in flight stays in the outbox while other at
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   let release;
   const held = new Promise((resolve) => { release = resolve; });
-  // The second request, the redelivery, is answered only when released.
-  const hook = await receiver(t, (n) => (n === 2 ? held.then(() => 200) : 200));
-  const { api } = await serve(t);
+  // The log is filled before the redelivery starts, so a single attempt pushes the first out while the redelivery
+  // waits: the wait stays far inside the server's fetch timeout. The redelivery is answered only when released.
+  const redelivery = ATTEMPTS_KEPT + 1;
+  const hook = await receiver(t, (n) => (n === redelivery ? held.then(() => 200) : 200));
+  const { api, data } = await serve(t);
   assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
   const id = hook.got[0].headers["webhook-id"];
+  for (let i = 1; i < ATTEMPTS_KEPT; i++) assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
+  const logged = async () => (await api("GET", "/settings/webhook/deliveries")).body.attempts.some((a) => a.webhook_id === id);
+  assert.ok(await logged(), "the log is full, its first attempt still in it");
   const again = api("POST", `/settings/webhook/deliveries/${id}/redeliver`);
-  await until(() => hook.got.length === 2, "the redelivery in flight");
-  for (let i = 0; i < 50; i++) assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
-  assert.ok(!(await api("GET", "/settings/webhook/deliveries")).body.attempts.some((a) => a.webhook_id === id), "its first attempt has left the log");
+  await until(() => hook.got.length === redelivery, "the redelivery in flight");
+  assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
+  assert.ok(!(await logged()), "its first attempt has left the log");
+  const outbox = JSON.parse(readFileSync(join(data, "webhook-outbox.json"), "utf8"));
+  assert.ok(!outbox.attempts.some((a) => a.webhook_id === id), "nor is it among the outbox's attempts");
+  assert.ok(outbox.messages.some((m) => m.id === id), "the outbox on disk keeps the message in flight");
   release();
   assert.equal((await again).body.status_code, 200);
   const third = await api("POST", `/settings/webhook/deliveries/${id}/redeliver`);
@@ -438,9 +447,7 @@ test("settings: an http or https URL with no user or password, and nothing else;
 async function serverProcess(t, data) {
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  await until(() => /AGENTRUN_API_KEY=/.test(out), "the server's banner");
+  const out = await printed(child, /^AGENTRUN_API_KEY=/m);
   return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim()) };
 }
 
@@ -538,7 +545,9 @@ test("a run waiting for its person when its server dies gives no new notice from
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
   await follow(api, run.run_id, ["input_required"]);
-  await sleep(500);
+  // A notice of the wait is in the outbox by the time the run reads input_required: each one is sent before ids are counted.
+  const outbox = join(data, "webhook-outbox.json");
+  await until(() => JSON.parse(readFileSync(outbox, "utf8")).messages.every((m) => m.status !== "pending"), "the outbox sent");
   // No new notice for the same wait: one webhook-id. The kill can land before the first server records its delivery,
   // and the server that adopts its outbox then sends that same message again, under the same id (at-least-once; the
   // id is the receiver's idempotency key). So ids are counted, never receipts.
@@ -548,18 +557,6 @@ test("a run waiting for its person when its server dies gives no new notice from
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
   await follow(api, run.run_id, ["completed"]);
   await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");
-});
-
-test("when a status is a notice: a change to a wait or an end; a live run adopted with no rows takes its first snapshot silently, and an end it comes to is noticed", () => {
-  assert.deepEqual(nextMoment(undefined, "completed", 3), { keep: undefined, notify: false }, "a run not yet read");
-  assert.deepEqual(nextMoment("other", "input_required", 3), { keep: "input_required", notify: true });
-  assert.deepEqual(nextMoment("input_required", "input_required", 3), { keep: "input_required", notify: false }, "the same wait");
-  assert.deepEqual(nextMoment("input_required", "other", 3), { keep: "other", notify: false });
-  assert.deepEqual(nextMoment("other", "cancelled", 3), { keep: "cancelled", notify: true });
-  assert.deepEqual(nextMoment("unread", "other", 0), { keep: "unread", notify: false });
-  assert.deepEqual(nextMoment("unread", "input_required", 2), { keep: "input_required", notify: false });
-  assert.deepEqual(nextMoment("unread", "cancelled", 0), { keep: "cancelled", notify: true });
-  assert.deepEqual(nextMoment("unread", "completed", 4), { keep: "completed", notify: true });
 });
 
 test("a start that fails after its webhooks began stops them before it lets the data directory go: no try and no write after it", async (t) => {
@@ -632,4 +629,712 @@ test("a try that fails after a redelivery delivered the same message leaves it d
   await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.attempts.length === 2, "both tries logged");
   await sleep(200);
   assert.equal(lines.filter((line) => line.includes("condition=delivery_failed")).length, 0, "no false failure");
+});
+
+// ---- a run's end and its run.ended, one durable step: the end's time is chosen once and saved first, run.ended is
+// queued only once the agent store has the end, and recorded as queued only once the outbox holds it on disk.
+
+const SERVE_END_HELD = new URL("./fixtures/serve-end-held.mjs", import.meta.url).pathname;
+/** The run's ended_at in the agent store, read from another connection; null while it runs. */
+const endedIn = (data, runId) => {
+  const store = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 2_000 });
+  try {
+    return store.prepare("SELECT ended_at FROM runs WHERE id = ?").get(runId)?.ended_at ?? null;
+  } finally {
+    store.close();
+  }
+};
+/** Another connection holding store.sqlite for writing (store-busy.test's IMMEDIATE), so the server's writes of it are
+ *  refused while its reads go on. */
+function hold(t, data) {
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN IMMEDIATE");
+  const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
+  t.after(release);
+  return release;
+}
+/** What the webhook's ledger (webhook-outbox.json, on disk) holds of a run: undefined for none, or no outbox yet. */
+const noticed = (data, runId) => (existsSync(join(data, "webhook-outbox.json")) ? JSON.parse(readFileSync(join(data, "webhook-outbox.json"), "utf8")).notices?.[runId] : undefined);
+/** The ledger's end of the run, as `{ended_at, queued}`. */
+const endNotice = (data, runId) => (noticed(data, runId)?.ended ? { ended_at: noticed(data, runId).ended, queued: true } : undefined);
+/** The webhook-id a run's notice has (webhooks.ts emit): its run, its type and the marker of its moment. */
+const noticeId = (runId, type, marker) => `msg_${createHash("sha256").update(`${runId}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
+/** A server on `data` in a process of its own, started by `script` (the CLI's banner, or a fixture's address line). */
+async function processOn(t, data, args) {
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => child.kill("SIGKILL"));
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  await until(() => /AGENTRUN_BASE_URL=/.test(out), "the server's address");
+  return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim()) };
+}
+const killed = async (child) => {
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+};
+
+test("a run whose end is in the store, its server killed before run.ended is queued and its outbox lost, gives its run.ended from the next server, once, under the id its end time makes", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  // The fixture's read of the run after its end is written never comes back: the server is killed inside that window.
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "ends", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  await killed(first.child);
+  assert.equal(ofType(hook.got, "run.ended").length, 0, "the first server never queued it");
+  // A crash of the machine can keep a write of the outbox from the disk: whatever it held of the end is gone, the store's
+  // end stays, and that alone brings the notice back.
+  rmSync(join(data, "webhook-outbox.json"), { force: true });
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, from the next server");
+  const [ended] = ofType(hook.got, "run.ended");
+  assert.equal(JSON.parse(ended.body).data.run_id, run.run_id);
+  assert.equal(ended.headers["webhook-id"], noticeId(run.run_id, "run.ended", at), "the id the store's end time makes");
+  await until(() => endNotice(data, run.run_id)?.queued, "recorded as queued");
+  assert.deepEqual(endNotice(data, run.run_id), { ended_at: at, queued: true });
+  await sleep(300);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "once");
+});
+
+test("a run whose end the store refuses gives no run.ended while it does, then one, under one webhook-id, from the server that stores it; a receiver reading it back reads it ended", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let api;
+  const read = [];
+  // The receiver reads the run back when its run.ended arrives, as a Standard Webhooks receiver may.
+  const hook = await receiver(t, async () => {
+    const id = JSON.parse(hook.got.at(-1).body).data.run_id;
+    read.push((await api("GET", `/runs/${id}`)).body.status);
+    return 200;
+  });
+  const data = join(await scratch(t), "agents");
+  const go = join(await scratch(t), "go");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", carryBackRetry: { delaysMs: [50] }, settleRetryMs: 600_000 });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "refused", `Answer once ${go} exists.`);
+  await follow(api, run.run_id, ["working"]);
+  const release = hold(t, data);
+  writeFileSync(go, "");
+  await until(async () => (await api("GET", `/runs/${run.run_id}`)).body.status === "completed", "ended here, from memory");
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.ended").length, 0, "no run.ended while the store has not the end");
+  release();
+  await first.close();
+  stopped = true;
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, once the store has the end");
+  await sleep(500);
+  const ids = new Set(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]));
+  assert.equal(ids.size, 1, `one end, one webhook-id: ${[...ids]}`);
+  assert.deepEqual([...ids], [noticeId(run.run_id, "run.ended", endedIn(data, run.run_id))], "under the store's end time");
+  assert.deepEqual(read, ["completed"], "read back on its notice, it is ended");
+});
+
+test("a receiver that reads a run back on its run.ended reads it ended, in the run and in the list", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let api;
+  const read = [];
+  const hook = await receiver(t, async () => {
+    const id = JSON.parse(hook.got.at(-1).body).data.run_id;
+    const one = (await api("GET", `/runs/${id}`)).body;
+    const listed = (await api("GET", "/runs")).body.runs.find((r) => r.run_id === id);
+    read.push([one.status, one.ended_at !== null, listed?.status]);
+    return 200;
+  });
+  ({ api } = await serve(t));
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "read-back", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => read.length === 1, "its run.ended, read back");
+  assert.deepEqual(read, [["completed", true, "completed"]]);
+});
+
+test("an end whose run.ended an older outbox holds with no ledger (as a server before the ledger leaves it) is recorded by the next start, and not sent again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "requeued", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1 && endNotice(data, run.run_id)?.queued, "sent and recorded");
+  await first.close();
+  stopped = true;
+  // The outbox as a server before the ledger leaves it: the message, and no record of what it queued.
+  const outbox = join(data, "webhook-outbox.json");
+  const { messages, attempts } = JSON.parse(readFileSync(outbox, "utf8"));
+  writeFileSync(outbox, `${JSON.stringify({ v: 2, messages, attempts })}\n`);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => endNotice(data, run.run_id)?.queued, "recorded by the next start");
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "the outbox already held that id: not sent again");
+});
+
+test("a run.ended whose outbox write failed is not recorded as queued, so after a kill the next server queues and sends it", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(t, data);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  // The outbox's temporary file is a directory: its writes fail, as on a full disk.
+  const blocked = join(data, "webhook-outbox.json.tmp");
+  mkdirSync(blocked);
+  const run = await startRun(first.api, "unsaved-end", "Answer.");
+  await follow(first.api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its try, from memory");
+  assert.equal(endNotice(data, run.run_id)?.queued, undefined, "not recorded: the outbox never held it on disk");
+  await killed(first.child);
+  rmdirSync(blocked);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => endNotice(data, run.run_id)?.queued, "queued and recorded by the next server");
+  await until(() => ofType(hook.got, "run.ended").length === 2, "sent again, under the same id");
+  const ids = new Set(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]));
+  assert.equal(ids.size, 1, "one end, one webhook-id");
+});
+
+// A start's recovery that cannot read the agent store (busy past its wait) gives up, as it always has; the catch-up of the
+// ends the outbox lacks is its own start step, so it still runs, reads the store once it is free, and queues each end.
+test("a start whose recovery gives up on a busy agent store still catches up the ends stored before it: the catch-up is its own step", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "ends-busy-start", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  await killed(first.child);
+  rmSync(join(data, "webhook-outbox.json"), { force: true });
+  // The next server's first reads of the run list find the store busy, every try of one request's wait (the first one
+  // and REQUEST_BUSY_MS's eight): recovery's read, which gives up. The reads after it find the store free.
+  const scratchStore = openStore(await scratch(t), { busyTimeoutMs: 0 });
+  const reader = Object.getPrototypeOf(Object.getPrototypeOf(scratchStore));
+  scratchStore.close();
+  const listRuns = reader.listRuns;
+  let busyLeft = 9;
+  reader.listRuns = function (...args) {
+    if (busyLeft > 0) { busyLeft--; throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 }); }
+    return listRuns.apply(this, args);
+  };
+  t.after(() => { reader.listRuns = listRuns; });
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, though the start's recovery gave up");
+  assert.equal(busyLeft, 0, "the start's first reads did find the store busy");
+  const [ended] = ofType(hook.got, "run.ended");
+  assert.equal(ended.headers["webhook-id"], noticeId(run.run_id, "run.ended", at));
+  await sleep(300);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "once");
+});
+
+test("a run continued, its server killed once the reopening is committed, ends again under a new webhook-id: both ends reach the receiver", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  // The fixture's process stops dead once a run's reopening is committed, before anything else of the continuation.
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX, "reopen"]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "continued", "Answer.");
+  await follow(first.api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1 && endNotice(data, run.run_id)?.queued, "its first end, sent and recorded");
+  const before = endedIn(data, run.run_id);
+  void first.api("POST", `/runs/${run.run_id}/messages`, { content: "And now?" }).catch(() => undefined);
+  await until(() => endedIn(data, run.run_id) === null, "the reopening, committed");
+  await killed(first.child);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  await until(async () => ["completed", "failed", "cancelled"].includes((await api("GET", `/runs/${run.run_id}`)).body.status), "its next end");
+  await until(() => ofType(hook.got, "run.ended").length === 2, "both ends, at the receiver");
+  const after = endedIn(data, run.run_id);
+  assert.notEqual(after, before);
+  assert.deepEqual(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]), [noticeId(run.run_id, "run.ended", before), noticeId(run.run_id, "run.ended", after)], "each end under its own time's id");
+});
+
+test("a run is continued only once its end's run.ended is in the outbox: refused 503 while the outbox cannot be written, then let through", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const { api, data } = await serve(t);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const blocked = join(data, "webhook-outbox.json.tmp");
+  mkdirSync(blocked);
+  const run = await startRun(api, "held-open", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its try, from memory");
+  assert.equal(endNotice(data, run.run_id), undefined, "not recorded: the outbox never held it on disk");
+  const refused = await api("POST", `/runs/${run.run_id}/messages`, { content: "And now?" });
+  assert.deepEqual([refused.status, refused.body.error?.code], [503, "unavailable"], JSON.stringify(refused.body));
+  rmdirSync(blocked);
+  await until(async () => (await api("POST", `/runs/${run.run_id}/messages`, { content: "And now?" })).status === 202, "let through once the outbox holds the end", 20_000);
+  assert.equal(endNotice(data, run.run_id)?.queued, true);
+});
+
+/** A data directory as an older server leaves the runs it ended and announced: an outbox with no ledger (its messages
+ *  pruned too); `since` the time the newer server first started. */
+function asAnOlderServerLeftIt(data, since) {
+  writeFileSync(join(data, "webhook-outbox.json"), `${JSON.stringify({ v: 2, messages: [], attempts: [] })}\n`);
+  if (since !== undefined) writeFileSync(join(data, "end-notices-since"), `${since}\n`);
+}
+
+test("an end from before this kind of server first started (no record of its notice, as an older server leaves it) is never sent again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "older", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
+  await first.close();
+  stopped = true;
+  // The run ended a moment before the newer server first started.
+  asAnOlderServerLeftIt(data, new Date(Date.parse(endedIn(data, run.run_id)) + 1_000).toISOString());
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await sleep(1_500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "not sent again");
+});
+
+test("a server that cannot write when it first started takes now, says so, and sends no earlier end again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  const api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "unwritable", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
+  await first.close();
+  stopped = true;
+  asAnOlderServerLeftIt(data);
+  // Where the time is kept, a directory: neither read nor written.
+  rmSync(join(data, "end-notices-since"), { force: true });
+  mkdirSync(join(data, "end-notices-since"));
+  const lines = [];
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line) });
+  t.after(() => next.close());
+  assert.equal((await client(next.baseUrl, next.token)("GET", "/health")).status, 200, "it started");
+  assert.ok(lines.some((line) => line.includes("condition=notices_since_unwritable")), "and said so");
+  await sleep(1_500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "nothing ended before it is sent again");
+});
+
+// ---- a wait's run.needs_input is a notice until the webhook's ledger says the outbox holds it, so a server that adopts the
+// run queues a wait no server queued, under its one webhook-id.
+
+/** The ledger's wait of the run, as `{marker}`. */
+const waitNotice = (data, runId) => (noticed(data, runId)?.wait ? { marker: noticed(data, runId).wait } : undefined);
+
+
+test("a run that comes to wait for its person while no server is up gives exactly one run.needs_input from the server that adopts it, under the wait's own id", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const gate = join(await scratch(t), "ask");
+  const first = await serverProcess(t, data);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  // "Pick a region once <file> exists." (fixtures/faux-model.mjs) asks only once the file is there.
+  const run = await startRun(first.api, "asks-late", `Pick a region once ${gate} exists.`, { tools: ["ask_person"] });
+  await follow(first.api, run.run_id, ["working"]);
+  await killed(first.child);
+  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  assert.ok(processAlive(holder.pid), "its process outlived the server");
+  // The run asks with no server up: the faux model says so by a file, as its store is its process's alone.
+  writeFileSync(gate, "");
+  await until(() => existsSync(`${gate}.asked`), "the run's question, asked");
+  assert.deepEqual(ofType(hook.got, "run.needs_input"), [], "no server was up to notice it");
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  await follow(api, run.run_id, ["input_required"]);
+  await until(() => ofType(hook.got, "run.needs_input").length > 0, "its wait's run.needs_input, from the server that adopted the run", 10_000);
+  await until(() => waitNotice(data, run.run_id), "recorded as queued");
+  await sleep(500);
+  const waits = ofType(hook.got, "run.needs_input");
+  const ids = [...new Set(waits.map((r) => r.headers["webhook-id"]))];
+  assert.equal(waits.length, 1, `one wait, one message: ${ids}`);
+  // Its marker is its question's row: the newest that is neither usage nor a phase (mark's).
+  const { rows } = (await api("GET", `/runs/${run.run_id}/timeline`)).body;
+  const question = rows.findLast((row) => row.kind !== "usage" && row.kind !== "phase" && !/:run:(start|end)$/.test(row.id));
+  assert.equal(ids[0], noticeId(run.run_id, "run.needs_input", question.id), "the id the wait's own marker makes");
+  assert.deepEqual(waitNotice(data, run.run_id), { marker: question.id });
+  const body = JSON.parse(waits[0].body);
+  assert.deepEqual([body.data.run_id, body.data.status, body.data.pending], [run.run_id, "input_required", { kind: "question" }]);
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");
+});
+
+test("a run.needs_input whose outbox write failed is not recorded, so after a kill the server that adopts the run queues it again, under the same id", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(t, data);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const blocked = join(data, "webhook-outbox.json.tmp");
+  mkdirSync(blocked);
+  const run = await startRun(first.api, "asks-unsaved", "Pick a region.", { tools: ["ask_person"] });
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "its try, from memory");
+  assert.equal(waitNotice(data, run.run_id), undefined, "not recorded: the outbox never held it on disk");
+  await killed(first.child);
+  const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
+  t.after(() => processAlive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  rmdirSync(blocked);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => waitNotice(data, run.run_id), "queued and recorded by the server that adopted it");
+  await until(() => ofType(hook.got, "run.needs_input").length === 2, "sent again");
+  const ids = new Set(ofType(hook.got, "run.needs_input").map((r) => r.headers["webhook-id"]));
+  assert.equal(ids.size, 1, "one wait, one webhook-id");
+});
+
+test("a run that ended before record-keeping began is continued at once, its old end never sent again, and its next end arrives under its own id", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "older-continued", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, sent then");
+  await first.close();
+  stopped = true;
+  const before = endedIn(data, run.run_id);
+  const since = Date.parse(before) + 1_000;
+  asAnOlderServerLeftIt(data, new Date(since).toISOString());
+  // The next end must come after the since-time, as one after record-keeping began does: on a fast machine the restart
+  // and the continued turn take less than the second between them, and an end before the since-time is never sent.
+  while (Date.now() <= since) await sleep(50);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  const continued = await api("POST", `/runs/${run.run_id}/messages`, { content: "And now?" });
+  assert.equal(continued.status, 202, JSON.stringify(continued.body));
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => ofType(hook.got, "run.ended").length === 2, "its next end");
+  await sleep(500);
+  const after = endedIn(data, run.run_id);
+  assert.notEqual(after, before);
+  assert.deepEqual(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]), [noticeId(run.run_id, "run.ended", before), noticeId(run.run_id, "run.ended", after)], "the old end once, then the new one under its own id");
+});
+
+test("a fresh data directory has its since-time right after the first start, before any run, and at or before the first run's end", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const { api, data } = await serve(t);
+  const file = join(data, "end-notices-since");
+  assert.ok(existsSync(file), "written at the start");
+  const since = readFileSync(file, "utf8").trim();
+  assert.ok(Number.isFinite(Date.parse(since)), since);
+  const run = await startRun(api, "first", "Answer.");
+  await follow(api, run.run_id, ["completed"]);
+  assert.ok(Date.parse(since) <= Date.parse(endedIn(data, run.run_id)), `${since} is at or before the first run's end`);
+  assert.equal(readFileSync(file, "utf8").trim(), since, "and never written again");
+});
+
+// ---- the notice ledger: what the outbox has queued of each run, in the outbox's own write.
+
+const ledgerOf = (dir) => JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8")).notices;
+
+test("a notice and its record are one write: the outbox holds the end and the wait it queued of each run; the same moment again queues nothing, here or in the next server", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const first = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => first.close());
+  first.save({ url: hook.url });
+  const ended = new Date().toISOString();
+  const run = { run_id: "run_1", agent_id: "a", status: "completed", title: "t" };
+  assert.equal(first.emit("run.needs_input", { ...run, status: "input_required", pending: { kind: "question" } }, "row_7"), "queued");
+  assert.equal(first.emit("run.ended", run, ended), "queued");
+  assert.deepEqual(Object.keys(ledgerOf(dir)), ["run_1"]);
+  assert.deepEqual([ledgerOf(dir).run_1.ended, ledgerOf(dir).run_1.wait], [ended, "row_7"], "recorded in the write that queued them");
+  assert.equal(first.emit("run.ended", run, ended), "queued", "the same end: already queued");
+  await until(() => hook.got.length === 2, "both sent");
+  await first.close();
+  // The next server reads the ledger: the same end and the same wait queue nothing, a new end of the run does.
+  const next = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => next.close());
+  assert.equal(next.emit("run.ended", run, ended), "queued");
+  assert.equal(next.emit("run.needs_input", { ...run, status: "input_required", pending: { kind: "question" } }, "row_7"), "queued");
+  const later = new Date(Date.now() + 1_000).toISOString();
+  assert.equal(next.emit("run.ended", run, later), "queued");
+  await until(() => hook.got.length === 3, "the new end sent");
+  await sleep(200);
+  // The first two were queued together, and each message goes on its own tries: they land in either order.
+  const types = hook.got.map((r) => JSON.parse(r.body).type);
+  assert.deepEqual([types.slice(0, 2).sort(), types[2]], [["run.ended", "run.needs_input"], "run.ended"]);
+  assert.equal(ledgerOf(dir).run_1.ended, later);
+});
+
+test("a start's catch-up queues each end the store holds and the ledger does not, once; an end before the since-time or the webhook's own setting is never sent", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  const before = new Date(Date.now() - 60_000).toISOString();
+  webhooks.save({ url: hook.url });
+  const now = new Date().toISOString();
+  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  await webhooks.catchUp([{ id: "old", endedAt: before }, { id: "lost", endedAt: now }], describe);
+  await webhooks.catchUp([{ id: "lost", endedAt: now }], describe);
+  await until(() => hook.got.length === 1, "the lost end sent");
+  await sleep(200);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).data.run_id), ["lost"], "once, and never the end before the webhook was set");
+  assert.equal(ledgerOf(dir).lost.ended, now);
+});
+
+test("the ledger keeps an end exactly as long as a start's catch-up looks for it: one just inside the day stays and is not sent again; one just past it is dropped, and not sent either", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  const inside = new Date(Date.now() - day + 60_000).toISOString();
+  const past = new Date(Date.now() - day - 60_000).toISOString();
+  // Record-keeping began, and the webhook was set, two days ago; the ledger holds both ends from an earlier server.
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 2 * day).toISOString()}\n`);
+  const setup = new Webhooks(dir, env, () => undefined, []);
+  setup.save({ url: hook.url });
+  await setup.close();
+  const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+  writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 2 * day).toISOString() })}\n`);
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [], attempts: [], notices: { inside: { ended: inside }, past: { ended: past } } })}\n`);
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  // A new notice writes the ledger, pruned as the catch-up would read it.
+  webhooks.emit("run.ended", { run_id: "now", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+  assert.deepEqual(Object.keys(ledgerOf(dir)).sort(), ["inside", "now"], "the end past the day is dropped; the one inside it stays");
+  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  await webhooks.catchUp([{ id: "inside", endedAt: inside }, { id: "past", endedAt: past }], describe);
+  await until(() => hook.got.length === 1, "the new end sent");
+  await sleep(300);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).data.run_id), ["now"], "neither earlier end sent again");
+});
+
+test("an end just inside the catch-up's day, its ledger entry at the pruning edge, is delivered exactly once across a restart: never twice, never not at all", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  // Both ends 2 min inside the day: one this server queued, one whose server was killed before the outbox had it.
+  const sent = new Date(Date.now() - day + 120_000).toISOString();
+  const lost = new Date(Date.now() - day + 120_000).toISOString();
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 2 * day).toISOString()}\n`);
+  const first = new Webhooks(dir, env, () => undefined, []);
+  first.save({ url: hook.url });
+  const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+  writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 2 * day).toISOString() })}\n`);
+  const run = (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  first.emit("run.ended", run("sent"), sent);
+  // A later notice prunes the ledger: the entry at the edge stays.
+  first.emit("run.ended", run("fresh"), new Date().toISOString());
+  await until(() => hook.got.length === 2, "both sent");
+  await first.close();
+  // Its message leaves the outbox as later attempts push it out of the log (ATTEMPTS_KEPT): the ledger alone keeps it.
+  const outbox = JSON.parse(readFileSync(join(dir, "webhook-outbox.json"), "utf8"));
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ ...outbox, messages: [], attempts: [] })}\n`);
+  const next = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => next.close());
+  next.emit("run.ended", run("pruning"), new Date().toISOString());
+  await next.catchUp([{ id: "sent", endedAt: sent }, { id: "lost", endedAt: lost }], async (id) => run(id));
+  // A continuation tells the same end again.
+  next.emit("run.ended", run("sent"), sent);
+  await until(() => hook.got.length === 4, "the new end and the lost one");
+  await sleep(300);
+  const of = (id) => hook.got.filter((r) => JSON.parse(r.body).data.run_id === id).length;
+  assert.deepEqual([of("sent"), of("lost")], [1, 1], "each end at the edge once");
+});
+
+test("an upgrade from a serve.json that still holds the old notice record (end_notice, wait_notice) ignores it: an end it names that the outbox lacks is caught up from the agent store, once", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  // Killed after the store's end and before run.ended is queued.
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "older-record", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  await killed(first.child);
+  // As an earlier version of this server left the run: its end recorded with it as queued, and a wait.
+  const file = join(data, "runs", run.run_id, "serve.json");
+  writeFileSync(file, `${JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), end_notice: { ended_at: at, queued: true }, wait_notice: { marker: "row_1" } })}\n`);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, from the store");
+  assert.equal(ofType(hook.got, "run.ended")[0].headers["webhook-id"], noticeId(run.run_id, "run.ended", at));
+  assert.equal((await client(next.baseUrl, next.token)("GET", `/runs/${run.run_id}`)).body.status, "completed", "the old fields are read as nothing");
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "once");
+  assert.equal(ofType(hook.got, "run.needs_input").length, 0, "the old wait record sends nothing");
+});
+
+test("a cancelled run whose last row is an open question, its wait no longer in the ledger, gives no run.needs_input when a later server reads it: an ended run never asks", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "asks-then-cancelled", "Pick a region.", { tools: ["ask_person"] });
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "the wait's notice");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+  await follow(api, run.run_id, ["cancelled"]);
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");
+  await first.close();
+  stopped = true;
+  // The ledger as an upgrade, or a pruning, leaves it: no wait of the run, and its messages gone from the outbox.
+  const file = join(data, "webhook-outbox.json");
+  const outbox = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, `${JSON.stringify({ ...outbox, messages: [], attempts: [], notices: { [run.run_id]: { ended: outbox.notices[run.run_id].ended } } })}\n`);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  api = client(next.baseUrl, next.token);
+  // Read by the next server, rows and all: its last row still asks, and the run is cancelled.
+  const view = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.equal(view.status, "cancelled");
+  await follow(api, run.run_id, ["cancelled"]);
+  await sleep(500);
+  assert.equal(ofType(hook.got, "run.needs_input").length, 1, "no wait notice for an ended run");
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "and its end once");
+});
+
+test("a run still waiting on the same question a day later, its message gone from the outbox, is not asked about again: the ledger keeps a wait until the run moves past it", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 3 * day).toISOString()}\n`);
+  const setup = new Webhooks(dir, env, () => undefined, []);
+  setup.save({ url: hook.url });
+  await setup.close();
+  // Queued two days ago, delivered, and pushed out of the outbox's log since: the ledger alone has the wait.
+  const asked = new Date(Date.now() - 2 * day).toISOString();
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [], attempts: [], notices: { waiting: { wait: "row_9", wait_at: asked } } })}\n`);
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  const waiting = { run_id: "waiting", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } };
+  // Another run's notice prunes the ledger; then the waiting run is seen again (an adoption, a refresh).
+  webhooks.emit("run.ended", { run_id: "other", agent_id: "a", status: "completed", title: "o" }, new Date().toISOString());
+  webhooks.emit("run.needs_input", waiting, "row_9");
+  await until(() => hook.got.length >= 1, "the other run's end");
+  await sleep(300);
+  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended"], "the same wait is not sent again");
+  // A new question of the run is a wait of its own, and replaces the last; then the run ends.
+  webhooks.emit("run.needs_input", waiting, "row_12");
+  const end = new Date().toISOString();
+  webhooks.emit("run.ended", { ...waiting, status: "completed", pending: undefined }, end);
+  await until(() => hook.got.length >= 3, "the new wait and the end");
+  await sleep(300);
+  // The new wait and the end were queued together, and each message goes on its own tries: they land in either order.
+  const types = hook.got.map((r) => JSON.parse(r.body).type);
+  assert.deepEqual([types[0], types.slice(1).sort()], ["run.ended", ["run.ended", "run.needs_input"]]);
+  assert.deepEqual(ledgerOf(dir).waiting, { wait: "row_12", ended: end }, "the newest wait, and the end past it");
+});
+
+test("a run that ends while the webhook is off leaves its wait behind in the ledger; the next start, the webhook set again, drops it and sends nothing", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  let api = client(first.baseUrl, first.token);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(api, "asks-off", "Pick a region.", { tools: ["ask_person"] });
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "the wait's notice");
+  // Off while the run ends: its end is never queued, and nothing moves the run past its wait in the ledger.
+  assert.equal((await api("DELETE", "/settings/webhook")).status, 204);
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
+  await follow(api, run.run_id, ["completed"]);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  await first.close();
+  stopped = true;
+  assert.ok(waitNotice(data, run.run_id), "the wait is still in the ledger");
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => !noticed(data, run.run_id), "its entry dropped by the start: the store holds the run as ended");
+  await sleep(500);
+  assert.deepEqual([ofType(hook.got, "run.needs_input").length, ofType(hook.got, "run.ended").length], [1, 0], "nothing sent");
+});
+
+test("a start drops the ledger's waits of runs the store holds as ended or no longer has, keeps an end still due, and keeps a wait the run still stands at however old", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const day = 24 * 3_600_000;
+  writeFileSync(join(dir, "end-notices-since"), `${new Date(Date.now() - 3 * day).toISOString()}\n`);
+  const setup = new Webhooks(dir, env, () => undefined, []);
+  setup.save({ url: hook.url });
+  await setup.close();
+  const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+  writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 3 * day).toISOString() })}\n`);
+  const old = new Date(Date.now() - 2 * day).toISOString();
+  const recent = new Date(Date.now() - 60_000).toISOString();
+  writeFileSync(join(dir, "webhook-outbox.json"), `${JSON.stringify({ v: 3, messages: [], attempts: [], notices: { deleted: { wait: "row_1" }, ended: { wait: "row_2" }, kept: { wait: "row_3", ended: recent }, open: { wait: "row_4" } } })}\n`);
+  const webhooks = new Webhooks(dir, env, () => undefined, []);
+  t.after(() => webhooks.close());
+  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  // The store's rows: "deleted" is gone, "ended" and "kept" have ended, "open" still waits (two days on).
+  await webhooks.catchUp([{ id: "ended", state: "completed", endedAt: old }, { id: "kept", state: "completed", endedAt: recent }, { id: "open", state: "running" }], describe);
+  assert.deepEqual(ledgerOf(dir), { kept: { ended: recent }, open: { wait: "row_4" } });
+  await sleep(300);
+  assert.equal(hook.got.length, 0, "nothing sent");
+});
+
+test("an end the start's catch-up finds while the run's own store is held busy is still queued, once, under its end time's id: the notice is made from the store's row, never from the run's store", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  // Killed after the agent store's end and before run.ended is queued: the next start's catch-up has it to queue.
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "busy-store", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  await killed(first.child);
+  // The run's own store held by another connection, exclusively, while the next server starts: no read of it lands.
+  const held = new DatabaseSync(join(data, "runs", run.run_id, "store", "run.sqlite"), { timeout: 0 });
+  held.exec("PRAGMA locking_mode=EXCLUSIVE");
+  held.exec("BEGIN EXCLUSIVE");
+  held.exec("CREATE TABLE IF NOT EXISTS held_by_the_test (x)");
+  const release = () => held.isOpen && (held.isTransaction && held.exec("ROLLBACK"), held.close());
+  t.after(release);
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", carryBackRetry: { delaysMs: [50] } });
+  t.after(() => next.close());
+  await sleep(1_500);
+  release();
+  await until(() => ofType(hook.got, "run.ended").length >= 1, "its run.ended, though the run's store was busy at the start");
+  await sleep(500);
+  const ended = ofType(hook.got, "run.ended");
+  assert.equal(ended.length, 1, "once");
+  assert.equal(ended[0].headers["webhook-id"], noticeId(run.run_id, "run.ended", at));
+  assert.deepEqual(JSON.parse(ended[0].body).data.status, "completed");
 });

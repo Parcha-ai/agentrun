@@ -7,6 +7,8 @@ export type LabelFn = (args: Obj, result?: ToolResultView) => string | undefined
 export type FoldSpec = {
   many: (count: number) => string;
   subject?: (input: string | null, output: string | null) => string | undefined;
+  /** The input preview is the call's file path: a host's `path` option names it, as the call's own row does. */
+  path?: boolean;
 };
 
 const labels = new Map<string, LabelFn>();
@@ -63,10 +65,12 @@ export function labelOf(tool: string, args: Obj, result?: ToolResultView, extra?
 }
 
 /** One line for several calls of one tool: `Read 4 pages: a.example, b.example, +2 more`. */
-export function foldLabel(tool: string, calls: readonly { input: string | null; output: string | null }[]): string {
+export function foldLabel(tool: string, calls: readonly { input: string | null; output: string | null }[], options: { path?: (path: string) => string } = {}): string {
   const spec = folds.get(tool);
   const head = spec ? spec.many(calls.length) : `Used ${tool} ${calls.length} times`;
-  const subjects = calls.flatMap((call) => spec?.subject?.(call.input, call.output) ?? []);
+  // A file path is named as the host names it (`path`), as the call's own row is; the preview itself stays the call's.
+  const named = (input: string | null) => (input !== null && spec?.path && options.path ? options.path(input) : input);
+  const subjects = calls.flatMap((call) => spec?.subject?.(named(call.input), call.output) ?? []);
   return subjects.length ? `${head}: ${list(subjects)}` : head;
 }
 
@@ -96,14 +100,15 @@ export const BROWSER_OPENERS: ReadonlySet<string> = new Set(["snapshot", "run", 
 const path = (args: Obj) => str(args.path) ?? str(args.file_path);
 const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;
 
-registerLabel("read", (a) => `Read ${path(a) ?? "a file"}`, { many: (n) => `Read ${n} files`, subject: (input) => input ?? undefined }, { name: "Read files" });
-registerLabel("write", (a) => `Wrote ${path(a) ?? "a file"}`, { many: (n) => `Wrote ${n} files`, subject: (input) => input ?? undefined }, { name: "Write files" });
-registerLabel("edit", (a) => `Edited ${path(a) ?? "a file"}`, { many: (n) => `Edited ${n} files`, subject: (input) => input ?? undefined }, { name: "Edit files" });
+registerLabel("read", (a) => `Read ${path(a) ?? "a file"}`, { many: (n) => `Read ${n} files`, subject: (input) => input ?? undefined, path: true }, { name: "Read files" });
+registerLabel("write", (a) => `Wrote ${path(a) ?? "a file"}`, { many: (n) => `Wrote ${n} files`, subject: (input) => input ?? undefined, path: true }, { name: "Write files" });
+registerLabel("edit", (a) => `Edited ${path(a) ?? "a file"}`, { many: (n) => `Edited ${n} files`, subject: (input) => input ?? undefined, path: true }, { name: "Edit files" });
 registerLabel("bash", (a) => `Ran \`${cut(scrubUrls(firstLine(str(a.command) ?? "")), 60)}\``, { many: (n) => `Ran ${n} commands` }, { name: "Run commands" });
 /** A fetch that answered its page as a result with `ok: false`: refused (the public-host guard said no, `refused`) or
- *  failed (`error`, or a message). Undefined for a page it fetched. */
+ *  failed (`error`, or a message). Undefined for a page it fetched. The page is the result's JSON, or its first line's
+ *  when a line for the model follows it (serve's web_fetch, saying why a picked Parallel gave no page). */
 const unfetched = (result: { text: string } | undefined) => {
-  const page = result && obj(json(result.text));
+  const page = result && obj(json(result.text) ?? json(firstLine(result.text)));
   if (page?.ok !== false) return undefined;
   const refused = str(page.refused);
   return refused !== undefined ? { refused: true, detail: refused.replace(/^refused:\s*/, "") } : { refused: false, detail: str(page.error) ?? str(page.message) ?? "no detail" };
@@ -123,6 +128,11 @@ registerLabel("web_search", (a) => {
   const query = str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";
 }, { many: (n) => `Searched the web ${n} times`, subject: (input) => (input ? `"${cut(input, 40)}"` : undefined) }, { name: "Search the web" });
+// web_search answers its results and a line asking for citations, or `{error}` when the search gave no answer: failed.
+registerOutcome("web_search", (result) => {
+  const error = str(obj(json(result.text))?.error);
+  return error !== undefined ? { failed: true, text: `failed: ${error}` } : undefined;
+});
 registerLabel(
   "browser_read",
   (_a, result) => {

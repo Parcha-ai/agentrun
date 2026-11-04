@@ -1,16 +1,20 @@
+import type { Place } from "./place";
 import type { ClientError } from "./client";
+import type { NoteProblem } from "./learning";
+import type { AgentTool, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex";
-export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; skills: string[]; tools: string[]; [field: string]: unknown };
+/** `learning`: whether the agent's runs learn (an agentic revision's switch; absent is off). */
+export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[] };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow">> & { workflowText?: string };
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[] };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings">> & { workflowText?: string; place?: Place };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
@@ -22,8 +26,9 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
   const edited: Definition = { ...agent.definition, ...editable };
   // A workflow revision takes no instructions, model or thinking beside its workflow (validate.ts refuses each).
   if (agent.kind === "workflow") { delete edited.thinking; delete edited.instructions; delete edited.model; }
-  // An empty model is no model: the server's default.
+  // An empty model is no model: the server's default. No tool settings of its own are none: the server's.
   if (edited.model === "") delete edited.model;
+  if (edited.tool_settings && !Object.keys(edited.tool_settings).length) delete edited.tool_settings;
   for (const key of Object.keys(edited)) if (edited[key] === undefined) delete edited[key];
   // serve makes no revision for a definition equal to the current one (a note alone changes nothing): then the version
   // is the current one's. A changed definition is the next revision, number revisions + 1.
@@ -68,30 +73,30 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; decisionProvider?: string }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string; learning?: boolean; decisionProvider?: string; tool_settings?: ToolSettings; place?: Place }): { definition: Definition } {
   if (isStarter(f.harness)) {
     return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.place ? { place: f.place } : {}), ...(f.learning ? { learning: true } : {}), skills: [], tools: f.tools,
+      ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
     },
   };
 }
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
- *  (`summary`), and, when the server says, which harnesses run it. An older server lists bare names. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; harnesses?: string[]; call_only?: true; nodes?: boolean };
+ *  (`summary`), and, when the server says, which harnesses run it. */
+export type ToolOffer = { name: string; available: boolean; summary?: string; missing?: string[]; reason?: string; harnesses?: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
-    if (typeof t === "string") return [{ name: t, available: true }];
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
-    const { name, available, summary, missing, harnesses, call_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; harnesses?: string[]; call_only?: unknown; nodes?: unknown };
+    const { name, available, summary, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
     return [{
-      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}),
-      ...(call_only === true ? { call_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
+      name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), ...(harnesses ? { harnesses } : {}),
+      ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
     }];
   });
 }
@@ -105,8 +110,14 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
   return offers.filter((t) => !t.call_only && (t.harnesses ? t.harnesses.includes(harness) : harness === "pi" || FILE_TOOLS.includes(t.name)));
 }
 
-/** A new agent's tools: on by default, every tool its harness runs here that the server can run now. */
-export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available).map((t) => t.name);
+/** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
+ *  this form shows no place, so a new agent's is the runner. Undefined when it can be ticked. */
+export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
+  tool.sandbox_only && (place as { mode?: unknown } | undefined)?.mode !== "sandbox" ? "Sandbox-only: it runs in a box, and this agent's place is the runner" : undefined;
+
+/** A new agent's tools: on by default, every tool its harness runs here that the server can run now, but a sandbox-only
+ *  one (bash): a new agent's place is the runner, which has no shell. */
+export const defaultTools = (harness: string, offers: ToolOffer[]) => toolsFor(harness, offers).filter((t) => t.available && !t.sandbox_only).map((t) => t.name);
 
 /** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */
@@ -141,6 +152,16 @@ export function saveError(e: ClientError): SaveProblem {
   if (e.status === 412 || e.code === "precondition_failed") return { kind: "conflict", message: e.message };
   if (e.status === 422 && e.fields?.length) return { kind: "invalid", message: e.message, fields: Object.fromEntries(e.fields.map((f) => [f.field, f.message])) };
   return { kind: "other", message: e.message };
+}
+
+/** What a refused note write means for the Learning tab, as saveError does for a definition: a stale If-Match (412) is
+ *  a change made since the note was read, or, creating one, a name already taken; a 400 with `problems` lists what the
+ *  checks refuse; anything else is shown as the server said it. */
+export type NoteSaveProblem = { kind: "conflict" } | { kind: "taken" } | { kind: "refused"; problems: NoteProblem[] } | { kind: "other"; message: string; code: string };
+export function noteSaveError(e: ClientError, creating = false): NoteSaveProblem {
+  if (e.status === 412 || e.code === "precondition_failed") return creating ? { kind: "taken" } : { kind: "conflict" };
+  if (e.problems?.length) return { kind: "refused", problems: e.problems };
+  return { kind: "other", message: e.fields?.[0]?.message ?? e.message, code: e.code };
 }
 
 /** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */

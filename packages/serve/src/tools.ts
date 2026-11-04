@@ -1,22 +1,28 @@
 // The tools a revision may name here: one closed table. Each entry is how the run's process binds the name and which
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
-// `bash` is not in it: a run gets no shell on this machine.
+// The file tools and `bash` bind from the run's coding source (coding-tools.ts): on the runner, pi's coding tools
+// without `bash`, so a run gets no shell on this machine; in a box, pi's four, each call made in the box. `bash` may be
+// named only by an agent whose place is a box (runnable.ts).
 import type { TSchema } from "@earendil-works/pi-ai";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
-import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
-import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
+import type { AppContext } from "@parcha/pi-durable-disk";
+import type { Revision } from "@parcha/pi-durable-agent";
+import type { CodingSource } from "./coding-tools.js";
+import { writeInWork } from "./workspace.js";
+import { FETCH_PAGE_TOOL, fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./fetch-page.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
-import { FAUX_ENV } from "./model.js";
+import { FAUX_ENV, workflowNodes } from "./model.js";
+import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { forModel } from "./result.js";
-import { parallelOf, WEB_FETCH_TOOL, webFetch, webFetchTool } from "./web-fetch.js";
-import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
@@ -42,15 +48,13 @@ export const askPerson = defineTool({
   },
 });
 
-// pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
-// hold apart from this package's own: the extension crosses that boundary as a value, typed on this side.
-export const CodingTools = ArchilCodingTools as unknown as Extension;
-
 /** What a tool's binding gets from the run's process. */
 export type ToolHost = {
   where: AppContext;
   /** The run's environment: the server's, without the server's token. */
   env: NodeJS.ProcessEnv;
+  /** The run's coding tools, by its place (coding-tools.ts codingSource). */
+  coding: CodingSource;
   /** Installs an extension in the run's registry, before the run opens. */
   install(extension: Extension): void;
   /** Runs in the commit that creates each of the run's conversations. */
@@ -64,9 +68,16 @@ export type ToolHost = {
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
 export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };
 
-/** What a call node's effect gets from the run's process: its signal, environment and work directory, and one
- *  completion on the run's models (the `llm` tool's). */
-export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete };
+/** `tool` alone in an extension named `name`, installed in the run's registry. */
+function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRegistration): ToolBinding {
+  const extension = defineExtension({ name, tools: [tool] });
+  host.install(extension);
+  return { tools: [tool], extensions: [extension] };
+}
+
+/** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
+ *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -82,6 +93,11 @@ export type ToolEntry = {
   effect?(args: Record<string, unknown>, run: EffectRun): Promise<unknown>;
   /** Only a workflow's call node runs it: no agent and no model node may name it. */
   callOnly?: true;
+  /** Only an agent whose place is a sandbox may name it: it runs in the box (runnable.ts). */
+  sandboxOnly?: true;
+  /** No agent whose place is a sandbox may name it: it writes the run's work/ from this machine by paths a box's command
+   *  could turn through a link (runnable.ts). */
+  runnerOnly?: true;
 };
 
 const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
@@ -89,11 +105,33 @@ const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): To
   bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
 });
 
-const fileTool = (name: string, summary: string): ToolEntry => ({
-  summary,
+/** web_fetch, bound under `name`: its own, or a legacy name for it (LEGACY_NAMES, fetch_page). */
+const webFetchEntry = (name: string): ToolEntry => ({
+  summary: `Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
   needs: [],
   nodes: true,
-  bind: async () => ({ tools: (CodingTools.tools ?? []).filter((tool) => tool.name === name), extensions: [CodingTools] }),
+  bind: async (host) => {
+    const tool = booking(webFetchTool(host.env, name)) as unknown as ToolRegistration;
+    const extension = defineExtension({ name: name.replaceAll("_", "-"), tools: [tool] });
+    host.install(extension);
+    return { tools: [tool], extensions: [extension] };
+  },
+  // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default, from the page
+  // the run read (runPages) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
+  // (paid-calls.ts); a part from what the run read makes none and books nothing.
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: runPages, signal: run.signal })),
+});
+
+/** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
+const fileTool = (name: string, summary: string, sandboxOnly = false): ToolEntry => ({
+  summary,
+  needs: [],
+  nodes: !sandboxOnly,
+  ...(sandboxOnly ? { sandboxOnly: true as const } : {}),
+  bind: async (host) => {
+    const tools = host.coding.tools.filter((tool) => tool.name === name);
+    return { tools, extensions: tools.length ? [host.coding.extension] : [] };
+  },
 });
 
 /** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
@@ -104,20 +142,19 @@ export const evidenceIn = (work: string) => {
   let seq = 0;
   return {
     file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
-      const dir = join(work, "evidence");
-      await mkdir(dir, { recursive: true });
       const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
       const text = typeof record.body === "string";
       for (;;) {
         const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
         try {
-          await writeFile(join(dir, text ? `${name}.md` : `${name}.json`), text ? `${facts}\n\n${record.body}` : `${facts}\n`, { flag: "wx" });
+          // Never through a link a box's command planted in work/ (files.ts).
+          await writeInWork(work, ["evidence"], text ? `${name}.md` : `${name}.json`, text ? `${facts}\n\n${record.body}` : `${facts}\n`);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
           throw error;
         }
         if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
-        await writeFile(join(dir, `${name}.${record.ext ?? "bin"}`), record.body);
+        await writeInWork(work, ["evidence"], `${name}.${record.ext ?? "bin"}`, record.body);
         return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
       }
     },
@@ -130,6 +167,8 @@ const browserTool: ToolEntry = {
   summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
   needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
   nodes: true,
+  // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
+  runnerOnly: true,
   bind: async (host) => {
     const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
       import("@earendil-works/chord/context"),
@@ -163,54 +202,23 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   read: fileTool("read", "Read a file in the run's work/."),
   write: fileTool("write", "Write a file in the run's work/."),
   edit: fileTool("edit", "Edit a file in the run's work/."),
+  bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.", true),
   [ASK_TOOL]: {
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
     nodes: false,
-    bind: async (host) => {
-      const person = defineExtension({ name: "person", tools: [askPerson] });
-      host.install(person);
-      return { tools: [askPerson as ToolRegistration], extensions: [person] };
-    },
+    bind: async (host) => installTool(host, "person", askPerson as ToolRegistration),
   },
-  [FETCH_PAGE_TOOL]: {
-    summary: "Fetch one public web page: { ok, url, status, title, text, links }; a private or local address, or a scheme other than http(s), is refused.",
-    needs: [],
-    nodes: true,
-    bind: async (host) => {
-      const tool = fetchPageTool(() => fetchOptions(host.env, FAUX_ENV)) as unknown as ToolRegistration;
-      const extension = defineExtension({ name: "fetch-page", tools: [tool] });
-      host.install(extension);
-      return { tools: [tool], extensions: [extension] };
-    },
-    effect: async (args, run) => fetchPage(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
-  },
-  [WEB_FETCH_TOOL]: {
-    summary: "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched as fetch_page fetches it: fetch_page's Page plus via, \"parallel\" or \"direct\"; a URL fetch_page refuses is refused, never sent to Parallel.",
-    needs: [],
-    nodes: true,
-    bind: async (host) => {
-      const tool = webFetchTool(host.env) as unknown as ToolRegistration;
-      const extension = defineExtension({ name: "web-fetch", tools: [tool] });
-      host.install(extension);
-      return { tools: [tool], extensions: [extension] };
-    },
-    effect: async (args, run) => webFetch(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), parallel: parallelOf(run.env), signal: run.signal }),
-  },
-  // web_search: Exa's keyless endpoint, on pi (web-search.ts). Only the query leaves the server.
+  [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
-    summary: 'Search the web through Exa\'s keyless endpoint (mcp.exa.ai, no key; only the query leaves this server), {query, n?} -> {provider: "exa-keyless", query, results: [{url, title, snippet, published?}]}, or {error} (a 429 when Exa\'s free rate limit is reached).',
+    summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Exa's keyless search; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
-    bind: async (host) => {
-      const tool = webSearchTool(host.env) as unknown as ToolRegistration;
-      const extension = defineExtension({ name: "web-search", tools: [tool] });
-      host.install(extension);
-      return { tools: [tool], extensions: [extension] };
-    },
+    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env)) as unknown as ToolRegistration),
+    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal)),
   },
   browser: browserTool,
-  // monid's catalog on one key (monid.ts): pi binds each under its wire name, `monid_discover` and the rest.
+  // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
@@ -231,6 +239,9 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
 export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => !TOOLS[name]!.callOnly);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
 export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => TOOLS[name]!.effect !== undefined);
+/** Whether `name` is one of `allowed`, or a legacy name for one (fetch_page, web_fetch's): a revision that names it
+ *  still saves and runs, though the table lists it no more. */
+export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(capabilityOf(name));
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
  *  `via: "tool"` (`tool`). */
@@ -244,8 +255,23 @@ export function workflowTools(nodes: readonly Record<string, unknown>[]): { node
   return { nodes: [...named], calls: [...calls] };
 }
 
+/** The tools a revision grants its run: an agentic revision's `tools`; a workflow revision's `tools` with those its model
+ *  and call nodes name, which its run binds whether `tools` lists them or not. */
+export async function grantedTools(revision: { kind: string; tools?: readonly string[]; workflow?: unknown }): Promise<string[]> {
+  if (revision.kind !== "workflow") return [...(revision.tools ?? [])];
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  const named = workflowTools(workflowNodes(revision.workflow, inspectWorkflow(revision.workflow)));
+  return [...new Set([...(revision.tools ?? []), ...named.nodes, ...named.calls])];
+}
+
 /** The table's entry for `name`, or undefined for a name it does not hold. */
-export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : undefined);
+export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : name === FETCH_PAGE_TOOL ? webFetchEntry(FETCH_PAGE_TOOL) : undefined);
+
+/** What a stored revision's tools resolve from (tool-plane.ts): the tools it grants, its harness, model and settings. */
+export async function toolingOf(revision: Revision): Promise<Tooling> {
+  const tools = await grantedTools(revision.kind === "agentic" ? { kind: "agentic", tools: revision.body.tools } : { kind: "workflow", tools: revision.body.tools, workflow: revision.body.workflow });
+  return { tools, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
+}
 
 /** The variables `entry` needs that `env` does not set, by name. */
 export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] => entry.needs.filter((name) => !env[name]);
@@ -254,22 +280,37 @@ export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] =
  *  not name), and the variables each tool in it needs that `env` does not set. Undefined when nothing does. */
 export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, where: "agent" | "nodes" | "calls" = "agent"): { message: string; unbound: string[]; missing: Record<string, string[]> } | undefined {
   const allowed = where === "nodes" ? NODE_TOOLS : where === "calls" ? CALL_TOOLS : BOUND_TOOLS;
-  const unbound = names.filter((name) => !allowed.includes(name));
+  const unbound = names.filter((name) => !allows(allowed, name));
   if (unbound.length) {
     const said = { agent: "agentrun-serve binds the tools", nodes: "A workflow's model nodes get the tools", calls: "A workflow's call nodes run the tools" }[where];
     return { message: `${said} ${allowed.join(", ")}; this ${where === "agent" ? "revision" : "workflow"} also ${where === "calls" ? "calls" : "names"} ${unbound.join(", ")}.`, unbound, missing: {} };
   }
-  const missing = Object.fromEntries(names.map((name) => [name, missingEnv(TOOLS[name]!, env)] as const).filter(([, vars]) => vars.length));
+  const missing = Object.fromEntries(names.map((name) => [name, missingEnv(toolOf(name)!, env)] as const).filter(([, vars]) => vars.length));
   const lacking = Object.entries(missing);
   if (!lacking.length) return undefined;
   const said = lacking.map(([name, vars]) => `the tool ${name} needs ${vars.join(" and ")}`).join("; ");
   return { message: `This server's environment does not set what the revision's tools need: ${said}.`, unbound: [], missing };
 }
 
-/** Every tool as capabilities show it: available here, or the variables it is missing (names only), and the harnesses
- *  that run it (another harness than pi runs only the host tools, host-tools.ts). */
-export const toolsView = (env: NodeJS.ProcessEnv) =>
-  Object.entries(TOOLS).map(([name, entry]) => {
-    const missing = missingEnv(entry, env);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), available: missing.length === 0, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS] };
+/** Every tool as capabilities show it, the server's one tool catalog: available here, or the variables it is missing
+ *  (names only), and the harnesses that run it (another harness than pi runs only the host tools, host-tools.ts). A tool
+ *  a user picks a provider for (tool-plane.ts) gives the providers offered, the server's (`provider`, the default where it
+ *  sets none), the default, and what it resolves to on each harness under the server's `settings`: available where any
+ *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
+ *  (`reason`). `noBox`: why no box can run a sandbox-only tool here (place.ts noBoxReason), which leaves it
+ *  unavailable with that reason; undefined, a box can. */
+export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string) => {
+  const views = explainsView(env, settings);
+  const picked = withDefaults(settings);
+  return Object.entries(TOOLS).map(([name, entry]) => {
+    const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
+    const plane = view?.resolves;
+    const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
+    const boxless = entry.sandboxOnly ? noBox : undefined;
+    const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined;
+    // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
+    // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
+    const reason = available ? undefined : boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${missing.join(", ")}`);
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
+};

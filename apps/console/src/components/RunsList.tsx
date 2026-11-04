@@ -1,8 +1,11 @@
 import { Archive, ArrowUpRight } from "lucide-react";
+import { ProblemCard } from "@/components/Problem";
+import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import type { RunsFilter } from "@/lib/client";
-import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
+import { cost, when } from "@/lib/format";
+import type { Problem } from "@/lib/problem";
 import type { Run, RunStatus } from "@/lib/v2";
 
 /** The statuses GET /v2/runs filters by, in the order a run moves through them. */
@@ -10,8 +13,9 @@ export const RUN_STATUSES: readonly RunStatus[] = ["queued", "working", "paused"
 const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Working", paused: "Paused", input_required: "Input required", completed: "Completed", failed: "Failed", cancelled: "Cancelled" };
 
 /** Every run on the server, newest first, as the hosted console's history table, with the status column it leaves out
- *  at desktop width. A row opens its run. With `onFilter`, a state filter and the archived runs, as the address keeps them. */
-export function RunsList({ runs, agentName, onOpen, error, onMore, loadingMore, filter = {}, onFilter }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: string | null; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void }) {
+ *  at desktop width. A row opens its run. With `onFilter`, a state filter and the archived runs, as the address keeps them.
+ *  A read that failed says so in words, with Try again (`onRetry`); a failed Load more keeps the rows above it. */
+export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void }) {
   const archived = !!filter.archived;
   return (
     <div className="p-5 md:p-8">
@@ -28,11 +32,12 @@ export function RunsList({ runs, agentName, onOpen, error, onMore, loadingMore, 
           </>
         )}
       </div>
-      {error ? <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>
-        : !runs ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading runs...</p>
+      {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
+        : !runs ? <ListSkeleton label="Loading the runs" />
         : !runs.length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
-      {runs && !error && onMore && <div className="mt-4 flex justify-center"><button type="button" onClick={onMore} disabled={loadingMore} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{loadingMore ? "Loading" : "Load more"}</button></div>}
+      {runs && error && <ProblemCard problem={error} className="mt-4" />}
+      {runs && onMore && <div className="mt-4 flex justify-center"><button type="button" onClick={onMore} disabled={loadingMore} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{loadingMore ? "Loading" : "Load more"}</button></div>}
     </div>
   );
 }
@@ -59,7 +64,7 @@ function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: s
             <td className="hidden px-3 py-2.5 align-top md:table-cell">{agentName(r.agent_id)}</td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{r.kind}</td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{when(r.created_at)}</td>
-            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{cost(r.cost)}{bounded(r.cost) && <span className="block text-[11px]">{CUT_NOTE}</span>}</td>
+            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{cost(r.cost)}</td>
           </tr>
         ))}
       </tbody>

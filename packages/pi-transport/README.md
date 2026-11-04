@@ -38,7 +38,7 @@ boxes, finds them again by id and lists them by label.
 Install the package with its pi peers, pinned. pi 1.4 is not supported yet; a later release widens the range.
 
 ```sh
-npm install @parcha/pi-transport@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-transport@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 The example below needs Docker; `localBoxes({ root: "./boxes" })` from `@parcha/pi-transport/box/local` runs it with
@@ -95,7 +95,8 @@ choose the size by naming a snapshot. A box that outlives `maxLifetimeMs` is end
 at about 65 to 70 s for a one-minute lifetime). Daytona's label index trails a create and answers each query shape on
 its own schedule, so `list` always asks Daytona for the `pi-transport` label alone and filters the other labels itself,
 and `create` returns only once that listing shows the box. A listing therefore pages through every box this package
-made in the organization. The default workspace is `/tmp/workspace`. Programs run through the toolbox with their input
+made in the organization. The default workspace is `/tmp/workspace`; one the sandbox's user may not create (below `/run`) is
+made with `sudo -n` and given to that user, and a snapshot without a passwordless sudo fails the create naming the path. Programs run through the toolbox with their input
 and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default sandbox is a container on the host
 kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
 snapshot could not be created in the test organization), so treat it as untested.
@@ -166,9 +167,11 @@ absent is `false`; `network` absent is unknown (a caller that needs `none` or an
 unknown, not none (a caller that must be sure no port is exposed must refuse; `noPortExposed` is true only for a list that is
 empty); `ptraceScope` absent is unknown (do not assume 1 or more); `diskGb` and `startedAt` absent are unknown (a receipt falls back to
 the time the create call answered). Only Modal reports all of them and can restrict a network to an allowlist, expose ports or give
-`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest; local reports `network: "open"`
-and `startedAt`, Daytona `diskGb` and `startedAt`, the Archil exec box `startedAt`, and the three refuse everything but `open` as
-`unsupported`.
+`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest. Daytona takes `network: "none"`
+(`networkBlockAll`) and reports `network: "none"` only once the sandbox's own read says Daytona blocked it; a sandbox it did not block
+(an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. Daytona also
+reports `diskGb` and `startedAt`. Local reports `network: "open"` and `startedAt`, the Archil exec box `startedAt`, and those two
+and Daytona refuse every other network, ports and capabilities as `unsupported`.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
@@ -178,8 +181,18 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 
 `dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
-container every GPU of the host.
+container every GPU of the host. `dockerBoxes({ user: "1000:1000" })` runs every program of its boxes as that uid:gid
+(`--user`), so what a box writes in a bound directory stays the host user's.
 It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
+`dockerBoxes({ dropCapabilities: true })` runs every box with `--cap-drop ALL` and `--security-opt no-new-privileges`, for a
+host whose boxes' programs never change user: as root a box then cannot make a device node in a directory it binds. With
+it, `attach` ends a box that was made without it (by an older version) instead of taking it, so the caller makes a new
+one. A launcher that drops from root to another user (setpriv, runuser) needs Docker's default set, so it stays the
+default. The daemon is the one the docker CLI reaches: when `DOCKER_HOST`, or the docker context, names another machine
+(tcp://, ssh://) rather than a unix socket, `provider.mounts` is false and a spec with mounts is refused as `unsupported`,
+since that daemon would bind its own paths, not this machine's. With both `DOCKER_HOST` and `DOCKER_CONTEXT` set, both
+must be this machine, and every create checks again, so a `docker context use` after the provider was made refuses the
+next spec with mounts.
 
 ### Archil exec
 
@@ -286,6 +299,9 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   and only when a kill call failed. When the group could not be confirmed gone, the error is a `StoppedCommandError`: its
   `killUnconfirmed` is `true`, and the command stays tracked, so `cleanup()` ends it with the rest. `killUnconfirmed` is
   absent when the group was confirmed gone, which is the normal case.
+- A host that dies leaves its commands running (ending a `docker exec` client does not end its program), and its
+  `cleanup()` with it. `endLeftCommands(box, context)`, from `@parcha/pi-transport/hands`, kills every command
+  group an environment wrote down in the box: the host that takes a box over calls it once, before its first command.
 - The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
   box's search path, so a `PATH` with no shell in it still runs a program named by its path.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
@@ -859,10 +875,11 @@ facts); `auto.rest` is where the session goes back when nothing needs it elsewhe
 environment) and `auto.threshold` how sure Jev must be (default 0.5).
 
 `jevPlacer(models, auto.classifier, { rest, threshold })` asks Jev through pi-ai's `Models.classify` (provider
-`typesafe`, model `jev-latest`): one call a decision, two questions. `need` is whether the step needs something `rest`
-cannot do, wherever the session is now; `where` is a choice among the environments, each by its purpose. Jev reads
-the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities, isolation, region; not the
-provider, which names how a box is made). The session
+`typesafe`, model `jev-latest`, on `TYPESAFE_API_KEY`; or Jev through OpenRouter's System One, provider `openrouter`,
+model `~typesafe/jev-latest`, on `OPENROUTER_API_KEY`): one call a decision, two questions. `need` is whether the
+step needs something `rest` cannot do, wherever the session is now; `where` is a choice among the environments, each
+by its purpose. Jev reads the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities,
+isolation, region; not the provider, which names how a box is made). The session
 moves only for a need: `need` at least the threshold and `where` elsewhere. A session away from rest stays while its
 next step needs that place, and goes back to rest at a turn's end when nothing does, by the config. Code checks only
 structure: the judgment is Jev's.
@@ -872,11 +889,14 @@ structure: the judgment is Jev's.
   keeps the session where it is and says why in `error`.
 - **No stand-in.** `jevPlacer` refuses to build without the classifier model (`no_classifier`) or its provider's key
   (`no_key`).
+- **On the key you have.** `jevClassifier(process.env)` picks the classifier as serve's decisions do: TypeSafe's own
+  API when `TYPESAFE_API_KEY` is set, else Jev through OpenRouter when `OPENROUTER_API_KEY` is, else `undefined`. The
+  host's `Models` holds pi-ai's `typesafeProvider()` and `openrouterProvider()`.
 - **Kept with the session.** `HomeHandle.recordPlacement(record)` writes the decision into the session's store
   (`transport.placements`, keyed by its id) in a commit of its runner: it travels with the session, and with the
   record stream it reaches the host's log. A record whose `by` is anything else is refused (`invalid`).
 - **Cost.** A decision's usage counts tokens; `costUsd` is `null` when the classifier has no price (pi-ai's catalog
-  gives TypeSafe none): unknown, not 0.
+  gives TypeSafe's own API none, and prices Jev through OpenRouter): unknown, not 0.
 
 `./testing` has `replayClassifier`, TypeSafe as a replay set keyed by the canonical question (an unknown question is
 an error, never an answer), and `recordingClassifications` to record one. This package's set, 40 decisions recorded

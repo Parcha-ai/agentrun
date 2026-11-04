@@ -2,15 +2,17 @@
 // server's settings and probed once at its start. bwrap comes later. No run uses a box yet: the registry says which boxes
 // this server has, why it lacks the others, and hands out an available box's provider.
 //
-// AGENTRUN_BOXES lists the boxes to set up. A box it does not list is never probed and is unavailable; a name in it that
-// is no box refuses the start. pi-transport is an optional peer of this package and the VM provider's SDK is the host's,
-// so each is loaded by the probe that needs it, and a box whose module is not installed says what to install. The keys
-// are the server's own: the launcher hands them over with its other secrets (secrets.ts), the probes read them here, and
-// no run's process is handed one (SERVER_ONLY in runs.ts).
+// AGENTRUN_BOXES lists the boxes to set up. A box it does not list is never probed and is unavailable, its reason naming
+// the setting that lists it; a name in it that is no box refuses the start. Every reason says what to do next.
+// pi-transport is an optional peer of this package and the VM provider's SDK is the host's, so each is loaded by the
+// probe that needs it, and a box whose module is not installed says what to install. The keys are the server's own: the
+// launcher hands them over with its other secrets (secrets.ts), the probes read them here, and no run's process is
+// handed one (SERVER_ONLY in runs.ts).
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { BoxProvider } from "@parcha/pi-transport";
+import { withoutSecrets } from "./secrets.js";
 
 /** The VM provider: its box id, which is also its SDK's npm name, the SDK's client class and the token's names. */
 export const VM_PROVIDER = { id: "modal", client: "ModalClient", keys: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] } as const;
@@ -37,14 +39,24 @@ export const BOXES_ENV = "AGENTRUN_BOXES";
 export const BOX_APP_ENV = "AGENTRUN_BOX_APP";
 const DEFAULT_BOX_APP = "agentrun";
 const DAYTONA_KEY = "DAYTONA_API_KEY";
+/** Daytona's API when DAYTONA_API_URL names none: pi-transport's own default. */
+export const DAYTONA_API_URL = "https://app.daytona.io/api";
+
+/** Daytona's API and this server's key for it, from its environment (its secrets readable); undefined without a key. The
+ *  key goes to the server's Daytona provider and its box relay, never further (box-relay.ts). */
+export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: string } | undefined {
+  const apiKey = env[DAYTONA_KEY];
+  return apiKey ? { apiKey, apiUrl: env.DAYTONA_API_URL || DAYTONA_API_URL } : undefined;
+}
 /** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
 export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 
 /** How long one box's probe may take; the probes run at once, so this bounds them all. */
 export const PROBE_TIMEOUT_MS = 5_000;
 
-const NOT_ENABLED = "not enabled on this server";
-const NOT_YET = "the bwrap box is not in this release yet";
+/** Why box `id` is unavailable when AGENTRUN_BOXES does not list it: the setting that does, keeping what it lists now. */
+const notEnabled = (id: BoxId, enabled: ReadonlySet<BoxId>) => `not enabled on this server: start AgentRun with ${BOXES_ENV}=${BOX_IDS.filter((box) => box === id || enabled.has(box)).join(",")}`;
+const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 const NOT_PROBED = "configured; not probed at start";
 const TRANSPORT = "@parcha/pi-transport";
 
@@ -69,7 +81,7 @@ export async function boxRegistry(env: NodeJS.ProcessEnv, options: { timeoutMs?:
   const probed = await Promise.all(
     BOX_IDS.map((id) => {
       if (id === "bwrap") return unavailable(id, NOT_YET);
-      if (!enabled.has(id)) return unavailable(id, NOT_ENABLED);
+      if (!enabled.has(id)) return unavailable(id, notEnabled(id, enabled));
       return bounded(id, timeoutMs, (signal) => PROBES[id](env, signal));
     }),
   );
@@ -126,17 +138,19 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
   async docker(env, signal) {
     const boxes = await load(TRANSPORT, () => import("@parcha/pi-transport/box/docker").then((module) => module.dockerBoxes));
     if (!boxes.ok) return unavailable("docker", boxes.reason);
-    // Its environment is the server's without the boxes' keys; the server's other secrets do not enumerate (withSecrets).
-    const dockerEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !BOX_KEYS.includes(name)));
+    // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
+    // name shaped like a key.
+    const dockerEnv = withoutSecrets(env);
     const answer = await new Promise<{ failed?: string; out: string }>((resolve) =>
       execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout) => {
         const code = (error as { code?: unknown } | null)?.code;
         resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error) } : {}), out: String(stdout) });
       }),
     );
-    if (answer.failed === "ENOENT") return unavailable("docker", "no docker command on this server's PATH");
-    if (answer.failed) return unavailable("docker", `docker version failed (${answer.failed}): is the Docker daemon running, and open to this server's user?`);
-    if (!answer.out.trim()) return unavailable("docker", "docker version named no Docker daemon");
+    // The probe runs once, at the start: each fix takes a restart.
+    if (answer.failed === "ENOENT") return unavailable("docker", "no docker command on this server's PATH: install Docker, then restart this server");
+    if (answer.failed) return unavailable("docker", `docker version failed (${answer.failed}): start Docker, or add this server's user to the docker group, then restart this server`);
+    if (!answer.out.trim()) return unavailable("docker", "docker version named no Docker daemon: start Docker, then restart this server");
     return available("docker", boxes.value());
   },
 

@@ -16,8 +16,41 @@ delete process.env.AGENTRUN_BOXES;
 
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return dir;
+}
+
+/** Resolves once `child`, a server in a process of its own, has printed a whole line on stdout that `ready` matches (the
+ *  line it prints once it listens); rejects as soon as it exits or cannot be spawned, with what it printed. A slow start
+ *  on a loaded machine is still a start: the backstop is only for a child that neither prints the line nor exits. */
+export function printed(child, ready, { backstopMs = 120_000 } = {}) {
+  let out = "";
+  let err = "";
+  return new Promise((resolve, reject) => {
+    const settle = (error) => {
+      clearTimeout(backstop);
+      child.stdout.off("data", onOut);
+      child.stderr?.off("data", onErr);
+      child.off("close", onClose);
+      child.off("error", settle);
+      if (error) reject(error);
+      else resolve(out);
+    };
+    const onOut = (chunk) => {
+      out += chunk;
+      if (ready.test(out.slice(0, out.lastIndexOf("\n") + 1))) settle();
+    };
+    const onErr = (chunk) => (err = (err + chunk).slice(-8_000));
+    // "close", not "exit": by then its stdout and stderr are read to their end, so its last words are in the message.
+    const onClose = (code, signal) => settle(new Error(`the server exited (${signal ?? code}) before it printed ${ready}: ${out}${err}`));
+    const backstop = setTimeout(() => settle(new Error(`the server printed no ${ready} in ${backstopMs / 1000} s and has not exited: ${out}${err}`)), backstopMs);
+    backstop.unref();
+    child.stdout.on("data", onOut);
+    child.stderr?.on("data", onErr);
+    child.once("close", onClose);
+    child.once("error", settle);
+  });
 }
 
 /** The index.html of a built console, as Vite writes it: one module script and one stylesheet, both relative. */
@@ -119,7 +152,8 @@ export async function startRun(api, id, content, extra = {}, skills) {
   return run.body;
 }
 
-/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until` and settled. */
+/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
+ *  once its page is final, any other status on the first page that leaves no change behind it. */
 export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
   const view = new Map();
   const pages = [];
@@ -133,7 +167,9 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
     for (const id of page.drop) view.delete(id);
     for (const row of page.rows) view.set(row.id, row);
     after = page.next_after;
-    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more && (page.unchanged || page.rows.length === 0);
+    // A page's status and its rows are read together, so a page with no more to come has every row up to that status. A
+    // second, empty page to confirm it would only return when its long poll runs out.
+    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more;
     if (until.includes(page.status) && settled) break;
     assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}: last ${page.status}/${page.state}`);
   }
@@ -142,33 +178,41 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.
- *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for. */
-export async function responsesEndpoint(t, text, tokens) {
+ *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for,
+ *  `authorizations` each POST's authorization header.
+ *  `incomplete`: each answer stops at its length instead (response.incomplete, max_output_tokens: pi's stopReason "length"). */
+export async function responsesEndpoint(t, text, tokens, { incomplete = false } = {}) {
   const asked = [];
   const bodies = [];
   const models = [];
+  const authorizations = [];
   const server = createServer((req, res) => {
     asked.push(`${req.method} ${req.url}`);
+    if (req.method === "POST") authorizations.push(req.headers.authorization ?? null);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       if (req.method === "POST") bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "null"));
       if (req.method === "POST") models.push(bodies.at(-1)?.model);
-      const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const item = { type: "message", id: "msg_1", role: "assistant", status: incomplete ? "incomplete" : "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const usage = { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens };
+      const end = incomplete
+        ? { type: "response.incomplete", response: { id: "resp_1", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [item], usage } }
+        : { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage } };
       res.writeHead(200, { "content-type": "text/event-stream" });
       for (const event of [
         { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
         { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
         { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
         { type: "response.output_item.done", output_index: 0, item },
-        { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens } } },
+        end,
       ]) res.write(`data: ${JSON.stringify(event)}\n\n`);
       res.end();
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models };
+  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models, authorizations };
 }
 
 /** Sets `vars` in this process's environment, which a server's runs inherit, for test `t`; the rest of `names` unset. */

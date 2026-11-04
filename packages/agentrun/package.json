@@ -1,0 +1,36 @@
+{
+  "name": "@parcha/agentrun",
+  "version": "0.3.2",
+  "description": "Start AgentRun on this machine with one command: npx @parcha/agentrun",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "agentrun": "./bin/agentrun.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test 'test/*.test.mjs'"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/agentrun"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}
