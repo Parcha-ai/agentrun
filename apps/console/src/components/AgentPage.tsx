@@ -3,6 +3,7 @@ import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { LatestRun } from "@/components/LatestRun";
+import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
 import { RunBar } from "@/components/RunBar";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
@@ -17,6 +18,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { bounded, cost, CUT_NOTE, when } from "@/lib/format";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel } from "@/lib/models";
+import { placeLabel, placeOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -51,7 +53,7 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
  *  `learning`: the server's learning switch, undefined until its capabilities are read and null when it has none;
  *  `notes`: the notes an address in the Learning tab points at. */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab, learning, notes }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; learning?: "on" | "off" | null; notes?: string[] }) {
+export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab, limits, learning, notes }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[] }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -87,7 +89,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
   const off = workflow ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
   const facts: [string, string, string?][] = [
-    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"]] as [string, string, string?][]),
+    ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", placeLabel(placeOf(d.place))]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
   // Until the server's capabilities are read, the Learning tab shows only on its own address, which opens it at once (a
@@ -118,7 +120,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
         </dl>
         {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} />}
+      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
