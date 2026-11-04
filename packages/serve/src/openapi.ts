@@ -10,7 +10,7 @@ import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
-import { BOX_IDS, BOX_STATES } from "./boxes.js";
+import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./boxes.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
@@ -1119,13 +1119,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "learning/1",
     },
     places: {
-      type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
+      type: "object", additionalProperties: false, required: ["modes", "default", "boxes", "allow"],
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" }, network: { enum: [...BOX_NETWORKS], description: "What an available Daytona box reaches: `allowlist`, the hosts in `allow` (Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. `none` with a `reason` when Daytona could not keep a list here (a tier that takes none); without one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" } } } },
       },
-      description: "The places a revision may name, this host's default, and each box: whether this server has it, its state (ready, preparing or unavailable), and when not, why.",
+      description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
     },
     harnesses: {
@@ -1183,6 +1183,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   // decisions/2: the providers took on parallel (and, here, openrouter). A client that validates against decisions/1 refuses it, so the
   // widening is a mark of its own.
+  "Capabilities/places": {
+    allow: { type: "array", items: { type: "string" }, description: "The hosts a box whose `network` is `allowlist` may reach: AGENTRUN_BOX_ALLOW's, else the package registries and GitHub; empty when it is `none`.", "x-agentrun-serve": "place/2" },
+  },
   "Capabilities/workflows": {
     decisions: {
       type: "object", additionalProperties: false, required: ["providers"],

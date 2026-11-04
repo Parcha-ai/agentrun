@@ -169,7 +169,10 @@ empty); `ptraceScope` absent is unknown (do not assume 1 or more); `diskGb` and 
 the time the create call answered). Only Modal reports all of them and can restrict a network to an allowlist, expose ports or give
 `fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest. Daytona takes `network: "none"`
 (`networkBlockAll`) and reports `network: "none"` only once the sandbox's own read says Daytona blocked it; a sandbox it did not block
-(an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. Daytona also
+(an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. It takes an
+allowlist of domains (a `*.` wildcard allowed) as Daytona's domain list (`domainAllowList`, which Daytona's egress proxy enforces,
+re-signing TLS with its own CA) and reports `network: "allowlist"` only once the sandbox's own read carries that list; a sandbox
+without it is deleted and the create refused as `unsupported` the same way. A CIDR in the list is refused. Daytona also
 reports `diskGb` and `startedAt`. Local reports `network: "open"` and `startedAt`, the Archil exec box `startedAt`, and those two
 and Daytona refuse every other network, ports and capabilities as `unsupported`.
 
