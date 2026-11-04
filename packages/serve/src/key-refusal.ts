@@ -64,3 +64,14 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
   const where = key.saved ? "set it where AgentRun starts, or save it in Settings → Model keys." : "set it where AgentRun starts.";
   return `${key.who} refused ${key.field} (401${detail ? `: ${detail}` : ""}): ${where}`;
 }
+
+/** Codex's errors end on the address it sent the request to, which is serve's own loopback model proxy (", url:
+ *  http://127.0.0.1:<port>/v1/responses"); any loopback address in a run's error is the host's, never a person's. */
+const LOOPBACK_TAIL = /,?\s*url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\S*\s*$/i;
+const LOOPBACK = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?[^\s,;)"'\]]*/gi;
+
+/** `text`, a run's error, with no loopback address in it: Codex's `url:` tail goes, and any other becomes "a local
+ *  address". */
+export function withoutLoopback(text: string): string {
+  return text.replace(LOOPBACK_TAIL, "").replace(LOOPBACK, "a local address");
+}

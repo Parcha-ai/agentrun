@@ -42,7 +42,7 @@ import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
-import { keyRefusal, runKeyOf } from "./key-refusal.js";
+import { keyRefusal, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
 import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
@@ -730,7 +730,9 @@ export class Runs {
    *  only, never the run's own rows, which its cost and its answer are read from. */
   private show(run: Run): void {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    const rows = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions);
+    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions);
+    // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
+    const rows = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
     if (run.log.sync(withLearning(rows, run.meta.learning), run.keep)) run.updatedAt = new Date().toISOString();
   }
 
@@ -759,13 +761,27 @@ export class Runs {
     // the words after it.
     const capped = last?.kind === "error" ? CAP_REFUSAL_PREFIX.exec(last.text ?? "") : null;
     if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last!.text!.slice(capped[0].length), retryable: false } };
-    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: this.plainKey(run, last.text ?? undefined) ?? last.text ?? last.summary ?? "The run failed.", retryable: false } };
+    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: this.errorWords(run, last.text ?? undefined) ?? last.summary ?? "The run failed.", retryable: false } };
     if (stopped(run)) return undefined;
     // Its newest row is the answer; or the person's message, which an answer that ended its request follows in the entries
     // (the Claude CLI's /compact: a summary request, no text): its turn took it and is over, and the earlier answer stands.
     // From the entries' own order, never from when the door said idle.
     if (answerOf(run.rows) || (last?.kind === "user_message" && run.answeredMessage === true)) return { outcome: "completed" };
     return undefined;
+  }
+
+  /** A run's error as a person reads it, in its error box and on its Timeline row alike: a refused key in plain words
+   *  (plainKey), else the harness's text with no loopback address (withoutLoopback: Codex names serve's own proxy). */
+  private errorWords(run: Run, text: string | undefined): string | undefined {
+    return text ? (this.plainKey(run, text) ?? withoutLoopback(text)) : text;
+  }
+
+  /** An error row as served: its summary and text in errorWords' terms. The run's own rows, which its status reads, keep
+   *  what the harness said. */
+  private servedError(run: Run, row: TimelineEvent): TimelineEvent {
+    const plain = this.plainKey(run, row.text ?? undefined);
+    if (plain) return { ...row, summary: plain, text: plain };
+    return { ...row, ...(row.summary ? { summary: withoutLoopback(row.summary) } : {}), ...(row.text ? { text: withoutLoopback(row.text) } : {}) };
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
