@@ -105,6 +105,21 @@ test("a save that grants a tool the server does not have is refused, naming the 
   assert.match(JSON.stringify(reserved.body), /keep for their own tools/);
 });
 
+test("a save that checks a deeply nested tool schema leaves the server answering: /health meanwhile, and a readable refusal past the bounds", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const fake = await startFakeMcp({ token: TOKEN });
+  let deep = { type: "string" };
+  for (let i = 0; i < 80; i++) deep = { type: "object", properties: { [`p${i}`]: { type: "string" } }, additionalProperties: deep };
+  fake.tools.deep = { description: "A deep schema.", input: deep, run: () => ({ content: [{ type: "text", text: "deep" }] }) };
+  await addFake(t, api, "fake", fake);
+  const started = Date.now();
+  const [saved, health] = await Promise.all([api("POST", "/agents", agent("deep", { tools: ["mcp:fake/deep"] })), api("GET", "/health")]);
+  assert.equal(health.status, 200);
+  assert.ok(Date.now() - started < 5_000, `the save and the health check answered in ${Date.now() - started} ms`);
+  assert.equal(saved.status, 422, JSON.stringify(saved.body));
+  assert.match(JSON.stringify(saved.body), /nests deeper than 64 levels/);
+});
+
 test("pi: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { faux: FAUX_MCP });
   const fake = await addFake(t, api);

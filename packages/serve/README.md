@@ -102,7 +102,7 @@ curl -sN "$AGENTRUN_BASE_URL/runs/$run/timeline" -H "$H" -H 'accept: text/event-
 curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"; curl -s "$AGENTRUN_BASE_URL/runs/$run/files/out.txt" -H "$H"
 ```
 
-The timeline ends when the run does. `out.txt` names the image's Debian 12, whatever this machine runs, and it is in
+The timeline ends when the run does. `out.txt` names the image's Debian, whatever this machine runs, and it is in
 the run's `work/`, the one directory the container binds. No key? Start the server with `--faux box.mjs`, a
 [faux model](#the-faux-model) that makes one `bash` call and then answers, and run the same commands:
 
@@ -312,7 +312,12 @@ go through `work/` by path.
   resolver settings (its nameservers and search domains), with no network to use them. Its environment is
   `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
   server's uid:gid, so what it writes in `work/` stays this server's. It starts from [the box's image](#the-boxs-image).
-  It has no CPU, memory or process limits yet.
+  It may use 2 CPUs' time, 4 GiB of memory, swap included, and 1,024 processes and threads (`--cpu-period 100000
+  --cpu-quota 200000 --memory 4g --memory-swap 4g --pids-limit 1024`), so a runaway build or a fork bomb stops in the
+  box. `AGENTRUN_BOX_CPUS` (at least `0.01`), `AGENTRUN_BOX_MEMORY` (with its unit, such as `8g`, and at least `6m`) and
+  `AGENTRUN_BOX_PIDS` (at most 4,194,304) change them; any other value refuses the start. `AGENTRUN_BOX_CPUS` caps CPU
+  time, as a CFS quota (the cap `--cpus` sets), so it holds whatever CPU count Docker's VM has, and where the kernel
+  gives Docker no CPU controller (a rootless Docker without one delegated), Docker ignores it with a warning.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
@@ -430,11 +435,15 @@ provider's answer.
   `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
   `preparing` (`building the box image (python, git, curl, node, rg)`, or `pulling <image>`), and a sandbox run whose
   first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
-  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails, or takes longer, makes
-  the box unavailable with the reason (the build could not reach the network, pull its base or install a package, ran
-  out of disk; the registry refused the image, has no such image, could not be reached; or the time ran out) until a
-  restart tries again. A run that was waiting fails its call with that reason, and the next sandbox run is
-  `409 agent_not_runnable`.
+  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
+  more, 5 seconds later, the box `preparing` meanwhile with what failed (`trying once more: the build of the box image
+  could not reach the network (…)`). One that fails again, or takes longer, makes the box unavailable with the reason
+  (the build could not reach the network, pull its base or install a package, ran out of disk; the registry refused the
+  image, has no such image, could not be reached; or the time ran out) until a restart tries again. A run that was
+  waiting fails its call with that reason, and the next sandbox run is `409 agent_not_runnable`. A server stopped or
+  killed while its image comes leaves no run waiting on it: a run's first box fails its call at once, with `the server
+  stopped while building it: restart the server to build it again`, never Docker's own error, and the next start
+  builds it again.
 - `daytona`: needs `DAYTONA_API_KEY`. Set `DAYTONA_API_URL` and `DAYTONA_TARGET` when Daytona's defaults do not fit.
   The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
 - `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
@@ -534,7 +543,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
 | `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
-| `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
+| `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
 
 `bash` runs only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
 sandbox place `read`, `write` and `edit` run in the box too. `fetch_page` is a legacy name for `web_fetch`: a
@@ -588,7 +597,8 @@ only where it is picked: `auto` there skips Claude's own search, an explicit `na
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
 keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the kernel's
 keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
-Codex's own search, except behind a gateway or under a spend cap (its request has no input bound, which a cap cannot
+Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
+counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
 admit), where it is Parallel on the server's key, else keyless Exa. `off` turns `web_search` off: nothing is searched,
 and an agent naming it is refused (`409`) until it is turned on again. A pick of `exa-keyless` is keyless Exa alone,
 the key held or not.
@@ -598,8 +608,8 @@ unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Exa: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway or under a spend cap, Parallel on the server's key, else keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Exa |
-| `web_search`, `native` | Claude's own WebSearch, unavailable under a spend cap | the same, unavailable behind a gateway or under a spend cap | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Exa: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Exa |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never keyless Exa |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
 | `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
@@ -834,6 +844,10 @@ What can go wrong, told apart:
 - `424 upstream_failed`: the server could not be reached, did not answer within 15 s (30 s for the whole listing),
   answered 5xx or more than 4 MiB at once, or failed to list its tools; `details.status` is its HTTP status, if any.
 
+A server is kept with at most 500 tools and 1 MiB of tool names, descriptions and schemas: past either, the listing
+stops at that page and the answer is `422 input_invalid` (field `url`, reason `too_many_tools` or `tools_too_large`),
+naming the limit and how many tools were read.
+
 `PUT /v2/settings/mcp-servers/{name}` previews the same way, then keeps the server: its URL, the tools it listed (the
 snapshot an agent will be shown) and its credential. A name is lowercase letters, digits and dashes, starting with a
 letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. Each credential header's value is
@@ -862,7 +876,8 @@ method, tool and whether an `Authorization` header came, never its value.
 An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
 (`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
 saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
-`mcp__<server>__<tool>`, is over 52 characters. pi and claude-agent run them (`features.mcp_client.harnesses`); on
+`mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
+property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi and claude-agent run them (`features.mcp_client.harnesses`); on
 another harness the save warns that they are not bound there yet, and a run is refused.
 
 - **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
@@ -880,7 +895,9 @@ another harness the save warns that they are not bound there yet, and a run is r
   those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
   makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
   offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
-- **A call** goes to the pinned URL alone: no redirect is followed, at most 4 MiB is read, and it may take 120 s. The
+- **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
+  `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
+  redirect is followed, at most 4 MiB is read, and it may take 120 s. The
   model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
   filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
   model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
@@ -1001,7 +1018,8 @@ A run's input files. Send one in one call, its bytes the body and its path in th
 curl -s "$AGENTRUN_BASE_URL/files?path=plan.md" -H "authorization: Bearer $AGENTRUN_API_KEY" --data-binary @plan.md
 ```
 
-It answers `201` with the file `ready`: its `file_id`, `size_bytes` (the body's length) and `sha256` (the body's own).
+It answers `201` with the file, `ready`, under `file`: its `file_id`, `size_bytes` (the body's length) and `sha256`
+(the body's own).
 Its `content_type` is the query's `content_type`, else the request's own type when it names one (not
 `application/octet-stream`, not curl's `application/x-www-form-urlencoded`), else its path's extension's, as a run's files
 are served (`plan.md` is `text/markdown; charset=utf-8`), else `application/octet-stream`. A `sha256` in the query is

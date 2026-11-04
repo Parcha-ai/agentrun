@@ -60,6 +60,14 @@ describe("StartHere", () => {
     expect(h).not.toContain(">Try it<");
     expect(h).toContain("Then reload this page, and the templates here run in one click.");
   });
+  // QA: the step read "in its environment,AGENT_MODEL=provider/model-id": JSX drops a line break between text and the
+  // element after it, so the words ran together. The text as a person reads it has its spaces.
+  it("keeps the spaces in the step's setup text", () => {
+    const d = document.createElement("div");
+    d.innerHTML = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
+    expect(d.textContent).toContain("Start agentrun-serve with the model to run in its environment, AGENT_MODEL=provider/model-id, and that provider's key (ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY). Or name a gateway: AGENT_MODEL_BASE_URL and AGENT_MODEL_API_KEY, with the gateway's model in AGENT_MODEL. Then reload this page");
+    expect(d.textContent).not.toMatch(/[,:][A-Za-z(]/);
+  });
   // QA: with the key card on screen above it (the server keeps keys), the step told the person to restart the server
   // with AGENT_MODEL and reload. The card saves a key with no restart, so the step points at it instead.
   it("points at the key card above when the server keeps keys, with no env advice and no reload", () => {

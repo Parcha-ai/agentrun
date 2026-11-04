@@ -23,6 +23,10 @@ const MAX_RESPONSE_BYTES = 4 * 2 ** 20;
 const MAX_URL = 2048;
 const MAX_VALUE_BYTES = 8192;
 const MAX_HEADERS = 8;
+/** What one server's snapshot may hold: every list and get reads it back whole. */
+const MAX_TOOLS = 500;
+const MAX_SNAPSHOT_BYTES = 2 ** 20;
+const MAX_PAGES = 64;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 /** Headers the transport sets itself, or that name the connection rather than the person. */
@@ -133,7 +137,7 @@ export class McpServers {
   /** The saved server's credential, opened, for a run's launch: its headers; undefined when it has none, or none that opens. */
   headers(name: string): HeaderMap | undefined {
     const servers = this.kept();
-    const kept = servers === "unreadable" ? undefined : servers[name];
+    const kept = servers === "unreadable" || !Object.hasOwn(servers, name) ? undefined : servers[name];
     if (!kept || kept.auth.type === "none") return undefined;
     const opened = this.open(name, kept);
     return "headers" in opened ? opened.headers : undefined;
@@ -198,7 +202,7 @@ export class McpServers {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
       return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? (Object.assign(Object.create(null), doc.servers) as Record<string, Kept>) : "unreadable";
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : "unreadable";
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? Object.create(null) : "unreadable";
     }
   }
 
@@ -283,7 +287,7 @@ function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
     if (value.headers !== undefined) {
       const entries = isObject(value.headers) ? Object.entries(value.headers) : [];
       if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field: "auth.headers", reason: "invalid", message: `auth.headers names 1 to ${MAX_HEADERS} headers and their values.` });
-      headers = {};
+      headers = Object.create(null) as HeaderMap;
       for (const [name, text] of entries) {
         const lower = name.toLowerCase();
         if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: `auth.headers.${name}`, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
@@ -319,22 +323,41 @@ async function listServer(url: URL, headers: HeaderMap, version: string, stop?: 
   const client = new sdk.Client({ name: "agentrun-serve", version }, { versionNegotiation: { mode: "auto" } });
   try {
     await client.connect(transport, { timeout: REQUEST_MS, signal: deadline });
-    const { tools } = await client.listTools(undefined, { timeout: PREVIEW_MS, signal: deadline });
+    // Paged here rather than by listTools(), which reads every page before answering: a snapshot past its caps
+    // stops at the page that crosses them.
+    const tools: McpTool[] = [];
+    let bytes = 0;
+    if (client.getServerCapabilities()?.tools) {
+      for (let cursor: string | undefined, pages = 0; ; ) {
+        const page = await client.request({ method: "tools/list", ...(cursor !== undefined ? { params: { cursor } } : {}) }, { timeout: PREVIEW_MS, signal: deadline });
+        for (const tool of page.tools) {
+          const kept: McpTool = {
+            name: tool.name,
+            ...(tool.title ? { title: tool.title } : {}),
+            ...(tool.description !== undefined ? { description: tool.description } : {}),
+            input_schema: tool.inputSchema,
+            ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
+            ...(tool.annotations ? { annotations: tool.annotations } : {}),
+          };
+          tools.push(kept);
+          bytes += Buffer.byteLength(JSON.stringify(kept));
+          if (tools.length > MAX_TOOLS) throw invalid([{ field: "url", reason: "too_many_tools", message: `This server lists more than ${MAX_TOOLS} tools (${tools.length} so far, listing stopped): a server is kept with at most ${MAX_TOOLS}.` }]);
+          if (bytes > MAX_SNAPSHOT_BYTES) throw invalid([{ field: "url", reason: "tools_too_large", message: `This server's tools come to more than ${MAX_SNAPSHOT_BYTES / 2 ** 20} MiB of names, descriptions and schemas (${tools.length} tools so far, listing stopped): a server is kept with at most ${MAX_SNAPSHOT_BYTES / 2 ** 20} MiB.` }]);
+        }
+        if (page.nextCursor === undefined || page.nextCursor === cursor) break;
+        if (++pages >= MAX_PAGES) throw new ApiError("upstream_failed", `The MCP server's tool list did not end within ${MAX_PAGES} pages.`);
+        cursor = page.nextCursor;
+      }
+    }
     const instructions = client.getInstructions();
     return {
       protocol: client.getNegotiatedProtocolVersion() ?? "unknown",
       server_info: client.getServerVersion() ?? null,
       ...(instructions ? { instructions } : {}),
-      tools: tools.map((tool) => ({
-        name: tool.name,
-        ...(tool.title ? { title: tool.title } : {}),
-        ...(tool.description !== undefined ? { description: tool.description } : {}),
-        input_schema: tool.inputSchema,
-        ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
-        ...(tool.annotations ? { annotations: tool.annotations } : {}),
-      })),
+      tools,
     };
   } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw await refusal(error, seen, overflow, url, headers, deadline, sdk);
   } finally {
     await client.close().catch(() => {});
@@ -347,7 +370,11 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   const redirect = seen.find((one) => one.status >= 300 && one.status < 400);
   if (redirect) {
     const to = redirect.headers.get("location");
-    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${to ? `, pointing to ${new URL(to, url).href}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, headers) }]);
+    let where = to?.slice(0, 200);
+    try {
+      if (to) where = new URL(to, url).href;
+    } catch {}
+    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${where ? `, pointing to ${where}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, headers) }]);
   }
   const denied = seen.find((one) => one.status === 401 || one.status === 403);
   if (denied) {
@@ -363,7 +390,8 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
     return upstream(`Could not reach the MCP server at ${url.origin}${causeCode(error) ? ` (${causeCode(error)})` : ""}.`);
   }
   if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${url.href} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
-  if (deadline.aborted || timedOut(error)) return upstream(`The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.`);
+  // The listing's own limit when it was the one that ran out, else one request's.
+  if (deadline.aborted || timedOut(error)) return upstream(deadline.aborted ? `The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.` : `The MCP server did not answer a request within ${REQUEST_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
   const said = scrub(error instanceof Error ? error.message : String(error), headers);
   return upstream(`The MCP server failed to list its tools: ${said.slice(0, 300)}`);
