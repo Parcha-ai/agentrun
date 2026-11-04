@@ -15,7 +15,7 @@ import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResu
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
-import { readJson, RUN_META } from "./files.js";
+import { defaultData, readJson, RUN_META } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
@@ -1034,7 +1034,7 @@ export async function importCommand(
       console.error(`--from takes ${SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
       return 2;
     }
-    const dir = values.data ?? join(env.XDG_DATA_HOME || join(home, ".local", "share"), "agentrun", "agents");
+    const dir = values.data ?? defaultData({ ...env, HOME: home });
     // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
     // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
     // server says it at its start.

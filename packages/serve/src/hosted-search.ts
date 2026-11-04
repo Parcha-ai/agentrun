@@ -13,7 +13,7 @@
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
 import { clip, TITLE_CAP } from "./fetch-page.js";
 import { sideRequests } from "./cap.js";
-import { type Hit, type Search, snippetOf } from "./web-search.js";
+import { ANSWER_MAX, type Hit, type Search, snippetOf } from "./web-search.js";
 
 export const HOSTED_MAX_USES = 5;
 /** One search's results billed as input: about 25,000 tokens, a working estimate. */
@@ -129,5 +129,5 @@ export async function hostedSearch(query: string, n: number, ref: string | undef
   const failed = read.failed();
   if (failed) return { error: `the provider's search failed: ${failed}` };
   const said = answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("").trim();
-  return { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, 4_000) } : {}) };
+  return { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) };
 }
