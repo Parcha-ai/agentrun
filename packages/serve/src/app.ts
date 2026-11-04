@@ -21,7 +21,7 @@ import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudeSkillCheck, type ConfineChild, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { withLearned } from "./learning.js";
@@ -68,6 +68,16 @@ async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
+/** codex's model and pi-ai's catalog that prices it, where codex reaches OpenAI only through OpenRouter (codexModel: no
+ *  OpenAI key needed); anywhere else, the run's usual models (runModels). */
+async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
+  if (env[FAUX_HARNESS_ENV] || !openRouterOnly("codex", env)) return runModels(env, ref, ["default"], "codex");
+  const choice = await codexModel(env, ref);
+  if ("why" in choice) throw new Error(choice.why);
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+}
+
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
 function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
   const reader = openStoreReader(resolve(where.root, "..", ".."));
@@ -86,7 +96,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && revision.body.harness === "codex" ? await codexModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -130,7 +141,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
     const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
-    const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never, { listed: !chosen.unpriced.has(model!.modelId) });
+    // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
+    const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
+    const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
     return { models: {}, registry: createRegistry(), door, onOpen, beforeResume: markResumed } as unknown as AppOptions;
@@ -197,15 +210,20 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const live = liveView(where.root, [...earlier]);
   // The `llm` tool's one completion: on the run's models (capped and marked as a model node's), its tier's model.
   const complete = completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default"), thinkingLevel);
+  /** The run, once it opens: a call node's paid requests are booked in its store (paid-calls.ts). */
+  let opened: DurableRun | undefined;
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. Its
-   *  input and output go to the node log. */
+   *  input and output go to the node log, and its paid requests are booked under the node's own call (its execution
+   *  path, and its item in a map). */
   const runEffect = async ({ node, input, signal, executionPath, item }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } }) => {
     const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": agentrun-serve runs no tool ${node.tool ?? `via ${node.via}`}`);
     const at = { path: executionPath ?? null, item: item?.index ?? null, tool: node.tool!, label: node.label };
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
-      const output = await effect(input, { signal, env, work: where.work, complete });
+      const durable = opened;
+      const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: (kind: string, data: Record<string, string | number | null>) => durable.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT) } : undefined;
+      const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
     } catch (error) {
@@ -264,6 +282,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
+    opened = durable;
     marked.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });

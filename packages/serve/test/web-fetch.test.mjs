@@ -8,6 +8,7 @@ import { test } from "node:test";
 import * as pages from "../dist/fetch-page.js";
 import * as web from "../dist/web-fetch.js";
 import { fetchFor, PARALLEL_EXTRACT_URL, parallelExtract, webFetch } from "../dist/web-fetch.js";
+import { bookedIn } from "../dist/paid-calls.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { TOOLS } from "../dist/tools.js";
@@ -31,7 +32,11 @@ function parallel(mode = "") {
 
 const withoutText = ({ text, ...rest }) => rest;
 
-test("with a key, a public page is read through Parallel's extract: via parallel, sent once as Parallel documents it, nothing dialled", async (t) => {
+/** Runs a test as a tool call does: inside a call its requests to Parallel are booked under, as paid-calls.ts requires
+ *  (a request outside one is refused unsent). */
+const inCall = (fn) => (t) => bookedIn({ call: "test-call", record: async () => undefined }, () => fn(t));
+
+test("with a key, a public page is read through Parallel's extract: via parallel, sent once as Parallel documents it, nothing dialled", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const net = network();
@@ -40,16 +45,16 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   assert.match(page.text, /^# Read by Parallel\n\nThe page at http:\/\/public\.example\//);
   assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 } } } }], "the most of a page web_fetch reads and one character, so a page Parallel cut there shows as cut");
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
-});
+}));
 
-test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, and end at the one that closes the link", async () => {
+test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, and end at the one that closes the link", inCall(async () => {
   const full_content = "See [the function](https://en.wikipedia.org/wiki/Function_(mathematics)) and [the other page](https://other.example/y#top).";
   const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   const page = await parallelExtract(CANARY, send).read(PUBLIC);
   assert.deepEqual(page.links, ["https://en.wikipedia.org/wiki/Function_(mathematics)", "https://other.example/y"]);
-});
+}));
 
-test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", async (t) => {
+test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const net = network();
@@ -65,9 +70,9 @@ test("a guard check whose lookup never answers does not pass within its bound: n
   assert.deepEqual([page.ok, page.title, page.via], [true, "Public page", "direct"], JSON.stringify(withoutText(page)));
   assert.deepEqual(sent, [], "Parallel was sent nothing");
   assert.equal(lookups, 2);
-});
+}));
 
-test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to the guarded direct fetch: via direct, saying why, Parallel still tried next time", async (t) => {
+test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to the guarded direct fetch: via direct, saying why, Parallel still tried next time", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const why = { errors: "listed the URL in errors", 500: "answered 500", 503: "answered 503", throws: "timed out" };
   for (const mode of ["errors", "500", "503", "throws"]) {
@@ -81,9 +86,9 @@ test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to
     assert.equal(sent.length, mode === "throws" ? 0 : 1, mode);
     assert.equal(extract.live(), true, `${mode} is not the key refused`);
   }
-});
+}));
 
-test("a URL the guard refuses is never sent to Parallel: refused as fetch_page refuses it, via direct", async (t) => {
+test("a URL the guard refuses is never sent to Parallel: refused as fetch_page refuses it, via direct", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const extract = parallelExtract(CANARY, send);
@@ -102,9 +107,9 @@ test("a URL the guard refuses is never sent to Parallel: refused as fetch_page r
   }
   assert.equal((await webFetch("not a url", { ...network(), parallel: extract })).error, "url is not an absolute URL");
   assert.deepEqual(sent, [], "Parallel was sent none of them");
-});
+}));
 
-test("a 401 or 403 stops Parallel for the rest of the run: the next read goes straight to the direct fetch", async (t) => {
+test("a 401 or 403 stops Parallel for the rest of the run: the next read goes straight to the direct fetch", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   for (const [key, mode] of [["not-a-secret", ""], [CANARY, "403"]]) {
     const { sent, send } = parallel(mode);
@@ -114,7 +119,7 @@ test("a 401 or 403 stops Parallel for the rest of the run: the next read goes st
     assert.equal(sent.length, 1, `${mode || "401"}: Parallel was asked once`);
     assert.equal(extract.live(), false);
   }
-});
+}));
 
 /** The server's environment for test `t`: Parallel's key when `key`, and files for the fake Parallel's calls and the
  *  network's dials, whose lines each answer gives back. */
@@ -243,7 +248,7 @@ function paging(pages) {
   return { asked, send };
 }
 
-test("through Parallel a page is one billed extract a run, asked for its first 1,000,001 characters: every later part comes from what the run read, with no request, and from Parallel's text however Parallel answers later", async () => {
+test("through Parallel a page is one billed extract a run, asked for its first 1,000,001 characters: every later part comes from what the run read, with no request, and from Parallel's text however Parallel answers later", inCall(async () => {
   const long = `${"forty-two ".repeat(5_000)}end`;
   // Parallel answers the first extract, and would fail any other.
   const { asked, send } = paging((n) => (n === 1 ? { text: long, url: `${PUBLIC}final` } : 500));
@@ -266,7 +271,7 @@ test("through Parallel a page is one billed extract a run, asked for its first 1
   const fresh = parallelExtract(CANARY, again.send);
   for (const offset of [0, 20_000]) await webFetch(PUBLIC, { ...network(), parallel: fresh, offset });
   assert.deepEqual(again.asked, [1_000_001, 1_000_001]);
-});
+}));
 
 test("the run keeps what it read of its last 8 pages: a page used since stays, the oldest goes and is read again", async () => {
   assert.equal(web.PAGES_HELD, 8);
@@ -283,7 +288,7 @@ test("the run keeps what it read of its last 8 pages: a page used since stays, t
   assert.deepEqual(reads.slice(9), [`${PUBLIC}1`], "page 0 from what was read; page 1 read again");
 });
 
-test("calls for one URL at once share its one read: one extract, both parts of the same text; a read that fails is shared too and not kept, so a later call reads again", async () => {
+test("calls for one URL at once share its one read: one extract, both parts of the same text; a read that fails is shared too and not kept, so a later call reads again", inCall(async () => {
   const first = `${"first ".repeat(5_000)}end`;
   const second = `${"second ".repeat(5_000)}end`;
   // Parallel would answer a second extract with another version of the page.
@@ -302,9 +307,9 @@ test("calls for one URL at once share its one read: one extract, both parts of t
   assert.deepEqual([failed.map((page) => [page.ok, page.error]), fetched, direct.size], [[[false, "the page answered 503"], [false, "the page answered 503"]], 1, 0], "one fetch for both, which failed, and nothing kept");
   const later = await webFetch(`${PUBLIC}flaky`, { ...network(), fetchImpl, pages: direct });
   assert.deepEqual([later.ok, later.text, fetched, direct.size], [true, "back", 2, 1], "a later call reads again");
-});
+}));
 
-test("a page fetched directly is fetched once a run too, and so is one Parallel gave none of: its parts are all the direct page's, each saying why, Parallel asked once", async () => {
+test("a page fetched directly is fetched once a run too, and so is one Parallel gave none of: its parts are all the direct page's, each saying why, Parallel asked once", inCall(async () => {
   const body = `${"plain ".repeat(9_000)}end`;
   let fetched = 0;
   const fetchImpl = async () => (fetched++, new Response(body, { status: 200, headers: { "content-type": "text/plain" } }));
@@ -324,9 +329,9 @@ test("a page fetched directly is fetched once a run too, and so is one Parallel 
     assert.equal(fetched, 1, "one fetch for its three parts");
   }
   assert.deepEqual(failing.asked, [1_000_001], "Parallel asked once, for the first part");
-});
+}));
 
-test("a part near a page's millionth character, through Parallel: the page asked for once at 1,000,001, the part says the page goes on past what web_fetch reads", async () => {
+test("a part near a page's millionth character, through Parallel: the page asked for once at 1,000,001, the part says the page goes on past what web_fetch reads", inCall(async () => {
   const huge = "y".repeat(1_000_050);
   const { asked, send } = paging(() => ({ text: huge }));
   const extract = parallelExtract(CANARY, send);
@@ -337,7 +342,7 @@ test("a part near a page's millionth character, through Parallel: the page asked
   assert.deepEqual([before.chars, before.truncated, before.next_offset, "original_chars" in before], [50_000, true, 950_000, false], "Parallel cut it: its whole length unknown");
   assert.deepEqual([last.via, last.chars, last.offset, "truncated" in last, "original_chars" in last, last.beyond_read], ["parallel", 20_000, 980_000, false, false, true]);
   assert.equal(where(last), "Characters 980000-1000000: the page goes on, but web_fetch reads only a page's first 1,000,000 characters.");
-});
+}));
 
 test("web_fetch reads a page's first 1,000,000 characters: an offset at or past them is refused before anything is fetched, and the part that reaches them says the page goes on", async () => {
   const net = network();
@@ -349,7 +354,7 @@ test("web_fetch reads a page's first 1,000,000 characters: an offset at or past 
   assert.equal(where(last), "Characters 980000-1000000 of 1000050: the page goes on, but web_fetch reads only a page's first 1,000,000 characters.");
 });
 
-test("the cut at a page's first 1,000,000 characters never splits a character: 999,999 then an emoji keeps 999,999, and the last part ends on a whole character", async () => {
+test("the cut at a page's first 1,000,000 characters never splits a character: 999,999 then an emoji keeps 999,999, and the last part ends on a whole character", inCall(async () => {
   const body = `${"a".repeat(999_999)}😀${"b".repeat(50)}`;
   const fetchImpl = async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } });
   const last = await webFetch(PUBLIC, { ...network(), fetchImpl, offset: 980_000, maxChars: 50_000 });
@@ -359,9 +364,9 @@ test("the cut at a page's first 1,000,000 characters never splits a character: 9
   const { send } = paging(() => ({ text: body }));
   const viaParallel = await webFetch(PUBLIC, { ...network(), parallel: parallelExtract(CANARY, send), offset: 980_000, maxChars: 50_000 });
   assert.deepEqual([viaParallel.via, viaParallel.chars, /[\uD800-\uDBFF]$/.test(viaParallel.text), viaParallel.beyond_read], ["parallel", 19_999, false, true]);
-});
+}));
 
-test("through Parallel, a page it cut is never taken as whole: a text longer than it was asked for (Parallel counting code points, the page holding emoji) gives no original_chars", async () => {
+test("through Parallel, a page it cut is never taken as whole: a text longer than it was asked for (Parallel counting code points, the page holding emoji) gives no original_chars", inCall(async () => {
   const page = `${"😀".repeat(10)}${"a".repeat(1_000_100)}`;
   const send = async (_url, init) => {
     const want = JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result;
@@ -371,7 +376,7 @@ test("through Parallel, a page it cut is never taken as whole: a text longer tha
   const last = await webFetch(PUBLIC, { ...network(), parallel: parallelExtract(CANARY, send), offset: 980_000, maxChars: 50_000 });
   assert.deepEqual([last.via, last.chars, last.beyond_read, "original_chars" in last], ["parallel", 20_000, true, false], "cut by Parallel: its whole length unknown, not the length of what it gave");
   assert.equal(where(last), "Characters 980000-1000000: the page goes on, but web_fetch reads only a page's first 1,000,000 characters.");
-});
+}));
 
 test("in a run, web_fetch's agent tool and a call node's web_fetch share what the run read: a page is fetched once for both", async (t) => {
   const dir = await scratch(t);
@@ -420,7 +425,7 @@ test("web_fetch takes its provider from the run's plane: none or kernel is the d
   assert.deepEqual(net.dialled, [], "nothing fetched");
 });
 
-test("calls for one URL at once share one read that no single caller's stop ends: the first stops early, the second still gets the page, and the run keeps it, all from one extract", async () => {
+test("calls for one URL at once share one read that no single caller's stop ends: the first stops early, the second still gets the page, and the run keeps it, all from one extract", inCall(async () => {
   const text = `${"shared ".repeat(3_000)}end`;
   const asked = [];
   // Parallel answers after 200 ms, and stops when the request's own signal does.
@@ -446,9 +451,9 @@ test("calls for one URL at once share one read that no single caller's stop ends
   assert.deepEqual(asked, [1_000_001], "one billed extract");
   const third = await webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, offset: 10_000 });
   assert.deepEqual([third.ok, asked.length], [true, 1], "the run kept the page: a later part asks Parallel nothing");
-});
+}));
 
-test("a page's links are read in one pass: a page of unclosed `](` takes no longer than its length, and an ordinary page's links are the same as before", async () => {
+test("a page's links are read in one pass: a page of unclosed `](` takes no longer than its length, and an ordinary page's links are the same as before", inCall(async () => {
   const answering = (fullContent) => async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content: fullContent }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   const links = Array.from({ length: 200 }, (_, n) => `[l${n}](https://links.example/${n}) `).join("");
   // Each unclosed `](` used to be scanned to the end of the text again: quadratic in the page's length.
@@ -463,4 +468,4 @@ test("a page's links are read in one pass: a page of unclosed `](` takes no long
   const ordinary = "See [a](https://a.example/x), [w](https://en.wikipedia.org/wiki/Foo_(bar)) and [a again](https://a.example/x#part), then ]( broken, [rel](/relative) and [b](https://b.example/y).";
   const read = await parallelExtract(CANARY, answering(ordinary)).read(PUBLIC);
   assert.deepEqual(read.links, ["https://a.example/x", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/y"]);
-});
+}));

@@ -105,17 +105,27 @@ export const secret = (name: string, stored?: StoredKeys): string | undefined =>
   return value || (stored?.(name) ?? value);
 };
 
+/** The names whose values a withSecrets env took from the keys saved on the server (StoredKeys), not its own. */
+const SAVED = Symbol("agentrun.saved-keys");
+
 /** `env` with the secrets this process holds, for this process's own reading: every one, or (`"own"`) only those it was
  *  started with, none saved. Each secret is a property that does not enumerate: `env.NAME` reads it, while a spread of
- *  the object, or a spawn given it (Node builds a child's environment from its enumerable keys), leaves it out. */
+ *  the object, or a spawn given it (Node builds a child's environment from its enumerable keys), leaves it out. Which
+ *  came from a saved key is said too (savedIn), never a value. */
 export const withSecrets = (env: NodeJS.ProcessEnv, which: "all" | "own" = "all", stored?: StoredKeys): NodeJS.ProcessEnv => {
   const out: NodeJS.ProcessEnv = { ...env };
+  const saved = new Set<string>();
   for (const name of SECRET_NAMES) {
     const value = which === "own" ? own(name) : secret(name, stored);
     if (value !== undefined) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
+    if (value !== undefined && which === "all" && !own(name)) saved.add(name);
   }
+  Object.defineProperty(out, SAVED, { value: saved, enumerable: false });
   return out;
 };
+
+/** The secrets of `env` (one withSecrets made) that were saved on the server, not its own, by name. */
+export const savedIn = (env: NodeJS.ProcessEnv): ReadonlySet<string> => (env as { [SAVED]?: Set<string> })[SAVED] ?? new Set();
 
 /** The environment a child gets: `env` with every secret name taken out. */
 export const withoutSecrets = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !SECRET_NAMES.includes(name)));

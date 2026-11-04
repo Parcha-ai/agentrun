@@ -26,6 +26,7 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
 import { clip, fetchOptions, HTML_READ_CHARS, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
+import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf } from "./tool-plane.js";
 
@@ -79,15 +80,22 @@ function* linksOf(markdown: string): Generator<string> {
  *  not read in `errors`, with no content). */
 export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Extract {
   let refused = false;
+  // Each request is a paid one (paid-calls.ts): held by the run's cap and booked as the call's cost at its endpoint's
+  // price. One the cap refuses is not sent: it throws its refusal (PaidRefused).
   const post: Extract["post"] = async (url, body, signal) => {
-    const response = await send(url, {
-      method: "POST",
-      headers: { "x-api-key": apiKey, "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.any([AbortSignal.timeout(PARALLEL_TIMEOUT_MS), ...(signal ? [signal] : [])]),
-    });
-    if (response.status === 401 || response.status === 403) refused = true;
-    return response;
+    const sent = async () => {
+      const response = await send(url, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.any([AbortSignal.timeout(PARALLEL_TIMEOUT_MS), ...(signal ? [signal] : [])]),
+      });
+      if (response.status === 401 || response.status === 403) refused = true;
+      return response;
+    };
+    const fee = parallelFeeOf(url, body);
+    if (!fee) throw new PaidRefused(`Parallel's ${URL.parse(url)?.pathname ?? url} was not sent: it has no price here`);
+    return paidRequest(fee, sent);
   };
   return {
     live: () => !refused,
@@ -107,6 +115,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
         const text = row.full_content as string;
         return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(text, text.length < asked), ...linksWithin(linksOf(text)) };
       } catch (error) {
+        if (error instanceof PaidRefused) return error.message;
         const name = (error as Error)?.name;
         return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
       }

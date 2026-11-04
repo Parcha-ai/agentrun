@@ -182,3 +182,44 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
   assert.equal(started.status, 409, `the run is refused: ${JSON.stringify(started.body)}`);
   assert.deepEqual(gw.requests, [], "nothing reached the endpoint");
 });
+
+// --- Red on main. ------------------------------------------------------------------------------------------------------
+
+for (const [form, base, path] of [["<gw>", (url) => url, "/v1/responses"], ["<gw>/api", (url) => `${url}/api`, "/api/v1/responses"]]) {
+  test(`pi through serve's gateway at ${form}: POST ${path}, as codex does (red on main: pi sends <base>/responses)`, { timeout: 60_000 }, async (t) => {
+    const { run, usage, count, shapes, gw } = await onGateway(t, "pi", base, { model: CODEX_OR_MODEL, price: null });
+    assert.deepEqual(shapes, [[path, `Bearer ${KEY("gateway")}`, null, CODEX_OR_MODEL]], `pi's requests: ${JSON.stringify(gw.requests)}`);
+    assert.equal(run.status, "completed", JSON.stringify(run.error));
+    assert.deepEqual(usage, booked(count, AT_OR_PRICE));
+  });
+}
+
+for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", CODEX_OR_MODEL]]) {
+  test(`${harness} on OPENROUTER_API_KEY alone, no base set: available, with ${model} its default model, and nothing sent anywhere for it (red on main: unavailable without its own provider's key)`, { timeout: 60_000 }, async (t) => {
+    const gw = await gateway(t);
+    withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
+    const { api } = await serve(t, { faux: undefined });
+    // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
+    const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
+    assert.deepEqual(offer, { id: harness, available: true, steer: false, default_model: model, run_memory_mib: { "claude-agent": 288, codex: 192 }[harness] });
+    assert.deepEqual(gw.requests, [], "no request reached the loopback gateway");
+  });
+}
+
+/** pi's default on OpenRouter alone (capabilities' `provider/model-id`), from tl-tools: undefined until it is set. */
+const PI_OR_DEFAULT = "openrouter/openai/gpt-6-sol";
+
+test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet (tl-tools)" }, async (t) => {
+  withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  const { max_concurrent_runs, ...pi } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi");
+  assert.deepEqual(pi, { id: "pi", available: true, steer: true, default_model: PI_OR_DEFAULT, run_memory_mib: 128 });
+  const { runModels } = await import("../dist/model.js");
+  const { models, model } = await runModels({ OPENROUTER_API_KEY: OR_KEY }, undefined);
+  assert.equal(`${model.provider}/${model.modelId}`, PI_OR_DEFAULT);
+  assert.equal(model.provider, "openrouter", "pi-ai's own openrouter provider, not serve's gateway");
+  const full = models.getModel(model.provider, model.modelId);
+  assert.match(full.baseUrl, /^https:\/\/openrouter\.ai\/api(\/v1)?$/);
+  assert.equal((await models.getAuth(full))?.source, "OPENROUTER_API_KEY");
+  assert.ok(full.cost.input > 0 && full.cost.output > 0, `priced from the catalog: ${JSON.stringify(full.cost)}`);
+});

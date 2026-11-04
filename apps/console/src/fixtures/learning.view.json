@@ -1,0 +1,118 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/agents/refund-finder/learning"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent": "refund-finder",
+    "main": "76f6fa613426536090c2eda8e85a5a82cb7768cd",
+    "index": "- [Keep the summary to three lines](keep-it-to-three-lines.md) — The answer is the URL, the window and who pays shipping; nothing else\n- [Try /policies/refund-policy first](try-policies-refund-policy-first.md) — Open /policies/refund-policy before any other page; fall back to /pages/returns\n",
+    "notes": {
+      "items": [
+        {
+          "file": "keep-it-to-three-lines.md",
+          "name": "Keep the summary to three lines",
+          "description": "The answer is the URL, the window and who pays shipping; nothing else",
+          "type": "feedback",
+          "status": "active",
+          "superseded_by": null,
+          "text": "---\nname: Keep the summary to three lines\ndescription: The answer is the URL, the window and who pays shipping; nothing else\ntype: feedback\n---\nAnswer with the policy URL, the return window and who pays return shipping. No preamble.\n",
+          "etag": "\"a94781bb8f0bbf09d1f1643372fd53b7e4eff75d\""
+        },
+        {
+          "file": "try-policies-refund-policy-first.md",
+          "name": "Try /policies/refund-policy first",
+          "description": "Open /policies/refund-policy before any other page; fall back to /pages/returns",
+          "type": "feedback",
+          "status": "active",
+          "superseded_by": null,
+          "text": "---\nname: Try /policies/refund-policy first\ndescription: Open /policies/refund-policy before any other page; fall back to /pages/returns\ntype: feedback\nsupersedes: [shopify-refund-policy-path.md]\n---\nOpen `https://<shop>/policies/refund-policy` first. It answered at once on Taylor Stitch and Brooklinen.\n\n**Why:** most of these shops run on Shopify, which always serves that path.\n\n**How to apply:** fetch it before any search. Only if it's a 404, try `/pages/returns`, then the links in the site's footer.\n",
+          "etag": "\"9ba556c3219b78e52cd69b4bdaab8dc4a729e140\""
+        },
+        {
+          "file": "shopify-refund-policy-path.md",
+          "name": "Shopify refund policy path",
+          "description": "On a Shopify store the refund policy is at /policies/refund-policy",
+          "type": "reference",
+          "status": "superseded",
+          "superseded_by": "try-policies-refund-policy-first.md",
+          "text": "---\nname: Shopify refund policy path\ndescription: On a Shopify store the refund policy is at /policies/refund-policy\ntype: reference\nstatus: superseded\nsuperseded_by: try-policies-refund-policy-first.md\n---\nShopify stores serve their refund policy at `/policies/refund-policy`.\n\n`/pages/returns` and `/pages/refund-policy` were empty on Taylor Stitch: they hold a returns portal, not the policy.\n",
+          "etag": "\"bb138f7669ae6f5189f7750f1bf558ed05f3a051\""
+        }
+      ],
+      "total": 3,
+      "next_cursor": null
+    },
+    "log": {
+      "items": [
+        {
+          "by": {
+            "user": true
+          },
+          "commit": "76f6fa613426536090c2eda8e85a5a82cb7768cd",
+          "at": "2026-11-03T18:50:29.000Z",
+          "reason": "created by a person: keep-it-to-three-lines.md",
+          "files": [
+            "MEMORY.md",
+            "keep-it-to-three-lines.md"
+          ]
+        },
+        {
+          "by": {
+            "run": "01a1a2bf-8ddd-71cc-b780-5e9b78b9f063"
+          },
+          "commit": "3f6f417d8b20278f81d59fe8065028e300f7e780",
+          "at": "2026-11-03T18:50:29.000Z",
+          "reason": "General and new: it holds for other shops too, and no note says it yet.",
+          "files": [
+            "MEMORY.md",
+            "shopify-refund-policy-path.md",
+            "try-policies-refund-policy-first.md"
+          ]
+        },
+        {
+          "by": {
+            "run": "01a1a2bf-600d-7a8b-b32a-0db5b1d7559c"
+          },
+          "commit": "8b7ca3c87e815024dfd41684253c8ccd98c1f4d6",
+          "at": "2026-11-03T18:50:24.000Z",
+          "reason": "General and new: it holds for other shops too, and no note says it yet.",
+          "files": [
+            "MEMORY.md",
+            "shopify-refund-policy-path.md"
+          ]
+        }
+      ],
+      "total": 3,
+      "next_cursor": null
+    },
+    "counts": {
+      "merged": 2,
+      "dropped": {
+        "empty": 3,
+        "grader": 1
+      },
+      "in_progress": 0
+    },
+    "impact": {
+      "before": {
+        "runs": 2,
+        "median_duration_s": 9.5,
+        "median_cost_usd": 0.048664,
+        "cost_runs": 2,
+        "median_learning_usd": 0.006998
+      },
+      "after": {
+        "runs": 4,
+        "median_duration_s": 2.9,
+        "median_cost_usd": 0.008628,
+        "cost_runs": 4,
+        "median_learning_usd": 0.006073
+      }
+    }
+  }
+}

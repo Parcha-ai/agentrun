@@ -1,5 +1,6 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
+import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
@@ -14,6 +15,8 @@ export class ClientError extends Error {
   retryAfterMs?: number;
   /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
   details?: Record<string, unknown>;
+  /** A note the server's checks refused (400): each check it fails, printable. */
+  problems?: NoteProblem[];
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
@@ -71,11 +74,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number } } | null)?.error;
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
       if (e?.details && typeof e.details === "object" && !Array.isArray(e.details)) err.details = e.details;
+      if (Array.isArray(e?.problems)) err.problems = e.problems;
       throw err;
     }
     const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
@@ -87,6 +91,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
   // after which they may be stale (the host can be set up since), so they go.
   const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
+  const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
+  // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
+  const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });
+  const noteAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The owner's session; its status too, since a server without accounts answers 404. */
@@ -140,7 +148,24 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
+    /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
+    agentLearning: (id: string) => call<AgentLearning>("GET", `${agent(id)}/learning`),
+    learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
+    learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
+    /** A note's whole text and its version, for the If-Match of an edit or a retire. */
+    readNote: async (id: string, file: string) => asNote(await callTagged<string>("GET", note(id, file), { headers: noteAccept, text: true })),
+    /** Edits a note (`etag`: the version the edit was made on; 412 when it changed since) or creates one (`create`: 412
+     *  when the name is taken). The text goes as JSON, the one write the server takes under the page's session. The
+     *  answer is the note as it now is, and its new version. */
+    writeNote: async (id: string, file: string, text: string, on: { etag: string } | { create: true }) =>
+      asNote(await callTagged<string>("PUT", note(id, file), { body: { text }, headers: { ...noteAccept, ...("etag" in on ? { "if-match": on.etag } : { "if-none-match": "*" }) }, text: true })),
+    /** Retires a note: out of every later run's instructions, its record kept. 412 when it changed since `etag`. */
+    retireNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/retire`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
+    approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
+    runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),

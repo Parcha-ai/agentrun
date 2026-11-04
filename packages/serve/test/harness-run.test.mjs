@@ -248,6 +248,15 @@ test("a run opened again whose new opening has a request of unknown price reads 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
 
+/** A run's paid tool records, from its store: each mark and charge, its tool and figure. */
+function paidOf(data, runId) {
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  try {
+    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_")).map((entry) => [entry.kind, entry.data.tool, entry.data.heldUsd ?? entry.data.usd]);
+  } finally {
+    db.close();
+  }
+}
 const toolResults = (rows) => rows.filter((r) => r.kind === "tool_result").map((r) => [`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`, r.tool_status]);
 
 test("a run on another harness gets pi's own file tools: a write then a read of the run's workspace", { timeout: 60_000 }, async (t) => {
@@ -277,7 +286,7 @@ for (const harness of ["claude-agent", "codex"]) {
   test(`web_fetch runs on ${harness} as a host tool: with Parallel picked the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
     const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title with web_fetch.", tools: ["web_fetch"], tool_settings: { web_fetch: { provider: "parallel" } } }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
@@ -289,12 +298,14 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /"title":"Read by Parallel".*"via":"parallel"/s, "read through Parallel's extract");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), [["/v1/extract", true, ["http://public.example/"]]], "on the key the server handed the run");
+    assert.deepEqual(paidOf(data, run.body.run_id), [["agentrun.tool_started", "web_fetch", 0.001], ["agentrun.tool_cost", "web_fetch", 0.001]], "the extract's fee, marked and booked as on pi");
+    assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "web_fetch").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_fetch"]);
   });
 
   test(`web_search runs on ${harness} as a host tool where Parallel is picked: the run is handed Parallel's key and searches through Parallel`, { timeout: 60_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxParallel: FAUX_PARALLEL });
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxParallel: FAUX_PARALLEL });
     const saved = await api("POST", "/agents", agent(`search-${harness}`, { harness, instructions: "Search the web for widgets delaware and say what you found.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
@@ -306,6 +317,8 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]]], "on the key the server handed the run");
+    assert.deepEqual(paidOf(data, run.body.run_id), [["agentrun.tool_started", "web_search", 0.001], ["agentrun.tool_cost", "web_search", 0.001]], "the search's fee, marked and booked as on pi");
+    assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "web_search").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_search"]);
   });
 }
 
@@ -360,6 +373,44 @@ test("pi's confinement holds for another harness's read: a link out of the works
   assert.doesNotMatch(read[0], /not for the agent/);
   // Named as the call gave it: neither the server's data directory nor where the link points.
   namesOnlyGiven(rows.filter((r) => r.kind === "tool_result").at(-1), "out.txt", [data, dir], "claude-agent");
+});
+
+test("a turn that says something, then calls a tool, then answers: what it said first is a text_block, the run does not end on it, and its answer is the last one", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "comment", "Comment, then write.", "codex", ["write"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  // decide() ends a run on its newest answer row once its turn is over: the row said first, an answer until the turn
+  // went on, never ended it (the write ran after it), and the real answer did.
+  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the first row ran");
+  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll write note.md."], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]]);
+  assert.equal(await answer(api, runId), "Wrote note.md.");
+});
+
+test("a turn whose first answer is empty and that then calls a tool and answers: the empty answer is an empty text_block, the real answer is the only final_answer, and the timeline is final", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "empty-first", "Say nothing, then write.", "codex", ["write"]);
+  const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.text]));
+  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
+  // An empty answer is an answer (it ended a request on purpose) until the same turn goes on: then it was only the turn's
+  // first word, an empty one, and the answer that ends the turn is the run's one final_answer.
+  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", ""], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
+  assert.equal(rows.filter((r) => r.kind === "final_answer").length, 1, shown);
+  assert.deepEqual([last.status, last.final], ["completed", true], shown);
+  assert.equal(await answer(api, runId), "Wrote note.md.");
+});
+
+test("a turn that comments, then answers with nothing, then calls a tool and answers: both earlier answers are text_blocks, the real answer the only final_answer", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "comment-empty", "Comment, say nothing, then write.", "codex", ["write"]);
+  const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.text]));
+  assert.equal(await readFile(join(data, "runs", runId, "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
+  // The empty answer held the turn's place as its answer for a moment; the commentary before it never stays one either.
+  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll check first."], ["text_block", ""], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
+  assert.equal(rows.filter((r) => r.kind === "final_answer").length, 1, shown);
+  assert.deepEqual([last.status, last.final], ["completed", true], shown);
+  assert.equal(await answer(api, runId), "Wrote note.md.");
 });
 
 test("another harness's file tools name the workspace's paths relative to it: a path out of it, a missing file and a write, with no result naming the server's data directory", { timeout: 60_000 }, async (t) => {

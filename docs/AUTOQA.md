@@ -246,8 +246,10 @@ land (native and picked web search and tool settings, monid on every harness, th
    crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
-6. On pi, `web_search` searches Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server; a 429
-   is a tool error naming the rate limit, never a hang.
+6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
+   `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;
+   past Exa's free limit it is tried once more, then a tool error in our words (`Free web search is rate-limited right
+   now…`), never Exa's fix text and never a hang.
 
 ### Places (boxes, home, files)
 
