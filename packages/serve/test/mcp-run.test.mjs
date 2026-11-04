@@ -1,18 +1,21 @@
 // An agent granted `mcp:<server>/<tool>` calls it, through the API: on pi (the faux model, the gateway in the run's
-// process) and on claude-agent (the pinned Agent SDK and Claude CLI, whose own MCP client calls the session proxy's
-// /mcp/<server>). The fake MCP server (fixtures/fake-mcp-server.mjs) takes one bearer token and logs whether each request
-// carried an Authorization header, never its value. No key, no network.
+// process), on claude-agent (the pinned Agent SDK and Claude CLI, whose own MCP client calls the session proxy's
+// /mcp/<server>) and on codex (the stand-in for Codex's app-server, whose MCP client calls the same route). The fake MCP
+// server (fixtures/fake-mcp-server.mjs) takes one bearer token and logs whether each request carried an Authorization
+// header, never its value. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { copyFile, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
+const CODEX_STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 /** The fake server's bearer token: no real one. */
 const TOKEN = `not-a-secret-${"mcp-bearer-0123456789"}`;
 /** A server that seals saved credentials, under a seal key of its own. */
@@ -159,4 +162,85 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file of the run, the CLI's own state among them, holds the token");
+});
+
+/** serve with codex on a copy of the repo's stand-in for Codex's app-server (no Codex binary, no network): its "model" is
+ *  the turn's text, `mcp <server> <tool> <json>` a call of a server's tool through the MCP client Codex has, at the URL its
+ *  config.toml names. `standInEnv` is the stand-in's own. */
+async function codexServe(t, standInEnv = {}) {
+  const dir = await scratch(t);
+  const standIn = join(dir, "codex-stand-in.mjs");
+  await copyFile(CODEX_STAND_IN, standIn);
+  withEnv(t, {
+    AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"),
+    AGENTRUN_CODEX_STANDIN: "1",
+    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: standInEnv }),
+    // No request reaches a model: the stand-in types its answers itself.
+    AGENT_MODEL_BASE_URL: "http://127.0.0.1:9",
+    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
+  }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
+  return serveOf(t, { faux: undefined });
+}
+
+/** The config.toml Codex was given for a run, from the run's own directory. */
+const codexConfigOf = async (data, runId) => (await filesUnder(join(data, "runs", runId))).filter((file) => file.path.endsWith("/config.toml")).map((file) => file.text);
+
+test("codex: an agent granted mcp:fake/add calls it through the session's proxy; the timeline reads fake · add, the fake saw the bearer, no file holds it", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await codexServe(t);
+  const fake = await addFake(t, api);
+  assert.equal((await api("POST", "/agents", agent("codex-adder", { harness: "codex", tools: ["mcp:fake/add"] }))).status, 201);
+  const runId = await runOf(api, "codex-adder", 'mcp fake add {"a":2,"b":3}');
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "add returned: 5");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
+  assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
+  assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
+  const configs = await codexConfigOf(data, runId);
+  assert.ok(configs.some((text) => /^\[mcp_servers\.fake\]$/m.test(text) && /^default_tools_approval_mode = "approve"$/m.test(text) && /^enabled_tools = \["add"\]$/m.test(text)), `Codex was given the server, its grant and approve mode: ${configs.join("\n---\n")}`);
+  const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
+  assert.deepEqual(leaked, [], "no file of the run, Codex's own home among them, holds the token");
+});
+
+test("codex: a run that grants nothing from the server gets no MCP server and the server sees nothing", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await codexServe(t);
+  const fake = await addFake(t, api);
+  const before = fake.log.length;
+  assert.equal((await api("POST", "/agents", agent("codex-plain", { harness: "codex", tools: [] }))).status, 201);
+  const runId = await runOf(api, "codex-plain", 'mcp fake add {"a":2,"b":3}');
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  const configs = await codexConfigOf(data, runId);
+  assert.ok(configs.length > 0 && configs.every((text) => !text.includes("mcp_servers")), "Codex was given no MCP server");
+  assert.deepEqual(fake.log.slice(before), [], "the server saw nothing of the run");
+});
+
+test("codex: a server that does not start fails the run, naming it, rather than running it without its tools", { timeout: 90_000 }, async (t) => {
+  const { api } = await codexServe(t, { FAKE_CODEX_MCP_START: "fail" });
+  await addFake(t, api);
+  assert.equal((await api("POST", "/agents", agent("codex-down", { harness: "codex", tools: ["mcp:fake/add"] }))).status, 201);
+  const runId = await runOf(api, "codex-down", 'mcp fake add {"a":2,"b":3}');
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "failed");
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.match(JSON.stringify(view.error ?? view), /MCP server fake did not start/);
+});
+
+test("codex: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await codexServe(t);
+  const fake = await addFake(t, api);
+  assert.equal((await api("POST", "/agents", agent("codex-writer", { harness: "codex", tools: ["mcp:fake/slow_write"] }))).status, 201);
+  const runId = await runOf(api, "codex-writer", 'mcp fake slow_write {"line":"once","seconds":30}');
+  for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
+    assert.ok(i < 600, "the call reaches the server");
+    await sleep(100);
+  }
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  process.kill(holder.pid, "SIGKILL");
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__slow_write");
+  assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted/i, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
+  assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
 });
