@@ -1,7 +1,7 @@
 // Notes in Claude Code's auto-memory format: parsed front matter, the active ones, and the index the host builds.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import * as format from "../dist/notes.js";
+import * as format from "../dist/learn/notes.js";
 
 const note = (head, body = "The body.\n") => `---\n${head}\n---\n${body}`;
 const REFUND = note("name: Refund policy path\ndescription: Shopify stores keep their policies at /policies/\ntype: reference", "Open /policies/ first.\n");
@@ -9,10 +9,13 @@ const REFUND = note("name: Refund policy path\ndescription: Shopify stores keep 
 test("a note's front matter: name, description and type, active when it has no status, and its body after", () => {
   assert.deepEqual(format.parseNoteFile("refund-policy-path.md", REFUND), {
     file: "refund-policy-path.md", name: "Refund policy path", description: "Shopify stores keep their policies at /policies/", type: "reference",
-    status: "active", superseded_by: null, body: "Open /policies/ first.\n",
+    status: "active", superseded_by: null, supersedes: [], keys: ["name", "description", "type"], body: "Open /policies/ first.\n",
   });
-  const old = format.parseNoteFile("old.md", note('name: "Old: quoted"\ndescription: \'single\'\ntype: feedback\nstatus: superseded\nsuperseded_by: refund-policy-path.md\nsupersedes: [x.md]'));
-  assert.deepEqual([old.name, old.description, old.status, old.superseded_by], ["Old: quoted", "single", "superseded", "refund-policy-path.md"], "quotes are cut, and a key it does not know is left alone");
+  const old = format.parseNoteFile("old.md", note('name: "Old: quoted"\ndescription: \'single\'\ntype: feedback\nstatus: superseded\nsuperseded_by: refund-policy-path.md\nsupersedes: [x.md, "y.md"]\norigin: elsewhere'));
+  assert.deepEqual([old.name, old.description, old.status, old.superseded_by, old.supersedes], ["Old: quoted", "single", "superseded", "refund-policy-path.md", ["x.md", "y.md"]], "quotes are cut, and a key it does not know is left alone");
+  assert.deepEqual(old.keys, ["name", "description", "type", "status", "superseded_by", "supersedes", "origin"]);
+  assert.deepEqual(format.parseNoteFile("one.md", note("name: O\ndescription: d\ntype: user\nsupersedes: x.md")).supersedes, ["x.md"], "one bare name is a list of one");
+  assert.deepEqual(format.parseNoteFile("none.md", note("name: O\ndescription: d\ntype: user\nsupersedes: []")).supersedes, []);
   assert.equal(format.parseNoteFile("r.md", note("name: R\ndescription: d\ntype: user\nstatus: retired")).status, "retired");
   assert.equal(format.parseNoteFile("crlf.md", "---\r\nname: C\r\ndescription: d\r\ntype: project\r\n---\r\nBody.\r\n").body, "Body.\n");
   assert.equal(format.parseNoteFile("bare.md", "---\nname: B\ndescription: d\ntype: user\n---").body, "", "a note may end at its front matter");
@@ -28,6 +31,8 @@ test("a note out of shape says why, and a file name that is the index, hidden or
   assert.deepEqual(problems("a.md", note("name: a\nname: b\ndescription: d\ntype: user")), ["name appears twice"]);
   assert.deepEqual(problems("a.md", note("name: a\ndescription: d\ntype: user\nsuperseded_by: ../x.md")), ["superseded_by is not a note's file name"]);
   assert.deepEqual(problems("a.md", note("name: a\n- list\ndescription: d\ntype: user")), ['the front matter line "- list" is not "key: value"']);
+  assert.deepEqual(problems("a.md", note("name: a\ndescription: d\ntype: user\nsupersedes: [b.md, ../c.md]")), ["supersedes is not a list of notes' file names"]);
+  assert.deepEqual(problems("a.md", note("name: a\ndescription: d\ntype: user\nsupersedes: [b.md, b.md]")), ["supersedes names a note twice"]);
   for (const file of ["MEMORY.md", ".hidden.md", "dir/a.md", "a.txt", "a b.md"]) assert.ok(Array.isArray(problems(file, REFUND)), file);
 });
 
@@ -56,4 +61,16 @@ test("what a run reads of the index: its first 200 lines, cut to whole lines wit
   assert.ok(Buffer.byteLength(read) <= format.INDEX_BYTES, `${Buffer.byteLength(read)} bytes`);
   assert.equal(read, long.slice(0, read.split("\n").length).join("\n"), "whole lines only");
   assert.equal(read.split("\n").length, 59);
+});
+
+test("supersede: the host marks an old note superseded by a new one, in place of any status it had, and leaves the rest", () => {
+  const marked = format.supersede(REFUND, "refund-v2.md");
+  assert.equal(marked, "---\nname: Refund policy path\ndescription: Shopify stores keep their policies at /policies/\ntype: reference\nstatus: superseded\nsuperseded_by: refund-v2.md\n---\nOpen /policies/ first.\n");
+  const parsed = format.parseNoteFile("refund-policy-path.md", marked);
+  assert.deepEqual([parsed.status, parsed.superseded_by, parsed.body], ["superseded", "refund-v2.md", "Open /policies/ first.\n"]);
+  assert.equal(format.buildIndex([parsed]), "", "it leaves the index");
+  const twice = format.supersede(format.supersede("---\r\nname: C\r\ndescription: d\r\ntype: user\r\nstatus: retired\r\n---\r\nBody.\r\n", "a.md"), "b.md");
+  assert.equal(twice, "---\nname: C\ndescription: d\ntype: user\nstatus: superseded\nsuperseded_by: b.md\n---\nBody.\n");
+  assert.throws(() => format.supersede("no front matter", "a.md"), /front matter/);
+  assert.throws(() => format.supersede(REFUND, "../a.md"), /file name/);
 });
