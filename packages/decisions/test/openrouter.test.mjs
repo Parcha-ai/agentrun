@@ -78,8 +78,9 @@ test('images go as base64 JSON assets under their tokens with the image header, 
   assert.equal(sent.headers['content-type'], 'application/json', 'OpenRouter refuses a multipart body (live: "invalid content-type: multipart/form-data")');
   const body = JSON.parse(sent.body);
   assert.deepEqual(body.assets, { '<page1>': { type: 'image', format: 'png', data_base64: Buffer.from(PNG).toString('base64') } });
-  // A model other than Jev reads an image only as a top-level item of an array state: the node's object state goes as one.
-  assert.deepEqual(body.state, [{ doc: 'acme.pdf' }, '<page1>']);
+  // A model other than Jev reads an image only as a top-level item of an array state: the node's object state goes as one,
+  // with the field each image stood in named in the first item.
+  assert.deepEqual(body.state, [{ doc: 'acme.pdf', image_fields: ['page'] }, '<page1>']);
   // Jev reads a token anywhere, inside text too, and gets the state as the node wrote it.
   await openrouterProvider({ ...settings, fetch }).decide({ ...request, model: 'typesafe/jev-1.14', state: { doc: 'acme.pdf', note: 'see <page1>' } }, ctx());
   assert.deepEqual(JSON.parse(seen[1].init.body).state, { doc: 'acme.pdf', note: 'see <page1>' });
@@ -217,6 +218,25 @@ test("the image check runs inside the request's deadline and ends on its cancel:
   // A host's own check that never ends is cut at the decision's deadline too.
   assert.equal(await within(1500, openrouterProvider({ ...settings, takesImages: () => new Promise(() => {}), fetch: silent }).decide(request, ctx({ deadlineMs: 100 }))), 'rejected timeout');
   assert.deepEqual(posts, [], 'nothing was sent');
+});
+
+test('an object state with several images names, in order, the field each image item stood in, so the model can tell them apart', async () => {
+  const { fetch, seen } = fakeFetch([answered(), answered()]);
+  const images = { '<i1>': { bytes: PNG, mime: 'image/png', ref: 'pages/invoice/1.png' }, '<i2>': { bytes: PNG, mime: 'image/png', ref: 'pages/receipt/1.png' } };
+  const request = { label: 'x', kind: 'judge', state: { invoice: '<i1>', receipt: '<i2>', vendor: 'Acme' }, questions: { holds: { type: 'noul', instructions: 'Does the receipt match the invoice?' } }, model: 'liquid/d1', images };
+  await openrouterProvider({ ...settings, fetch }).decide(request, ctx());
+  const body = JSON.parse(seen[0].init.body);
+  assert.deepEqual(body.state, [{ vendor: 'Acme', image_fields: ['invoice', 'receipt'] }, '<i1>', '<i2>']);
+  assert.deepEqual(Object.keys(body.assets), ['<i1>', '<i2>']);
+  // A state with a field of its own named image_fields keeps it; the names go under _image_fields.
+  await openrouterProvider({ ...settings, fetch }).decide({ ...request, state: { image_fields: 'theirs', receipt: '<i2>', invoice: '<i1>' } }, ctx());
+  assert.deepEqual(JSON.parse(seen[1].init.body).state, [{ image_fields: 'theirs', _image_fields: ['receipt', 'invoice'] }, '<i2>', '<i1>']);
+  // The faux service, which refuses images anywhere but as top-level items as OpenRouter does, takes the shape.
+  process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS = '0';
+  try {
+    const outcome = await openrouterProvider({ apiKey: KEY, fetch: fauxSystemOne }).decide(request, ctx());
+    validateAnswers(request.questions, outcome.answers);
+  } finally { delete process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS; }
 });
 
 test("through judgeFromProviders, a node's timeoutMs that cuts the image check is timeout and unsent, never a decision for review", async () => {
