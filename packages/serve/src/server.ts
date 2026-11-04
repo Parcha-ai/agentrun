@@ -33,7 +33,7 @@ import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff,
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
+import { boxLimitsOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
@@ -542,6 +542,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
+  boxLimitsOf(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const learning = learningOf(process.env, options.learning);
   const learningBudget = learningBudgetOf(process.env, options.learningBudget);
@@ -614,7 +615,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     headers: (name) => mcpServers.headers(name),
     refresh: (name) => mcpServers.headersForRun(name).then(() => undefined, () => undefined),
   };
-  const mcpTools = (server: string) => mcpSource.server(server)?.tools.map((tool) => tool.name);
+  const mcpTools = (server: string) => mcpSource.server(server)?.tools;
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
@@ -1260,19 +1261,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       case "/setup/import": {
-        if (!offersImport) throw new ApiError("not_found", "no route /v2/setup/import");
-        // Before the owner is set, to the setup page: that it can import (202 while it counts), and then how many projects
-        // and sessions it would, or null for each when the count failed.
+        // No offer is an answer, `{ offer: false }`, never a 404: the console reads this on its first page, and a browser
+        // logs every 404 as an error.
+        // Before the owner is set, to the setup page: none on a server that cannot import, else that it can (202 while it
+        // counts), and then how many projects and sessions it would, or null for each when the count failed.
         if (!me.hasPassword()) {
           pageRead(req);
+          if (!offersImport) return send(res, 200, { offer: false });
           countSessions();
           if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
           if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
           return send(res, 202, { counting: true });
         }
-        // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
-        if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
-        return send(res, 200, importState);
+        // After, to the signed-in owner: the import asked for at setup, running, done or stopped, or none asked.
+        if (!signedIn(req, me)) throw new ApiError("not_found", "no route /v2/setup/import");
+        return send(res, 200, importState ?? { offer: false });
       }
       case "/auth/sign-in": {
         fromPage(req);
