@@ -208,14 +208,15 @@ test("a model key saved with no restart: a server with none says no model runs a
   assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" }, "deleted, none again");
 });
 
-// Greptile's P1 on #1470 ("Codex loses its default"): behind a gateway, with AGENT_MODEL naming a model codex cannot run
-// (Anthropic's) and OpenAI's key on the server, the server picks codex's default from OpenAI's key. The run's process holds
-// only the gateway's key, skips AGENT_MODEL as codex's hostModel does, and must still be told that default
-// (AGENTRUN_SERVE_KEY_MODEL), or it finds none: "No model yet". pi can run AGENT_MODEL behind a gateway, so it keeps it.
+// Behind a gateway, AGENT_MODEL is the gateway's own string, for codex as for pi (#1571: no provider is read out of a
+// gateway's id), so with OpenAI's key also on the server, an agent naming no model still runs on AGENT_MODEL, on the
+// gateway's key alone: the host's setting wins over a key's default. (This case began as Greptile's P1 on #1470, when
+// codex skipped an Anthropic AGENT_MODEL behind a gateway; fix C's default for a run with no AGENT_MODEL is pinned by the
+// custody and saved-key cases.)
 const CODEX_FAKE = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [CODEX_FAKE], env: { FAKE_CODEX_MODEL: "remote" } }) };
-for (const [harness, model] of [["codex", "openai/gpt-6.1-sol"], ["pi", "anthropic/claude-sonnet-5-5"]]) {
-  test(`behind a gateway, with AGENT_MODEL on a model codex cannot run and OpenAI's key on the server, a ${harness} agent naming no model runs on ${model}, on the gateway's key alone`, { timeout: 90_000 }, async (t) => {
+for (const [harness, model] of [["codex", "anthropic/claude-sonnet-5-5"], ["pi", "anthropic/claude-sonnet-5-5"]]) {
+  test(`behind a gateway, with AGENT_MODEL set and OpenAI's key on the server, a ${harness} agent naming no model runs on AGENT_MODEL's string (${model}), on the gateway's key alone`, { timeout: 90_000 }, async (t) => {
     const gw = await startFauxGateway({ text: "42" });
     t.after(() => gw.close());
     const gateway = made();
