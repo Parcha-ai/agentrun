@@ -433,6 +433,13 @@ export class RunGate {
       const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string; args_shown?: string }> | undefined;
       for (const held of open) {
         const answer = answers?.[held.id];
+        // Withdrawn with its run (a cancel, or a stop while it waited): never run and nothing resumed; resolved, so the
+        // run waits on it no more.
+        if (answer?.decision === "canceled" || answer?.decision === "withdrawn") {
+          await this.durable!.harness.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision: answer.decision as string } }), this.context!);
+          held.resolved = true;
+          continue;
+        }
         if (answer?.decision !== "allow" && answer?.decision !== "deny") continue;
         const decision = answer.decision;
         // An allow runs the call, unless its tool was set to deny since it asked.

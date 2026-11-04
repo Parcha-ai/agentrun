@@ -166,7 +166,9 @@ type RunMeta = {
  *  process acted on the answer. */
 type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
-type ApprovalAnswer = { decision: "allow" | "deny" | "canceled"; note?: string; answered_at: string; args_shown?: string };
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string };
+/** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
+const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -384,7 +386,7 @@ const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval
   return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
 };
 /** One answered (allow or deny) whose answer the run's process has not acted on yet. */
-const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && run.meta.approvals[a.id]!.decision !== "canceled");
+const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
 /** The row after each tool call that waited for approval, beside its result's row. Its arguments are redacted whole
  *  (`redact`, the Timeline's own: no held key), before any cut. */
 function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">, redact: (text: string) => string): TimelineEvent[] {
@@ -395,7 +397,9 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     if (!approval) return [row];
     const args = shownArgs(approval, redact);
-    const summary = `${approval === waiting ? "Waiting for your approval" : "Asked your approval"}: ${approval.tool} ${clip(args, 400)}`;
+    const said = run.meta.approvals?.[approval.id]?.decision;
+    const head = approval === waiting ? "Waiting for your approval" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
+    const summary = `${head}: ${approval.tool} ${clip(args, 400)}`;
     return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
 }
@@ -914,6 +918,14 @@ export class Runs {
     run.keep = keep;
     this.show(run);
     this.refresh(run);
+  }
+
+  /** The approval rows as the run's answers say them now (a stop or a cancel withdraws a call, an answer settles one),
+   *  shown at once: an answer takes no new rows. */
+  private restate(run: Run): void {
+    if (!run.approvals?.size) return;
+    run.rows = withApprovals(run.rows.filter((row) => row.kind !== APPROVAL_ROW), run, this.redactor(run));
+    this.show(run);
   }
 
   /** The run's rows into its log, as served: a workflow run's decisions and the run's learning row are the served view's
@@ -2146,6 +2158,9 @@ export class Runs {
     // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
     // the turn as it stops any working run.
     if (run.kind !== "workflow") await this.caughtUp(run);
+    // A run parked on a tool call's approval has no turn to abort: the stop withdraws the call (never run, an answer
+    // after is 409), and the run is stopped as a stop leaves one.
+    if (run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing && waitingApproval(run)) return this.withdraw(run);
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     run.stopping = true;
@@ -2154,6 +2169,19 @@ export class Runs {
     } finally {
       run.stopping = undefined;
     }
+  }
+
+  /** stop() of a run parked on an approval: the call withdrawn, and the stop's mark saved, as a stop saves it. */
+  private async withdraw(run: Run): Promise<boolean> {
+    const waiting = waitingApproval(run)!;
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "withdrawn", answered_at: new Date().toISOString() } };
+    delete run.meta.stopped_at;
+    delete run.meta.stopped_after;
+    Object.assign(run.meta, stopMark(run.rows));
+    await this.saveMeta(run);
+    this.restate(run);
+    this.refresh(run);
+    return true;
   }
 
   /** stop()'s mark and abort, once it took the stop. */
@@ -2186,10 +2214,11 @@ export class Runs {
     if (!given && !run.approvals?.has(id)) throw new ApiError("not_found", `The run ${run.id} has no tool call ${id} waiting for approval.`);
     if (given) {
       if (given.decision === decision) return;
-      throw new ApiError("not_continuable", `The tool call ${id} was already ${given.decision === "canceled" ? "canceled with its run" : `answered: ${given.decision}`}.`, { details: { reason: "already_answered", decision: given.decision } });
+      throw new ApiError("not_continuable", `The tool call ${id} was already ${given.decision === "canceled" ? "canceled with its run" : given.decision === "withdrawn" ? "withdrawn when its run was stopped" : `answered: ${given.decision}`}.`, { details: { reason: "already_answered", decision: given.decision } });
     }
     run.meta.approvals = { ...run.meta.approvals, [id]: { decision, ...(note ? { note } : {}), answered_at: new Date().toISOString(), args_shown: shownArgs(run.approvals!.get(id)!, this.redactor(run)) } };
     await this.saveMeta(run);
+    this.restate(run);
     this.refresh(run);
     if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
   }
@@ -2208,6 +2237,7 @@ export class Runs {
     if (waiting) {
       run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "canceled", answered_at: new Date().toISOString() } };
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `its canceled approval is not saved: ${error.message}`));
+      this.restate(run);
     }
     if (run.kind === "agentic") {
       run.finishing = "cancelled";
