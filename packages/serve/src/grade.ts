@@ -5,9 +5,9 @@
 //   the prompt is bounded whatever the folder holds (GRADE_CAPS). It runs on the model the server names for grading
 //   (learning.ts gradeModelOf: `--grade-model`, else its strong tier), else on the agent's own. Its answer is read by parseVerdict,
 //   which fails closed. A
-//   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. Before it, and only
-//   when this server has an independent judge (Jev), each new note goes through the injection screen: pi-browser's page
-//   classifier with its own INJECTION_THRESHOLD. A score at or over it refuses the proposal, and no score refuses it too.
+//   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. No injection screen
+//   runs before it: a page classifier cannot see where a note came from, and dropped a preference the user stated (it
+//   reads like an instruction); the grader's Planted question decides, with what the user said in view.
 // - The merge is one host commit on main, made with plumbing on a temporary index: the new notes added, each note one of
 //   them supersedes marked, the skill's and draft's files added or changed (one the grader held, marked pending), and
 //   MEMORY.md rebuilt (buildIndex). Its message is `learning: <run id>: merged`, the verdict's
@@ -16,22 +16,18 @@
 //   (learn/check.ts mergeProblems) are asked again of main as it is then, and each note superseded must still be the
 //   blob the grade read: one a person changed since is theirs, and nothing merges. The checked-out files are brought in
 //   line.
-// The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
+// The merge runs in the agent's queue; the grader never does, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { buildIndex, gradedItems, held, INDEX_FILE, type IndexEntry, type LearnedNote, learnedPlace, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
-import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel, claudeProvider, codexModel, codexProvider } from "./adapters.js";
-import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
 import { homeOf } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { agentFolder, checkOut, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
 import { type ModelRef, openRouterOnly, runModels, thinkingOf } from "./model.js";
 
-/** How long one note's screen and the grader may take (the grader's unless the server names another), and the most the
- *  grader may write. */
-const SCREEN_TIMEOUT_MS = 60_000;
+/** How long the grader may take (unless the server names another), and the most it may write. */
 const GRADE_TIMEOUT_MS = 180_000;
 const GRADE_MAX_TOKENS = 16_000;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -39,10 +35,10 @@ const utf8 = new TextDecoder("utf-8", { fatal: true });
 /** Main as a grade reads it: its commit, every entry at its top, its notes' texts by file (any status), and each
  *  entry's object id. */
 export type Main = { sha: string; files: string[]; texts: Map<string, string>; oids: Map<string, string> };
-/** What a grade spent: the screen's judge and the grader. The dollars, null when any call's are unknown, and the tokens,
+/** What a grade spent: the grader's calls. The dollars, null when any call's are unknown, and the tokens,
  *  null when any call's are. */
 export type GradeCost = { usd: number | null; tokens: Tokens | null };
-export type Judged = { cost: GradeCost } & ({ verdict: Verdict } | { reason: "screen" | "screen_down"; file: string } | { reason: "grade_failed"; error: Error });
+export type Judged = { cost: GradeCost } & ({ verdict: Verdict } | { reason: "grade_failed"; error: Error });
 /** The agentic revision the run ran: its standing instructions, and what its model is. */
 export type Agent = { instructions: string; harness?: string; model?: string; thinking?: string };
 
@@ -210,46 +206,13 @@ async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost
   };
 }
 
-/** The injection screen's judge: Jev, by TypeSafe's API or OpenRouter, when this server has its key; else none, and no
- *  screen runs. Each call is counted in `cost` (one that fails, or reports no price, is unknown unless its error carries
- *  a cost). */
-async function independentJudge(env: NodeJS.ProcessEnv, cost: GradeCost): Promise<PageJudge | undefined> {
-  const key = jevKey(env);
-  if (!key) return undefined;
-  const [{ jevProvider }, { judgeFromProvider }, fetch] = await Promise.all([import("@parcha/agentrun-jev"), import("@parcha/agentrun-dsl"), fauxFetch(env, FAUX_JEV_ENV)]);
-  const judge = judgeFromProvider(jevProvider({ apiKey: key.key, ...(key.route === "openrouter" ? { provider: "openrouter" as const } : {}), ...(fetch ? { fetch } : {}) })) as unknown as PageJudge;
-  const add = counter(cost);
-  return async (request) => {
-    const result = await judge(request).catch((error: { costUsd?: unknown }) => (add(typeof error?.costUsd === "number" ? error.costUsd : null, null), Promise.reject(error)));
-    // A decision provider counts `{input_tokens, output_tokens}`, with no cache of its own.
-    const used = (result.usage ?? null) as { input_tokens?: unknown; output_tokens?: unknown } | null;
-    add(typeof result.cost_usd === "number" ? result.cost_usd : null, typeof used?.input_tokens === "number" && typeof used.output_tokens === "number" ? { ...NO_TOKENS, input: used.input_tokens, output: used.output_tokens } : null);
-    return result;
-  };
-}
-
-/** The screen (only with an independent judge), then the grader, on `gradeModel` when the server names one (gradeModelOf),
- *  given `asked`, what the user said in the run: the first note the screen refuses or cannot judge, the grader's verdict,
- *  or why the grader gave none; with what it spent. Rejects only when `signal` (the server closing) aborts it: nothing
+/** The grader, on `gradeModel` when the server names one (gradeModelOf), given `asked`, what the user said in the run:
+ *  its verdict, or why it gave none; with what it spent. Rejects only when `signal` (the server closing) aborts it: nothing
  *  is decided then. */
 export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; files?: NoteText[]; asked?: readonly string[]; gradeModel?: string; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
   const { runId, agent, main, proposed, env, signal } = input;
   const files = input.files ?? [];
   const cost: GradeCost = { usd: 0, tokens: { ...NO_TOKENS } };
-  const judge = await independentJudge(env, cost);
-  if (judge) {
-    const { createPageClassifier, INJECTION_THRESHOLD } = await import("@parcha/pi-browser");
-    const screened = [...proposed, ...files];
-    const classify = createPageClassifier({ judge: () => judge, maxPages: screened.length });
-    for (const { file, text } of screened) {
-      const verdict = await bounded(SCREEN_TIMEOUT_MS, signal, cost, (screen) => classify({ url: file, status: null, contentType: null, text }, screen)).catch(() => undefined);
-      signal.throwIfAborted();
-      // The injection score alone decides: the classifier's wall question is about pages, not notes.
-      const score = verdict?.injection;
-      if (typeof score !== "number" || !Number.isFinite(score)) return { reason: "screen_down", file, cost };
-      if (score >= INJECTION_THRESHOLD) return { reason: "screen", file, cost };
-    }
-  }
   try {
     const { gradePrompt, parseVerdict } = await import("./learn/index.js");
     const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed, ...(files.length ? { files } : {}), ...(input.asked ? { asked: input.asked } : {}) });

@@ -1408,8 +1408,8 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. Only with Jev's key here does an injection screen
-run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
+many notes the folder holds. No injection screen runs before it: a page classifier cannot see where a note came
+from, and read a preference the user stated as a planted instruction; the grader's Planted question decides. What the
 grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
@@ -1429,8 +1429,8 @@ The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in 
 characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
-`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
-`grader`, `grade_failed`; `no_write_tool` and `tool_denied` are an older server's, still read and counted, and no run
+`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`;
+`no_write_tool`, `tool_denied`, `screen` and `screen_down` are an older server's, still read and counted, and no run
 gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
