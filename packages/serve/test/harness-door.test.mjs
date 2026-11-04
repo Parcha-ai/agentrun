@@ -239,3 +239,57 @@ test("a run reopened with a turn to recover and a message that waited for it is 
   await until(() => next.events.includes("run_end"), "the run ends");
   assert.deepEqual(next.events, ["run_start", "run_end"]);
 });
+
+test("an adapter written before settleOpenTurn: a stopped turn it holds open is recovered at the open, as before, and the open does not throw", async () => {
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const held = heldAdapter();
+  const open = held.adapter.open;
+  let recovered = 0;
+  // A session from outside this repository: open_turn, with recover() and no settleOpenTurn().
+  held.adapter.open = async (...args) => {
+    const session = await open(...args);
+    return Object.assign(session, { state: "open_turn", async recover() { recovered += 1; held.turns.push(deferred()); }, turnEnd: () => held.turns.at(-1).promise });
+  };
+  // The run's stop record names the person's newest message (none on this root): the open turn is the stopped one.
+  const app = adapterRun(async () => held.adapter, "held", { key: "run:1", label: "a", system: [], context: "fresh" }, ctx, undefined, [], undefined, undefined, () => false, undefined, undefined, { stopped_after: 0 });
+  const events = [];
+  app.door.attach((e) => events.push(e.type));
+  const opening = await app.onOpen(runOf(harness)).then(() => "opened", (error) => `threw: ${error?.message ?? error}`);
+  assert.equal(opening, "opened");
+  await until(() => recovered === 1, "the open turn is recovered, as on an adapter with no settle");
+  held.turns[0].resolve({ status: "completed" });
+  await until(() => events.includes("run_end"), "the recovered turn ends");
+});
+
+test("a stop settles the turn the session still holds open after its interrupt, before the next message is sent; on an adapter without settleOpenTurn the stop still ends the turn", async () => {
+  for (const settles of [true, false]) {
+    const held = heldAdapter();
+    const open = held.adapter.open;
+    const order = [];
+    // A session that reads open_turn after an interrupt, as the claude-agent and codex sessions do while the stopped
+    // turn's input is pending or its recovery note stands.
+    held.adapter.open = async (...args) => {
+      const session = await open(...args);
+      let state = "new";
+      return {
+        get state() { return state; },
+        async send(text) { order.push(`send ${text}`); state = "idle"; await session.send(text); },
+        recover: () => session.recover(),
+        turnEnd: () => session.turnEnd(),
+        async interrupt() { await session.interrupt(); state = "open_turn"; },
+        close: () => session.close(),
+        ...(settles ? { async settleOpenTurn() { order.push("settle"); state = "idle"; } } : {}),
+      };
+    };
+    const { app, door, submit } = await opened(new MemoryStorage(), held);
+    await submit("one");
+    await until(() => held.sent.length === 1, "the first turn starts");
+    assert.equal(await app.door.abort(door), "aborted");
+    await until(() => !app.door.busy(), "the stopped turn ends");
+    await submit("two");
+    await until(() => held.sent.length === 2, "the next message is sent");
+    held.turns[1].resolve({ status: "completed" });
+    await until(() => !app.door.busy(), "its turn ends");
+    assert.deepEqual(order, settles ? ["send one", "settle", "send two"] : ["send one", "send two"], settles ? "settled once, before the next message" : "no settle to call");
+  }
+});
