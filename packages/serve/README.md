@@ -102,7 +102,7 @@ curl -sN "$AGENTRUN_BASE_URL/runs/$run/timeline" -H "$H" -H 'accept: text/event-
 curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"; curl -s "$AGENTRUN_BASE_URL/runs/$run/files/out.txt" -H "$H"
 ```
 
-The timeline ends when the run does. `out.txt` names the image's Debian 12, whatever this machine runs, and it is in
+The timeline ends when the run does. `out.txt` names the image's Debian, whatever this machine runs, and it is in
 the run's `work/`, the one directory the container binds. No key? Start the server with `--faux box.mjs`, a
 [faux model](#the-faux-model) that makes one `bash` call and then answers, and run the same commands:
 
@@ -435,11 +435,15 @@ provider's answer.
   `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
   `preparing` (`building the box image (python, git, curl, node, rg)`, or `pulling <image>`), and a sandbox run whose
   first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
-  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails, or takes longer, makes
-  the box unavailable with the reason (the build could not reach the network, pull its base or install a package, ran
-  out of disk; the registry refused the image, has no such image, could not be reached; or the time ran out) until a
-  restart tries again. A run that was waiting fails its call with that reason, and the next sandbox run is
-  `409 agent_not_runnable`.
+  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
+  more, 5 seconds later, the box `preparing` meanwhile with what failed (`trying once more: the build of the box image
+  could not reach the network (…)`). One that fails again, or takes longer, makes the box unavailable with the reason
+  (the build could not reach the network, pull its base or install a package, ran out of disk; the registry refused the
+  image, has no such image, could not be reached; or the time ran out) until a restart tries again. A run that was
+  waiting fails its call with that reason, and the next sandbox run is `409 agent_not_runnable`. A server stopped or
+  killed while its image comes leaves no run waiting on it: a run's first box fails its call at once, with `the server
+  stopped while building it: restart the server to build it again`, never Docker's own error, and the next start
+  builds it again.
 - `daytona`: needs `DAYTONA_API_KEY`. Set `DAYTONA_API_URL` and `DAYTONA_TARGET` when Daytona's defaults do not fit.
   The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
 - `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).

@@ -10,8 +10,10 @@
 // inspect --format {{json .Config.Labels}}` prints an image's labels, or says there is no such image (in Podman's words
 // with `podman-words`). A `pull` holds while `pull-hold` is there, and with `pull-fail` it fails, its stderr the file's
 // text (Docker's own words); a `build` reads its context directory's Dockerfile, is noted in `builds.jsonl`, and holds
-// and fails the same way with `build-hold` and `build-fail`. Each `run` is noted in `made.jsonl`, `pulledInRun` when Docker had no image
-// then, as Docker would pull it there, inside the call.
+// and fails the same way with `build-hold` and `build-fail`; with `build-fail-once`, only the next build fails, with that
+// file's text, and the mark goes. Each `run` is noted in `made.jsonl`, `pulledInRun` when Docker had no image then, as
+// Docker would pull it there, inside the call; for the server's own image (`agentrun-box:*`), which no registry has, that
+// pull fails, and `run` with it, in Docker's words.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -89,7 +91,16 @@ switch (args[0]) {
     if (context === "-" || !existsSync(join(context, "Dockerfile"))) fail("fake docker: a build takes a context directory with a Dockerfile, never stdin");
     const at = statSync(context);
     appendFileSync(join(state, "builds.jsonl"), `${JSON.stringify({ tag, labels, context, mode: (at.mode & 0o777).toString(8), files: readdirSync(context).sort(), recipe: readFileSync(join(context, "Dockerfile"), "utf8") })}\n`);
-    held("build-hold", "build-fail", () => (keepImage(tag, labels), done(`sha256:${randomBytes(32).toString("hex")}\n`)));
+    held("build-hold", "build-fail", () => {
+      const once = join(state, "build-fail-once");
+      if (existsSync(once)) {
+        const text = readFileSync(once, "utf8").trim();
+        rmSync(once);
+        fail(text || "ERROR: failed to solve: the fake's build failed once");
+      }
+      keepImage(tag, labels);
+      done(`sha256:${randomBytes(32).toString("hex")}\n`);
+    });
     break;
   }
   case "run": {
@@ -116,6 +127,7 @@ switch (args[0]) {
     // `made.jsonl`, which outlives the container.
     const image = args[args.indexOf("--entrypoint") + 2];
     appendFileSync(join(state, "made.jsonl"), `${JSON.stringify({ id: container.Id, image, pulledInRun: !hasImage(image) })}\n`);
+    if (!hasImage(image) && image.startsWith("agentrun-box:")) fail(`Unable to find image '${image}' locally\ndocker: Error response from daemon: pull access denied for agentrun-box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied.\nSee 'docker run --help'.`, 125);
     container.Mounts = container.mounts.map((mount) => ({ Type: "bind", Source: mount.source, Destination: mount.target, RW: true }));
     save(container);
     if (existsSync(join(state, "fail-run"))) fail("docker: Error response from daemon: the fake's start failed.", 125);
