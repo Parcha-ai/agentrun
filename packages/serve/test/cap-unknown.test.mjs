@@ -12,8 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, metersIn, spentIn } from "../dist/cap.js";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn } from "../dist/cap.js";
+import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -134,7 +135,10 @@ test("the cap's refusal in its own words (its code with a note) is left out as a
 
 test("a cut request is unknown when its start mark holds no figure (an older store), and one request is counted once whatever marks and entry it has", (t) => {
   assert.equal(spentIn(storeOf(t, [startedHeld(0.001), answer({ total: 0.001 }), started])), null, "a start with no figure, cut");
-  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), startedHeld(0.4)])), null, "a figure on the cut one, but a start without one: which was cut is not certain");
+  // Read in order, the answer closed the start before it, which holds no figure: the cut one is certain, at its own.
+  assert.equal(Math.round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), startedHeld(0.4)])) * 1e6) / 1e6, 0.401, "an older start, answered before the cut one started");
+  assert.equal(spentIn(storeOf(t, [started, startedHeld(0.4), answer({ total: 0.001 })])), null, "a start with no figure that may still be the open one: which was cut is not certain");
+  assert.equal(spentIn(storeOf(t, [startedHeld(0.2), started])), null, "a start with no figure still open at the crash, beside one with a figure: unknown, never the figure alone");
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
   for (const [why, entries] of Object.entries({
     "start, aborted entry, end": [startedHeld(0.4), answer({ total: 0 }, "aborted"), ended(0.4)],
@@ -155,6 +159,131 @@ test("a request stopped before its end counts at the figure its end mark holds, 
   for (const [why, entries] of Object.entries(cases)) assert.equal(round(spentIn(storeOf(t, entries))), 0.501, why);
   assert.equal(round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), compactionStarted, ended(0.2, { request: "compaction" })]))), 0.201, "a summary stopped before its end, at its figure");
   assert.equal(round(spentIn(storeOf(t, [started, ended(0.5), started, answer({ total: 0.002 }), refusedStart, refused]))), 0.502, "the cap's refusal, marked, answers its own mark");
+});
+
+test("after a crash, each request still open counts at its own start's figure: a start an answer or an end mark closed is never counted again", (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), answer({ total: 0.2 }), startedHeld(0.1)]))), 0.3, "answered at 0.20 before the cut one (held 0.10) started: 0.20 + 0.10, never the answered start's 0.30 again");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.1), startedHeld(0.3), ended(0.3)]))), 0.4, "one stopped at 0.30 (its end mark) and one a crash cut, held 0.10: 0.30 + 0.10");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), ended(0.3), startedHeld(0.1)]))), 0.4, "the same, the stop before the cut one started");
+  // Requests that overlap: the marks do not say which one an answer closed, so it closes the smallest figure still open.
+  // Its cost is not read as a clue: a held figure is the cap's worst case, and a reading that trusted it never to be
+  // passed would count less than was spent if it ever were.
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.1), startedHeld(0.3), answer({ total: 0.2 })]))), 0.5, "either can have been cut: at the larger, 0.30");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.5), startedHeld(0.2), answer({ total: 0.1 }), startedHeld(0.3)]))), 0.9, "an overlap, then a request after it: 0.10 + 0.50 + 0.30");
+});
+
+/** The most the marks `events` allow the run to have spent: each answer can have closed any request open when it came,
+ *  each end mark one open with its figure, and each request still open at the end counts at its figure. */
+const mostOf = (events, open = [], i = 0) => {
+  if (i === events.length) return open.reduce((sum, figure) => sum + figure, 0);
+  const [kind, x] = events[i];
+  const without = (figure) => {
+    const at = open.indexOf(figure);
+    return [...open.slice(0, at), ...open.slice(at + 1)];
+  };
+  if (kind === "start") return mostOf(events, [...open, x], i + 1);
+  if (kind === "end") return open.includes(x) ? x + mostOf(events, without(x), i + 1) : -Infinity;
+  if (!open.length) return x + mostOf(events, open, i + 1);
+  return Math.max(...[...new Set(open)].map((figure) => x + mostOf(events, without(figure), i + 1)));
+};
+
+test("read in order, the spend after a crash is never less than any reading of the marks allows, and exactly what was spent when no requests overlap", (t) => {
+  // mulberry32: a 32-bit state stepped with Math.imul, so every bit is exact. A product past 2^53 would lose its low
+  // bits, and rand(2) with them.
+  let seed = 1377;
+  const rand = (n) => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return Math.floor((((x ^ (x >>> 14)) >>> 0) / 4294967296) * n);
+  };
+  const FIGURES = [0.1, 0.2, 0.3, 0.4, 0.5];
+  // A run's requests as they went: each one opens with its start mark, and may close by an answer (at most its figure)
+  // or a stop (its end mark); the process then crashes, cutting the rest. `serial`: each closes before the next opens.
+  const runOf = (serial) => {
+    const entries = [];
+    const events = [];
+    const open = [];
+    let spent = 0;
+    let overlapping = 0;
+    for (let step = 0, steps = 1 + rand(7); step < steps; step++) {
+      const opening = open.length === 0 || (!serial && rand(2) === 0);
+      if (opening) {
+        const figure = FIGURES[rand(FIGURES.length)];
+        open.push(figure);
+        entries.push(startedHeld(figure));
+        events.push(["start", figure]);
+        continue;
+      }
+      // A close while another request is open too: which one it closed is what the reading has to get right.
+      if (open.length > 1) overlapping += 1;
+      const [figure] = open.splice(rand(open.length), 1);
+      if (rand(2) === 0) {
+        const cost = Math.round(figure * rand(5) * 25_000) / 100_000;
+        entries.push(answer({ total: cost }));
+        events.push(["answer", cost]);
+        spent += cost;
+      } else {
+        entries.push(ended(figure));
+        events.push(["end", figure]);
+        spent += figure;
+      }
+    }
+    return { entries, events, overlapping, most: spent + open.reduce((sum, figure) => sum + figure, 0) };
+  };
+  const seen = { answers: 0, ends: 0, overlapping: 0 };
+  for (let i = 0; i < 300; i++) {
+    const { entries, events, overlapping, most: actual } = runOf(false);
+    seen.answers += events.filter(([kind]) => kind === "answer").length;
+    seen.ends += events.filter(([kind]) => kind === "end").length;
+    seen.overlapping += overlapping;
+    const got = spentIn(storeOf(t, entries));
+    assert.ok(got >= mostOf(events) - 1e-9, `never less than the marks allow: ${got} for ${JSON.stringify(events)}`);
+    assert.ok(got >= actual - 1e-9, `never less than what the run can have spent: ${got} < ${actual}`);
+  }
+  // The walk covers what it checks: answers, end marks, and closes while requests overlap, each well past a handful.
+  t.diagnostic(`overlapping runs: ${seen.answers} answers, ${seen.ends} end marks, ${seen.overlapping} closes while requests overlap`);
+  for (const [what, count] of Object.entries(seen)) assert.ok(count >= 50, `the generator made only ${count} ${what}`);
+  for (let i = 0; i < 300; i++) {
+    const { entries, events, most } = runOf(true);
+    assert.ok(Math.abs(spentIn(storeOf(t, entries)) - most) < 1e-9, `exact with no overlap: ${JSON.stringify(events)}`);
+  }
+});
+
+/** pi's entry for `message`, as it writes a request's answer or error. */
+const entryOf = (message) => ({ kind: "pi.assistant", model: [message] });
+/** A run whose store keeps the marks it is given, or refuses every write (`refusing`). */
+const markStore = (refusing = false) => {
+  const marks = [];
+  const commit = async (change) => (refusing ? Promise.reject(new Error("the store refused the write")) : change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }));
+  return { marks, run: { harness: { commit } } };
+};
+const FAUX_MODEL = { api: "faux", provider: "faux", id: "m" };
+
+test("a request that never left answers none: pi's error for one whose start mark could not be written, and a cancel's refusal, close no other request", async (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  // request-start's own path: the store refuses the start mark, so the request is not sent, and pi gets the error it
+  // writes as the request's entry. The cap reads that error by the same constant request-start builds it from.
+  let sent = 0;
+  const { models, open } = await markRequests({ streamSimple: () => (sent++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) });
+  open(markStore(true).run);
+  const notSent = await models.streamSimple(FAUX_MODEL, { messages: [] }, {}).result();
+  assert.equal(sent, 0, "the request did not leave");
+  assert.equal(notSent.stopReason, "error");
+  assert.ok(notSent.errorMessage.startsWith(MARK_NOT_WRITTEN), notSent.errorMessage);
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.4), entryOf(notSent)]))), 0.4, "the request in flight at the crash is not answered by it: counted at its figure");
+  // A figureless start in flight when another request's mark failed; that process crashed, the next sent a request (held
+  // 0.30) and crashed too. The figureless one was cut: unknown, never 0.30.
+  assert.equal(spentIn(storeOf(t, [started, entryOf(notSent), startedHeld(0.3)])), null, "a figureless start left open stays unknown");
+  // A cancel's refusal, through request-start's own path: its mark, then pi's error for it. Together they are no request.
+  const { marks, run } = markStore();
+  const cancelled = await markRequests({ streamSimple: () => (sent++, {}) }, () => true);
+  cancelled.open(run);
+  const refusal = await cancelled.models.streamSimple(FAUX_MODEL, { messages: [] }, {}).result();
+  assert.equal(sent, 0, "the cancelled request did not leave");
+  assert.deepEqual(marks.map((m) => m.kind), [REQUEST_REFUSED]);
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), ...marks, entryOf(refusal)]))), 0.3, "the request in flight still counts; the refusal closes nothing");
 });
 
 test("the run's shown cost is the timeline's, unchanged: a stopped request is unknown there, and a refusal after it never makes it $0", () => {

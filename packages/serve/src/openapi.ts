@@ -255,7 +255,7 @@ const HOME_HOST_ENTRY = {
   type: "object", additionalProperties: false, required: ["path", "host_owned"],
   properties: {
     path: { type: "string", description: "Its name at the top of the home, as it is on disk (`learning`)." },
-    host_owned: { type: "boolean", const: true, description: "A path of `capabilities.home.host_owned`: only the server writes it, and what is in it is read through `/v2/agents/{agent_id}/learning`, never listed or served here." },
+    host_owned: { type: "boolean", const: true, description: "A path of `capabilities.home.host_owned`: only the server writes it, and what is in it is read through the learning API (`/v2/agents/{agent_id}/learning`, on a server that has it), never listed or served here." },
   },
 };
 const HOME_FILES = {
@@ -280,7 +280,33 @@ const RPC_ANSWER = {
   type: "object", required: ["jsonrpc", "id"],
   properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number", "null"] }, result: {}, error: { type: "object", required: ["code", "message"], properties: { code: { type: "integer" }, message: { type: "string" } } } },
 };
+/** GET /files's answer: a page of this server's uploads, newest first. */
+const FILE_LIST = { type: "object", additionalProperties: false, required: ["files", "next_cursor"], properties: { files: { type: "array", items: ref("schemas/File") }, next_cursor: { type: ["string", "null"] } } };
+
 const EXTENSIONS: Record<string, Record<string, Json>> = {
+  "/files": {
+    get: {
+      operationId: "listFiles", tags: ["files"], summary: "This server's uploads, newest first",
+      description: "Every file reserved or sent here, pending or ready, a page at a time, so a file whose id was lost is found again. A run that copied a file keeps its copy whatever happens to the upload.",
+      parameters: [ref("parameters/Limit"), ref("parameters/Cursor")],
+      responses: { "200": json(FILE_LIST, "One page of files, newest first."), ...errors(400, 401, 429, 500) },
+      "x-agentrun-serve": "files/1",
+    },
+  },
+  "/files/{file_id}": {
+    get: {
+      operationId: "getFile", tags: ["files"], summary: "An upload's record",
+      description: "The file as POST /files answered it, with its status now: `pending` until its bytes arrive, then `ready` with their `sha256`.",
+      responses: { "200": json(ref("schemas/File"), "The file."), ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "files/1",
+    },
+    delete: {
+      operationId: "deleteFile", tags: ["files"], summary: "Delete an upload",
+      description: "Removes the file and its bytes, pending or ready. A run that already copied it into its workspace keeps its copy; a run started after names it in vain (`422` at `file_ids`).",
+      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "files/1",
+    },
+  },
   "/mcp": {
     post: {
       operationId: "callMcp", tags: ["local"], summary: "The MCP endpoint: this API's tools, for a coding agent",
@@ -459,7 +485,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   [`${HOME_FILES_AT}/{path}`]: {
     get: {
       operationId: "readHomeFile", tags: ["agents"], summary: "One file of the agent's home, raw",
-      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. ${HOME_PATHS} A path at or under one of \`capabilities.home.host_owned\` (\`learning/\`), as normalized, folded and by identity on disk, is \`403 system_file_forbidden\` with \`details.reason\` \`host_owned\`: read it through \`/v2/agents/{agent_id}/learning\`. A link on the way is \`404 not_found\`.`,
+      description: `Raw bytes with the file's content type, as a run's file is read (\`GET /runs/{run_id}/files/{path}\`): \`nosniff\`, a CSP on HTML, \`?download=1\` for an attachment. ${HOME_PATHS} A path at or under one of \`capabilities.home.host_owned\` (\`learning/\`), as normalized, folded and by identity on disk, is \`403 system_file_forbidden\` with \`details.reason\` \`host_owned\`. Its message names the learning API (\`/v2/agents/{agent_id}/learning\`) on a server that has that route, and says this server has none on one that does not. A link on the way is \`404 not_found\`.`,
       parameters: [ref("parameters/AgentId"), HOME_PATH, { name: "download", in: "query", required: false, description: "`1` forces a download.", schema: { type: "integer", enum: [0, 1], default: 0 } }],
       responses: {
         "200": { description: "The whole file.", headers: { "Content-Disposition": ref("headers/ContentDisposition"), "X-Content-Type-Options": ref("headers/NoSniff") }, content: RAW },
@@ -602,7 +628,7 @@ const RUN_PLACE: Json = {
     { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
     { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
   ],
-  description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's read, write, edit and bash run in the box, which binds only the run's work/ and has no network and no key; its loop, its log and every key stay on the server.",
+  description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server.",
   "x-agentrun-serve": "place/1",
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
@@ -700,7 +726,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: {
         type: "object", additionalProperties: false, required: ["name", "summary", "nodes", "calls", "available", "harnesses"],
         properties: {
-          name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, sandbox_only: { type: "boolean", description: "Only an agent whose place is a sandbox names it (bash): it runs in the box, and a runner has no shell." }, available: { type: "boolean" }, reason: { type: "string", description: "Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing." }, missing: { type: "array", items: { type: "string" } },
+          name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, sandbox_only: { type: "boolean", description: "Only an agent whose place is a sandbox names it (bash): it runs in the box, and a runner has no shell." }, available: { type: "boolean" }, reason: { type: "string", description: "Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing; for a sandbox-only tool (bash) that no box this server has can run, `no box is set up on this server: …` with each box's own reason (`places.boxes`)." }, missing: { type: "array", items: { type: "string" } },
           harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tool here; a revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable.", "x-agentrun-serve": "tool-harness/1" },
           providers: { type: "array", items: { type: "string" }, description: "A tool with a provider choice: the providers offered for it, its default first.", "x-agentrun-serve": "providers/1" },
           provider: { type: "string", description: "A tool with a provider choice: the server's, its default where it sets none.", "x-agentrun-serve": "providers/1" },
@@ -864,11 +890,34 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // What this server changes in a contract operation, by the addition that made it.
   update["x-agentrun-serve-changed"] = { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" };
   const changed = ["PUT /agents/{agent_id}/definition"];
+  // A workflow run's decisions are rows of its timeline here (decision-rows.ts), of a kind the contract does not list.
+  const timelineKind = schemas.TimelineKind as Json & { enum?: string[] };
+  if (Array.isArray(timelineKind.enum) && !timelineKind.enum.includes("decision")) {
+    timelineKind.enum = [...timelineKind.enum, "decision"];
+    timelineKind["x-agentrun-serve"] = "decision-rows/1";
+    fields.push("TimelineKind.decision");
+  }
   // A timeline page of at most `limit` rows: the contract's pages hold up to 500, more than a small client reads at once.
   const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
   timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
   changed.push("GET /runs/{run_id}/timeline");
+  // upload/2: POST /files also takes a file's bytes in one call (`path` in the query, the bytes the body), answered as
+  // a reservation is with the file ready; and `upload.url` is a path from the server's root, `/v2/files/{file_id}`.
+  const createFile = (doc.paths["/files"] as Json).post as Json & { requestBody: Json & { content: Record<string, Json> }; parameters: Json[]; responses: Record<string, Json> };
+  createFile.requestBody.description = "Without `path` in the query: the contract's JSON reservation (application/json, FileCreate), its bytes sent after with PUT /files/{file_id}. With `path` in the query: the file's bytes themselves, in any type, application/json included (a multipart form is 415), sent in one call, the length the body's and the hash its own.";
+  Object.assign(createFile.requestBody.content, structuredClone(RAW));
+  const query = (name: string, description: string, schema: Json) => ({ name, in: "query", required: false, description, schema });
+  createFile.parameters = [
+    ...createFile.parameters,
+    query("path", "With the file's bytes as the body: the file's path (FilePathString). Its presence makes the body the file.", ref("schemas/FilePathString")),
+    query("content_type", "With `path`: the file's type. Absent, the request's own type when it names one (not application/octet-stream, not application/x-www-form-urlencoded), else the path's extension's, else application/octet-stream.", { type: "string" }),
+    query("sha256", "With `path`: the hash the bytes must have (`422 input_invalid` at sha256 when they do not).", { type: "string", pattern: "^[0-9a-f]{64}$" }),
+  ];
+  createFile.responses["201"] = { ...createFile.responses["201"], description: "The file and where to send its bytes; sent in one call, the file is ready. `upload.url` is a path from the server's root (`/v2/files/{file_id}`): resolve it against the server's address, do not append it to the `/v2` base." };
+  createFile.responses["415"] = ref("responses/UnsupportedMediaType");
+  createFile["x-agentrun-serve-changed"] = { requestBody: "upload/2", parameters: "upload/2", responses: "upload/2" };
+  changed.push("POST /files");
   // models/2: capabilities' `models.source` takes on the values this server answers with that the contract's enum (managed,
   // chatgpt, env, faux) lacks, `gateway` and `providers`. A client that validates against the contract's enum refuses them,
   // so the widening is a mark of its own, each value listed, as RunStatus's `paused` is.

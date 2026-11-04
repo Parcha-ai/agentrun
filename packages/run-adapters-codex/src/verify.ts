@@ -2,9 +2,9 @@
 // to a run's failure line. Written for AgentRun.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { checkedOnce, sha256OfFile } from "./pinned-binary.js";
 import { resolve } from "node:path";
 import { env } from "node:process";
+import { checkedOnce, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { codexTarget, findCodex } from "./binary.js";
 import { CODEX_BINARY_SHA256, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from "./versions.js";
 
@@ -29,7 +29,7 @@ export function codexPins(target = codexTarget()): CodexPins {
  * first, from this process's working directory, and that is the one checked and returned: a session starts the binary
  * from its own directory, where a relative `CODEX_BIN` names nothing. The sha256 is read a chunk at a time, never the
  * whole binary in memory, and a check that passed holds for this process while the binary stays the same file, unchanged
- * (pinned-binary.ts' checkedOnce): a host that checks it for each model it resolves, and a run's process that makes its
+ * (the kernel's checkedOnce): a host that checks it for each model it resolves, and a run's process that makes its
  * adapter, check it once.
  */
 export function verifyCodexBinary(found: { path: string; packageVersion?: string } | undefined, pins: CodexPins = codexPins()): { path: string } | CodexPinMismatch | CodexNotInstalled {
@@ -39,7 +39,7 @@ export function verifyCodexBinary(found: { path: string; packageVersion?: string
   if (pins.packageVersion && found.packageVersion !== undefined && found.packageVersion !== pins.packageVersion) {
     return new CodexPinMismatch("package_version", pins.packageVersion, found.packageVersion, path);
   }
-  // Hashed a chunk at a time, and once per binary in this process while it stays the same file (pinned-binary.ts).
+  // Hashed a chunk at a time, and once per binary in this process while it stays the same file.
   return checkedOnce(path, JSON.stringify(pins), () => checkBinary(path, pins), (result) => !(result instanceof Error));
 }
 

@@ -22,7 +22,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, sideRequests } from "./cap.js";
+import { CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, sideRequests } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 
 
@@ -88,7 +88,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       try {
         await mark(REQUEST_STARTED, startOf(options));
       } catch (error) {
-        const message = failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+        const message = failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
         outer.push({ type: "error", reason: "error", error: message });
         outer.end(message);
         return;
@@ -128,7 +128,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     try {
       await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options) });
     } catch (error) {
-      return failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+      return failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
     }
     if (cancelled()) {
       await mark(REQUEST_ENDED, { ...COMPACTION, unsent: true }).catch(() => undefined);

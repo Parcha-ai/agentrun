@@ -3,6 +3,7 @@ import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { KeysPage } from "@/components/KeysPage";
+import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
 import { LiveRun } from "@/components/LiveRun";
@@ -14,8 +15,11 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, type RunsFilter } from "@/lib/client";
+import { createConnection } from "@/lib/connection";
 import { appendRuns } from "@/lib/idempotency";
+import { placesOf } from "@/lib/place";
+import { type Problem, problem } from "@/lib/problem";
 import { toolChoices } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
 
@@ -76,9 +80,11 @@ function importLine(s: ImportState): string {
   return `Imported ${runs} into ${s.agents.toLocaleString("en-US")} agent${s.agents === 1 ? "" : "s"}${s.skipped ? `; ${s.skipped.toLocaleString("en-US")} left out` : ""}.`;
 }
 
-/** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. */
+/** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. Its reads
+ *  ride out the server going away (lib/connection): they wait, and carry on once it answers. */
 export function App() {
-  const v2 = useMemo(() => createClient(), []);
+  const [connection] = useState(createConnection);
+  const v2 = useMemo(() => createClient({ fetch: connection.fetch }), [connection]);
   const [auth, setAuth] = useState<AuthMode | null>(null);
   // The setup code, taken from the address once and removed from it (and from the history entry).
   const [setupCode] = useState(setupCodeOnce);
@@ -113,7 +119,7 @@ export function App() {
     })();
     return () => { live = false; };
   }, [v2, auth]);
-  if (auth === null) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+  if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
       <SignIn key={auth} mode={auth} code={setupCode} offer={offer} onSubmit={async (password, code, importSessions) => {
@@ -121,12 +127,18 @@ export function App() {
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
-          return e instanceof ClientError ? signInProblem(e) : String(e);
+          return e instanceof ClientError ? signInProblem(e) : e instanceof Error ? e.message : String(e);
         }
       }} />
     );
   }
-  return <Console v2={v2} onSignedOut={() => setAuth("sign_in")} />;
+  return <ConnectionProvider connection={connection}><Console v2={v2} onSignedOut={() => setAuth("sign_in")} /></ConnectionProvider>;
+}
+
+/** Before the console knows who is signed in: a quiet page, or, while the server can't be reached, that said with the
+ *  next try (never the password page, where a password would go nowhere). */
+function Starting() {
+  return useLink().state === "offline" ? <Unreached /> : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground" role="status">Connecting…</p>;
 }
 
 function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
@@ -135,7 +147,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [caps, setCaps] = useState<Capabilities | null>(null);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
-  const [missionError, setMissionError] = useState<string | null>(null);
+  const [missionError, setMissionError] = useState<Problem | null>(null);
   const [missionTry, setMissionTry] = useState(0);
   // The range and agent Mission Control's analytics are asked for; a change reads them again, the page kept meanwhile.
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
@@ -151,7 +163,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const namesAsked = useRef(0);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Problem | null>(null);
+  const [runsTry, setRunsTry] = useState(0);
   const asked = useRef(0);
   const go = (hash: string) => { location.hash = hash; };
   // The import asked for at setup (here, or before the server restarted): read until it ends, a failed read tried again.
@@ -182,7 +195,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
   // earlier read (two saves in a row) never puts back what an earlier save left.
   const capsAsked = useRef(0);
-  const readCaps = () => { const n = ++capsAsked.current; v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); }).catch(() => {}); };
+  // It answers whether the read landed, for a page that says so (Settings → Tools).
+  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere, is named at once, and
@@ -212,8 +226,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     setRuns(null); setError(null);
     (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, null, runsFilter) : v2.listRuns(50, null, runsFilter))
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
-      .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
-  }, [v2, where, refreshed]);
+      .catch((e) => { if (n === asked.current) setError(problem(e, "the runs")); });
+  }, [v2, where, refreshed, runsTry]);
   // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
   const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
@@ -244,7 +258,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         const active = a.filter((x) => !x.archived_at);
         setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
-      .catch((e) => { if (n === agentsAsked.current) setStartError(problemOf(e)); });
+      .catch((e) => { if (n === agentsAsked.current) { const p = problem(e, "the agents"); setStartError(`${p.why} ${p.next}${p.said ? ` (${p.said})` : ""}`); } });
   }, [v2, where.section, retry, refreshed]);
   useEffect(() => {
     if (where.section !== "mission") return;
@@ -253,10 +267,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     const from = rangeFrom(statsRange);
     Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
       .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
-      .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); })
+      .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
       .finally(() => { if (live) setMissionReading(false); });
     return () => { live = false; };
   }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
+  // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
+  useResumed(() => setMissionTry((n) => n + 1));
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -290,7 +306,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} onSaved={readCaps} />
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} onSaved={readCaps} onOpen={readCaps} />
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>
         : where.section === "mission"
@@ -303,11 +319,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
-          : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows) }} agentId={where.agent} go={go} />
+          : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
-        : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
+        : <RunsList runs={runs} agentName={agentName} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
-            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }
