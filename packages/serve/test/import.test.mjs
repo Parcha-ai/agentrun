@@ -19,7 +19,7 @@ import { summaryLines } from "../dist/import-summary.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, FAUX, scratch } from "./support.mjs";
+import { agent, client, FAUX, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const CANARY = "CANARY-VALUE-7f3e9d2c1b0a6e5d";
@@ -452,6 +452,83 @@ test("keys in a JSON string a session holds, as Codex keeps a shell's output and
   const lines = [];
   assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
   for (const value of [k.anthropic, k.github, k.slack, k.stripe, ...k.pem.lines]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(value), `${file.slice(data.length + 1)} holds ${value.slice(0, 8)}…`);
+  assert.ok(lines.includes("5 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("keys an environment holds and sessions of each harness hold too are each counted once, however each was found: the summary counts the values the import cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [billing, site] = [join(at, "code", "billing"), join(at, "code", "site")];
+  for (const dir of [billing, site]) mkdirSync(dir, { recursive: true });
+  const k = shapedKeys();
+  // As a person's environment holds them, and as their sessions printed or pasted them: Claude Code twice, Codex, pi.
+  const keys = { OPENAI_API_KEY: k.openai, STRIPE_SECRET_KEY: k.stripe, ANTHROPIC_API_KEY: k.anthropic };
+  claudeSession(at, billing, 1, { prompt: "Check the environment.", output: Object.entries(keys).map(([name, value]) => `${name}=${value}`).join("\n") });
+  codexSession(at, site, 2, { prompt: `Run the eval with ${keys.OPENAI_API_KEY}.` });
+  piSession(at, site, 3, { prompt: `Rotate ${keys.ANTHROPIC_API_KEY} today.` });
+  claudeSession(at, site, 4, { prompt: "Log in to Stripe again.", output: `stripe login --api-key ${keys.STRIPE_SECRET_KEY}` });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin", ...keys }, out: (line) => lines.push(line) }), 0);
+    return lines.filter((line) => /removed/.test(line));
+  };
+  assert.deepEqual(await run("--dry-run"), ["3 secrets would be removed"]);
+  assert.deepEqual(await run(), ["3 secrets removed"]);
+  for (const [name, value] of Object.entries(keys)) assert.deepEqual(keptUnder(data).filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}'s value`);
+});
+
+test("this server's own secrets, pasted into sessions, are cut out of what the import keeps and prints, and counted: its webhook signing secret, its tokens, its sign-in sessions' secret and a run's door token", async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const seal = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
+  // A server that made each of them: the webhook's secret, shown once at its first PUT, and a run, which has its door
+  // token. Closed before the import, as a person runs one.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true });
+  let open = true;
+  t.after(() => open && server.close());
+  const api = client(server.baseUrl, server.token);
+  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  assert.equal(set.status, 201, JSON.stringify(set.body));
+  assert.equal((await api("POST", "/agents", agent("door"))).status, 201);
+  const made = await api("POST", "/agents/door/runs", { input: { content: "hi" } });
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  for (const deadline = Date.now() + 30_000; !["completed", "failed"].includes((await api("GET", `/runs/${made.body.run_id}`)).body.status); ) assert.ok(Date.now() < deadline, "the run ends");
+  await server.close();
+  open = false;
+  const own = {
+    webhook: set.body.secret,
+    token: server.token,
+    door: readFileSync(join(data, ".door-token"), "utf8").trim(),
+    session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
+    run: readFileSync(join(data, "runs", made.body.run_id, "door-token"), "utf8").trim(),
+  };
+  for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}` });
+  codexSession(at, site, 2, { prompt: `cat .door-token says ${own.door}` });
+  piSession(at, site, 3, { prompt: `The session secret is ${own.session} and the run's door ${own.run}.` });
+  // What was there before the import: the server's own files, which hold them as the server keeps them.
+  const had = new Map(keptUnder(data));
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin", ...seal }, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  const dry = await run("--dry-run");
+  const lines = await run();
+  const wrote = keptUnder(data).filter(([path, bytes]) => !had.get(path)?.equals(bytes));
+  assert.ok(wrote.length > 0, "the import wrote");
+  for (const [name, value] of Object.entries(own)) {
+    assert.deepEqual(wrote.filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}: in no byte the import wrote`);
+    assert.ok(![...dry, ...lines].some((line) => line.includes(value)), `${name}: in no printed line`);
+  }
+  assert.ok(dry.includes("5 secrets would be removed"), dry.filter((l) => /removed/.test(l)).join(" "));
   assert.ok(lines.includes("5 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
 });
 
