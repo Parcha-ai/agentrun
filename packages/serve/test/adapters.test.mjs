@@ -202,6 +202,15 @@ test("demo: run from npx, a missing Codex says the npx line that starts this ser
   assert.ok((await reason(true)).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p ${spec} agentrun-serve`));
   assert.ok((await reason(true, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0" })).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p ${spec} agentrun`));
   assert.ok((await reason(false)).endsWith(`; ${codex.CODEX_INSTALL}`));
+  // As the start's probe says it (startReason): in a project, the restart that shows the install; under npx, the npx
+  // line alone, since running it is the restart.
+  const { startReason } = await import("../dist/adapters.js");
+  const said = async (npx) => startReason(await codexOf({}, needs, absent, npx).then(() => assert.fail("refused"), (error) => error));
+  assert.equal(await said(false), `${await reason(false)}; once it is installed, restart AgentRun to pick it up.`);
+  assert.equal(await said(true), await reason(true), "under npx: the npx line, no restart clause");
+  const unpinned = async () => ({ ...codex, verifyCodex: () => { throw new codex.CodexPinMismatch("version", codex.CODEX_VERSION, "0.0.1", "/x/codex"); } });
+  assert.match(startReason(await codexOf({}, needs, unpinned, false).catch((error) => error)), /is not the pinned build[^]*; once the pinned build is installed, restart AgentRun\.$/);
+  assert.equal(startReason(new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.")), "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.", "a reason a setting fixes: as it is");
 });
 
 test("demo: a server started by npx @parcha/agentrun hints that same command, one line for a Claude Code user: the server at its version and the SDK beside it, on ~/.agentrun", () => {

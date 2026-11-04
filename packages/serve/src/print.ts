@@ -7,8 +7,8 @@ export type TokenSource = "made" | "file" | "env";
 
 /** The banner's lines. The token is printed only when this start made it; else where it is. `publicUrl` is the address
  *  people open (AGENTRUN_PUBLIC_URL), which the base URL and the link use. With `accounts` the page is the owner's
- *  password, so its link holds no token. */
-type BannerOptions = { url: string; baseUrl: string; data: string; token: string; source: TokenSource; listen?: string; publicUrl?: string; accounts?: boolean };
+ *  password, so its link holds no token. `boxes`: which boxes are ready, in words (Serve's boxesLine), last. */
+type BannerOptions = { url: string; baseUrl: string; data: string; token: string; source: TokenSource; listen?: string; publicUrl?: string; accounts?: boolean; boxes?: string };
 
 /** The console's address to open: with accounts off, the link whose token signs a browser in when this start made the
  *  token (the banner prints it this once); else the page itself. */
@@ -26,6 +26,7 @@ export function banner(o: BannerOptions): string[] {
     `AGENTRUN_BASE_URL=${o.publicUrl ? `${o.publicUrl}/v2` : o.baseUrl}`,
     `AGENTRUN_API_KEY=${key}`,
     o.accounts || o.source === "made" ? `Open ${consoleLink(o)}` : `Open ${o.publicUrl ?? o.url}/?token=${where}`,
+    ...(o.boxes ? [o.boxes] : []),
   ];
 }
 

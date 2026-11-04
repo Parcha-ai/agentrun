@@ -81,14 +81,15 @@ async function killRun(pid) {
   }
 }
 
-test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes", async (t) => {
+test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes; its timeline says it resumed after a crash", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await killRun(pid);
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
-  const { last } = await follow(api, runId, ["completed"]);
+  const { last, rows } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
+  assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after a crash"], "one stored row, kept by the settle's read");
   assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
   assert.equal(storeRun(data, runId).state, "completed");
   assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
@@ -495,6 +496,8 @@ test("a reply that answers only once its turn is stopped leaves the run stopped,
   const two = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(two.baseUrl, two.token);
   assert.deepEqual(await stateOf(api, run_id), ["input_required", "idle"]);
+  // Its process ended with the first server, so these rows are the stopped turn's last: the late reply left none.
+  assert.deepEqual((await follow(api, run_id, ["input_required"])).rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block"), []);
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
   await follow(api, run_id, ["completed"]);
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
