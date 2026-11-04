@@ -880,9 +880,9 @@ alone. A refresh the authorization server refuses (revoked, expired) makes the s
 and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
 refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it.
 
-`test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `node
-test/fixtures/fake-mcp-server.mjs [--legacy] [--token T]` prints its URL; it serves `add`, `slow_write`, `delete_thing`
-and `paid`, and logs each request's method, tool and whether an `Authorization` header came, never its value.
+`test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
+answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
+method, tool and whether an `Authorization` header came, never its value.
 
 ## Webhooks
 

@@ -4,8 +4,6 @@
 // protected-resource metadata, as a server behind OAuth does: `oauth` may name its authorization server's URL, and `token`
 // may be a check of the Authorization header (fake-oauth-server.mjs `accepts`). Every request is logged: method, tool, and whether an
 // Authorization header came, never its value.
-//
-//   node test/fixtures/fake-mcp-server.mjs [--legacy] [--token T] [--port N]   prints its URL
 import { createServer } from "node:http";
 import { createMcpHandler, fromJsonSchema, legacyStatelessFallback, McpServer } from "@modelcontextprotocol/server";
 
@@ -63,8 +61,3 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
   return { url, log, tools, close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
 }
 
-if (import.meta.main) {
-  const arg = (flag) => process.argv[process.argv.indexOf(flag) + 1];
-  const fake = await startFakeMcp({ era: process.argv.includes("--legacy") ? "legacy" : "modern", token: process.argv.includes("--token") ? arg("--token") : undefined, port: process.argv.includes("--port") ? Number(arg("--port")) : 0 });
-  console.log(fake.url);
-}
