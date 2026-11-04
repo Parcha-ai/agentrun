@@ -414,6 +414,9 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         }
         current.end(current.error ? { status: "failed", error: current.error } : { status: "completed" });
       };
+      // The stream's end once it has no tries left, or once OpenCode stopped: a turn asked after it fails at once with it,
+      // since no event of that turn could reach the drive (one in flight is ended by it here).
+      let streamDown: string | undefined;
       let opened!: () => void;
       let refused!: (error: Error) => void;
       const open = new Promise<void>((resolve, reject) => {
@@ -451,12 +454,14 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
           await Promise.race([live.exited, sleep(250)]);
           if (!live.alive()) {
             const error = `OpenCode stopped: ${live.stderrTail().trim().slice(-300) || "its process ended"}`;
+            streamDown = error;
             refused(new Error(`opencode: ${error}`));
             turn?.end({ status: "failed", error });
             return;
           }
           if (tries >= EVENT_TRIES) {
             const error = `OpenCode's event stream ${connected ? "ended" : "did not open"} ${EVENT_TRIES} times (${why})`;
+            streamDown = error;
             refused(new Error(`opencode: ${error}`));
             turn?.end({ status: "failed", error });
             return;
@@ -488,6 +493,15 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         const ended = new Promise<Outcome>((resolve) => {
           turn = { messageID: id, busy: false, accepted: false, text: new Map(), finalText: "", end: (outcome) => resolve(outcome) };
         });
+        // The stream is gone (read with the turn set and nothing awaited between, so a later end reaches the turn itself):
+        // nothing is sent, and the turn ends here, in the records, with why.
+        if (streamDown !== undefined) {
+          turn = undefined;
+          const gone: Outcome = { status: "failed", error: streamDown };
+          journal.message({ type: "turn", ...gone } satisfies TranscriptEntry);
+          await journal.flush();
+          return gone;
+        }
         const answer = await live.request("POST", `/session/${sessionID}/prompt_async`, {
           messageID: id,
           agent: AGENT,
