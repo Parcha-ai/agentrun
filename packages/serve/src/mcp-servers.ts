@@ -108,7 +108,7 @@ export class McpServers {
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal) {
     nameOf(name);
     const { url, auth } = this.admit(body);
-    if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
+    if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = this.servers()[name];
     let headers = auth.headers;
     if (auth.type !== "none" && !headers) {
@@ -166,7 +166,7 @@ export class McpServers {
       if (text !== undefined && (typeof text !== "string" || text === "" || CONTROL.test(text) || Buffer.byteLength(text) > MAX_VALUE_BYTES)) issues.push({ field, reason: "invalid", message: `${field} is text, at most ${MAX_VALUE_BYTES} bytes.` });
     if (client_secret !== undefined && client_id === undefined) issues.push({ field: "client_id", reason: "missing", message: "A client_secret goes with the client_id it is the secret of." });
     if (issues.length) throw invalid(issues);
-    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
+    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = this.servers()[name];
     // A body with no client_id signs in again with the client kept in the sealed token set (a pre-registered one with
     // its secret, or the one registered or named last time), for the same origin only; one with a client_id replaces it.
@@ -306,7 +306,7 @@ export class McpServers {
     if (kept.auth.oauth?.expired) throw invalid([{ field, reason: "expired", message: `The sign-in to ${name} expired or was revoked: ${SIGN_IN_AGAIN}.` }]);
     const opened = this.open(name, kept);
     if ("headers" in opened) return opened.headers;
-    if (opened.unreadable === "seal_key_missing") throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so the saved credential of ${name} does not open.`);
+    if (opened.unreadable === "seal_key_missing") throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so the saved credential of ${name} does not open. ${SEAL_KEY_HOW}`);
     throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
   }
 
@@ -348,6 +348,8 @@ const scrub = (text: string, headers: HeaderMap): string =>
   Object.values(headers).flatMap((value) => [value, /^Bearer\s+(.+)$/i.exec(value)?.[1]]).filter((value): value is string => !!value).sort((a, b) => b.length - a.length).reduce((cut, value) => cut.split(value).join("[credential]"), text);
 /** Which save of a server this is: a PUT or a sign-in makes a new one, a refresh of its token or tools does not. */
 const saving = (kept: Kept) => `${kept.url} ${kept.updated_at}`;
+/** How a server gets a seal key: what its launcher does (launcher/agentrun-serve). */
+const SEAL_KEY_HOW = `Start it with its launcher, agentrun-serve, which keeps one in agentrun/seal.key under $XDG_CONFIG_HOME (~/.config by default), made at the first start, 0600 in a 0700 directory; or hand it ${SEAL_KEY_ENV} (32 random bytes in base64).`;
 const notFound = (name: string) => new ApiError("not_found", `No MCP server ${name}: GET /v2/settings/mcp-servers lists them.`);
 const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : type === "oauth" ? "auth.type" : "auth.headers", reason: "missing", message: type === "oauth" ? `${message} An OAuth server is signed in to first: POST /v2/settings/mcp-servers/{name}/oauth/start.` : message });
 const nameOf = (name: string) => {
@@ -370,7 +372,7 @@ function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   }
   if (value.length > MAX_URL) issues.push({ field: "url", reason: "too_long", message: `url is at most ${MAX_URL} characters.` });
   else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds a user or password: send a credential as auth instead." });
-  else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: "url is https, or http on this machine's loopback." });
+  else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: `url is http://${url.host}, which is not this machine's loopback: use https, or http only on loopback.` });
   else if (url.protocol !== "https:" && url.protocol !== "http:") issues.push({ field: "url", reason: "invalid", message: "url is https, or http on loopback." });
   url.hash = "";
   return url;

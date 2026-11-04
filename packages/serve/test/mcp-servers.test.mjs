@@ -4,7 +4,9 @@
 // a plain web page, a closed port and a redirect.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -251,6 +253,7 @@ test("what is refused before any connection: no seal key for a credential (409),
   const cleartext = await api1("POST", "/settings/mcp-servers/preview", { url: "http://mcp.example.com/mcp" });
   assert.equal(cleartext.status, 422);
   assert.deepEqual([cleartext.body.error.fields[0].field, cleartext.body.error.fields[0].reason], ["url", "not_https"]);
+  assert.equal(cleartext.body.error.fields[0].message, "url is http://mcp.example.com, which is not this machine's loopback: use https, or http only on loopback.");
   const typeless = await api1("PUT", "/settings/mcp-servers/other", { url: server.url, auth: { type: "bearer" } });
   assert.equal(typeless.status, 422, "a new server's bearer comes with its token");
   await first.close();
@@ -261,6 +264,7 @@ test("what is refused before any connection: no seal key for a credential (409),
   const refused = await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "no_sealing_key");
+  assert.match(refused.body.error.message, /launcher, agentrun-serve, which keeps one in agentrun\/seal\.key under \$XDG_CONFIG_HOME .*0600 in a 0700 directory; or hand it AGENTRUN_SEAL_KEY/, "it says how to get a seal key");
   assert.deepEqual(server.log.slice(before), [], "refused before the server is contacted");
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200, "a server with no credential needs no seal key");
   const listed = (await api("GET", "/settings/mcp-servers")).body.servers;
@@ -340,4 +344,17 @@ test("names an empty object would inherit are no saved servers: 404 on every rou
   assert.ok(!existsSync(join(data, "mcp-servers.json")), "nothing was written");
   const headers = await api("POST", "/settings/mcp-servers/preview", { url: (await fake(t)).url, auth: { type: "headers", headers: { constructor: "a-value" } } });
   assert.equal(headers.status, 200, `a header named constructor is no duplicate: ${JSON.stringify(headers.body)}`);
+});
+
+test("the launcher's warning for a seal key it cannot use names MCP server credentials, and how to fix the file", (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-seal-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const keys = join(dir, "config", "agentrun");
+  mkdirSync(keys, { recursive: true, mode: 0o700 });
+  writeFileSync(join(keys, "seal.key"), `${randomBytes(32).toString("base64")}\n`);
+  chmodSync(join(keys, "seal.key"), 0o644); // another user can read it: refused, never changed
+  const { AGENTRUN_SEAL_KEY: _, ...env } = process.env;
+  const ran = spawnSync(new URL("../launcher/agentrun-serve", import.meta.url).pathname, ["--", process.execPath, "-e", ""], { encoding: "utf8", env: { ...env, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir } });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.match(ran.stderr, /so the server keeps no tool key and no MCP server credential: make the file 0600 and its directory 0700 \(chmod 700 \S+; chmod 600 \S+seal\.key\)/);
 });
