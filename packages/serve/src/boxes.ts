@@ -22,8 +22,12 @@ const VM = VM_PROVIDER.id;
 export const BOX_IDS = ["bwrap", "docker", VM, "daytona"] as const;
 export type BoxId = (typeof BOX_IDS)[number];
 
-/** One box: whether this server has it, and why when not (or how it was checked). */
-export type BoxOffer = { id: BoxId; available: boolean; reason?: string };
+/** One box: whether this server has it, and why when not (or how it was checked). `state`, set where the server knows
+ *  more than the probe did (box-image.ts): `preparing` is available, its image still coming. */
+export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string };
+/** A box's state in capabilities: ready, preparing (available; a run's first box waits for its image), or unavailable. */
+export const BOX_STATES = ["ready", "preparing", "unavailable"] as const;
+export type BoxState = (typeof BOX_STATES)[number];
 
 /** The boxes this server set up at its start. */
 export type BoxRegistry = {
