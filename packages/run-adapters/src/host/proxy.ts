@@ -97,6 +97,9 @@ export interface ModelUsageReport extends ProxyUsage {
   tableUsd?: number | null;
   /** The ids the response's headers gave it (`providerIdsOf`), when they came. */
   providerIds?: Record<string, string>;
+  /** A response its client left before its end (a stop), with the bytes of it the client was sent: what streamed. Not
+   *  set for one the provider ended early (an error part way), nor for one the client read whole. */
+  stoppedAfterBytes?: number;
 }
 
 /** A paid request as the host is asked about it, before it leaves. */
@@ -502,7 +505,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     const controller = new AbortController();
     inflight.add(controller);
-    res.on("close", () => controller.abort());
+    /** That the client left before the answer reached it whole (the harness stopped the request). */
+    let clientLeft = false;
+    /** The bytes of the answer the client was sent. */
+    let sentBytes = 0;
+    /** That the answer ended because its client left part way, not because the provider or this proxy ended it. */
+    let stoppedByClient = false;
+    res.on("close", () => {
+      if (!answered) clientLeft = true;
+      controller.abort();
+    });
     let head = "";
     let tail = "";
     let length = 0;
@@ -569,6 +581,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           }
           // The usage is at the start, the end, or both: keep those, not the whole answer.
           length += text.length;
+          sentBytes += chunk.byteLength;
           if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
           tail = (tail + text).slice(-USAGE_WINDOW);
         }
@@ -576,6 +589,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       res.end();
       answered = { ok: upstream.ok };
     } catch (error) {
+      // Its client had left before this (a stop): read now, as the proxy's own end below closes the response too.
+      stoppedByClient = clientLeft && began?.ok === true;
       say(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
       else res.destroy();
@@ -632,7 +647,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
     }
     try {
-      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}) }, ticket);
+      // A response its client stopped and whose cost is unknown says what streamed of it, for the host to count it by.
+      const stopped = stoppedByClient && usd === null ? { stoppedAfterBytes: sentBytes } : {};
+      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}), ...stopped }, ticket);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }

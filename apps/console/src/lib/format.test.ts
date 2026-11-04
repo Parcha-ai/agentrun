@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cost, markdown } from "./format";
+import { cost, markdown, runLabel } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
 
@@ -126,5 +126,13 @@ describe("a cost known so far (so_far_usd, unpriced)", () => {
     expect(html).toContain("so far $0.0123");
     expect(html).toContain("1 not priced");
     expect(html).not.toContain("Unknown");
+  });
+});
+
+// One short label for a run everywhere: the id's random tail, so runs started in the same second differ.
+describe("runLabel", () => {
+  it("is the last 8 characters of the id, different for two UUIDv7s of the same millisecond", () => {
+    expect(runLabel("01a1a869-ce4e-7cf5-abf8-c5407893934a")).toBe("7893934a");
+    expect(runLabel("01a1a869-ce4e-7d11-9a02-3f6b0e21d7c5")).toBe("0e21d7c5");
   });
 });

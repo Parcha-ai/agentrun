@@ -6,7 +6,7 @@
 import "./quiet-sqlite-warning.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { openStore } from "@parcha/pi-durable-agent";
-import { planImport, runImport } from "./import.js";
+import { ownSecrets, planImport, runImport } from "./import.js";
 
 /** `secrets`: the server's own, and `stored`: the keys saved on its Tool keys page (tool-keys.ts' `values`), both cut
  *  out of everything the import writes; never put in an environment. */
@@ -35,7 +35,9 @@ const answer = async (): Promise<ImportAnswer> => {
   // A connection of its own, which may wait for the store: only this thread waits.
   const store = openStore(data);
   try {
-    const report = await runImport(store, await planImport(options, store), options);
+    // The secrets this server made and keeps, read as the import starts: cut by their values too.
+    const taking = { ...options, own: ownSecrets(data, env) };
+    const report = await runImport(store, await planImport(taking, store), taking);
     const took = { agents: report.agents.filter((a) => a.runs + a.finished > 0).map((a) => a.id), runs: report.agents.reduce((n, a) => n + a.runs + a.finished, 0), skipped: report.skipped.length };
     return stop.signal.aborted ? { took, stopped: true } : { took };
   } finally {
