@@ -30,13 +30,14 @@ import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
 import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
-import { storedPlace } from "./place.js";
+import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
+import { mirrorWrites } from "./workspace.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
@@ -113,7 +114,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
   const root = resolve(where.root, "..", "..");
-  const box = place.mode === "sandbox" ? runBox(() => runBoxProvider(place, env, root), { id: run.id, root, dir: where.root, place }) : undefined;
+  // A remote box (Daytona) is the server's to make and seed, reached through its relay; Docker's is made here.
+  const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place }) : undefined;
+  // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
+  if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
