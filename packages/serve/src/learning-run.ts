@@ -17,7 +17,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
 import { dropSeed, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, shortLearning, snapshotLearned, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
@@ -450,7 +450,7 @@ export class LearningRuns {
     const last = run.rows.findLast((row) => row.agent_label === LEARNING_LABEL && shows(row));
     if (run.cancel) this.setLearning(run, "dropped", "cancelled", "The run was cancelled during its end-of-run turn.");
     else if (reflect.timedOut) this.setLearning(run, "dropped", "reflect_timeout", "The end-of-run turn did not end in time.");
-    else if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) this.setLearning(run, "dropped", "no_budget", "The run's cap refused the end-of-run turn's request.");
+    else if (last?.kind === "error" && CAP_REFUSAL_PREFIX.test(last.text ?? "")) this.setLearning(run, "dropped", "no_budget", "The run's cap refused the end-of-run turn's request.");
     else if (last?.kind === "error") this.setLearning(run, "dropped", "reflect_failed", "The end-of-run turn ended on an error.");
     else if (!reflect.ended) this.setLearning(run, "dropped", "crashed", "The run's process went during its end-of-run turn.");
     else this.setLearning(run, "reflecting", null, "The end-of-run turn ended; what it wrote waits to be checked.");

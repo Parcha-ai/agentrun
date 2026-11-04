@@ -1201,10 +1201,16 @@ An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap 
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
 not sent and the run ends `failed` with `spend_cap_reached`. A request's worst case is its input bound at the higher of
-the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the model's
-whole output ceiling at its output price: its max output tokens, else its context window, clamped on pi to what the
-window leaves. A request asking for fewer output tokens is held at the ceiling all the same, since a thinking budget can
-raise any request to it. The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
+the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the output it is
+sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
+output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
+ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
+own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent and codex written into its body
+by the model proxy (`max_tokens` and `thinking.budget_tokens`, or `max_output_tokens`). The limit is what it is held at,
+so the cap stays exact. A request is refused only when what is left cannot buy its least: 1,024
+tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
+where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
+budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
 a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
 server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
 the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
@@ -1232,8 +1238,16 @@ process counts it the same: a capped pi run stopped and sent another message, or
 goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
 no one knows.
 
-Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's
-worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
+A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
+cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
+once a run has spent: "Not sent: the run has spent $0.45 of its $0.50 cap, and its next Claude Sonnet 5.5 request needs at
+least $0.03. Raise the cap to at least $0.48 to run it." The cap that would run it is what was spent, what requests still
+answering hold, and the request's least, rounded up to the cent so that it is enough; the model is named as its catalog
+names it, without a vendor's prefix. The error's code is `spend_cap_reached (out of budget): ` before those words: pi-ai's
+retry reads only an error's text, and takes "out of budget" as final whatever digits the words hold. A request the cap
+refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
+request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
+the $0.15 left of the run's $0.50 cap could buy."
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search does not run under a
