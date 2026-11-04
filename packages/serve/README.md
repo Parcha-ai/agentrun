@@ -375,13 +375,19 @@ gets them, in its environment or on its pipe.
 ## Models
 
 An agentic revision names its model as `provider/model-id` (`"model"` in its definition), or names none and runs on
-this host's default, `AGENT_MODEL`. A workflow revision names no model: each model node names a tier (`fast`, `default`
+this host's default, `AGENT_MODEL`. With no `AGENT_MODEL`, a model provider's key, the server's own or saved as a
+[tool key](#tool-keys), gives the default, the first of: `anthropic/claude-sonnet-5-5` with `ANTHROPIC_API_KEY`,
+`openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `openrouter/anthropic/claude-sonnet-5.5` with `OPENROUTER_API_KEY`. Each is
+its provider's capable everyday model, not its dearest ($2 in and $10 out per million tokens); set `AGENT_MODEL` for
+another. claude-agent takes only the Anthropic one and codex only the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
 `source` is `gateway`, `providers` or `faux` (the published document marks these as `models/2`, beyond the contract's
 `managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
-model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source. Where
-the models come from:
+model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source.
+`models` also says `ready`, whether a revision that names no model runs here, and when it does not, `needs`: `key` (no
+model provider's key, or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
+know). Where the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
@@ -627,7 +633,10 @@ A tool's key comes from one of two places. The server's own environment, through
 `MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by name:
 `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
 `PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`,
-`typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. `GET
+`typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
+provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
+`"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
+default model ([models](#models)); its `harnesses` are pi and the provider's own harness, of those this server runs. `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
 `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only what capabilities show
 this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
