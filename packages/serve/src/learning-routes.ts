@@ -238,7 +238,8 @@ async function learnedAt(home: string, repo: string, sha: string): Promise<{ ski
     if (isLearned(path) && mode === "100644" && type === "blob" && oid && Number(size) <= FILE_CAP) entries.set(path, { oid, size: Number(size) });
   }
   const fronts = new Map([...entries].filter(([path]) => !path.endsWith("/workflow.json")).map(([path, { oid }]) => [path, oid]));
-  const [texts, runs] = await Promise.all([textsOf(home, repo, fronts), lastRuns(home, repo, sha)]);
+  // A folder with none reads no history for them.
+  const [texts, runs] = entries.size ? await Promise.all([textsOf(home, repo, fronts), lastRuns(home, repo, sha)]) : [new Map<string, { oid: string; text: string }>(), new Map<string, string>()];
   const skills: LearnedView[] = [];
   const workflows: LearnedView[] = [];
   for (const [path, { size }] of entries) {
