@@ -602,6 +602,28 @@ test("a result stored before its call (a harness that wrote it first) reads as t
   placed(reducer.rows());
 });
 
+test("live, a result stored before its call is first served after its call, never above it; one whose call never comes is served at the run's end", () => {
+  // A host's row log serves each row where it first sees it: a result given before its call stays above the call.
+  const entries = [
+    user("Write the files.", 0),
+    result("w1", "write", "Successfully wrote a.md", 1),
+    assistant([call("w1", "write", { path: "a.md", content: "alpha" })], 2),
+    result("x9", "write", "Successfully wrote c.md", 3),
+    assistant([{ type: "text", text: "Wrote it." }], 4),
+  ];
+  const reducer = timelineReducer({ conversationId: 1 });
+  const served = [];
+  const take = (events) => { for (const row of reducer.apply(events).rows) if (!served.some((r) => r.id === row.id)) served.push(row); };
+  for (const entry of entries) take([{ type: "entry_appended", entry }]);
+  const shown = () => JSON.stringify(served.map((r) => [r.id, r.kind, r.tool_use_id]));
+  const at = (kind, id) => served.findIndex((r) => r.kind === kind && r.tool_use_id === id);
+  assert.ok(at("tool_use", "w1") >= 0 && at("tool_use", "w1") < at("tool_result", "w1"), `w1's call is served before its result: ${shown()}`);
+  assert.equal(at("tool_result", "x9"), -1, `a result whose call has not come is not served yet: ${shown()}`);
+  take([{ type: "run_end", inputs: [] }]);
+  assert.ok(at("tool_result", "x9") >= 0, `served at the run's end: ${shown()}`);
+  assert.ok(timelineOf(entries, { settled: true }).some((r) => r.kind === "tool_result" && r.tool_use_id === "x9"), "and in the stored read");
+});
+
 test("waits: a retry, a poll and a queue are live rows that clear", () => {
   const reducer = timelineReducer({ conversationId: 1, now: () => 1_000 });
   const rows = (events) => summaries(reducer.apply(events).rows);
