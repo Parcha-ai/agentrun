@@ -1552,7 +1552,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
   distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
-  config files, a `whsec_` secret another server made, or a run's own door token, are imported as they are.
+  config files, are imported as they are. So are a key-shaped value this server did not make (a `whsec_` secret from
+  another service) and a run's own door token.
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
   a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
   providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev

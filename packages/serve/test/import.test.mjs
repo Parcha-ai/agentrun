@@ -761,6 +761,7 @@ test("what the CLI prints is cut with the saved tool keys too: a skipped file na
 test("the README says what an import removes and what it leaves", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
   assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));
+  assert.ok(readme.includes("So are a key-shaped value this server did not make (a `whsec_` secret from another service) and a run's own door token."));
 });
 
 test("a key of the environment's that holds a slash, across a skill's folders, leaves no part of itself in what the import keeps, and the skill stays one skill", async (t) => {
