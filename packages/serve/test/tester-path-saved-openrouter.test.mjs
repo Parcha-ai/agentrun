@@ -12,7 +12,9 @@ import { MODEL_KEYS } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
-const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SEAL_KEY", ...MODEL_KEYS.map((row) => row.field)];
+// Every setting that names a model key, a model, or where a model request goes (serve reads ANTHROPIC_BASE_URL for
+// claude-agent; OpenAI's clients read OPENAI_BASE_URL): unset here, so nothing inherited changes the route under test.
+const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SEAL_KEY", ...MODEL_KEYS.map((row) => row.field)];
 
 test("tester path: no model key at start, OPENROUTER_API_KEY saved in the console, then pi (no model), claude-agent and codex each run and complete with no restart", { timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
