@@ -93,3 +93,28 @@ test(`pi: two follow-ups to a run that answered, the second sent while the first
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary).sort(), ["You: And then?", "You: Go on.", "You: hi"]);
   assert.deepEqual(resumedRows(rows), [], `two follow-ups, the second during the first's reopen: no "Resumed" phase: ${shown(rows)}`);
 });
+
+test(`pi: a stopped run whose live process dies while the follow-up goes to it shows "Resumed after a crash": that relaunch is no follow-up's open`, { timeout: 240_000 }, async (t) => {
+  let data;
+  let killed;
+  // The follow-up is on its way to the stopped run's live process when that process dies.
+  const { api, data: dir } = await serve(t, { beforeSubmit: async (runId, content) => {
+    if (content !== "Go on.") return;
+    const pid = recordOf(data, runId)?.holder?.pid;
+    assert.ok(pid, "setup: the stopped run's process is known");
+    process.kill(pid, "SIGKILL");
+    await until("the run's process is gone", () => { try { process.kill(pid, 0); return false; } catch { return true; } });
+    killed = pid;
+  } });
+  data = dir;
+  assert.equal((await api("POST", "/agents", agent("stopped-dies", {}))).status, 201);
+  // Its first request answers only after a minute: the turn is mid-request when the stop comes.
+  const runId = (await api("POST", "/agents/stopped-dies/runs", { input: { content: "Take your time." } })).body.run_id;
+  await until("the run works", async () => { const { status, state } = (await api("GET", `/runs/${runId}`)).body; return status === "working" && state === "working"; });
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Go on." })).status, 202);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
+  assert.ok(killed, "setup: the process died while the follow-up was in flight");
+  assert.deepEqual(resumedRows(rows), ["Resumed after a crash"], `the stopped run's live process died under the follow-up, and the server relaunched it: its row stays: ${shown(rows)}`);
+});

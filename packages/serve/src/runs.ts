@@ -629,6 +629,8 @@ export class Runs {
   /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
    *  launch, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
+  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
 
   private get store() {
     return this.options.agents.store;
@@ -1826,6 +1828,7 @@ export class Runs {
   }
 
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
+    await this.beforeSubmit?.(run.id, content);
     const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
