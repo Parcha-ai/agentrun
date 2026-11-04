@@ -15,6 +15,8 @@ import { CODEX_INSTALL, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch, code
 import { findCodex } from '../dist/binary.js';
 import { codeMode, waitStoppedText, withOutputKind } from '../dist/code-mode.js';
 import { verifyCodexBinary } from '../dist/verify.js';
+import { repairOutput } from '../dist/harness.js';
+import { finishedLong } from './fixtures/finished-long.mjs';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
 const FAKE = fileURLToPath(new URL('./fake-app-server.mjs', import.meta.url));
@@ -385,6 +387,37 @@ async function repairedItems(calls, hostTools = [], order, { ctx, ties = [] } = 
   order?.push('returned');
   return injected;
 }
+
+/** What a resume injects for the calls the rollout left dangling in a turn whose outcomes are in `state`: through the no-note
+ *  repair, and as a resume with a recovery note builds them (harness.ts: each call's repairOutput, then code mode's recoverItems). */
+async function injectedOnResume(state, dangling) {
+  const unnoted = await repairedItems(dangling.map((c) => ({ type: 'function_call', name: c.name, arguments: '{}', call_id: c.callId })), dangling.map((c) => c.name), undefined, { ctx: { state: () => state, isMemoized: () => true } });
+  const code = codeMode({
+    ctx: { state: () => state, isMemoized: () => true }, machine: {}, logged: new Set(), lines: [], log() {}, tries: 1, declined: 'declined',
+    journal: { append() {}, flush: async () => {}, read: async () => [] }, synced: async () => {}, bridge: { get: (name) => ({ name, replay: 'safe' }) },
+    rpc: () => ({ request: async () => {} }), guard: (promise) => promise, threadId: () => 'thread-1',
+  });
+  const noted = dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(state, c) }));
+  await code.recoverItems(noted, dangling, [], 0);
+  return { unnoted, noted };
+}
+
+test("a resume injects a dangling call's output from the log held to the host's bound, as the tool bridge holds a result: a recorded result or failure past it keeps its start and says where it was cut, with a recovery note or without", async () => {
+  const BOUND = 120_000;
+  const { state, whole, failure } = await finishedLong();
+  assert.equal(state.effects.get('tool:c1')?.output, whole, 'the record keeps the result whole');
+  const dangling = [{ callId: 'c1', name: 'read_skill_file', type: 'function_call' }, { callId: 'c2', name: 'delegate', type: 'function_call' }];
+  const { unnoted, noted } = await injectedOnResume(state, dangling);
+  for (const [how, items] of [['without a note', unnoted], ['with a note', noted]]) {
+    assert.equal(items.length, 2, how);
+    for (const [item, text] of [[items[0], whole], [items[1], failure]]) {
+      assert.ok(item.output.length <= BOUND, `${how}, ${item.call_id}: ${item.output.length} characters injected, past ${BOUND}`);
+      const note = /\n\[cut at (\d+) of (\d+) characters\]$/.exec(item.output);
+      assert.ok(note, `${how}, ${item.call_id} says where it was cut`);
+      assert.deepEqual([Number(note[2]), item.output.slice(0, note.index)], [text.length, text.slice(0, Number(note[1]))], `${how}, ${item.call_id}`);
+    }
+  }
+});
 
 test('the no-note repair answers each dangling call with an output of its own kind: a custom tool call output for apply_patch, a function call output for a function call', async () => {
   const applyPatch = { type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch\n*** End Patch', call_id: 'call_patch' };

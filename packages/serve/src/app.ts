@@ -212,15 +212,20 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const live = liveView(where.root, [...earlier]);
   // The `llm` tool's one completion: on the run's models (capped and marked as a model node's), its tier's model.
   const complete = completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default"), thinkingLevel);
+  /** The run, once it opens: a call node's paid requests are booked in its store (paid-calls.ts). */
+  let opened: DurableRun | undefined;
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. Its
-   *  input and output go to the node log. */
+   *  input and output go to the node log, and its paid requests are booked under the node's own call (its execution
+   *  path, and its item in a map). */
   const runEffect = async ({ node, input, signal, executionPath, item }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } }) => {
     const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": agentrun-serve runs no tool ${node.tool ?? `via ${node.via}`}`);
     const at = { path: executionPath ?? null, item: item?.index ?? null, tool: node.tool!, label: node.label };
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
-      const output = await effect(input, { signal, env, work: where.work, complete });
+      const durable = opened;
+      const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: (kind: string, data: Record<string, string | number | null>) => durable.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT) } : undefined;
+      const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
     } catch (error) {
@@ -279,6 +284,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
+    opened = durable;
     marked.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });
