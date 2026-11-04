@@ -105,8 +105,12 @@ export const said = {
   checker: (problems: readonly Pick<Problem, "rule">[]) => problems.some((problem) => MUST_NOT_STORE.has(problem.rule))
     ? `Not kept: it held something that must not be stored (${rulesIn(problems.filter((problem) => MUST_NOT_STORE.has(problem.rule)))}).`
     : `Not kept: it didn't pass the checks on notes (${rulesIn(problems)}).`,
-  /** The agent's notes as they are now no longer take what the run wrote (another run's or a person's change since). */
-  stale: (problems: readonly Pick<Problem, "rule">[]) => `Not kept: the agent's notes changed while this run ran (${rulesIn(problems)}).`,
+  /** The agent's notes as they are now no longer take what the run wrote (another run's or a person's change since). A
+   *  note it would replace that is gone, or that a person changed after the grade read it, is the rule `supersedes`
+   *  either way: said in one sentence true of both. */
+  stale: (problems: readonly Pick<Problem, "rule">[]) => problems.length && problems.every((problem) => problem.rule === "supersedes")
+    ? "Not kept: a note it would replace is gone or was changed since."
+    : `Not kept: the agent's notes changed while this run ran (${rulesIn(problems)}).`,
   noWriteTool: "Not kept: this agent can't write notes (give it the write tool).",
   noBudget: "Skipped: no budget left in this run to look back.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover looking back.",

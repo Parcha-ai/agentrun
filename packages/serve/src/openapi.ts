@@ -268,7 +268,7 @@ const PAGE = (item: Json, description: string) => closed({ items: { type: "array
 const LEARNING_NOTE = closed({
   file: { type: "string", description: "The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name)." },
   name: { type: "string" }, description: { type: "string" }, type: { enum: [...NOTE_TYPES] },
-  status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the user asked for that the grader held as risky, to wait for its owner's OK; no run reads it." },
+  status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the grader held as risky, the user's or the run's own, to wait for its owner's OK; no run reads it." },
   origin: { enum: [...NOTE_ORIGINS], description: "`you`: kept from what the user asked in their own words; `run`: what the run worked out (absent from older notes: `run`)." },
   superseded_by: { ...NULL_STRING, description: "The note that superseded it, on a superseded note; `[redacted]` as `file` is." },
   text: { type: "string", description: "The note's whole file, front matter included." },
@@ -312,7 +312,7 @@ const VERDICT_ITEM = {
   properties: {
     file: { type: "string", description: "The new note's file name; `[redacted]` when it holds one of the host's secrets as they are now." },
     keep: { type: "boolean", description: "Whether the rubric keeps the note: true for one that waits for the owner's OK too." },
-    pending: { type: "boolean", const: true, description: "Present on a note kept to wait for the owner's OK: a risky rule the user asked for (its question is Risky)." },
+    pending: { type: "boolean", const: true, description: "Present on a note kept to wait for the owner's OK: a risky rule, the user's or the run's own (its question is Risky)." },
     origin: { enum: [...NOTE_ORIGINS], description: "On a kept note: `you`, from what the user asked in their own words, or `run`." },
     question: { type: "string", description: "The rubric's question the note failed (General, Planted, Secret, Duplicate or Contradicts) when it is not kept, or Risky when it waits." },
     why: { type: "string", description: "One sentence, the grader's, cut of the host's secrets." },
@@ -343,7 +343,7 @@ const RUN_NOTES: Record<string, Json> = {
   pending: {
     type: "array", minItems: 1,
     items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
-    description: "The notes this run's merge holds for the owner's OK (status `pending` in the folder: a risky rule the user asked for), in no index and read by no run until approved, never among `learned`: present once `state` is `merged` and one waits, absent otherwise.",
+    description: "The notes this run's merge holds for the owner's OK (status `pending` in the folder: a risky rule, the user's or the run's own), in no index and read by no run until approved, never among `learned`: present once `state` is `merged` and one waits, absent otherwise.",
     "x-agentrun-serve": "learning/2",
   },
 };
@@ -921,7 +921,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["grade_model", "pending"],
       properties: {
         grade_model: { type: ["string", "null"], description: "The model that grades what a run proposes to learn: `--grade-model` (AGENTRUN_SERVE_GRADE_MODEL), else the strong tier (AGENT_MODEL_STRONG), named as the strong tier takes one; null when the server names none, and each run is graded on its agent's own model." },
-        pending: { type: "boolean", const: true, description: "A risky rule a run's user asked for (to trust a site or a seller, skip or loosen an approval or a check, or send money or data somewhere) is kept to wait for its owner's OK: committed as a note with status `pending`, in no MEMORY.md and read by no run. This server has no route that approves one yet; a person can retire it." },
+        pending: { type: "boolean", const: true, description: "A risky rule, one a run's user asked for or one the run worked out (to trust a site or a seller, skip or loosen an approval or a check, or send money or data somewhere), is kept to wait for its owner's OK: committed as a note with status `pending`, in no MEMORY.md and read by no run. This server has no route that approves one yet; a person can retire it." },
       },
       description: "How this server judges what a run proposes to learn.",
       "x-agentrun-serve": "learning/1",

@@ -114,6 +114,25 @@ test("the grader reads what the user said in the run, in order and cut of the se
   assert.ok(!proposal.includes(token));
 });
 
+test("a server secret the user's message holds across the point it is shortened at shows no part of itself: each message is cut of the server's secrets whole first, then shortened, in the proposal and in the grader's prompt", { timeout: 150_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, token, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("straddled", { plan: PLAN }));
+  // The token starts before the 1,000th character, where a message is shortened, and ends after it; the message runs on
+  // past what a checker's field may hold (4,096 bytes), and is read whole all the same.
+  const before = 1_000 - Math.floor(token.length / 2);
+  const runId = await started(api, "straddled", `${"Look at this. ".repeat(80).slice(0, before)}${token} and the rest of what the user said. ${"More. ".repeat(1_000)}`);
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  const proposal = readFileSync(join(data, "runs", runId, "learning-proposal.json"), "utf8");
+  const shown = `${proposal}\n${JSON.stringify(callsIn(calls))}`;
+  assert.equal(callsIn(calls).length, 1, "the grader was asked");
+  for (let i = 0; i + 12 <= token.length; i++) assert.ok(!shown.includes(token.slice(i, i + 12)), `no 12 characters of the token, from its ${i}th: ${token.slice(i, i + 12)}`);
+  const [asked] = JSON.parse(proposal).asked;
+  assert.ok(asked.startsWith("Look at this.") && asked.includes("[redacted]") && asked.length <= 1_000, `what the user said is kept, cut of the token and shortened: ${asked.slice(0, 40)}`);
+});
+
 test("with no independent judge there is no injection screen: Jev is never asked, the grader alone decides, and the run merges", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   withEnv(t, { AGENTRUN_TEST_FAUX_JEV_CALLS: join(dir, "jev.jsonl"), AGENTRUN_TEST_FAUX_CALLS: join(dir, "calls.jsonl") }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);

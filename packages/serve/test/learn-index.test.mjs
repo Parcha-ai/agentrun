@@ -12,7 +12,7 @@ import * as reflect from "../dist/learn/reflect.js";
 import * as secrets from "../dist/learn/secrets.js";
 
 const VALUES = {
-  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable"],
+  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy"],
   grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradePrompt", "parseVerdict"],
   invisible: ["hiddenCharacter"],
   reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt"],

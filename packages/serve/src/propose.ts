@@ -21,7 +21,7 @@ const cut = (text: string, max: number) => (text.length <= max ? text : [...text
 
 /** What a run's end-of-run turn answered (`turn`, as its directory kept it), its notes parsed, checked against its seed
  *  `seed` (its pin) and kept in `runDir` as its proposal, with what the user said in the run as the grader reads it
- *  (each message cut to GRADE_CAPS.askedMessage, then of the host's secrets); or `empty` when it gave no note,
+ *  (each message cut of the host's secrets, then to GRADE_CAPS.askedMessage); or `empty` when it gave no note,
  *  `unparsed` when its notes are out of format, or `checker` with the problems, printable. A note the answer gives with
  *  the very text of one in the seed is no change, and `MEMORY.md` is the host's (the checker ignores it). `refuse`: this
  *  host's secrets. In the agent's queue. */
@@ -35,7 +35,10 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   const checked = checkProposal({ base: { files: seed.files, active: activeOf(seed) }, changes, refuseValues: input.refuse });
   if (checked.problems.length) return { state: "dropped", reason: "checker", problems: checked.problems };
   if (!checked.notes.length) return { state: "dropped", reason: "empty" };
-  const asked = input.turn.asked.map((message) => redactSecrets(cut(message, GRADE_CAPS.askedMessage), input.refuse));
+  // Each message cut of the host's secrets whole first, and only then shortened: a secret the cut fell inside would
+  // leave a part of itself that no longer matches. The whole message is read, however long (a message is bounded by
+  // the run's own request limits), so a long one is not lost to the grader as one "[redacted]".
+  const asked = input.turn.asked.map((message) => cut(redactSecrets(message, input.refuse, Number.POSITIVE_INFINITY), GRADE_CAPS.askedMessage));
   const proposal: Proposal = { seed: input.seed, notes: checked.notes.map(({ file, text }) => ({ file, text })), asked };
   await writeDurable(join(input.runDir, PROPOSAL), `${JSON.stringify(proposal)}\n`);
   return { state: "proposed", notes: proposal.notes.length };

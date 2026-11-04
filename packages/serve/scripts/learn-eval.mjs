@@ -14,12 +14,15 @@
 //     [--grade-model MODEL] [--repeat N] [--only id,id] [--concurrency 4] [--cases FILE] [--claude-model anthropic/<id>]
 //
 // `--grade-model` is the server's: the model the grader runs on, as `agentrun-serve --grade-model` takes it; without
-// it each case is graded on its own model. In `reflect`, a case's `reflect.want` (a pattern a kept note should match)
-// and `reflect.never` (one no kept note may) score what merged; read the notes too, which the JSON lines hold.
+// it each case is graded on its own model. In `reflect`, a case's `reflect.want` (a pattern a kept note should match:
+// a note served at once, or held for the owner's OK in a case labelled pending) and `reflect.never` (one no kept note
+// may, served or held) score what merged, each note by its own verdict item (learn-eval-score.mjs); read the notes too,
+// which the JSON lines hold.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { scored, tally } from "./learn-eval-score.mjs";
 
 const { values: opts } = parseArgs({ options: {
   out: { type: "string" }, cases: { type: "string" }, models: { type: "string", default: "default,claude" }, modes: { type: "string", default: "grade,reflect" },
@@ -124,10 +127,9 @@ async function grade(c, notes, profile, tag) {
     main: { active: notesOf(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => replaced.has(n.file)) },
     proposed: notes, asked: c.transcript.filter((t) => t.role === "user").map((t) => t.text), ...(opts["grade-model"] ? { gradeModel: opts["grade-model"] } : {}),
   });
-  return "verdict" in judged ? { merged: judged.verdict.merge, pending: judged.verdict.merge && judged.verdict.items.some((item) => item.pending), stage: "grader", verdict: judged.verdict, usd: judged.cost.usd ?? 0 } : { merged: false, stage: judged.reason, why: judged.error?.message, usd: judged.cost.usd ?? 0 };
+  return "verdict" in judged ? { merged: judged.verdict.merge, stage: "grader", verdict: judged.verdict, usd: judged.cost.usd ?? 0 } : { merged: false, stage: judged.reason, why: judged.error?.message, usd: judged.cost.usd ?? 0 };
 }
 
-const pattern = (source) => { const m = /^\(\?([a-z]+)\)/.exec(source); return m ? new RegExp(source.slice(m[0].length), m[1]) : new RegExp(source); };
 const cases = JSON.parse(readFileSync(opts.cases ?? join(root, "packages/serve/test/fixtures/learn-eval.json"), "utf8")).cases.filter((c) => !opts.only || opts.only.split(",").includes(c.id));
 const models = opts.models.split(",");
 const modes = opts.modes.split(",");
@@ -160,9 +162,7 @@ await Promise.all(Array.from({ length: Number(opts.concurrency) }, async () => {
           Object.assign(row, g, { notes: kept, usd: row.usd + g.usd });
         }
       }
-      const text = row.merged ? row.notes.map((n) => n.text).join("\n") : "";
-      row.wantHit = Boolean(mode === "reflect" && c.reflect.want && row.merged && pattern(c.reflect.want).test(text));
-      row.neverHit = Boolean(mode === "reflect" && c.reflect.never && row.merged && pattern(c.reflect.never).test(text));
+      Object.assign(row, scored(row, c, mode));
     } catch (error) {
       Object.assign(row, { merged: false, stage: "error", error: String(error?.message ?? error).slice(0, 500) });
     }
@@ -177,17 +177,9 @@ const out = [`# ${opts.label}`, "", `${rows.length} rows; spent $${rows.reduce((
 for (const mode of modes) {
   out.push(`## ${mode}`, "", "| model (grader) | keep-precision | keep-recall | injection-drop | drop-accuracy | risky held to wait | not graded |", "|---|---|---|---|---|---|---|");
   for (const m of models) {
-    const rs = rows.filter((r) => r.mode === mode && r.model === m);
-    // Served at once: merged and not waiting for the owner's OK. A case labelled pending is right when it waits.
-    const good = (r) => (mode === "grade" ? r.label === "keep" : !r.neverHit);
-    const kept = rs.filter((r) => r.merged && !r.pending);
-    const waits = rs.filter((r) => r.label === "pending");
-    const keeps = rs.filter((r) => (mode === "grade" ? r.label === "keep" : cases.find((c) => c.id === r.case).reflect.want));
-    const hit = (r) => (mode === "grade" ? r.merged && !r.pending : r.wantHit && !r.neverHit);
-    const inj = rs.filter((r) => r.kind === "injection");
-    const drops = rs.filter((r) => (mode === "grade" ? r.label === "drop" : !cases.find((c) => c.id === r.case).reflect.want && r.label !== "pending"));
-    const off = rs.filter((r) => !["grader", "checker", "empty"].includes(r.stage)).map((r) => r.stage);
-    out.push(`| ${m} (${opts["grade-model"] ?? "own"}) | ${pct(kept.filter(good).length, kept.length)} | ${pct(keeps.filter(hit).length, keeps.length)} | ${pct(inj.filter((r) => !r.merged || (mode === "reflect" && !r.neverHit)).length, inj.length)} | ${pct(drops.filter((r) => !r.merged || (mode === "reflect" && !r.neverHit)).length, drops.length)} | ${waits.length ? pct(waits.filter((r) => r.merged && r.pending).length, waits.length) : "n/a"} | ${off.join(", ") || "none"} |`);
+    // Each note by its own fate (learn-eval-score.mjs): served at once, or held for the owner's OK.
+    const t = tally(rows.filter((r) => r.mode === mode && r.model === m), cases, mode);
+    out.push(`| ${m} (${opts["grade-model"] ?? "own"}) | ${pct(...t.precision)} | ${pct(...t.recall)} | ${pct(...t.injection)} | ${pct(...t.drops)} | ${t.held[1] ? pct(...t.held) : "n/a"} | ${t.off.join(", ") || "none"} |`);
   }
   out.push("");
 }

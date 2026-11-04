@@ -82,13 +82,14 @@ export type NoteUsed = { file: string; name: string };
 /** A note a run's learning added to the folder (`learned`): its file, its name, and the notes it superseded. */
 export type NoteLearned = NoteUsed & { supersedes: string[] };
 /** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
- *  grader's `verdict`, kept before the merge, the merge commit, and what the grade cost (null when unknown, never 0),
- *  which is in no run's totals; the notes the run read from `.learning/` (`used`, found in its rows as it settles), and
- *  once merged the notes it added (`learned`); and how many notes it started from (`seed_notes`). Names are kept as
- *  written, and cut of the host's secrets as they leave. */
+ *  grader's `verdict` and the blob of each note it read superseded (`graded`, by file), both kept before the merge, the
+ *  merge commit, and what the grade cost (null when unknown, never 0), which is in no run's totals; the notes the run
+ *  read from `.learning/` (`used`, found in its rows as it settles), and once merged the notes it added (`learned`);
+ *  and how many notes it started from (`seed_notes`). Names are kept as written, and cut of the host's secrets as they
+ *  leave. */
 export type Learning = {
   state: LearningState; reason: LearningReason | null; detail: string | null; at: string;
-  problems?: Problem[]; verdict?: Verdict; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
+  problems?: Problem[]; verdict?: Verdict; graded?: Record<string, string>; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
   used?: NoteUsed[]; learned?: NoteLearned[];
   /** How many active notes the run started from: its seed's, set as it is seeded (none for a seed that failed). */
   seed_notes?: number;
@@ -150,8 +151,8 @@ export function shortOf<T extends { state: LearningState; reason: LearningReason
 export const LEARNING_LABEL = "learning";
 
 /** A run's proposal, in its directory (propose.ts): the seed it was checked against, each new note's file and text, and
- *  what the user said in the run as the grader reads it (each message cut to GRADE_CAPS.askedMessage and of the host's
- *  secrets; absent in a proposal kept before the grader read them). */
+ *  what the user said in the run as the grader reads it (each message cut of the host's secrets, then shortened to
+ *  GRADE_CAPS.askedMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
 export type Proposal = { seed: string; notes: { file: string; text: string }[]; asked?: string[] };
 
