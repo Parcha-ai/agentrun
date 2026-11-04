@@ -14,7 +14,7 @@ import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
-import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
+import { type McpHandler, parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import type { AcquireMachine, CacheDir, KillSignal, MachineSpawn, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { anthropicPolicy, type AnthropicPolicyOptions, withWebSearches } from "./policy.js";
@@ -54,6 +54,8 @@ export interface LocalMachineOptions {
     builtins?: readonly string[];
     /** Admit Anthropic's web search server tool, the one the CLI's WebSearch asks for. */
     webSearch?: boolean;
+    /** The session's remote MCP servers, served at `/mcp/<server>`, and their granted tools as the CLI names them. */
+    mcp?: { handler: McpHandler; tools: readonly string[] };
     /** The input a request carrying it may read in beyond its body, for its input bound (anthropicPolicy). */
     webSearchAllowance?: number;
     /** The tokens' price; each web search a response reports is added to it (`withWebSearches`). */
@@ -183,6 +185,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         ...(route.models.smallModel ? { smallModel: route.models.smallModel } : {}),
         tools: options.proxy.tools,
         ...(options.proxy.builtins?.length ? { builtins: options.proxy.builtins } : {}),
+        ...(options.proxy.mcp ? { mcpTools: options.proxy.mcp.tools } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(options.proxy.webSearch ? { webSearch: true, ...(options.proxy.webSearchAllowance !== undefined ? { webSearchAllowance: options.proxy.webSearchAllowance } : {}) } : {}),
         ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
@@ -194,6 +197,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       credential: async () => (await route.credential()) ?? "",
       ...(options.proxy.price ? { price: withWebSearches(options.proxy.price) } : {}),
       ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
+      ...(options.proxy.mcp ? { mcp: options.proxy.mcp.handler } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       onResponse: ({ path, status }) => {
         if (path !== "/v1/messages/count_tokens" || counted) return;

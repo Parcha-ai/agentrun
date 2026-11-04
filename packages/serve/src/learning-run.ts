@@ -346,9 +346,9 @@ export class LearningRuns {
 
   /** A run's process launched, handed the secrets named `names`: what each held then, as handover read it, kept beside
    *  the run while its learning is under way (a key replaced since stays refused in its notes). */
-  onLaunch(run: Run, names: readonly string[]): void {
+  onLaunch(run: Run, names: readonly string[], also: readonly string[] = []): void {
     if (!run.meta.learning || ended(run.meta.learning)) return;
-    const values = names.flatMap((name) => secret(name, this.options.storedKeys) ?? []);
+    const values = [...names.flatMap((name) => secret(name, this.options.storedKeys) ?? []), ...also];
     if (!values.length) return;
     const kept = this.handed.get(run.id) ?? new Set<string>();
     for (const value of values) kept.add(value);

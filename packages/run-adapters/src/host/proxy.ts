@@ -16,6 +16,7 @@
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import type { McpHandler } from "./mcp-route.js";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -143,6 +144,8 @@ export interface ModelProxyOptions {
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
+  /** The session's remote MCP servers (mcp-route.ts), each at `/mcp/<server>` behind the session's key. */
+  mcp?: McpHandler;
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
 }
@@ -172,6 +175,10 @@ export interface ModelProxy {
   close(): Promise<void>;
 }
 
+/** A server's endpoint, `/mcp/<server>`, with no query. */
+const MCP_PATH = /^\/mcp\/([a-z][a-z0-9-]{0,31})$/;
+/** Where an MCP client looks for OAuth after a 401: never served here, so it never starts a sign-in against the proxy. */
+const OAUTH_PATH = /^\/(?:\.well-known\/|register(?:$|[/?]))/;
 const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** How much of a response's start and end the proxy keeps to read its usage from. */
@@ -370,6 +377,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     // A request refused before its body is read is drained, so its client gets the answer instead of a reset.
     res.once("finish", () => { if (!req.complete) req.resume(); });
+    const path = req.url ?? "";
+    if (options.mcp && OAUTH_PATH.test(path)) {
+      res.writeHead(404, { "content-length": "0" });
+      return res.end();
+    }
+    const mcp = options.mcp ? MCP_PATH.exec(path) : null;
+    if (mcp) {
+      if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
+      if (closing) return refuse(res, 503, "the model proxy is closing", req);
+      return options.mcp!(mcp[1]!, req, res);
+    }
     let route: ProxyRoute;
     let query: string;
     try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", req.url ?? "")); } catch (error) {

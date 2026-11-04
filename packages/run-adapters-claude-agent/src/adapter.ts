@@ -16,12 +16,13 @@ import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession,
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
+import { checkedOnce, hostHeaderProblems, mcpRoute, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
+import { MCP_SERVER } from "./transcript.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
@@ -348,6 +349,10 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         const common = toolSchemaProblems(tool.name, tool.inputSchema);
         problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(tool.name, tool.inputSchema)));
       }
+      for (const server of spec.mcp?.servers ?? []) {
+        if (server.name === MCP_SERVER) problems.push(`the MCP server name ${MCP_SERVER} is the adapter's own`);
+        for (const tool of server.tools) if (!TOOL_NAME.test(`mcp__${server.name}__${tool.name}`)) problems.push(`the MCP tool mcp__${server.name}__${tool.name.slice(0, 64)} is not a name the Claude Agent CLI takes (letters, digits, _ and -, at most 64)`);
+      }
       return problems;
     },
     async open(spec, io) {
@@ -359,6 +364,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // The remote MCP servers' granted tools, as the CLI names them: its own MCP client calls them at the proxy.
+      const mcpServers = spec.mcp?.servers ?? [];
+      const mcpNames = new Set(mcpServers.flatMap((server) => server.tools.map((tool) => `mcp__${server.name}__${tool.name}`)));
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
@@ -377,6 +385,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
+          ...(spec.mcp ? { mcp: { handler: mcpRoute(spec.mcp), tools: [...mcpNames] } } : {}),
         },
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
@@ -397,6 +406,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
         disallowedTools: CLAUDE_AGENT_ALSO_OFF.filter((name) => !(webSearch && name === "WebSearch")),
         ...(webSearch ? { providerTools: ["web_search" as const] } : {}),
+        ...(mcpServers.length ? { mcpServers: mcpServers.map((server) => ({ name: server.name, tools: server.tools.map((tool) => tool.name) })) } : {}),
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
@@ -411,6 +421,11 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const live = (event: unknown) => {
         const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // An MCP call, recorded as a built-in's: the host hears of it once its intent is in the session's records.
+        if (e?.type === "tool_start" && typeof e.callId === "string" && typeof e.name === "string" && mcpNames.has(e.name)) {
+          calls.begin(e.callId);
+          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
+        }
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {

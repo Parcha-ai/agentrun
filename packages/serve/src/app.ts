@@ -8,11 +8,11 @@
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
-import { authContextOf, withSecrets } from "./secrets.js";
+import { authContextOf, mcpCredentials, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
-import { createRegistry, type Extension, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import { settleIn } from "./paid-calls.js";
@@ -25,6 +25,7 @@ import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
+import { MCP_PIN, mcpGateway, mcpNameOf, type McpPin, mcpRegistrations } from "./mcp-gateway.js";
 import { withLearned } from "./learning.js";
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
@@ -124,6 +125,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
   if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
+  // Its remote MCP servers, as its first launch pinned them, with the credentials this launch handed it (mcp-gateway.ts).
+  const pinned = (await readJson(join(where.root, MCP_PIN))) as McpPin | null;
+  const gateway = pinned && Object.keys(pinned).length ? mcpGateway({ pin: pinned, credentials: mcpCredentials(), work: () => where.work }) : undefined;
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
   // installed first so it comes before every other extension's and the instructions.
@@ -142,9 +146,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
-    // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
-    const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel), ...(gateway ? { mcp: gateway } : {}) };
+    // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own; the MCP tools
+    // are the harness's own client's, at the session's proxy.
+    const named = revision.body.tools.filter((name) => name !== ASK_TOOL && !mcpNameOf(name));
     // The harness's own files (its homes, its state) go in a private directory beside the workspace, never in it. It works
     // in the workspace itself (where.work), the directory the run's file tools confine to: a path the model builds from
     // its working directory is then one they take.
@@ -195,7 +200,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     await durable.setStatus("sleeping", { reason: "drained" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
   };
   if (revision.kind === "agentic") {
-    const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
+    const tools = (await Promise.all(revision.body.tools.filter((name) => !mcpNameOf(name)).map((name) => bind(name)))).flatMap((binding) => binding.tools);
+    const mcp = gateway ? mcpRegistrations(gateway) : [];
+    if (mcp.length) registry.install(defineExtension({ name: "mcp", tools: mcp }));
+    tools.push(...mcp);
     const instructions = [await promptOf(learned, Object.keys(revision.body.skills), where.work), guidance].filter(Boolean).join("\n\n");
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
   }
