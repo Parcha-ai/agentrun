@@ -116,6 +116,20 @@ test("a model key's PUT or DELETE changes capabilities' models.needs on the next
   assert.deepEqual(await ready(), [false, "key"], "deleted: none again");
 });
 
+// Key writes that overlap (a PUT still remaking whether a model runs when a DELETE lands) leave the capabilities agreeing
+// with the keys as they end up: the latest write's answer stands, never an older one that finished after it.
+test("overlapping model key writes leave capabilities' models.needs agreeing with the keys as they end up", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, MODEL_VARS);
+  const { api } = await serve(t, { faux: undefined });
+  for (let round = 0; round < 12; round++) {
+    const writes = [api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: made() } }), api("DELETE", "/settings/tool-keys/openrouter")];
+    await Promise.all(writes);
+    const set = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openrouter").fields[0].set;
+    const { ready, needs } = (await api("GET", "/capabilities")).body.models;
+    assert.deepEqual([ready, needs], set ? [true, null] : [false, "key"], `round ${round}: the key is ${set ? "set" : "not set"}`);
+  }
+});
+
 test("a model key saved with no restart: a server with none says no model runs and refuses the run; saved, a revision that names no model runs on its default; the key is in no answer, log or file", { timeout: 60_000 }, async (t) => {
   const endpoint = await responsesEndpoint(t, "42", 10);
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url }, MODEL_VARS);
