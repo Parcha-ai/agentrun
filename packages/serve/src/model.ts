@@ -68,15 +68,20 @@ export function openRouterOnly(harness: "claude-agent" | "codex", env: NodeJS.Pr
  *  taken in is MODEL_KEYS' own. */
 export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${[...MODEL_KEYS].sort((a, b) => Number(b.id === "openrouter") - Number(a.id === "openrouter")).map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
 
-/** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`), as it talks to
- *  Anthropic's endpoint only; codex an OpenAI model, or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL),
- *  as it takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
+/** Whether `id` names `vendor`'s model on OpenRouter (`openrouter/<vendor>/<model-id>`), as pi names it and claude-agent
+ *  and codex take it (adapters.ts' claudeModel and codexProvider). */
+const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openrouter/${vendor}/[^/]+$`).test(id);
+
+/** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`, or Anthropic's on
+ *  OpenRouter, `openrouter/anthropic/...`), as it talks to an Anthropic Messages endpoint only; codex an OpenAI model
+ *  (`openai/...`, or OpenAI's on OpenRouter), or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL), as it
+ *  takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
 export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string): boolean {
   if (harness === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV]) return true;
   const slash = id.indexOf("/");
   const provider = slash > 0 ? id.slice(0, slash) : undefined;
-  if (harness === "claude-agent") return provider === "anthropic";
-  if (harness === "codex") return provider === "openai" || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
+  if (harness === "claude-agent") return provider === "anthropic" || onOpenRouter(id, "anthropic");
+  if (harness === "codex") return provider === "openai" || onOpenRouter(id, "openai") || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
   return true;
 }
 

@@ -47,10 +47,12 @@ function detailOf(rest: string): string {
  *  undefined when it is not one. */
 export function keyRefusal(text: string | undefined, key: RunKey | undefined, secrets: readonly string[] = []): string | undefined {
   if (!text || !key) return undefined;
-  const at = /(?:^|\D)401(?:\D|$)/.exec(text);
+  // Every held key's value out of the whole text first: cut afterwards, a key the provider echoed across the cut would
+  // keep its start in the words.
+  const said = secrets.reduce((out, secret) => (secret.length >= 8 ? out.split(secret).join("[redacted]") : out), text);
+  const at = /(?:^|\D)401(?:\D|$)/.exec(said);
   if (!at) return undefined;
-  let detail = detailOf(text.slice(at.index + at[0].indexOf("401") + 3));
-  for (const secret of secrets) if (secret.length >= 8) detail = detail.split(secret).join("[redacted]");
+  const detail = detailOf(said.slice(at.index + at[0].indexOf("401") + 3));
   const where = key.saved ? "set it where AgentRun starts, or save it in Settings → Model keys." : "set it where AgentRun starts.";
   return `${key.who} refused ${key.field} (401${detail ? `: ${detail}` : ""}): ${where}`;
 }
