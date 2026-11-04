@@ -150,6 +150,58 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     expect(select().value).toBe("native");
   });
 
+  // While a save is under way, the form's settings are measured against what that save sent, which the agent's definition
+  // becomes once it lands, never against the definition from before it: a change back to that older one is a change.
+  async function pending(before: Agent, after: Agent) {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const saves: AgentFields[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const render = (agent: Agent) => root!.render(createElement(AgentEditor, { agent, caps, providerChoices: choices, step: "tools", onSave }));
+    // As AgentEditPage does: the saved agent is put in before the save's answer comes back to the editor.
+    const onSave = async (fields: AgentFields) => { saves.push(fields); if (saves.length === 1) { await held; render(after); } return null; };
+    act(() => render(before));
+    const row = () => host.querySelector<HTMLTableRowElement>('section[aria-label="Tool settings"] tr[data-tool="web_search"]')!;
+    const select = () => row().querySelector("select")!;
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const choose = async (p: string) => { await act(async () => { const s = select(); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
+    const click = async (label: RegExp) => { await act(async () => { [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()))!.click(); }); };
+    const land = async () => { await act(async () => { release(); }); await settle(); };
+    return { saves, row, select, choose, click, land };
+  }
+
+  it("a reset made while a save of a pick is pending is kept: the saved pick doesn't come back, and the reset saves", async () => {
+    // An agent with no provider of its own: pick Parallel, save, and reset before the save comes back.
+    const page = await pending(agentWith(), agentWith({ web_search: { provider: "parallel" } }, "parallel"));
+    await page.choose("parallel");
+    await page.click(/^Save/);
+    await page.click(/^Reset web_search/);
+    await page.land();
+    expect(page.saves[0]!.tool_settings).toEqual({ web_search: { provider: "parallel" } });
+    // The reset stands, unsaved: the server's pick, not the Parallel that save put in the definition.
+    expect(page.select().value).toBe("exa-keyless");
+    expect(page.row().hasAttribute("data-set")).toBe(false);
+    // And the next save sends it: the agent's own provider goes.
+    await page.click(/^Save/);
+    expect(page.saves[1]!.tool_settings).toEqual({});
+    expect("tool_settings" in editBody(agentWith({ web_search: { provider: "parallel" } }), page.saves[1]!, "").definition).toBe(false);
+  });
+
+  it("a pick made while a reset's save is pending, back to the agent's old provider, is kept", async () => {
+    // An agent with Parallel of its own: reset, save, and pick Parallel again before the save comes back.
+    const page = await pending(agentWith({ web_search: { provider: "parallel" } }, "parallel"), agentWith());
+    await page.click(/^Reset web_search/);
+    await page.click(/^Save/);
+    await page.choose("parallel");
+    await page.land();
+    expect(page.saves[0]!.tool_settings).toEqual({});
+    expect(page.select().value).toBe("parallel");
+    expect(page.row().hasAttribute("data-set")).toBe(true);
+    await page.click(/^Save/);
+    expect(page.saves[1]!.tool_settings).toEqual({ web_search: { provider: "parallel" } });
+  });
+
   it("the agent's resolution shows only beside the provider it was read for: another one since says once saved", async () => {
     // The agent read says the server's provider is now parallel (changed in another tab), while capabilities, read
     // earlier, still say exa-keyless: the select shows exa-keyless, so the agent's word is not shown beside it.
