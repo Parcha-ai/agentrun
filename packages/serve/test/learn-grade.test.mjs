@@ -6,7 +6,7 @@
 // runs the server holds, never a run's files.
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -330,7 +330,7 @@ test("a grader that never answers is cut off at its bound: the run's learning is
 // total is every line once.
 test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000 }, async (t) => {
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_KEY: saved }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
   // A learning run on pi, graded and merged: its grade's cost is the learning ledger's.
   await made(api, learner("learner", { plan: PLAN }));

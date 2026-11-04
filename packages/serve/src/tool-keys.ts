@@ -60,11 +60,15 @@ export function unlockedBy(candidates: readonly string[], tools: readonly { name
 }
 
 /** What a row unlocks here: a `tool` row's, its tools and providers as capabilities bind them (unlockedBy); any other
- *  kind's (a model's), no tool, on the harnesses this server offers (`offers`, capabilities' `harnesses`) of those that
- *  run on it (its `harnesses`, when it names them). */
-export function rowUnlocks(row: { kind: string; unlocks: readonly string[]; harnesses?: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean }[]) {
+ *  kind's (a model's), no tool, on those that run on it (its `harnesses`, when it names them) that this server runs
+ *  (`offers`, harness.ts' harnessOffers) or would once its key is set: one unavailable only for want of a model key
+ *  among whose `keys` is the row's (its first field). So OpenRouter's row names all three before any key is saved; a
+ *  harness not installed, off its pins or too big for this host is left out. */
+export function rowUnlocks(row: { kind: string; unlocks: readonly string[]; harnesses?: readonly string[]; fields?: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean; keys?: readonly string[] }[]) {
   if (row.kind === "tool") return unlockedBy(row.unlocks, tools, providers);
-  return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && offers.some((offer) => offer.id === harness && offer.available)) };
+  const key = row.fields?.[0];
+  const runs = (harness: string) => offers.some((offer) => offer.id === harness && (offer.available || (key !== undefined && offer.keys?.includes(key) === true)));
+  return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && runs(harness)) };
 }
 
 /** The key that unlocks the tool `name` (capabilities' `tools[].key`, so a page links "needs the X key" to it), if any. */
@@ -155,9 +159,9 @@ export class ToolKeys {
   }
 
   /** GET: each key's fields, whether set and where from (never a value), what it unlocks of what capabilities shows
-   *  here (a model key: the harnesses `offers` says this server runs), its check when its key (its first field) is
+   *  here (a model key: the harnesses `offers` says this server runs or would on the key), its check when its key (its first field) is
    *  stored here (null otherwise: the server's own is not checked here), and what to enter again, with why. */
-  view(offers: readonly { id: string; available: boolean }[] = []) {
+  view(offers: Parameters<typeof rowUnlocks>[3] = []) {
     const kept = this.kept();
     const again: { name: string; why: Unreadable }[] = [];
     const tools = toolsView(this.env);
