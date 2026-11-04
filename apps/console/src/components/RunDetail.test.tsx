@@ -34,7 +34,8 @@ describe("RunDetail, a run waiting on a question", () => {
 // A run paused at its spend cap waits on a raise, not an answer: a message to it is refused (409 budget_reached).
 describe("RunDetail, a run paused at its spend cap", () => {
   const f = runFixture("run.input_required.waiting.1");
-  const SAID = "Not sent: this run's cap of $0.05 can't cover one faux-1 request (at least $0.11). Raise the cap to at least $0.11 to run it.";
+  // Words with no apostrophe: the page's markup escapes one (&#x27;), and these tests read its text as written.
+  const SAID = "Not sent: the run has spent $0.04 of its $0.05 cap, and its next faux-1 request needs at least $0.11. Raise the cap to at least $0.16 to run it.";
   const paused: Run = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0, needs_usd: 0.1024, said: SAID, at: "2026-11-04T20:08:05.127Z" } };
   it("shows the cap's words in the banner and offers no composer: no answer, no follow-up", () => {
     const shown = page(paused, f.page.rows);
@@ -42,6 +43,7 @@ describe("RunDetail, a run paused at its spend cap", () => {
     expect(shown).toContain(SAID);
     expect(shown).not.toContain("Answer the question");
     expect(shown).not.toContain("Ask a follow-up");
-    expect(shown).not.toContain("Input required");
+    // The banner is the cap's, not a question's (the run's header keeps its status, input required).
+    expect(shown).not.toContain("Asked you the question above.");
   });
 });
