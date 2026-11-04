@@ -19,6 +19,13 @@ export type HarnessRunner = ((request: NodeRequest) => Promise<unknown>) & { sto
 
 /** The tool the runner injects; a host tool may not take its name. */
 export const SUBMIT_TOOL = "submit";
+/** Why a review rejected a candidate, as the model reads it: its message, or, for none (no message, or a blank one),
+ *  that it gave no reason. Always a string, so a rejection never lets the candidate through (Pi's runner reads a review
+ *  the same way). A long one reaches the model through the host's one bound on a result (HOST_RESULT_MAX_CHARS). */
+const reviewRejection = (message: unknown): string => {
+  const said = message === undefined || message === null ? "" : String(message);
+  return said.trim() ? said : "the review rejected it without saying why";
+};
 /** A held figure as a host gives it or a record keeps it: a finite amount, 0 or more, else none. */
 const heldFigure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
 /** `total` with `cost` added: unknown once either is. */
@@ -433,7 +440,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         else if (!validator.Check(candidate)) message = JSON.stringify([...validator.Errors(candidate)]);
         else if (request.review) {
           const verdict = await request.review(candidate);
-          if (!verdict.accepted) message = verdict.message;
+          if (!verdict.accepted) message = reviewRejection(verdict.message);
           else if (!validator.Check(candidate)) message = "The reviewed candidate no longer satisfies its output schema";
         }
         if (stopped) return { text: "This session has stopped.", isError: true };

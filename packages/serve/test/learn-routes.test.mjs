@@ -7,8 +7,9 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { parseNoteFile } from "../dist/learn/notes.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started, turnCopyOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { learningTestHooks } from "../dist/learning.js";
 import { agent, call, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -24,8 +25,6 @@ const added = (text) => {
   const lines = text.split("\n").slice(0, -1);
   return `@@ -0,0 +1,${lines.length} @@\n${lines.map((one) => `+${one}\n`).join("")}`;
 };
-/** The index under `# Learned` in a prompt, or undefined. */
-const learnedIn = (prompt) => /\n# Learned\n\n[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 
 test("a person sees what the agent learned and controls it: the view, the log by run and by person, a run's diff and its drop, an edit, a create and a retire through preconditions, the checks on a person's note, and the next run reading the result", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, data, token } = await serve(t, { learning: "on", faux: LEARN });
@@ -79,7 +78,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal(view.main, main1);
   assert.equal(view.index, `${line("check-units.md", "Check units", "Convert every amount to one unit before comparing")}\n${line("quote-sources.md", "Quote sources", "Name the page each figure came from")}\n`);
   assert.deepEqual(view.notes.items.map((n) => [n.file, n.status, n.type, n.superseded_by]), [["check-units.md", "active", "reference", null], ["quote-sources.md", "active", "reference", null]]);
-  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", superseded_by: null, text: UNITS, etag: `"${git(repoOf(data, id), ["rev-parse", "main:check-units.md"])}"` });
+  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", origin: "run", superseded_by: null, text: UNITS, etag: `"${git(repoOf(data, id), ["rev-parse", "main:check-units.md"])}"` });
   assert.deepEqual(view.log, { items: [{ by: { run: one }, commit: main1, at: view.log.items[0].at, reason: "Each note is general and new.", files: ["MEMORY.md", "check-units.md", "quote-sources.md"] }], total: 1, next_cursor: null });
   assert.deepEqual(view.counts, { merged: 1, dropped: { grader: 1 }, in_progress: 0 });
 
@@ -93,7 +92,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // Run 2: its learning whole shows the drop, and its diff its proposal against its seed.
   const learned2 = (await api("GET", `/runs/${two}/learning`)).body;
   meets("/runs/{run_id}/learning", learned2);
-  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, merged: null, verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
+  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, merged: null, pending: [], verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
   assert.ok(Object.keys(learned2.cost_usd).join() === "grade" && learned2.cost_usd.grade > 0 && learned2.tokens.grade.input > 0, JSON.stringify(learned2));
   assert.deepEqual((await api("GET", `/runs/${two}/learning/diff`)).body, { base: main1, head: null, files: [{ path: "prefers-tables.md", status: "added", patch: added(TABLES) }] });
   const learned1 = (await api("GET", `/runs/${one}/learning`)).body;
@@ -177,10 +176,13 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // The next run reads the edit and the new note, and not the retired one.
   const three = await started(api, id);
   const third = await ended(api, three);
-  assert.equal(learnedIn(third.view.result.final_answer), index, third.view.result.final_answer);
+  // Each note whole, the one changed last first: the one a person created, then the one they edited.
+  const section = learnedIn(third.view.result.final_answer);
+  assert.deepEqual(wholeIn(section), ["ask-first.md", "check-units.md"], third.view.result.final_answer);
+  assert.ok(section.includes(parseNoteFile("check-units.md", EDITED).body.trim()), section);
   // Its copy, as the run settled: set aside from its work, as its end-of-run turn left it.
-  assert.ok(existsSync(join(turnCopyOf(data, three), "ask-first.md")) && !existsSync(join(turnCopyOf(data, three), "quote-sources.md")), "the retired note is not in its .learning/");
-  assert.equal(readFileSync(join(turnCopyOf(data, three), "check-units.md"), "utf8"), EDITED);
+  assert.ok(existsSync(join(copyOf(data, three), "ask-first.md")) && !existsSync(join(copyOf(data, three), "quote-sources.md")), "the retired note is not in its .learning/");
+  assert.equal(readFileSync(join(copyOf(data, three), "check-units.md"), "utf8"), EDITED);
 
   // Pages: opaque cursors, each read at the commit the first page was, so a write between pages moves nothing.
   const page1 = (await api("GET", `/agents/${id}/learning/notes?limit=1`)).body;
@@ -305,7 +307,7 @@ test("a restarted server counts an agent's runs that tried to learn from the lea
   await made(first.api, learner("counted", { plan: [["check-units.md", UNITS]], once: true }));
   const merged = await ended(first.api, await started(first.api, "counted"));
   settled(merged.view, merged.rows, "merged");
-  // The second run's index names the note: it plans nothing, and its learning is dropped as empty.
+  // The second run's instructions name the note: it plans nothing, and its learning is dropped as empty.
   const empty = await ended(first.api, await started(first.api, "counted"));
   settled(empty.view, empty.rows, "dropped", "empty");
   assert.equal((await first.api("GET", `/runs/${empty.view.run_id}/learning`)).body.verdict, null, "no grade ran, so no verdict");
@@ -440,7 +442,7 @@ test("a note's name that holds a value made secret after it was written is never
   assert.deepEqual([after.index, after.log.items[0].by, after.log.items[0].reason, after.log.items[0].files], ["", { user: true }, "retired by a person: [redacted].md", ["MEMORY.md", "[redacted]"]]);
   assert.deepEqual(after.notes.items.map((n) => [n.file, n.status]), [["[redacted]", "retired"], ["old-plan.md", "superseded"]]);
   const learned = (await api("GET", `/runs/${two.view.run_id}/learning`)).body;
-  assert.deepEqual(learned.verdict.items, [{ file: "[redacted]", keep: true, why: "It holds as a general rule." }], "the grader's item names the note [redacted]");
+  assert.deepEqual(learned.verdict.items, [{ file: "[redacted]", keep: true, origin: "run", why: "It holds as a general rule." }], "the grader's item names the note [redacted]");
   // What run two learned and run three used, on each run's view and in the list, name the note [redacted].
   const runTwo = (await api("GET", `/runs/${two.view.run_id}`)).body.learning;
   const runThree = (await api("GET", `/runs/${three.view.run_id}`)).body.learning;
@@ -621,7 +623,7 @@ test("a run's learning shows the grader's item for each new note: a drop of two 
   const { items, ...verdict } = learned.verdict;
   assert.deepEqual(verdict, { merge: false, reason: "A note is about the one case it came from." });
   assert.deepEqual([...items].sort((a, b) => a.file.localeCompare(b.file)), [
-    { file: "check-units.md", keep: true, why: "It holds as a general rule." },
+    { file: "check-units.md", keep: true, origin: "run", why: "It holds as a general rule." },
     { file: "one-case.md", keep: false, question: "General", why: "It is about one case." },
   ]);
 });

@@ -21,12 +21,14 @@
 // timeline (runs.ts withOverCap).
 //
 // A paid tool's charge (monid.run's, monid.ts) is the run's spend too: booked in the run's store as a TOOL_COST, which
-// the run's cost and spentIn both count (an unknown one makes the spend unknown), and added to what the run's process
-// counts as spent (useSpend), so the next request's check sees it. Before each paid call, paidCall holds it as a request
-// is held: refused unless what the run has spent plus what the call is held at (its quote, else an allowance) fits the
-// cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before it. A call
-// sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on pi or on
-// another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
+// the run's cost and spentIn both count, and added to what the run's process counts as spent (useSpend), so the next
+// request's check sees it. A charge the call does not say (null: stopped, timed out, failed with no cost) leaves the
+// run's cost unknown, and the cap counts the call at what it was held at, the bound it let the call go at, as it counts
+// one a crash cut: in the run's process and from its mark in the store. Before each paid call, paidCall holds it as a
+// request is held: refused unless what the run has spent plus what the call is held at (its quote, else an allowance)
+// fits the cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before
+// it. A call sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on
+// pi or on another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
@@ -170,11 +172,12 @@ function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; com
  *  timeline says (pi-durable-agent's timelineOf), read as a settled run, since the process that wrote it is gone, and
  *  then the full amount, never the timeline's total rounded for display. Every response, and each cost written apart
  *  from one (a compaction summary's; a harness request's that came in after its answer). A cost that is not a number, or
- *  one still pending, leaves it unknown, as the timeline says. Three readings are the cap's own, on its copy of the
+ *  one still pending, leaves it unknown, as the timeline says. These readings are the cap's own, on its copy of the
  *  entries (the run's shown cost is the timeline's, unchanged): a request stopped before its end counts at the figure its
  *  end mark holds (HELD_FIELD), and one a crash cut (marked as sent, no answer, no end) at the figure its start mark
  *  holds (openFigures), each the worst case the cap held for it; without that figure either stays cut, at an unknown
- *  cost. And this cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
+ *  cost. A paid call settled at a charge it did not say, like one a crash cut, counts at the figure its mark holds. And
+ *  this cap's refusals are left out, as none left. Unknown is null, which a cap never reads as $0. */
 export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true });
@@ -233,6 +236,8 @@ export function spentIn(storeFile: string): number | null {
     // whose start mark could not be written, whose error entry has no mark at all. A cancel's refusal is its mark
     // (REQUEST_REFUSED) and pi's error for it, which close nothing together (openFigures, and the timeline).
     if (refusedHere(entry) || notSentHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
+    // A paid call settled at a charge it did not say: at the figure its mark holds, the cap's bound for it.
+    const bound = entry.kind === TOOL_COST && figureOf(data.usd) === undefined ? figureOf(calls.get(data.call)) : undefined;
     if (entry.kind === TOOL_STARTED) calls.set(data.call, data[HELD_FIELD]);
     if (entry.kind === TOOL_COST) calls.delete(data.call);
     if (entry.kind === REQUEST_STARTED) marked = true;
@@ -240,7 +245,7 @@ export function spentIn(storeFile: string): number | null {
     // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
     if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
     if (taken.has(at)) continue;
-    entries.push(entry);
+    entries.push(bound === undefined ? entry : { ...entry, data: { ...data, usd: bound } });
     read.push(entry);
     const held = data[HELD_FIELD];
     // A summary that ended on an error after its response began (its cost mark says `failed`) counts at its hold.
@@ -300,16 +305,16 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
   }
 }
 
-/** What the paid tools of `entries` (TOOL_STARTED and TOOL_COST) spent, as the cap counts it: each charge, and a call a
- *  crash cut (marked, never settled) at its held figure, as spentIn counts it; null when one is unknown. The run's
- *  reported cost reads such a call unknown instead (the timeline). */
+/** What the paid tools of `entries` (TOOL_STARTED and TOOL_COST) spent, as the cap counts it: each charge, and a call
+ *  settled at a charge it did not say, or a crash cut (marked, never settled), at its held figure, as spentIn counts it;
+ *  null when one has no figure. The run's reported cost reads such a call unknown instead (the timeline). */
 export function capToolSpend(entries: readonly EntryLike[]): number | null {
   const open = new Map<unknown, unknown>();
   const figures: unknown[] = [];
   for (const { kind, data } of entries) {
     const at = (data ?? {}) as Record<string, unknown>;
     if (kind === TOOL_STARTED) open.set(at.call, at[HELD_FIELD]);
-    else if (kind === TOOL_COST) open.delete(at.call), figures.push(at.usd);
+    else if (kind === TOOL_COST) figures.push(figureOf(at.usd) ?? open.get(at.call)), open.delete(at.call);
   }
   const all = [...figures, ...open.values()].map(figureOf);
   return all.every((figure) => figure !== undefined) ? (all as number[]).reduce((sum, figure) => sum + figure, 0) : null;
@@ -348,8 +353,9 @@ export const paidHolds = (): number => [...paidOpen].reduce((sum, { usd }) => su
  *  its price and the cap and never calling it, unless what the run has spent plus what the call is held at (`hold`: its
  *  quote, else an allowance, `basis` saying which) fits the cap, and whenever the spend is unknown; else run, one paid
  *  call at a time, so each check sees the charge before it, and held at that figure (paidHolds) until the charge it
- *  reports (`charge` of its result, undefined for none) joins the spend. A call that fails counts at its held figure,
- *  as its mark does once its process is gone (spentIn), since it may have charged. With no cap it just runs. */
+ *  reports (`charge` of its result, undefined for none) joins the spend. A charge it does not say (null), or a call that
+ *  fails, counts at its held figure, as its mark does from the store (spentIn), since it may have charged that much.
+ *  With no cap it just runs. */
 export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
@@ -365,7 +371,7 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
     try {
       const result = await call();
       const usd = charge(result);
-      if (usd !== undefined) spend.add(usd);
+      if (usd !== undefined) spend.add(usd ?? hold.usd);
       return { result };
     } catch (error) {
       spend.add(hold.usd);

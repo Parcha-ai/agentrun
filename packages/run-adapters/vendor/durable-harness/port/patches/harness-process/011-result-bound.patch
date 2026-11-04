@@ -1,0 +1,80 @@
+Patch: 011-result-bound
+Reason: every result a harness gets passes the bridge, so the host's one bound on a result (HOST_RESULT_MAX_CHARS) is kept here: a longer text keeps its start, cut where a character ends, says where it was cut, and is flagged truncated, its record whole
+Upstream: ours
+Pins: the tool bridge holds a result to HOST_RESULT_MAX_CHARS: a longer one keeps its start and says where it was cut, flagged truncated, a failure's text too, never half a surrogate pair
+---
+diff --git a/packages/harness-process/src/tools.ts b/packages/harness-process/src/tools.ts
+index ac18994..61ab900 100644
+--- a/packages/harness-process/src/tools.ts
++++ b/packages/harness-process/src/tools.ts
+@@ -1,5 +1,5 @@
+ import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from 'harness-world';
+-import type { ToolImage } from './types.ts';
++import { HOST_RESULT_MAX_CHARS, type ToolImage } from './types.ts';
+ 
+ /**
+  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
+@@ -13,6 +13,10 @@ import type { ToolImage } from './types.ts';
+  * as an interrupted result, never a second run. With the harness's built-in
+  * tools turned off, these are its only tools, so every side effect it can
+  * cause has an intent in the log before it runs.
++ *
++ * Every result a harness gets passes here, so here it is held to the host's
++ * bound: a text past HOST_RESULT_MAX_CHARS keeps its start and says where it
++ * was cut (`boundResult`), the call's record keeping it whole.
+  */
+ 
+ /** What a call returns to the harness. */
+@@ -24,6 +28,8 @@ export interface ToolResult {
+   interrupted?: boolean;
+   /** Images the tool answered with, as it gave them (recorded with its outcome). */
+   images?: readonly ToolImage[];
++  /** The text was cut at HOST_RESULT_MAX_CHARS (`boundResult`); it says so in its last line. */
++  truncated?: true;
+ }
+ 
+ /** One tool, harness-neutral. */
+@@ -110,14 +116,15 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
+           (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
+         );
+         // A tool answers in text, or in text with images (a screenshot): the images come back as recorded.
+-        const { text, images } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined };
+-        if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text });
+-        return { text: String(text), isError: false, ...(images?.length ? { images } : {}) };
++        const { text: whole, images } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined };
++        const { text, truncated } = boundResult(String(whole));
++        if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
++        return { text, isError: false, ...(images?.length ? { images } : {}), ...(truncated ? { truncated } : {}) };
+       } catch (err) {
+         if (err instanceof EffectFailure) {
+-          const text = failureText(err.error, options.partialChars);
+-          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text });
+-          return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
++          const { text, truncated } = boundResult(failureText(err.error, options.partialChars));
++          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
++          return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}), ...(truncated ? { truncated } : {}) };
+         }
+         ctx.halt?.(err);
+         throw err;
+@@ -157,6 +164,21 @@ export function failureText(error: EffectError, partialChars = 2000): string {
+   return `${message}\nPartial output before the interruption:\n${clip(text, partialChars)}`;
+ }
+ 
++/**
++ * `text` within HOST_RESULT_MAX_CHARS characters, as a harness gets a call's
++ * result: a longer one keeps its start, cut before a character written as a
++ * surrogate pair rather than between its halves, and ends with a line saying
++ * so, `[cut at N of M characters]`, counted in the bound. `truncated` when cut.
++ */
++export function boundResult(text: string): { text: string; truncated?: true } {
++  if (text.length <= HOST_RESULT_MAX_CHARS) return { text };
++  const note = (kept: number) => `\n[cut at ${kept} of ${text.length} characters]`;
++  // The note's own length counted at the bound: what is kept is never longer than that, so neither is its note.
++  let kept = HOST_RESULT_MAX_CHARS - note(HOST_RESULT_MAX_CHARS).length;
++  if ((text.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
++  return { text: `${text.slice(0, kept)}${note(kept)}`, truncated: true };
++}
++
+ /** At most `max` characters, with a marker when cut. */
+ export function clip(text: string, max: number): string {
+   return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} more characters]`;

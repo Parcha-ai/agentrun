@@ -28,7 +28,8 @@ export const FAUX_EXA_ENV = "AGENTRUN_SERVE_FAUX_EXA";
 /** The MCP revision this client speaks; the server answers the one it takes. */
 const PROTOCOL = "2025-06-18";
 const TIMEOUT_MS = 60_000;
-/** The most results Exa is asked for (its default is 10). */
+/** The most results Exa's free endpoint is asked for (its default is 10). Its own cap on purpose, not web search's
+ *  RESULTS_MAX: the hosted providers take more, and Exa's keyless limit is per request. */
 const RESULTS_MAX = 8;
 const ACCEPT = "application/json, text/event-stream";
 /** The most of an answer read: a search's text is a few kilobytes; past this the rest is never read. */

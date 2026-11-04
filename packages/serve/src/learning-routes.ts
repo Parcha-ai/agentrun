@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -41,7 +41,7 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
-type NoteView = { file: string; name: string; description: string; type: string; status: string; superseded_by: string | null; text: string; etag: string };
+type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string };
 type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 /** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
 type Note = LearnedNote & { text: string; oid: string };
@@ -186,9 +186,7 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
   const key = `${repo}\0${sha}`;
   const known = parsedAt.get(key);
   if (known) return known;
-  const [{ index, notes }, walked] = await Promise.all([readAt(home, repo, sha), git(home, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e", sha])]);
-  const touched = new Map<string, number>();
-  recordsOf(walked).forEach(({ files }, i) => files.forEach((file) => touched.has(file) || touched.set(file, i)));
+  const [{ index, notes }, touched] = await Promise.all([readAt(home, repo, sha), changedOrder(home, repo, sha)]);
   const rank = (note: LearnedNote) => (note.status === "active" ? 0 : 1);
   const parsed = { index, notes: [...notes.values()].sort((a, b) => rank(a) - rank(b) || (touched.get(a.file) ?? Infinity) - (touched.get(b.file) ?? Infinity) || (a.file < b.file ? -1 : 1)) };
   parsedAt.set(key, parsed, 2 * parsed.notes.reduce((size, note) => size + note.text.length + 256, index.length));
@@ -197,7 +195,7 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
 
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows. */
-const noteView = ({ file, name, description, type, status, superseded_by, text, oid }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid) });
+const noteView = ({ file, name, description, type, status, origin, superseded_by, text, oid }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, origin, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid) });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
 /** A page of `all`, from `offset`, at most `limit`, each shown by `view` (so only the page's are cut of secrets). */
@@ -359,10 +357,19 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         throw refused([{ rule: "secret_value", path: file, detail: "This note holds a value the server now keeps secret, so its text was shown with that value hidden, and saving would replace the hidden text. Retire it and write a new note instead." }]);
       }
       let text = given;
+      // A note that waits for its owner's OK is made active by an approval alone: an edit keeps it waiting, so one that
+      // drops or changes its status is refused, whoever sends it.
+      if (given !== undefined && current) {
+        const was = parseNoteFile(file, current.text);
+        const now = parseNoteFile(file, given);
+        if (!Array.isArray(was) && was.status === "pending" && !Array.isArray(now) && now.status !== "pending") throw refused([printable({ rule: "status", path: file, detail: "it waits for its owner's OK: an edit keeps status: pending, only an approval makes it active, and a retire takes it out" }, input.refuse)]);
+      }
+      const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, Note>();
       if (text === undefined) {
         const note = parseNoteFile(file, current!.text);
         if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
-        if (note.status !== "active") return { status: 200, file, text: current!.text, etag: etagOf(current!.oid) };
+        // A pending note is retired too: a person who will never approve it takes it out of the folder's waiting list.
+        if (note.status !== "active" && note.status !== "pending") return { status: 200, file, text: current!.text, etag: etagOf(current!.oid) };
         // A retire is how a person takes a note out of every later run's prompt, a leaking one above all, so it always
         // can: only the note's format is checked as retired (its front matter parses, and it fits the note cap with the
         // status line added), never a secret in its name or text. Every answer cuts those as any read does.
@@ -373,7 +380,6 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status line a retire adds` }, input.refuse)]);
       }
       if (current && text === current.text) return { status: 200, file, text, etag: etagOf(current.oid) };
-      const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, LearnedNote>();
       const after = [...[...notes.values()].filter((note) => note.file !== file), parseNoteFile(file, text) as LearnedNote];
       const lines = after.filter((note) => note.status === "active").length;
       if (lines > INDEX_LINES) throw refused([{ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so retire a note first` }]);
@@ -413,16 +419,18 @@ export async function runLearning(run: Run, shown: Shown, secrets: readonly stri
   const learning = run.meta.learning;
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
-  const { state, reason, at, verdict, problems, merged, cost_usd, tokens } = learning;
+  const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;
   return {
     run: run.id, state, reason, detail: detailShown(learning, shown), at,
     // Once it settled (a run that runs again for a follow-up is still reading).
     ...notesView(learning, shown, run.settled),
     seed: pin?.seed ?? null,
     merged: merged ?? null,
+    // The merge's notes that wait for a person's OK: on main as `status: pending`, read by no run until approved.
+    pending: (pending ?? []).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })),
     // The grader's, with its item for each new note: a name holding one of the host's secrets reads [redacted], and
     // each text is cut of them.
-    verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, question, why }) => ({ file: shown.name(file), keep, ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
+    verdict: verdict ? { merge: verdict.merge, reason: shown.text(verdict.reason), items: (verdict.items ?? []).map(({ file, keep, pending: waits, origin, question, why }) => ({ file: shown.name(file), keep, ...(waits ? { pending: true } : {}), ...(origin ? { origin } : {}), ...(question ? { question: shown.text(question) } : {}), why: shown.text(why) })) } : null,
     problems: (problems ?? []).map((problem) => printable(problem, secrets)),
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },

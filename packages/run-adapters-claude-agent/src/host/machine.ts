@@ -175,6 +175,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const key = randomBytes(32).toString("base64url");
     // What the provider does with a token count (a free route it may not serve), said once per session, a status only.
     let counted = false;
+    // Whether the provider has refused the session's key (one paid 401): said once.
+    let refused = false;
     const proxy = await startModelProxy({
       policy: anthropicPolicy({
         model: route.models.model,
@@ -198,7 +200,16 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         counted = true;
         options.proxy.log?.("claude-agent: the provider answered count_tokens", { status });
       },
-      ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
+      fetch: async (input, init) => {
+        const answer = await (options.proxy.fetch ?? fetch)(input, init);
+        // A paid request the provider answers 401 is the key refused: said to the harness once, with the provider's words
+        // (what of its body comes within REFUSAL_WAIT_MS, never waiting on one that does not end).
+        if (answer.status === 401 && route.onKeyRefused && !refused && new URL(String(input instanceof Request ? input.url : input)).pathname.endsWith("/v1/messages")) {
+          refused = true;
+          route.onKeyRefused(refusalDetail(await bodyStart(answer)));
+        }
+        return answer;
+      },
     }, key);
     const lost = new AbortController();
     const children = new Set<MachineChild>();
@@ -235,4 +246,62 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     };
     return brandMachine(machine);
   };
+}
+
+/** A JSON string's body as JSON reads it, from a capture that a cut may have ended mid-escape (a lone backslash, or a
+ *  \\u with fewer than four digits, is dropped); the capture as it came if it still does not read. */
+function jsonString(body: string): string {
+  const whole = body.replace(/((?:^|[^\\])(?:\\\\)*)\\(?:u[0-9a-fA-F]{0,3})?$/, "$1");
+  try {
+    return JSON.parse(`"${whole}"`) as string;
+  } catch {
+    return whole;
+  }
+}
+
+/** How much of a refusal's body is read for its words, and how long it is waited for: the turn ends either way. */
+const REFUSAL_BYTES = 4096;
+const REFUSAL_WAIT_MS = 2000;
+
+/** The start of `answer`'s body, from a copy (the client still reads the original whole): at most REFUSAL_BYTES, and
+ *  what came within REFUSAL_WAIT_MS. */
+async function bodyStart(answer: Response): Promise<string> {
+  const reader = answer.clone().body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  let timer: NodeJS.Timeout | undefined;
+  const waited = new Promise<undefined>((resolve) => (timer = setTimeout(resolve, REFUSAL_WAIT_MS, undefined)));
+  try {
+    while (text.length < REFUSAL_BYTES) {
+      const next = await Promise.race([reader.read(), waited]);
+      if (!next || next.done) break;
+      text += decoder.decode(next.value, { stream: true });
+    }
+  } catch {
+    // What came is what is said.
+  } finally {
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+  }
+  return text.slice(0, REFUSAL_BYTES);
+}
+
+/** The provider's words in a 401's body: its error's message (Anthropic's `{error: {message}}`, OpenRouter's too), a
+ *  string `error`, or a top-level `message`; a body that is no JSON, its text; a cut body, its message if that much came.
+ *  Never JSON itself: a body with no string message says nothing, and the run's error is the plain refused-key words.
+ *  The first line, with no control character (C0 or C1), at most 200 characters. */
+export function refusalDetail(text: string): string {
+  let said = "";
+  try {
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const error = body?.error;
+    const message = error !== null && typeof error === "object" ? (error as { message?: unknown }).message : error ?? body?.message;
+    said = typeof message === "string" ? message : "";
+  } catch {
+    // A body cut before its end: its message, if that much came.
+    const caught = /"message"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(text)?.[1];
+    said = caught === undefined ? (text.trimStart().startsWith("{") ? "" : text) : jsonString(caught);
+  }
+  return said.split("\n")[0]!.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 200);
 }

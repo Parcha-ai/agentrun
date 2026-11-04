@@ -15,6 +15,7 @@ import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { settleIn } from "./paid-calls.js";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
@@ -30,13 +31,14 @@ import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
 import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
-import { storedPlace } from "./place.js";
+import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
+import { mirrorWrites } from "./workspace.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
@@ -44,6 +46,10 @@ export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 
 /** A call node's tool failure, as the value its effect completed with (runEffect below). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
+
+/** A run's own commit of `kind` to its root, outside any one call's turn: a workflow call node's ledger, and every
+ *  request's settle (paid-calls.ts settleIn). */
+const rootRecordOf = (harness: Harness) => (kind: string, data: Record<string, string | number | null>) => harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND);
 
 export { promptOf };
 
@@ -110,7 +116,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
   const root = resolve(where.root, "..", "..");
-  const box = place.mode === "sandbox" ? runBox(() => runBoxProvider(place, env, root), { id: run.id, root, dir: where.root, place }) : undefined;
+  // A remote box (Daytona) is the server's to make and seed, reached through its relay; Docker's is made here.
+  const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place }) : undefined;
+  // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
+  if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
@@ -145,8 +154,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
     const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
-    return { models: {}, registry: createRegistry(), door, onOpen, beforeResume: markResumed } as unknown as AppOptions;
+    // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
+    const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord);
+    // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
+    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
   searchOn(models);
@@ -182,7 +194,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
     const instructions = [await promptOf(learned, Object.keys(revision.body.skills), where.work), guidance].filter(Boolean).join("\n\n");
-    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
+    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};
   const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, durableDecisions, nodeRunner, taskScope }, { EffectFailure, inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
@@ -222,7 +234,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
       const durable = opened;
-      const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: (kind: string, data: Record<string, string | number | null>) => durable.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT) } : undefined;
+      const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
       log({ t: "effect.end", ...at, status: "done", output, at: new Date().toISOString() });
       return output;
@@ -283,6 +295,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
     opened = durable;
+    settleIn(rootRecordOf(durable.harness));
     marked.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });

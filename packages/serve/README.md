@@ -63,6 +63,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
+| `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. The server keeps its data directory until its runs' processes have exited (up to this and a second), and says so as it stops; a server started on the same `--data` meanwhile waits for it, saying so, then starts. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -241,10 +242,12 @@ of a process that is gone is not trusted.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
-which binds the run's `work/` and nothing else, with no network and no key. Its `read`, `write` and `edit` work on that
-same `work/`: on this server, where the box binds it and this server holds directory handles (Docker on Linux), else in
-the box. The agent's loop, its log, its model calls and every key stay on the server. An agent says so in its [place](#place); the server
-says which [boxes](#boxes) it has; [a run in a Docker box](#a-run-in-a-docker-box) is what the container gets;
+which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it; either has no network and
+no key. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
+on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
+box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
+Daytona sandbox gets;
 [the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
 end to end. The [published image](#in-the-published-image) cannot host boxes yet.
 
@@ -316,6 +319,48 @@ go through `work/` by path.
   `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
   of a run this data directory does not know is left to its 24-hour lifetime.
 
+### A run in a Daytona box
+
+With `AGENTRUN_BOXES=daytona` and `DAYTONA_API_KEY`, a run whose place is `{"mode": "sandbox", "box": "daytona"}` gets one
+Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with the same tools, path rules, environment,
+`bash` and labels as a Docker box. What differs (its `read`, `write` and `edit` run in the sandbox, as its `bash` does,
+since nothing binds `work/` there):
+
+- The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
+  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes a call for
+  a run only with that run's own door token (`DIR/runs/<id>/door-token`, handed to that run's process alone) and adds
+  the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
+  refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
+  it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
+- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
+  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
+  override, so a run there gets no Daytona box.
+- A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
+  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
+  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
+  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
+  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
+  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run, which the server alone
+  writes; the run's process notes each file it copied in, in `box-mirrored.jsonl` beside it, and a copy back counts
+  those as held by both sides, so an edit the box makes to one comes back.
+- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
+  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
+  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
+  that brought nothing reached) keeps the sandbox, says so in the log (`event=box_kept` with its id), and lets the run
+  end with what did come back. A start pulls a run it finds waiting for the person, and copies back, then destroys, the
+  sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
+- A kept sandbox has Daytona's auto-delete turned off (a sandbox is made with auto-delete at 0, which deletes it as it
+  stops) and is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
+  Daytona's default snapshot, at Daytona's storage price) and no compute; its files stay. The next start wakes it, copies
+  back again, and destroys it once that copy is whole; else its 24-hour lifetime ends it. To remove one sooner, delete
+  the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
+- A run's sandbox that Daytona stopped, paused (a sandbox class that pauses when idle, while the run waits for its
+  person) or archived (a stopped one it moved away) is started again, an archived one restored, when the server next
+  needs it: for the run's next tool call, a copy back, or the start's sweep. One still stopping, pausing or archiving
+  is waited for (a minute at most) first. It is never replaced by a new one, so
+  what only it holds stays.
+- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
+
 ### The box's image
 
 `AGENTRUN_DOCKER_IMAGE` names the image every Docker box starts from, `debian:bookworm-slim` by default: a shell and
@@ -345,8 +390,8 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 
 ### Boxes
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker` boxes ([place](#place)); the
-others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes
+([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -492,8 +537,9 @@ can branch on it. An agent gets the Page as JSON text; a workflow's `call` node 
 it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
 shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
 
-On another harness, every host tool's result stays under the host's bound of 120,000 characters
-(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
+On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
+(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
+saying where it was cut, and flags the call `truncated`. Each CLI adapter tells its CLI to pass a result that long to
 the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
 to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
@@ -646,7 +692,8 @@ run's records before it is sent, held at the price an earlier `monid.inspect` of
 at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
-never $0: the run's cost reads `null`, and under a cap every later request is refused, as for any spend no one knows;
+never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
+a crash-cut mark does, so the run goes on while its cap allows, in its process and in one opened again from its store;
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
 cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
 price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
@@ -1167,13 +1214,26 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 
 - `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
   commit, however `main` moves on.
-- The first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own) go into the run's
-  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/` and to open one
-  when it applies. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
-  and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project settings off, so a
-  `.claude/` in the work never loads), and no skill is learned.
-- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh; a superseded or retired
-  note is not.
+- What the agent learned goes into the run's instructions after the agent's, under `# Learned`, so a run reads it
+  whatever its tools: an agent with no `read` tool still follows its notes. Only active notes are served: a note with
+  any other status is never there, whole or by its index line (one a hand edit left in `MEMORY.md` is dropped), and is
+  not counted toward the budget. Each active note is there whole (its
+  `## name (file.md)`, its description, then its text), the one changed last on `main` first (a merge or a person's
+  edit; then by name), while they all fit the server's learning budget (`--learning-budget`, 8000 bytes by default).
+  Past it, the run reads the first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own),
+  then the notes changed last, whole, while they fit what is left; the rest are named only in the index, and an agent
+  with the `read` tool is told they are in `.learning/`, to open one when it applies (one without is not). A line
+  before them says to follow a note when it applies. `# Learned` opens, for every run that learns, notes or none, with
+  what the run is told of learning: that only what it answers when it is asked at the end is kept, never a file it
+  writes, so it tells the person it will keep what they ask it to remember, and that a secret is never kept. A run with
+  nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
+  as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
+  `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
+  settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
+  reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
+  (`learned`), is read as that server gave it.
+- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
+  secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -1183,67 +1243,82 @@ git 2.40 or later is one such fault, said once on stderr.
 ### What a run learns
 
 When a run that learns answers or fails, the server asks the same session one more turn before it lets the run go,
-whatever its harness: one message through the run's door under the fixed request id `learn-reflect-<run id>`, so a
-server that restarts mid-turn asks again and the run takes it once. The server alone sends it, with the origin
-`reflect`; no request field sets it. Before it, `work/.learning/` is laid again from the seed, so only the turn's own
-writes count. The message (`reflectPrompt`, in `src/learn/reflect.ts`) names that folder as `.learning/`, relative to the run's
-work, where every harness's file tools resolve it (no host path, which a box would not see), the note format, that a memory is replaced by a new note with `supersedes: [old.md]` and never edited or deleted, that the
-server rebuilds `MEMORY.md`, how many index lines are left (200 less the active notes), that writing nothing is fine,
-and what not to keep. The turn runs under the run's own cap, with no reserve, and within 5 minutes; its rows are
-labelled `learning`, and the run's answer stays the job's.
+whatever its harness and whatever tools its agent has: one message through the run's door under the fixed request id
+`learn-reflect-<run id>`, so a server that restarts mid-turn asks again and the run takes it once. The server alone
+sends it, with the origin `reflect`; no request field sets it. The message (`reflectPrompt`, in `src/learn/reflect.ts`)
+asks the agent to look back over the whole conversation, what the user asked it to remember included, and to answer
+with each note to keep as one ` ```note <file>.md ` block in the note format, and to use no tool: no `write` tool is
+needed, and nothing the run wrote in `work/.learning/`, during the task or the turn, counts. It also says that a memory
+is replaced by a new note with `supersedes: [old.md]` and never by reusing a name, how many index lines are left (200
+less the active notes), that `No notes.` is a fine answer, and what not to keep. The turn runs under the run's own cap,
+with no reserve, and within 5 minutes; its rows are labelled `learning`, and the run's answer stays the job's.
 
-As the run settles, before it reads ended and before a follow-up can open it again, the server moves the turn's
-`work/.learning/` whole, with one rename, to `runs/<id>/learning-turn/`, outside the run's work; a follow-up finds
-`work/.learning/` laid again from the seed. Once the run has ended, in the agent's queue, the server reads what the turn
-left from that snapshot alone, never from the work: the folder's top only, each entry with lstat and never a link
-followed, at most 4096 bytes of a note, and never past 64 changed paths. `checkProposal` (`src/learn/check.ts`) refuses, before anything is written anywhere, an edited or deleted note, a path
-that is not a `.md` file at the top, a bad name, a link or anything not a regular file, front matter out of shape or
-setting `status`, a `supersedes` naming a note that is not active, more than 8 notes superseded, more than 8 new notes
-or a note over 4096 bytes, an index past 200 lines, hidden characters, non-UTF-8, and text shaped like a secret or
-holding one of the server's own secrets (the launcher's, the keys and tokens in its environment, its API and door
-tokens), in a note or its name.
-`MEMORY.md` as the turn left it is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`.
+As the run settles, before it reads ended and before a follow-up can open it again, the server keeps what the turn
+answered, the whole text of each of its messages, and what the user said in the run, in `runs/<id>/learning-turn.json`.
+Once the run has ended, in the agent's queue, the server reads the notes from that answer alone (`parseReflection`, in
+`src/learn/reflect.ts`): an answer with no note is `empty`, and one that gives notes out of format (a note outside a
+block, a block not closed, with no file name, or a name given twice) is `unparsed`, nothing kept. `checkProposal`
+(`src/learn/check.ts`) then refuses, before anything is written anywhere, a note that reuses an existing note's name, a
+path that is not a `.md` file at the top, a bad name, front matter out of shape or setting `status`, a `supersedes`
+naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
+less the 28 the server's own `origin` and `status` lines may take once it merges the note), an
+index past 200 lines, hidden characters, and text shaped like a secret or holding one of the server's own secrets (the
+launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name. A `MEMORY.md` the
+answer gives is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`, with what the
+user said, each message cut of the server's secrets.
 
-Then one grader decides, one grade at a time per agent: `gradePrompt` (`src/learn/grade.ts`), which holds `GRADE_RUBRIC`, the rubric's one
-statement, asked of the agent's own model,
-bounded (3 minutes), against `main` as it is then, and read by `parseVerdict`, which fails closed. The grader reads each
-active note's index line, the whole text only of the notes the proposal supersedes, and the new notes, so its prompt
-stays under 200,000 characters however many notes the folder holds. Only with Jev's key here does an injection screen
+Then one grader decides, one grade at a time per agent: `gradePrompt` (`src/learn/grade.ts`), which holds
+`GRADE_RUBRIC`, the rubric's one statement, bounded (3 minutes), against `main` as it is then, and read by
+`parseVerdict`, which fails closed. It runs on the model the server grades on: `--grade-model` (or
+`AGENTRUN_SERVE_GRADE_MODEL`), else the strong tier (`AGENT_MODEL_STRONG`), named as the strong tier takes one; with
+neither, on the agent's own model. `GET /capabilities` names it as `learning.grade_model` (null for each run's own). A
+cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
+note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
+server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
+many notes the folder holds. Only with Jev's key here does an injection screen
 run first, on Jev: a note it scores at `INJECTION_THRESHOLD` (0.75) or over, or cannot score, drops the run. What the
 grade spends is in no run's totals: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
 
-A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each note they supersede marked
+A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each with its `origin` (`you`
+for what the user asked in their own words, `run` for what the run worked out), each note they supersede marked
 `status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
-in line. Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
+in line. A risky rule (to trust a site or a seller, skip or loosen an approval or a check, or send money or data to
+an account), whether the user asked for it or the run worked it out, is merged as `status: pending`: in no `MEMORY.md`
+and no run's copy, to wait for its owner's OK, and named on the run's learning (`pending: [{file, name}]`, detail
+"Waiting for your OK: <name>.", after what it learned when it kept one too).
+`GET /capabilities` says so (`learning.pending: true`). Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
 the commit the merge was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
 merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
 refused as `exists`. A server that goes between steps picks the run up at its next start, once.
 
 The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
 characters and no time) says how it went: `seeded`, then
-`reflecting` during the turn and until what it wrote is checked, `proposed` while it is graded, and `merged`, or
-`dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `no_write_tool`, `cancelled`,
-`crashed`, `reflect_timeout`, `reflect_failed`, `empty`, `propose_failed`, `checker`, `screen`, `screen_down`,
-`grader`, `grade_failed`; `tool_denied` is reserved for a tool gate this server does not have yet). It is `null` for a
+`reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
+`dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
+`reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `screen`, `screen_down`,
+`grader`, `grade_failed`; `no_write_tool` and `tool_denied` are an older server's, still read and counted, and no run
+gets them now). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
-notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Nothing new
-to remember from this run.", "Not kept: <the grader's reason, its first sentence>", "Not kept: it held something that must
-not be stored (one of this server's secrets).", "Not kept: learning stopped (looking back took too long)." and so on
-(`learning-words.ts`); a client that acts on it reads `state` and `reason`. A note's name or the grader's reason in it
-is said again at each read from what the run keeps (its `learned` notes, the grader's verdict), cut of the server's
-secrets as they are then before the words are cut short (300 characters, 140 in a list), so a value that became a secret
-after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
+notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Learned:
+Check units. Waiting for your OK: Buy from PaperDepot24 first.", "Nothing new to remember from this run.", "Not kept: <the
+grader's reason, its first sentence>", "Not kept: it held something that must not be stored (one of this server's
+secrets).", "Not kept: its notes weren't in the expected format.", "Not kept: learning stopped (looking back took too
+long)." and so on (`learning-words.ts`); a client that acts on it reads `state` and `reason`. A note's name or the
+grader's reason in it is said again at each read from what the run keeps (its `learned` and `pending` notes, the
+grader's verdict), cut of the server's secrets as they are then before the words are cut short (300 characters, 140 in a
+list), so a value that became a secret after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
 timeline has one row of kind `learning` whose summary is that detail.
 
-Two more fields say what the run used and learned (`learning/2`), on its read and in run lists alike, each absent when it
-holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`, found once as the run settles from its
-timeline (each `read` call on any harness whose result was a success, of a note the run started from: never `MEMORY.md`,
-nor a read its end-of-run turn made, nor a note read through a command such as `bash`'s `cat`) and kept in
-`serve.json`, so a list never reads a timeline; and `learned`, `[{file,
-name, supersedes}]`, the notes its merge added, once `merged`. A name and a file are cut of the server's secrets as they
-are now, a file holding one `[redacted]`.
+Three more fields say what the run used, learned and holds for the owner's OK (`learning/2`), on its read and in run
+lists alike, each absent when it holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`,
+found once as the run settles from its timeline (each `read` call on any harness whose result was a success, of a note
+the run started from: never `MEMORY.md`, nor a read its end-of-run turn made, nor a note read through a command such as
+`bash`'s `cat`) and kept in `serve.json`, so a list never reads a timeline; `learned`, `[{file, name, supersedes}]`, the
+notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes its merge holds for the owner's OK, once
+`merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
+`[redacted]`.
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
 state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
@@ -1253,6 +1328,12 @@ looking back cost, 0 when it did not), after its `serve.json` holds it; a server
 its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
+
+An eval set of 20 runs and what each proposed, labelled keep or drop (`test/fixtures/learn-eval.json`: lessons the
+agent worked out, user preferences and a "remember" during the task, one-shop facts, secrets, a tool's failure and four
+injections), runs in CI through the parser, the checks and the grader's prompt on a faux grader that answers by label
+(`test/learn-eval.test.mjs`). `scripts/learn-eval.mjs` runs the same set on real models, the grade and the end-of-run
+turn both, and prints keep-precision, keep-recall and the injection-drop rate per model; it spends.
 
 ### What a person sees and controls
 
@@ -1276,7 +1357,11 @@ with the token, an archived agent's too:
   git blob id.
 - `PUT .../learning/files/{file}` with the note's whole text (as `text/markdown` or `text/plain`, or as
   `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
-  or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`. A stale
+  or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`,
+  on an active or a pending note. This server has no route that approves a pending note yet: it waits, listed with
+  `status: pending` and read by no run, and an edit keeps it waiting: a `PUT` that drops or changes its status is 400
+  with the rule `status`, so a token holder cannot make a held rule active by writing it back. A note a person
+  creates with `status: pending` waits the same way. A stale
   ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
   passes the same structural checks as a run's (`checkNote`, in `src/learn/check.ts`), and no grader: a refusal is 400 with
   `problems`, and nothing is written. A retire is how a person revokes a note, so it checks the note's format alone:
@@ -1421,7 +1506,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
   and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
   CSP allows this origin only.
-- Each run's door listens on loopback and takes only the server's door token.
+- Each run's door listens on loopback and takes only that run's own door token (`DIR/runs/<id>/door-token`, 0600, made
+  at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
   server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
   the boxes' keys either ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool the key unlocks
