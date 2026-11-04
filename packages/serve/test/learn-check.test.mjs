@@ -2,10 +2,12 @@
 // edited or deleted, MEMORY.md left to the host, no hidden character and no secret, and every problem printable.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, checkProposal, mergeProblems, printable } from "../dist/learn/check.js";
+import * as checks from "../dist/learn/check.js";
 import { parseNoteFile } from "../dist/learn/notes.js";
 import { PRINT_MAX } from "../dist/learn/secrets.js";
 import { added, baseOf, note, SEED } from "./learn-format-support.mjs";
+
+const { CAPS, checkProposal, mergeProblems, printable } = checks;
 
 const NEW = "refund-policy-path.md";
 const check = (changes, over = {}) => checkProposal({ base: baseOf(), changes, ...over });
@@ -49,11 +51,11 @@ test("a link, a folder or anything not a regular file is refused, never read", (
   assert.deepEqual(rules(check([{ path: "shipping-path.md", status: "modified", mode: "120000" }])), ["file_mode"]);
 });
 
-test("front matter missing or out of shape is refused with why; a run that sets status or superseded_by is refused", () => {
+test("front matter missing or out of shape is refused with why; a run that sets status, superseded_by or origin is refused", () => {
   assert.deepEqual(check([added(NEW, "Just text.\n")]).problems, [{ rule: "note", path: NEW, detail: "it does not start with front matter" }]);
   assert.deepEqual(rules(check([added(NEW, note({ type: "lesson" }))])), ["note"]);
   assert.deepEqual(rules(check([added(NEW, note({ extra: "supersedes: [../x.md]\n" }))])), ["note"]);
-  for (const extra of ["status: active\n", "status: superseded\nsuperseded_by: x.md\n", "superseded_by: x.md\n"]) assert.deepEqual(rules(check([added(NEW, note({ extra }))])), ["status"], extra);
+  for (const extra of ["status: active\n", "status: superseded\nsuperseded_by: x.md\n", "superseded_by: x.md\n", "status: pending\n", "origin: you\n", "origin: run\n"]) assert.deepEqual(rules(check([added(NEW, note({ extra }))])), ["status"], extra);
 });
 
 test("supersedes must name a note active on the seed, once among the new notes", () => {
@@ -76,15 +78,18 @@ test("the new notes supersede at most eight notes together: eight pass, and a ni
   assert.deepEqual(mergeProblems(baseOf(files), proposed).map((p) => p.rule), ["supersedes"]);
 });
 
-test("eight new notes pass and a ninth is refused; a note over 4096 bytes is refused and one at 4096 passes", () => {
+test("eight new notes pass and a ninth is refused; a run's note over 4068 bytes is refused and one at 4068 passes: the note cap less the 28 bytes of the host's own lines", () => {
   const notes = (n) => Array.from({ length: n }, (_, i) => added(`n${i}.md`, note({ name: `N${i}` })));
   assert.equal(check(notes(CAPS.newNotes)).ok, true);
   assert.deepEqual(rules(check(notes(CAPS.newNotes + 1))), ["too_many_notes"]);
+  // What the host adds to a run's note as it merges it, at the most: `origin: you` and `status: pending`, a line each.
+  assert.equal(CAPS.runNote, CAPS.note - Buffer.byteLength("origin: you\nstatus: pending\n"));
+  assert.equal(CAPS.runNote, 4068);
   const at = note({ body: "" });
-  const full = note({ body: "x".repeat(CAPS.note - Buffer.byteLength(at)) });
-  assert.equal(Buffer.byteLength(full), 4096);
+  const full = note({ body: "x".repeat(CAPS.runNote - Buffer.byteLength(at)) });
+  assert.equal(Buffer.byteLength(full), 4068);
   assert.equal(check([added(NEW, full)]).ok, true);
-  assert.deepEqual(check([added(NEW, `${full}x`)]).problems, [{ rule: "too_large", path: NEW, detail: "4097 bytes; the cap is 4096" }]);
+  assert.deepEqual(check([added(NEW, `${full}x`)]).problems, [{ rule: "too_large", path: NEW, detail: "4069 bytes; the cap is 4068 for a run's note" }]);
   assert.deepEqual(rules(check([{ path: NEW, status: "added", mode: "100644", size: 9000 }])), ["too_large"], "a file the host did not read past the cap");
   assert.deepEqual(rules(check(Array.from({ length: CAPS.changes + 1 }, (_, i) => added(`n${i}.md`, note()))))[0], "too_many_files");
 });
@@ -97,6 +102,28 @@ test("an index that would pass 200 lines is refused; a note that supersedes one 
   assert.deepEqual(rules(over), ["index_full"]);
   assert.match(over.problems[0].detail, /201 lines; it holds at most 200/);
   assert.equal(checkProposal({ base, changes: [added(NEW, note()), added("two.md", note({ extra: "supersedes: [n0.md]\n" }))] }).ok, true);
+});
+
+test("the index counts what the merge makes active: a note that waits for its OK supersedes nothing until approved, so the notes it names stay lines, and the merge writes by the same rule", () => {
+  // 200 active notes; a pending note that supersedes two of them, and one active addition: the merge leaves 201 active.
+  const files = { ...Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`n${i}.md`, note({ name: `N${i}` })])), "MEMORY.md": "" };
+  const waiting = parseNoteFile("waiting.md", note({ name: "Waiting", extra: "supersedes: [n0.md, n1.md]\nstatus: pending\n" }));
+  const addition = parseNoteFile("addition.md", note({ name: "Addition" }));
+  const over = mergeProblems(baseOf(files), [waiting, addition]);
+  assert.deepEqual(over.map((problem) => problem.rule), ["index_full"]);
+  assert.match(over[0].detail, /201 lines; it holds at most 200/);
+  // The review's case: 199 active, two pending replacements and two additions merge as 201 active: refused.
+  const fewer = { ...Object.fromEntries(Array.from({ length: 199 }, (_, i) => [`n${i}.md`, note({ name: `N${i}` })])), "MEMORY.md": "" };
+  const replacements = [0, 1].map((i) => parseNoteFile(`r${i}.md`, note({ name: `R${i}`, extra: `supersedes: [n${i}.md]\nstatus: pending\n` })));
+  const additions = [0, 1].map((i) => parseNoteFile(`a${i}.md`, note({ name: `A${i}` })));
+  assert.deepEqual(mergeProblems(baseOf(fewer), [...replacements, ...additions]).map((problem) => problem.rule), ["index_full"]);
+  // Approved (active), the note that supersedes two replaces them, and the 200 lines fit.
+  const approved = parseNoteFile("waiting.md", note({ name: "Waiting", extra: "supersedes: [n0.md, n1.md]\n" }));
+  assert.deepEqual(mergeProblems(baseOf(files), [approved, addition]), []);
+  // The one rule both use: what the active new notes supersede, each by its note; a pending note supersedes nothing.
+  assert.equal(typeof checks.supersededBy, "function", "the merge and the checks share one rule");
+  assert.deepEqual([...checks.supersededBy([waiting, addition])], []);
+  assert.deepEqual([...checks.supersededBy([approved, addition])], [["n0.md", "waiting.md"], ["n1.md", "waiting.md"]]);
 });
 
 test("mergeProblems asks the same of main at merge time: a name another run added, a note superseded since", () => {

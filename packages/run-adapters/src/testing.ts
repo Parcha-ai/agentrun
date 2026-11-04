@@ -98,7 +98,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       let cursor = records.filter((r) => r.kind === FAUX_RECORDS.request).length;
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
       const turnsEnded = records.filter((r) => r.kind === FAUX_RECORDS.turnEnd).length;
-      const state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
+      let state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
       stats.opened.push({ key: spec.key, state });
       // A call whose intent is recorded and whose outcome is not: a crash cut it off. It is answered interrupted, once.
       const results = new Set(records.filter((r) => r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
@@ -179,14 +179,22 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         void run();
       };
       const session: AdapterSession = {
-        state,
+        get state() { return state; },
         async send(text) {
+          state = "idle";
           await append(FAUX_RECORDS.user, { text });
           prompt.push(text);
           await append(FAUX_RECORDS.turn, { n: turnsStarted + 1 });
           begin();
         },
-        async recover() { begin(); },
+        async recover() { state = "idle"; begin(); },
+        // The open turn ends in the session's records, as a turn's end is written (end()), and nothing runs. Its end is the
+        // kernel's for the session's own stop (abortedOutcome of its SessionHalt), as an interrupted turn's is here.
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("faux: there is no turn to settle");
+          await append(FAUX_RECORDS.turnEnd, { status: abortedOutcome(AbortSignal.abort(new SessionHalt("interrupted"))).status });
+          state = "idle";
+        },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
         async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); },

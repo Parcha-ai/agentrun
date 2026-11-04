@@ -6,6 +6,8 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
+import { chargeOf, monidClient } from "../dist/monid.js";
+import fakeMonid, { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { bookedIn, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
 import { parallelExtract } from "../dist/web-fetch.js";
 import { webSearch } from "../dist/web-search.js";
@@ -102,6 +104,73 @@ test("a paid call that fails counts at what it was held at, as a model request t
   assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
   const refused = await request.result();
   assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\./);
+});
+
+/** monid's run of `endpoint` on the tests' fake: /slow runs until it is stopped, /late answers TIMED_OUT. */
+const monidRun = (endpoint, options = {}, signal) => monidClient({ key: MONID_KEY, fetch: fakeMonid, ...options }).run({ provider: "faux", endpoint }, signal);
+/** Past the turn the cap's count of an ended request takes. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a paid call the run's stop cuts short, or one that times out, counts at what it was held at, never unknown: the next model request goes while that leaves room, and is refused for room once it does not", async (t) => {
+  // Each request's worst case is $0.001 and each monid run is held at its $0.001 quote: $0.0045 holds three runs and a
+  // request, not a $0.002 one.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0045, 0);
+  t.after(() => useSpend(undefined));
+  const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
+  // Stopped by the run's stop while monid runs it: monid is asked to stop it, and says nothing of a charge.
+  const stop = new AbortController();
+  const stopped = await paidCall("monid_run", () => monidRun("/slow", { sleep: async () => stop.abort() }, stop.signal), chargeOf, hold);
+  assert.match(stopped.result?.error ?? JSON.stringify(stopped), /was stopped by the caller; monid was asked to stop it/);
+  const next = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the stopped call counts at its $0.001 hold, never unknown: the next request goes");
+  sent[0].end(0);
+  await next.result();
+  await settled();
+  // Past the run's wait, and monid's own TIMED_OUT: neither says what it charged.
+  const outlasted = await paidCall("monid_run", () => monidRun("/slow", { waitMs: 500, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }), chargeOf, hold);
+  assert.match(outlasted.result?.error ?? JSON.stringify(outlasted), /did not end in 0\.5 s; monid was asked to stop it|no answer in 0\.5 s/);
+  const timedOut = await paidCall("monid_run", () => monidRun("/late"), chargeOf, hold);
+  assert.match(timedOut.result?.error ?? JSON.stringify(timedOut), /\(TIMED_OUT\)/);
+  const after = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 2, "the three calls at their holds, $0.003, and this request's $0.001 fit the $0.0045 cap");
+  sent[1].end(0);
+  await after.result();
+  await settled();
+  // A request dearer than the room left is refused for room, naming what is spent: never for a spend unknown.
+  const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 2, "not sent");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.003 of its \$0\.0045 cap, /, "refused for room, naming the holds as spent (#1539's words)");
+});
+
+test("a paid call monid answers FAILED with no cost, or whose answer is lost, counts at what it was held at too: every charge a call does not say is held, whatever cut it short", async (t) => {
+  // Each request's worst case is $0.001 and each monid run is held at its $0.001 quote: $0.0035 holds two runs and a
+  // request, not a $0.002 one.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0035, 0);
+  t.after(() => useSpend(undefined));
+  const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
+  // /broken runs, then FAILS on its second read, its waits skipped: monid says nothing of a charge.
+  const failed = await paidCall("monid_run", () => monidRun("/broken", { sleep: async () => {} }), chargeOf, hold);
+  assert.match(failed.result?.error ?? JSON.stringify(failed), /failed inside monid \(FAILED\)/);
+  const next = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the FAILED call counts at its $0.001 hold, never unknown: the next request goes");
+  sent[0].end(0);
+  await next.result();
+  await settled();
+  // Sent, and its answer lost on the way back: it may have gone ahead at monid.
+  const lost = await paidCall("monid_run", () => monidRun("/person/enrich", { fetch: async () => { throw new Error("offline"); } }), chargeOf, hold);
+  assert.match(lost.result?.error ?? JSON.stringify(lost), /offline: the run may have gone ahead at monid/);
+  const after = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 2, "the two calls at their holds, $0.002, and this request's $0.001 fit the $0.0035 cap");
+  sent[1].end(0);
+  await after.result();
+  await settled();
+  const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 2, "not sent");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.002 of its \$0\.0035 cap, /, "refused for room, naming the holds as spent (#1539's words)");
 });
 
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */

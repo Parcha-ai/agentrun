@@ -15,7 +15,8 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOfBody, steersMidTurn } from "./harness.js";
+import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
+import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
@@ -24,18 +25,15 @@ import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, 
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { rowPaths } from "./workspace-paths.js";
-import { FAUX_WEB_ENV } from "./fetch-page.js";
-import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
+import { ASK_TOOL, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
-import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
+import { EFFORT_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
+import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -46,7 +44,7 @@ import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV,
 import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
-import { destroyRunBoxes, ensureRemoteBox, FAUX_BOX_ENV, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
+import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Emitted } from "./webhooks.js";
@@ -155,6 +153,9 @@ type RunMeta = {
   learning?: Learning;
   /** The run's end-of-run turn, saved before it is asked. */
   reflect?: Reflect;
+  /** A run whose cost was unknown when it ended: the sum of its charges whose cost is known, and how many have none
+   *  (costsofar/1), as its view said then, so a list row read from the store says it too. */
+  cost_so_far?: SoFar;
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -182,8 +183,6 @@ export type Run = {
   revision: string;
   /** The harness its revision names (pi when it names none, or its revision is gone). */
   harness: string;
-  /** Its agentic revision names the `write` tool: its end-of-run turn can add a note. */
-  writes?: boolean;
   /** The newest store entry the run has shown. */
   lastEntry?: number;
   /** What the live path's rows keep served (keepCommitted), for a learning row shown between its snapshots. */
@@ -202,6 +201,9 @@ export type Run = {
   rows: TimelineEvent[];
   /** The whole text of the run's newest assistant message: a row's text is cut at 2000 characters, an answer is not. */
   answerText?: string;
+  /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
+   *  notes learning reads (learning-run.ts). */
+  turnText?: Map<number, string>;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
   orphan?: number;
@@ -229,7 +231,7 @@ export type Run = {
   finishing?: Status;
   /** A stop on its way: from its mark to its abort's answer, or a server's abort of a saved stop's turn that outlived the
    *  server before it (finishStop). The abort withdraws every input queued behind that turn, so a message meanwhile waits
-   *  for it (stopAnswered). */
+   *  for it (message). */
   stopping?: true;
   endedAt?: string;
   outcome?: Status;
@@ -238,6 +240,8 @@ export type Run = {
   costUsd?: number | null;
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
+  /** The same decisions, apart: the sum of the costs that are known, and how many are not. */
+  decisionsPriced?: { known: number; unpriced: number };
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
    *  when they cannot be read: its timeline's usage row then reads unknown. */
   decisions?: Record<string, unknown>[] | null;
@@ -304,12 +308,19 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
 }
 
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries), and the newest entry. The
- *  end-of-run turn's are never the run's answer. */
+ *  end-of-run turn's are never the run's answer: each is noted by its entry in `turnText`, whole. */
 function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
-    if (isObject(value) && typeof value.id === "number") {
-      run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
-      if (reflects(run.meta.reflect, value.id)) continue;
+    const entry = isObject(value) && typeof value.id === "number" ? value.id : undefined;
+    if (entry !== undefined) run.lastEntry = Math.max(run.lastEntry ?? 0, entry);
+    // The end-of-run turn's entries are never the run's answer, nor a message it waits on: each assistant message's
+    // whole text is noted in `turnText`, by entry.
+    if (entry !== undefined && reflects(run.meta.reflect, entry)) {
+      if (isObject(value) && value.kind === "pi.assistant" && Array.isArray(value.model) && isObject(value.model[0])) {
+        const content = value.model[0].content;
+        (run.turnText ??= new Map()).set(entry, typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "");
+      }
+      continue;
     }
     if (!isObject(value) || typeof value.kind !== "string") continue;
     // A message a claude-agent or codex run accepted, and its end (harness-app.ts): one with no end still waits.
@@ -343,12 +354,13 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
   }
 }
 
-const shows = (r: TimelineEvent) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id);
+/** Read only on a run's `rows`, which hold no QUIET row (take). */
+const shows = (r: TimelineEvent) => r.kind !== "usage" && r.kind !== "phase";
 const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => shows(r) && r.agent_label !== LEARNING_LABEL);
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -380,6 +392,24 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   if (!usage) return stored === undefined ? 0 : stored;
   return usage.usage?.usd ?? null;
 }
+/** What a run whose cost is unknown has cost so far (costsofar/1): the sum of its charges whose cost is known, and how many
+ *  have none, from its usage row, plus a workflow's decisions (`decisions`: their known sum and how many are not known;
+ *  null when they could not be read, which says nothing). Undefined while the cost is known, when the row says neither
+ *  (an older run's), or when a workflow's decisions are unreadable. No ceiling is claimed. */
+export type SoFar = { so_far_usd: number; unpriced: number };
+export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: number; unpriced: number } | null): SoFar | undefined {
+  if (decisions === null) return undefined;
+  const usage = usageOf(rows)?.usage;
+  const models = !usage ? { known: 0, unpriced: 0 } : usage.usd !== null ? { known: usage.usd, unpriced: 0 } : usage.so_far_usd !== undefined && usage.unpriced !== undefined ? { known: usage.so_far_usd, unpriced: usage.unpriced } : undefined;
+  if (!models) return undefined;
+  const unpriced = models.unpriced + (decisions?.unpriced ?? 0);
+  return unpriced > 0 ? { so_far_usd: Math.round((models.known + (decisions?.known ?? 0)) * 1e6) / 1e6, unpriced } : undefined;
+}
+/** What a run's meta kept of its cost so far at its end, when it is well formed. */
+const soFarOfMeta = (meta: Partial<RunMeta> | null | undefined): SoFar | undefined => {
+  const kept = meta?.cost_so_far;
+  return kept && typeof kept.so_far_usd === "number" && Number.isFinite(kept.so_far_usd) && Number.isInteger(kept.unpriced) && kept.unpriced > 0 ? { so_far_usd: kept.so_far_usd, unpriced: kept.unpriced } : undefined;
+};
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
@@ -407,6 +437,13 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
 
 /** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
 const waitMark = (run: Run): string => (stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "";
+
+/** Waits for `work`, or until `deadline` (ms since the epoch), whichever comes first. */
+async function untilDeadline(work: Promise<unknown> | undefined, deadline: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([work, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
+  clearTimeout(timer);
+}
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -436,11 +473,11 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
-export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => Emitted;
+export type RunNotify = (event: (typeof WEBHOOK_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -680,7 +717,6 @@ export class Runs {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [], harness,
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
       ...(tooling ? { tooling } : {}),
-      ...(revision?.kind === "agentic" ? { writes: revision.body.tools.includes("write") } : {}),
     };
   }
 
@@ -738,7 +774,7 @@ export class Runs {
       // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
       // does (readDecisionCost): never its model nodes' total alone.
       try { run.decisions = durableDecisions(file); } catch { run.decisions = null; }
-      run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
+      run.llmRead = llmAnswers(await readNodeLog(run.dir)).length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
@@ -826,14 +862,7 @@ export class Runs {
 
   /** The test hooks startServe's options name, as a run's process and this server's own calls get them. */
   private fauxEnv(): NodeJS.ProcessEnv {
-    const { faux, fauxBrowser, fauxWeb, fauxJev, fauxParallel, fauxOpenrouter, fauxMonid, fauxExa, fauxHarness } = this.options;
-    return {
-      ...(faux ? { [FAUX_ENV]: faux, ...(fauxBrowser ? { [FAUX_BROWSER_ENV]: fauxBrowser } : {}), ...(fauxWeb ? { [FAUX_WEB_ENV]: fauxWeb } : {}), ...(fauxJev ? { [FAUX_JEV_ENV]: fauxJev } : {}), ...(fauxParallel ? { [FAUX_PARALLEL_ENV]: fauxParallel } : {}), ...(fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: fauxOpenrouter } : {}), ...(this.options.fauxUpstream ? { [FAUX_UPSTREAM_ENV]: this.options.fauxUpstream } : {}), ...(this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}) } : {}),
-      ...(fauxHarness ? { [FAUX_HARNESS_ENV]: fauxHarness } : {}),
-      ...(faux && fauxMonid ? { [FAUX_MONID_ENV]: fauxMonid } : {}),
-      ...(this.options.faux && this.options.fauxBox ? { [FAUX_BOX_ENV]: this.options.fauxBox } : {}),
-      ...(faux && fauxExa ? { [FAUX_EXA_ENV]: fauxExa } : {}),
-    };
+    return { ...this.options.fauxEnv };
   }
 
   /** Let go of a live run with `outcome`: SIGTERM, after aborting its turn when it is still working. */
@@ -1160,6 +1189,9 @@ export class Runs {
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
+        // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
+        // as the settled read counts it, never one in flight.
+        if (!run.working && stopped(run)) reducer.idle();
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.
         const rows = reducer.rows();
@@ -1186,9 +1218,7 @@ export class Runs {
     // And for its files, which its start copies before it launches it: within the time left.
     const copying = run.preparing;
     if (copying) {
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([copying, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
-      clearTimeout(timer);
+      await untilDeadline(copying, deadline);
       if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
     for (let launched = false; ; await sleep(100)) {
@@ -1201,9 +1231,7 @@ export class Runs {
         // A process that just went is being settled: its run may be over, so nothing starts it again before that.
         if (run.settles > 0) {
           // Within the time left: a settle waiting on a busy store must not hold this caller past its deadline.
-          let timer: NodeJS.Timeout | undefined;
-          await Promise.race([run.settling, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
-          clearTimeout(timer);
+          await untilDeadline(run.settling, deadline);
           if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
           continue;
         }
@@ -1508,6 +1536,7 @@ export class Runs {
     // already sums (request-start.ts).
     const paid = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
     if (paid.length) run.decisionCost = paid.every((cost) => typeof cost === "number") ? (paid as number[]).reduce((a, b) => a + b, 0) : null;
+    if (paid.length) run.decisionsPriced = { known: paid.reduce<number>((a, b) => a + (typeof b === "number" ? b : 0), 0), unpriced: paid.filter((cost) => typeof cost !== "number").length };
   }
 
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
@@ -1520,6 +1549,10 @@ export class Runs {
     await this.learning.beforeSettle(run, outcome);
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
+    // An unknown cost keeps what it cost so far beside it, for the list row read from the store.
+    const soFar = cost === null && !run.imported ? soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) : undefined;
+    if (soFar) run.meta.cost_so_far = soFar;
+    else delete run.meta.cost_so_far;
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
@@ -1800,10 +1833,10 @@ export class Runs {
     do {
       // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go
       // to the turn the abort is cutting, and be dropped with it, its row never coming.
-      if (run.stopping) await this.stopAnswered(run);
+      if (run.stopping) await this.waitWhile(() => run.stopping === true, 50, "The run is being stopped");
       // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
       // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
-      if (run.finishing && !run.outcome) await this.endWritten(run);
+      if (run.finishing && !run.outcome) await this.waitWhile(() => Boolean(run.finishing && !run.outcome), 100, "The run's end is still being written");
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     } while (run.stopping);
     const steers = this.steers(run);
@@ -1826,17 +1859,10 @@ export class Runs {
     return { mode, messageId };
   }
 
-  /** Waits, up to a request's deadline, for a stop in flight to answer. */
-  private async stopAnswered(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.stopping; await sleep(50)) {
-      if (Date.now() > deadline) throw new ApiError("unavailable", "The run is being stopped; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    }
-  }
-
-  /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
-  private async endWritten(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.finishing && !run.outcome; await sleep(100)) {
-      if (Date.now() > deadline) throw new ApiError("unavailable", "The run's end is still being written; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+  /** Waits, up to a request's deadline, while `holds` (checked every `everyMs`): else 503 `unavailable`, saying `why`. */
+  private async waitWhile(holds: () => boolean, everyMs: number, why: string): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); holds(); await sleep(everyMs)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", `${why}; try again.`, { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
   }
 
@@ -1885,7 +1911,7 @@ export class Runs {
   /** Waits, up to a request's deadline, until a live run's rows show every message sent to it, and any rows at all: its
    *  record has caught up with its process. Its end, a cancel or its process going ends the wait. */
   private async caughtUp(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.submitted > 0 || !run.rows.length; await sleep(100)) {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.submitted > 0 || !run.rows.length; await run.log.changed(100)) {
       if (!this.live(run) || run.finishing || run.outcome || run.cancel || Date.now() > deadline) return;
     }
   }
@@ -2032,7 +2058,11 @@ export class Runs {
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
     // An imported run's cost is its source's, for the whole session: its requests may not each have a price.
-    return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    const usd = run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost);
+    // Unknown: what it cost so far and how many charges have no price (costsofar/1), from its rows, else what it said at
+    // its end (a run carried back with no rows read since).
+    const soFar = usd === null && !run.imported ? (soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) ?? (run.rows.length ? undefined : soFarOfMeta(run.meta))) : undefined;
+    return { usd, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null, ...(soFar ?? {}) };
   }
 
   /** `Run`, as the contract shows it. `known`: its stored row as the caller already has it, so nothing is read; a run
@@ -2104,7 +2134,7 @@ export class Runs {
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
-      cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
+      cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
