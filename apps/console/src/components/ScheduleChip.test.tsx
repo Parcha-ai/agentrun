@@ -20,7 +20,7 @@ describe("a run a schedule started", () => {
     const html = inNames(createElement(RunsList, { runs: [run({ trigger: { id: "trg_1", firing_key: "fir_1" } }), run({ run_id: "r2", trigger: null })], agentName: (id: string) => id, onOpen: () => {} }));
     expect(text(html)).toContain("Schedule: nightly triage");
     expect(html).toContain('href="#/schedules/trg_1"');
-    expect(html.match(/Schedule: /g)).toHaveLength(1);
+    expect(text(html).match(/Schedule: /g)).toHaveLength(1);
   });
   it("names it by its id when the schedule is not in the list (deleted since, or not read yet)", () => {
     const html = inNames(createElement(RunsList, { runs: [run({ trigger: { id: "trg_gone", firing_key: "fir_1" } })], agentName: (id: string) => id, onOpen: () => {} }));

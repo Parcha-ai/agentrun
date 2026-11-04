@@ -2,6 +2,7 @@ import { Archive, ArchiveRestore, ArrowLeft, Ban, Square } from "lucide-react";
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
+import { ScheduleChip } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -53,6 +54,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
               : <span className="font-mono" title={costTitle(run.cost)}>{cost(run.cost)}</span>}
             <LearningChips run={run} link />
+            <ScheduleChip run={run} />
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>
