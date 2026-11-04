@@ -56,7 +56,7 @@ npm ci --ignore-scripts
 npm run build
 npm test
 npm run check   # build, generated-file checks, typecheck, all tests, examples, viewer
-npm run verify:packages   # packs each package into a clean consumer (install needs network; CI checks shard)
+npm run verify:packages   # packs each package into a clean consumer (install needs network; CI packages shard)
 ```
 
 - Most package suites import `dist/`, so rebuild before running one file with `node --test`.
