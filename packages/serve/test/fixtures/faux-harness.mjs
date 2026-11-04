@@ -67,6 +67,10 @@ export function script(spec) {
   if (endpoint) return [{ call: "monid_run", args: { provider: "faux", endpoint, input: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
+  // A first request that costs the amount the line names, then an answer: a cap that leaves too little after the first
+  // refuses the second.
+  const spend = /Spend (\d+\.\d+) on the first request\./.exec(text)?.[1];
+  if (spend) return [{ call: "read", args: { path: "a.txt" }, usd: Number(spend) }, { say: "Not sent.", usd: 0.001 }];
   // One request that costs more than its run's cap allows: a native search's input is held at an allowance, not a bound.
   if (/Overspend\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.5 }, { say: "Not sent.", usd: 0.001 }];
   // A chat whose second turn has a request of unknown price.

@@ -82,8 +82,12 @@ export default function reply(context, faux) {
   // A follow-up that asks the person: the question its turn ends on.
   if (users.length > 1 && last === "Ask me now.") return answered ? faux.message("Asked.") : faux.message(faux.toolCall("ask_person", { question: "Which one?" }), { stopReason: "toolUse" });
   // Asks the person through ask_person; for an agent without it the call fails, and the reply goes on without asking.
+  // "Pick a region once <file> exists." asks only once the test has made that file, and then makes `<file>.asked`.
   if (first.includes("Pick a region")) {
-    if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
+    const gate = /^Pick a region once (\S+) exists\.$/.exec(first)?.[1];
+    const ask = () => faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
+    // It says it asked by `<file>.asked`: the run's own store is its process's alone while it lives.
+    if (users.length === 1 && !answered) return gate ? untilExists(gate).then(async () => ((await import("node:fs")).writeFileSync(`${gate}.asked`, ""), ask())) : ask();
     return faux.message(JSON.stringify({ region: users.length === 1 ? "us" : last.trim() }));
   }
   // The run's process says which of these it sees: the server's token must not reach it, the rest must.

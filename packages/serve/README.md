@@ -377,13 +377,19 @@ gets them, in its environment or on its pipe.
 ## Models
 
 An agentic revision names its model as `provider/model-id` (`"model"` in its definition), or names none and runs on
-this host's default, `AGENT_MODEL`. A workflow revision names no model: each model node names a tier (`fast`, `default`
+this host's default, `AGENT_MODEL`. With no `AGENT_MODEL`, a model provider's key, the server's own or saved as a
+[tool key](#tool-keys), gives the default, the first of: `anthropic/claude-sonnet-5-5` with `ANTHROPIC_API_KEY`,
+`openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `openrouter/anthropic/claude-sonnet-5.5` with `OPENROUTER_API_KEY`. Each is
+its provider's capable everyday model, not its dearest ($2 in and $10 out per million tokens); set `AGENT_MODEL` for
+another. claude-agent takes only the Anthropic one and codex only the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
 `source` is `gateway`, `providers` or `faux` (the published document marks these as `models/2`, beyond the contract's
 `managed`, `chatgpt`, `env` and `faux`), and `route_prefix` is the routing prefix this server puts before a gateway's
-model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source. Where
-the models come from:
+model ids (`agent-model`), which a client takes off to show the gateway's own id, and null with any other source.
+`models` also says `ready`, whether a revision that names no model runs here, and when it does not, `needs`: `key` (no
+model provider's key, or none for the default's provider) or `model` (`AGENT_MODEL` names one this server does not
+know). Where the models come from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
@@ -630,7 +636,10 @@ A tool's key comes from one of two places. The server's own environment, through
 `MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by name:
 `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
 `PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`,
-`typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. `GET
+`typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
+provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
+`"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
+default model ([models](#models)); its `harnesses` are pi and the provider's own harness, of those this server runs. `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
 `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only what capabilities show
 this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
@@ -688,6 +697,19 @@ on your own machine or network works. Two kinds of message are POSTed to it: `ru
 need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once carried back).
 
+A run's end and its `run.ended` are one durable step. The server chooses the end's time once and gives it to the agent
+store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
+store has the end, so a receiver that reads the run back on its message (`GET /v2/runs/{id}`) reads it ended; while the
+store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
+stores it. The outbox (`DIR/webhook-outbox.json`) keeps, in the same write as each message, which end and which wait of
+each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
+not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine; one whose run's `serve.json` can't
+be read goes with an empty `title`), and a server that takes over a run
+queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
+`webhook-id`. The first start of a server that keeps this writes when it began (`DIR/end-notices-since`); an end before
+that time (an older server's) or before the webhook was set is never sent. A run is continued only once its end's
+`run.ended` is in the outbox on disk (`503` meanwhile), so a continued run's next end is its own, under its own id.
+
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
   "data": { "run_id": "…", "agent_id": "triage", "status": "input_required", "title": "…",
@@ -708,8 +730,9 @@ sealed under `AGENTRUN_SEAL_KEY` in `DIR/webhook.json` (0600), so with no seal k
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
 spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, then logged as failed
-(`event=webhook condition=delivery_failed`). A `410 Gone` turns the webhook off (`disabled` in `GET`, and the log says
-why) until a `PUT` sets it again. Pending messages are kept in `DIR/webhook-outbox.json`, so the next server goes on with
+(`event=webhook condition=delivery_failed`). Each message goes on its own tries, so two queued close together can
+arrive in either order: a receiver orders them by `webhook-timestamp`, or reads the run (`GET /v2/runs/{id}`). A
+`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in `DIR/webhook-outbox.json`, so the next server goes on with
 them after a restart; a message can then come twice, under the same `webhook-id`. `GET /v2/settings/webhook/deliveries`
 lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
 `POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
@@ -1151,16 +1174,63 @@ it at its next start. `GET /stats` counts the runs that tried to learn under `le
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
+### What a person sees and controls
+
+A person reads and changes an agent's learning through this server's own routes (`learning/1` in `/v2/openapi.json`),
+with the token, an archived agent's too:
+
+- `GET /agents/{agent_id}/learning`: `main`'s head, `MEMORY.md` as `index`, the first 50 notes (active first, then
+  newest first) and the first 20 changes on `main` (newest first, each `by: {run}` from its `Run-Id` trailer or
+  `{user: true}`, with its commit, time, reason and files), and how the agent's runs that tried to learn fared
+  (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them: from the learning ledger and the
+  runs the server holds, never a run's files. An agent with no folder answers `main: null` and empty pages.
+  `GET .../learning/notes?cursor=&limit=&status=` and `GET .../learning/log?cursor=&limit=` page on, up to 200 at a
+  time; a cursor reads the same commit its first page did.
+- `GET .../learning/files/{file}`: one note (or `MEMORY.md`) on `main` as `text/markdown`, with its `ETag`, the note's
+  git blob id.
+- `PUT .../learning/files/{file}` with the note's whole text (as `text/markdown` or `text/plain`, or as
+  `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
+  or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`. A stale
+  ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
+  passes the same structural checks as a run's (`checkNote`, in `src/learn/check.ts`), and no grader: a refusal is 400 with
+  `problems`, and nothing is written. A retire is how a person revokes a note, so it checks the note's format alone:
+  its front matter as retired, and the note cap with the status line on top. A secret shape or one of the server's
+  values in its name or text never blocks it (its answer and the log are cut of them as any read is), and a leaking
+  note is replaced by retiring it and creating a clean one. Each write is one commit on `main` in the agent's queue,
+  `learning: <edited, created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md`
+  rebuilt, `main` moved only from the commit it was made on, and the folder's files brought in line; it answers the
+  note as it now is, with its new `ETag`. `MEMORY.md` itself is never written (400).
+- `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the grader's verdict with its item for
+  each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
+  problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
+  `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its
+  seed, each file's patch as git writes it from the first `@@`, or `withheld` (`too_large`, `secret`).
+
+Every read is git plumbing at one commit, with no optional lock, and every text it answers is cut of the server's
+secrets as they are then; a file name holding one (a note named after a value made secret since, say) reads
+`[redacted]` whole, in the notes (`file`, `superseded_by`), the log's `files` and a diff's `path`, and a write's
+`Location` leaves it out, while its route still answers the real name to a caller who knows it. A commit's notes are
+parsed once and kept, for the few commits last read, so the view and every page at that commit read no note again; a
+log page reads only its own commits (`git log` from the cursor's offset, at most `limit`), and the log's `total` is
+counted once a commit. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+followed: a read or a write there answers `500`, and nothing is written.
+
 ## Spend cap
 
 An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 the worst case of each request still in flight, plus this request's worst case must stay within it, or the request is
 not sent and the run ends `failed` with `spend_cap_reached`. A request's worst case is its input bound at the higher of
-the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the model's
-whole output ceiling at its output price: its max output tokens, else its context window, clamped on pi to what the
-window leaves. A request asking for fewer output tokens is held at the ceiling all the same, since a thinking budget can
-raise any request to it. The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
+the model's input and cache-write prices (the provider may bill any of the input as a cache write), plus the output it is
+sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
+output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
+ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
+own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent and codex written into its body
+by the model proxy (`max_tokens` and `thinking.budget_tokens`, or `max_output_tokens`). The limit is what it is held at,
+so the cap stays exact. A request is refused only when what is left cannot buy its least: 1,024
+tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
+where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
+budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
 a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
 server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
 the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
@@ -1188,8 +1258,16 @@ process counts it the same: a capped pi run stopped and sent another message, or
 goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
 no one knows.
 
-Pricing the whole output ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's
-worst case is about $0.96, so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
+A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
+cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
+once a run has spent: "Not sent: the run has spent $0.45 of its $0.50 cap, and its next Claude Sonnet 5.5 request needs at
+least $0.03. Raise the cap to at least $0.48 to run it." The cap that would run it is what was spent, what requests still
+answering hold, and the request's least, rounded up to the cent so that it is enough; the model is named as its catalog
+names it, without a vendor's prefix. The error's code is `spend_cap_reached (out of budget): ` before those words: pi-ai's
+retry reads only an error's text, and takes "out of budget" as final whatever digits the words hold. A request the cap
+refused was never sent: the run's usage counts no request for it, and a run whose only request was refused says "no model
+request sent". A reply the limit cut short says so on the run's timeline: "The reply stopped at 1,500 tokens: all that
+the $0.15 left of the run's $0.50 cap could buy."
 
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search does not run under a

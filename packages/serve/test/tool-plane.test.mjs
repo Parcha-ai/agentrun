@@ -5,9 +5,10 @@
 import assert from "node:assert/strict";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS } from "../dist/tools.js";
-import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, settingsIssues, ToolSettings } from "../dist/tool-plane.js";
+import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, resolvesView, settingsIssues, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -80,6 +81,31 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
   assert.deepEqual(planeFor(env, { tools: ["web_search"], workflow: true }, {}), { web_search: "exa-keyless" }, "a workflow searches keyless, never on the default model a fast node may not use");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], workflow: true }, { web_search: { provider: "parallel" } }), { web_search: "parallel" }, "Parallel picked: as for any run");
   assert.deepEqual(planeFor(env, { tools: ["web_search"], workflow: true }, { web_search: { provider: "native" } }), { web_search: "unavailable: no native search for a model with none named" }, "native only: refused, never one node's model");
+});
+
+// A model key alone (no AGENT_MODEL) gives the host its default model (model.ts hostModel): a run that names none runs on
+// it, so its search resolves on it too. Native search asks that model's provider; auto is native there, never keyless.
+test("with only a model key, a run that names no model searches on the key's default model: native asks its provider, auto is native", () => {
+  const anthropic = { ANTHROPIC_API_KEY: "not-a-secret" };
+  const openai = { OPENAI_API_KEY: "not-a-secret" };
+  assert.deepEqual(planeFor(anthropic, { tools: ["web_search"] }, { web_search: { provider: "native" } }), { web_search: "native", model: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual(planeFor(openai, { tools: ["web_search"] }, {}), { web_search: "native", model: "openai/gpt-6.1-sol" }, "auto: native on the key's default, not keyless Exa");
+  assert.deepEqual(planeFor(openai, { tools: ["web_search"], model: "anthropic/claude-sonnet-4-5" }, {}), { web_search: "native", model: "anthropic/claude-sonnet-4-5" }, "the revision's model over the key's default");
+  // What capabilities and the tool catalog show: per harness, on that harness's default.
+  assert.equal(resolvesView(openai, {}).web_search.pi, "native");
+  assert.equal(resolvesView(anthropic, { web_search: { provider: "native" } }).web_search.pi, "native");
+});
+
+test("a pi agent that names no model and picks native search runs on a server whose only model is a saved key", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENT_MODEL", "AGENT_MODEL_BASE_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
+  const { api } = await serve(t);
+  // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: `not-a-secret-${"search"}` } })).status, 204);
+  const made = await api("POST", "/agents", agent("key-searcher", { tools: ["web_search"], tool_settings: { web_search: { provider: "native" } } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.warnings ?? [], [], "no warning: its search has a model to ask");
+  const run = await api("POST", "/agents/key-searcher/runs", { input: { content: "Search for the news." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
 });
 
 test("settings are checked before anything is kept: an unknown capability, a provider not offered for it, and a permission, which waits for the tool gate", () => {

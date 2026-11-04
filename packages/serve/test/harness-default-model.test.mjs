@@ -1,7 +1,8 @@
 // The demo: capabilities name each harness's default model, as a save and a run resolve it (runnable.ts harnessModel),
 // never a second copy of the rule. On a server with serve's gateway (AGENT_MODEL_BASE_URL) and Anthropic's endpoint
-// both set, pi and codex run the gateway's default when a definition names none, and claude-agent has none: it never
-// takes the gateway's model. A save agrees: a claude-agent agent naming no model saves with a warning on its model.
+// both set, pi and codex run the gateway's default when a definition names none, and claude-agent never takes the
+// gateway's model: it takes its own key's default (model.ts hostModel). A save agrees: a claude-agent agent naming no
+// model saves with no warning on its model.
 import assert from "node:assert/strict";
 import { copyFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import { agent, scratch, serve } from "./support.mjs";
 
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 
-test("on a gateway server, codex shows the gateway's default model and claude-agent shows none; a save says the same", { timeout: 60_000 }, async (t) => {
+test("on a gateway server, codex shows the gateway's default model and claude-agent its own key's default; a save says the same", { timeout: 60_000 }, async (t) => {
   const anthropic = await fakeAnthropic({ reply: () => ({ text: "unused" }) });
   t.after(() => anthropic.close());
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
@@ -36,14 +37,14 @@ test("on a gateway server, codex shows the gateway's default model and claude-ag
   const caps = (await api("GET", "/capabilities")).body;
   assert.deepEqual(caps.harnesses.map((h) => [h.id, h.available, h.default_model]), [
     ["pi", true, "agent-model/gpt-test"],
-    ["claude-agent", true, null],
+    ["claude-agent", true, "anthropic/claude-sonnet-5-5"],
     ["codex", true, "agent-model/gpt-test"],
     ["opencode", true, "agent-model/gpt-test"],
   ]);
   assert.equal(caps.models.default, "agent-model/gpt-test", "pi's is the server's default");
   const claude = await api("POST", "/agents", agent("claude", { harness: "claude-agent" }));
   assert.equal(claude.status, 201, JSON.stringify(claude.body));
-  assert.ok((claude.body.warnings ?? []).some((w) => w.field === "definition.model"), JSON.stringify(claude.body.warnings));
+  assert.deepEqual((claude.body.warnings ?? []).filter((w) => w.field === "definition.model"), [], "it runs on its key's default");
   const codex = await api("POST", "/agents", agent("coder", { harness: "codex" }));
   assert.equal(codex.status, 201, JSON.stringify(codex.body));
   assert.deepEqual(codex.body.warnings ?? [], [], "it runs on the default capabilities name");

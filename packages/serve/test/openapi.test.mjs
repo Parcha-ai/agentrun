@@ -376,6 +376,22 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.notDeepEqual(schemaProblems(doc, stats, { ...counted, dropped: { conflict: 1 } }), []);
 });
 
+test("what a person sees and controls of an agent's learning is learning/1: each route marked, its writes' 412 and 428, a refused note's problems on the error, and precondition_required among the codes", async (t) => {
+  const { doc } = await served(t);
+  const routes = { "/agents/{agent_id}/learning": ["get"], "/agents/{agent_id}/learning/notes": ["get"], "/agents/{agent_id}/learning/log": ["get"], "/agents/{agent_id}/learning/files/{file}": ["get", "put"], "/agents/{agent_id}/learning/files/{file}/retire": ["post"], "/runs/{run_id}/learning": ["get"], "/runs/{run_id}/learning/diff": ["get"] };
+  for (const [path, methods] of Object.entries(routes)) {
+    for (const method of methods) assert.equal(doc.paths[path][method]["x-agentrun-serve"], "learning/1", `${method.toUpperCase()} ${path}`);
+  }
+  for (const write of [doc.paths["/agents/{agent_id}/learning/files/{file}"].put, doc.paths["/agents/{agent_id}/learning/files/{file}/retire"].post]) {
+    assert.ok(["200", "400", "412", "428"].every((status) => write.responses[status]), write.operationId);
+    assert.ok(write.responses["200"].headers.ETag, `${write.operationId} answers the note's ETag`);
+  }
+  assert.ok(doc.paths["/agents/{agent_id}/learning/files/{file}"].put.responses["201"], "a create is 201");
+  assert.equal(doc.components.schemas.ErrorBody.properties.problems["x-agentrun-serve"], "learning/1");
+  assert.ok(doc.components.schemas.ErrorCode.enum.includes("precondition_required"));
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("ErrorBody.problems") && doc.info["x-agentrun-serve"].fields.includes("ErrorCode.precondition_required"));
+});
+
 test("an agent's home is its own addition, home/1: its routes and capabilities.home marked and listed, beside the contract's packed home, and its answers meet the document", async (t) => {
   const { api, baseUrl, token, data } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();

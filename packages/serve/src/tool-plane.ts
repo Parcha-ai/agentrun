@@ -16,6 +16,7 @@ import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import type { InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
+import { hostModel } from "./model.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -55,7 +56,8 @@ export const HOSTED_SEARCH_PROVIDERS: readonly string[] = ["anthropic", "openai"
 /** A run's facts its capabilities resolve from. */
 export type ResolveInput = {
   harness: string;
-  /** The run's model as named, `provider/model-id`: the revision's, else the server's AGENT_MODEL. */
+  /** The run's model as named, `provider/model-id`: the revision's, else the host's for its harness (hostModel: a tier
+   *  variable or AGENT_MODEL it runs, else a model key's default). */
   model?: string;
   /** Its model requests go through a gateway (AGENT_MODEL_BASE_URL), not the provider's own API (pi's). */
   gateway: boolean;
@@ -97,11 +99,15 @@ export const isUnavailable = (resolution: Resolution | undefined): resolution is
 const served = (env: NodeJS.ProcessEnv) => ({ gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey: PARALLEL_KEY_ENV in decisionKeysOf(env) });
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
- *  (default the server's AGENT_MODEL): what capabilities and the tool catalog show. */
-export function resolvesView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}, model = env.AGENT_MODEL): Record<Pickable, Record<HarnessId, Resolution>> {
+ *  (default each harness's host model, the one a run that names none runs on: hostModel): what capabilities and the
+ *  tool catalog show. */
+export function resolvesView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}, model?: string): Record<Pickable, Record<HarnessId, Resolution>> {
   return Object.fromEntries(PICKABLE.map((name) => {
-    const input = { ...served(env), ...(model ? { model } : {}), ...picked(name, settings, overrides) };
-    return [name, Object.fromEntries(HARNESSES.map((harness) => [harness, resolveCapability(name, { ...input, harness })]))];
+    const input = { ...served(env), ...picked(name, settings, overrides) };
+    return [name, Object.fromEntries(HARNESSES.map((harness) => {
+      const on = model ?? hostModel(env, "default", harness);
+      return [harness, resolveCapability(name, { ...input, ...(on ? { model: on } : {}), harness })];
+    }))];
   })) as Record<Pickable, Record<HarnessId, Resolution>>;
 }
 
@@ -124,7 +130,9 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const harness = tooling.harness ?? DEFAULT_HARNESS;
   // A workflow's model nodes may each run on another tier's model, and a native search asks one model's provider: a
   // workflow's search resolves with no model (keyless Exa, or Parallel where picked), never on a model a node may not use.
-  const model = tooling.workflow ? undefined : (tooling.model ?? env.AGENT_MODEL);
+  // A run that names no model runs on the host's for its harness (hostModel: a model key's default when no AGENT_MODEL
+  // it runs is set), so its search resolves on that one.
+  const model = tooling.workflow ? undefined : (tooling.model ?? hostModel(env, "default", harness));
   const plane: Plane = {};
   const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {
