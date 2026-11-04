@@ -834,6 +834,10 @@ What can go wrong, told apart:
 - `424 upstream_failed`: the server could not be reached, did not answer within 15 s (30 s for the whole listing),
   answered 5xx or more than 4 MiB at once, or failed to list its tools; `details.status` is its HTTP status, if any.
 
+A server is kept with at most 500 tools and 1 MiB of tool names, descriptions and schemas: past either, the listing
+stops at that page and the answer is `422 input_invalid` (field `url`, reason `too_many_tools` or `tools_too_large`),
+naming the limit and how many tools were read.
+
 `PUT /v2/settings/mcp-servers/{name}` previews the same way, then keeps the server: its URL, the tools it listed (the
 snapshot an agent will be shown) and its credential. A name is lowercase letters, digits and dashes, starting with a
 letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. Each credential header's value is
