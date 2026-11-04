@@ -18,6 +18,25 @@ const SAID = {
   "claude-agent": "claude-agent: Failed to authenticate. API Error: 401 User not found",
   codex: "codex: unexpected status 401 Unauthorized: User not found, url: http://127.0.0.1:43269/v1/responses",
 };
+/** What each harness said for OpenRouter's 401 on 2026-11-04, on this route with a dummy key (#1537's live-proof dry run):
+ *  pi-ai's chat completions, the pinned Claude CLI and the pinned Codex binary, as each run's error carried it. */
+const SAID_LIVE = {
+  pi: '401: {"message":"User not found.","code":401}',
+  "claude-agent": "claude-agent: Failed to authenticate. API Error: 401 User not found.",
+  codex: "codex: unexpected status 401 Unauthorized: User not found., url: http://127.0.0.1:37839/v1/responses",
+};
+/** pi-ai's words for serve's gateway's 401 (AGENT_MODEL_BASE_URL, its Responses API): the provider's name, then the
+ *  status in parentheses. */
+const SAID_GATEWAY = 'agent-model API error (401): {"message":"User not found","code":401}';
+/** Errors holding a bare 401 that is no provider's status: a count, a file name, a duration, money, and another service's
+ *  HTTP 401 (a tool's fetch). None of them is a refused model key. */
+const NOT_REFUSALS = {
+  "a count": "the tool returned 401 rows",
+  "a file name": "write failed: ENOENT: no such file or directory, open 'report-401.txt'",
+  "a duration": "timed out after 401 ms",
+  money: "spend_cap_reached: the next model request was not sent: the run has spent $401 of its $500 cap",
+  "another service's 401": "GET https://example.com/x answered 401",
+};
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 
 test("kr-1: on OpenRouter's key alone, a 401 names OPENROUTER_API_KEY and where to set it, on every harness, with the provider's first sentence only", async () => {
@@ -65,3 +84,20 @@ test("kr-4: a key the provider echoes across the cut at 200 characters leaves no
   assert.ok(said?.startsWith("OpenRouter refused OPENROUTER_API_KEY (401: "), said);
   for (let at = 0; at + 8 <= secretPart.length; at++) assert.ok(!said.includes(secretPart.slice(at, at + 8)), `"${secretPart.slice(at, at + 8)}" of the key is in: ${said}`);
 });
+
+test("kr-5: each 401 shape the harnesses give today is a refused key: OpenRouter's through pi-ai, the Claude CLI and the Codex binary, and pi-ai's for serve's gateway", async () => {
+  const { keyRefusal, runKeyOf } = await import("../dist/key-refusal.js");
+  for (const [harness, text] of Object.entries(SAID_LIVE)) assert.equal(keyRefusal(text, runKeyOf(ONLY, harness)), OPENROUTER, `${harness}: ${text}`);
+  assert.equal(keyRefusal(SAID_GATEWAY, runKeyOf({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m" })), "The gateway at AGENT_MODEL_BASE_URL refused AGENT_MODEL_API_KEY (401: User not found): set it where AgentRun starts.");
+});
+
+for (const [what, text] of Object.entries(NOT_REFUSALS)) {
+  test(`kr-6 (${what}): an error holding a bare 401 that is no provider's status is left as it is, on every harness: ${text}`, async () => {
+    const { keyRefusal, runKeyOf } = await import("../dist/key-refusal.js");
+    for (const harness of ["pi", "claude-agent", "codex"]) {
+      // As each harness's run error carries it: claude-agent's and codex's adapters name the harness first.
+      const said = harness === "pi" ? text : `${harness}: ${text}`;
+      assert.equal(keyRefusal(said, runKeyOf(ONLY, harness)), undefined, said);
+    }
+  });
+}
