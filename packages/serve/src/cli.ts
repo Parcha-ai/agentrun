@@ -6,20 +6,24 @@ import { secret } from "./secrets.js";
 // Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
+import { spawn } from "node:child_process";
 import { defaultData } from "./files.js";
+import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
                     is the only lock, so put TLS in front of it
-  --port N          the port (default ${DEFAULT_PORT}; 0 is any free port)
+  --port N          the port (default: the first free one from ${DEFAULT_PORT}; 0 is any free port)
+  --open            open the console in this machine's browser once the server listens (not in CI, nor on Linux with no
+                    display)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
   --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
@@ -89,6 +93,7 @@ try {
       data: { type: "string" },
       listen: { type: "string" },
       port: { type: "string" },
+      open: { type: "boolean", default: false },
       faux: { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
@@ -139,7 +144,7 @@ const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
 let serve: Serve;
 try {
   serve = await startServe({
-    data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true, ...(publicUrl ? { publicUrl } : {}) } : {}),
@@ -153,6 +158,9 @@ const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // With a public address the setup link and its code are printed as the code is made (owner.ts).
 if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+// The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
+// and the browser's history.
+if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

@@ -56,7 +56,8 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | --- | --- | --- |
 | `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
-| `--port N` | `7340` | The port. `0` is any free port. |
+| `--port N` | the first free port from `7340` | The port. `0` is any free port. |
+| `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
