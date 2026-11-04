@@ -476,7 +476,7 @@ describe("App, the playground when its agents can't be read", () => {
 // card) shows a bar while capabilities say no model is ready, and it goes by itself once they say ready.
 describe("App, the no-model bar", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const serve = (models: () => Record<string, unknown>, routes = true) => {
+  const serve = (models: () => Record<string, unknown>, routes = true, stats?: unknown) => {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
@@ -484,7 +484,7 @@ describe("App, the no-model bar", () => {
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
       if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(routes ? { tool_keys: { routes: true, at_rest: "sealed" } } : {}) }, models: models() });
       if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
-      if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
+      if (path === "/v2/stats") return stats ? json(200, stats) : json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
@@ -571,6 +571,28 @@ describe("App, the no-model bar", () => {
     await act(async () => { hold!(json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } }, models: { source: "providers", default: null, ready: false, needs: "key" } })); });
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect(bar(host)).toBeNull();
+  });
+
+  // QA: the first screen's start-here step told the person to restart with AGENT_MODEL and reload, under a key card
+  // that saves a key with no restart. Where the server keeps keys it points at the card; where it keeps none, the env.
+  it("points the first screen's model step at the key card above where the server keeps keys, and keeps the env text where it keeps none", async () => {
+    const step = (host: HTMLElement) => host.querySelector('section[aria-label="Start here"]');
+    // Nothing of the owner's has run yet, so the first screen shows the start-here panel.
+    const fresh = { agents: 0, runs: { total: 0, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 0 }, archived: { agents: 0, runs: 0 }, analytics: { ...ANALYTICS, by_source: [] } };
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, fresh);
+    const keys = await mount("");
+    await until(() => !!step(keys)?.textContent?.includes("Add a model key"));
+    expect(keys.querySelector('section[aria-label="Model key"]')).not.toBeNull();
+    expect(step(keys)?.textContent).toContain("Add a model key in the card above, and the templates here run in one click.");
+    expect(step(keys)?.textContent).not.toContain("AGENT_MODEL");
+    expect(step(keys)?.textContent).not.toContain("reload");
+    act(() => root!.unmount()); root = undefined;
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false, fresh);
+    const none = await mount("");
+    await until(() => !!step(none)?.textContent?.includes("Add a model key"));
+    expect(step(none)?.textContent).toContain("AGENT_MODEL");
+    expect(step(none)?.textContent).toContain("Then reload this page");
+    expect(step(none)?.textContent).not.toContain("card above");
   });
 
   it("shows nothing while a model is ready", async () => {
