@@ -610,7 +610,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     },
     headers: (name) => mcpServers.headers(name),
   };
-  const mcpTools = (server: string) => mcpSource.server(server)?.tools.map((tool) => tool.name);
+  const mcpTools = (server: string) => mcpSource.server(server)?.tools;
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);

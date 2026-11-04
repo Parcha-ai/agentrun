@@ -866,7 +866,8 @@ method, tool and whether an `Authorization` header came, never its value.
 An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
 (`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
 saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
-`mcp__<server>__<tool>`, is over 52 characters. pi and claude-agent run them (`features.mcp_client.harnesses`); on
+`mcp__<server>__<tool>`, is over 52 characters, or a tool whose `x-mcp-header` declaration cannot be sent (on a
+property not reached through `properties` alone, not a string, integer or boolean, not a header name, or declared twice). pi and claude-agent run them (`features.mcp_client.harnesses`); on
 another harness the save warns that they are not bound there yet, and a run is refused. Until the tool gate lands, a
 grant means the tool runs.
 
@@ -885,7 +886,9 @@ grant means the tool runs.
   those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
   makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
   offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
-- **A call** goes to the pinned URL alone: no redirect is followed, at most 4 MiB is read, and it may take 120 s. The
+- **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
+  `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
+  redirect is followed, at most 4 MiB is read, and it may take 120 s. The
   model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
   filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
   model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
