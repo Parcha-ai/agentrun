@@ -1,7 +1,8 @@
 /** The bar every page but the first screen shows while capabilities' `models.ready` is false (the first screen has the key
  *  card, ModelKeyCard): no agent that names no model runs here yet, and what would fix it. `needs` `model`: the server's
- *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes), so
- *  one can be added in Settings, which the bar leads with: a saved key reaches the next run with no restart. */
+ *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes, and a
+ *  seal key: `at_rest` "sealed"), so one can be added in Settings, which the bar leads with: a saved key reaches the next
+ *  run with no restart. */
 export function NoModelBanner({ needs, settings }: { needs?: "key" | "model" | null; settings: boolean }) {
   return (
     <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-[13px] text-warning-text md:px-8">
