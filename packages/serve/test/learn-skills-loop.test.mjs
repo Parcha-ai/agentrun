@@ -144,3 +144,17 @@ test("a run whose skill changed on main after it started never writes over it: r
   assert.match(show(repo, "skills/find-policies/SKILL.md"), /^status: retired$/m, "the person's retire stands");
   assert.ok(!show(repo, "skills/find-policies/SKILL.md").includes("Then the site map."), "the run's text is not on main");
 });
+
+test("a note the run marked risky: true waits for its owner's OK through the server's own grade, beside a skill: the grade reads the note's text for the mark, not just its name", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await server(t);
+  const RISKY = note("Refund limit", "Use when staff ask whether a refund needs a manager", "Staff can refund up to $250 on their own.\n", "risky: true\n");
+  assert.match(RISKY, /^risky: true$/m);
+  const text = ["Keeping two things.", `\`\`\`note refund-limit.md\n${RISKY}\`\`\``, `\`\`\`\`skill find-policies\n${SKILL}\`\`\`\``, "Reflected."].join("\n\n");
+  await made(api, answering("marked", text));
+  const { view } = await ended(api, await started(api, "marked"));
+  assert.equal(view.learning?.state, "merged", JSON.stringify(view.learning));
+  assert.deepEqual((view.learning.pending ?? []).map((n) => n.file), ["refund-limit.md"], "the marked note waits, though the grader kept it");
+  const repo = repoOf(data, "marked");
+  assert.match(show(repo, "refund-limit.md"), /^status: pending$/m);
+  assert.ok(!/^risky:/m.test(show(repo, "refund-limit.md")), "the mark is not kept");
+});

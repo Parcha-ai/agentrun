@@ -119,6 +119,11 @@ const isGraded = (file: unknown): file is string => {
 export const gradedFiles = (proposed: readonly NoteText[], files: readonly NoteText[] = []): string[] =>
   [...proposed.map((note) => note.file), ...files.map((file) => file.file).filter((file) => learnedPlace(file)?.kind !== "readme")];
 
+/** The items the grader judges, with their texts, in gradedFiles' order: what parseVerdict reads, a note's text for the
+ *  mark its run's turn may have set (runMarkedRisky). */
+export const gradedItems = (proposed: readonly NoteText[], files: readonly NoteText[] = []): NoteText[] =>
+  [...proposed, ...files.filter(({ file }) => learnedPlace(file)?.kind !== "readme")];
+
 /** The skill and draft files, checked as a checked proposal holds them: each a skill's SKILL.md or a draft's two files,
  *  each named once, within its cap and with no unseen character; at most CAPS.skills skills and CAPS.workflows drafts,
  *  each draft whole. */

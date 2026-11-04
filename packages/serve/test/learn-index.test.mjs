@@ -14,7 +14,7 @@ import * as skills from "../dist/learn/skills.js";
 
 const VALUES = {
   check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy"],
-  grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradedFiles", "gradePrompt", "parseVerdict"],
+  grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradedFiles", "gradedItems", "gradePrompt", "parseVerdict"],
   invisible: ["hiddenCharacter"],
   reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt", "SKILL_BLOCK", "WORKFLOW_BLOCK"],
   notes: ["activeNotes", "approve", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "mergedNote", "NOTE_FILE", "NOTE_ORIGINS", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
