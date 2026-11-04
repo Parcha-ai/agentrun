@@ -853,9 +853,9 @@ another format) is never written over: the list answers `servers: []` with `file
 route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
 says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
 
-`test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `node
-test/fixtures/fake-mcp-server.mjs [--legacy] [--token T]` prints its URL; it serves `add`, `slow_write`, `delete_thing`
-and `paid`, and logs each request's method, tool and whether an `Authorization` header came, never its value.
+`test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
+answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
+method, tool and whether an `Authorization` header came, never its value.
 
 ### Agents call a server's tools
 
