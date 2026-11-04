@@ -257,7 +257,8 @@ export type Run = {
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
-  /** The store has it running and it has no serve.json: its server went down before it was set up, so it never launched. */
+  /** The store has it running and its serve.json holds no input: its server went down before it set the run up (whose
+   *  first write is the input), so it never launched. A serve.json written since (its failure, a stop) never adds one. */
   notSetUp?: boolean;
   /** Its files being copied into its work/ before its first launch, until they are: nothing launches it meanwhile (a
    *  request that would waits for it), and nothing but a cancel settles it. */
@@ -725,7 +726,7 @@ export class Runs {
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
-    run.notSetUp = row.state === "running" && !existsSync(join(dir, RUN_META));
+    run.notSetUp = row.state === "running" && !isObject(stored?.input);
     const record = await this.record(run);
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
