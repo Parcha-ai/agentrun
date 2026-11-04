@@ -59,7 +59,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
-| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
@@ -198,17 +198,32 @@ through `POST /v2/agents`. Their earlier runs stay readable where you moved them
 
 ## Capacity and health
 
-Each run is a process of its own, about 67 MiB of private memory (measured with the faux model; an independent test of
-the image measured 20 runs at 1.22 GiB), beside the server's own 100 MiB or so. So the server caps the runs it holds at
-once (each run with a live process: working, or waiting for an answer), by default
+Each run is a process of its own, and how much memory it takes depends on its harness. The server admits runs by
+memory: each run that holds a live process (working, or waiting for an answer) reserves its harness's size out of the
+container's limit when it has one (cgroup), else the machine's, less the server's own 128 MiB.
 
-    max_concurrent_runs = max(1, floor((memory − 128 MiB) / 72 MiB))
+| Harness | Reserved per run | Measured per run |
+| --- | --- | --- |
+| pi | 128 MiB | up to 106 MB |
+| codex | 192 MiB | up to 143 MB |
+| claude-agent | 288 MiB | up to 215 MB |
 
-where memory is the container's limit when it has one (cgroup), else the machine's: 5 runs on a 512 MB instance, 12 on
-1 GB, 112 on 8 GB. `--max-runs N` or `AGENTRUN_MAX_RUNS` sets it instead; capabilities report it in
-`limits.max_concurrent_runs`. Over it, `POST /agents/{id}/runs` is `429 rate_limited` with `retry-after` and nothing
-starts: there is no queue, so the client tries again once a run ends. A message to a run already going is never
-refused. A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
+The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
+in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
+once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28. A start that does not fit in what is left is
+`429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
+queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
+on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, and its runs are `409
+agent_not_runnable` with that reason. pi always has one place, however small the host.
+
+`--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
+apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
+(`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
+the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
+memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails
+with why if it was working, and a message to it is `409 agent_not_runnable`.
+
+A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
 counts only its own runs, and a run could be relaunched twice).
 
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
@@ -225,9 +240,10 @@ of a process that is gone is not trusted.
 
 ## Sandbox
 
-A sandbox agent's `read`, `write`, `edit` and `bash` run in a box, a machine apart from this server: today a Docker
-container made for each run, which binds the run's `work/` and nothing else, with no network and no key. The agent's
-loop, its log, its model calls and every key stay on the server. An agent says so in its [place](#place); the server
+A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
+which binds the run's `work/` and nothing else, with no network and no key. Its `read`, `write` and `edit` work on that
+same `work/`: on this server, where the box binds it and this server holds directory handles (Docker on Linux), else in
+the box. The agent's loop, its log, its model calls and every key stay on the server. An agent says so in its [place](#place); the server
 says which [boxes](#boxes) it has; [a run in a Docker box](#a-run-in-a-docker-box) is what the container gets;
 [the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
 end to end. The [published image](#in-the-published-image) cannot host boxes yet.
@@ -235,9 +251,9 @@ end to end. The [published image](#in-the-published-image) cannot host boxes yet
 ### Place
 
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
-the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's file and shell tools (`read`,
-`write`, `edit`, `bash`) run in the named box, while the agent's loop, its log and every key stay on the server, whatever
-its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
+the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's `bash` runs in the named box and its
+file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
+while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). A definition that
 names none runs in this host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one
 that names a place keeps it, `runner` included. An edit that names no place keeps the agent's.
@@ -260,8 +276,14 @@ request's `place` and `capabilities.places` `x-agentrun-serve: "place/1"`.
 ### A run in a Docker box
 
 With `AGENTRUN_BOXES=docker` and a Docker daemon this server's user may use, a run whose place is
-`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `read`, `write`, `edit` or `bash` call
-(a run with no such call gets none). Those four tools are pi's own, on every harness; their calls run in the container.
+`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
+container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
+run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
+they follow no link anywhere on the way (one pointing inside `work/` included), take only a regular file with one hard
+link, and write through a temporary file renamed over the old one, keeping its mode (a new file is `0644`). A refusal
+says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
+directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
+the first of them.
 `web_fetch` (and `fetch_page`, its legacy name), `web_search` and the `monid.*` tools stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
@@ -411,7 +433,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)): `{url}` in, a Page out, `{ok, url, status, title, text, truncated?, original_chars?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, offset?, next_offset?, html_chars?, converted?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else keyless through Exa, or through Parallel where it is picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
@@ -430,16 +452,33 @@ A call tool that fails on its own (an unreadable PDF, a model's refusal) fails i
 `onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
 stops the run.
 
-`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
-every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
-link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`, `::ffff:127.0.0.1`
-and the like), a name such as `localhost`, a public name that resolves to one of them and a redirect to one are all
-refused, as is any scheme but http(s). A URL on a port other than 80 or 443 is refused before the guard is asked. A
-body is at most 5 MiB, a fetch at most 30 s, the text is cut at 60,000 characters and the links at 200, absolute
-http(s) only. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
-reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool",
-tool: "web_fetch"` gets it as its output (`args: {url}`, `out` a schema of that shape). A call node naming a tool the
-table cannot run that way is refused before the run starts (`409`).
+`web_fetch`'s direct fetch reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is
+resolved, every address it resolves to is checked, and the connection is dialled at the address checked, so a
+loopback, private, link-local, carrier-grade or metadata address (`127.0.0.1`, `10.x`, `169.254.169.254`, `fc00::`,
+`::ffff:127.0.0.1` and the like), a name such as `localhost`, a public name that resolves to one of them and a
+redirect to one are all refused, as is any scheme but http(s). A URL on a port other than 80 or 443, or longer than
+4,096 characters, is refused before the guard is asked. A body is at most 5 MiB and a fetch at most 30 s. A Page holds
+a part of the page's text: about `max_chars` characters from `offset` (20,000 by default, at least 200, at most
+50,000; a quote or a line break counts two, as the JSON answer holds it, and a part holds one character at least, so
+it always advances), its length as `chars`. A part that is not the whole page says so: `truncated` while more follows,
+`next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's extract gives it
+only for a page shorter than it was asked for), and for an agent a line after the JSON says which characters these are
+and the call that reads on. A page whose HTML is longer than 1,000,000 characters (scripts and styles aside) is cut
+before it is read: every part gives `html_chars`, the page's whole length, and no `original_chars`, its text is the
+start of the page, and the last part's line says `The page was cut at 1,000,000 characters of HTML before reading; the
+rest wasn't read.` `converted: "text"` says the text is the page's plain text, its conversion to markdown having run
+out of time. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000
+characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
+reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via:
+"tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by
+default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
+run starts (`409`).
+
+On another harness, every host tool's result stays under the host's bound of 120,000 characters
+(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
+the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
+to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
+`web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
 
 ### Search and fetch
 
@@ -566,7 +605,9 @@ cap, each `monid.run` is held as a model request is: unless what the run has spe
 price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
 refused with a `spend_cap_reached` error the model reads, naming its price and the cap (and, when the allowance was
 used, that `monid.inspect` gives a quote), and monid is never called. Runs go one at a time under a cap, and on
-claude-agent and codex the check holds each model request still in flight at its worst case. `discover` and `inspect`
+claude-agent and codex the check holds each model request still in flight at its worst case. A run sent holds its
+figure until its charge is in, on every harness: a model request checked meanwhile counts it beside what the run has
+spent, and a run that fails without an answer counts at it. `discover` and `inspect`
 cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call them as
 host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent again
 (`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
@@ -585,6 +626,22 @@ A tool's key comes from one of two places. The server's own environment, through
 this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
 none of still lists, with nothing in `unlocks`. A field the server is started with is the server's, and wins: saving
 it is `409 key_set_by_server`. A value is text of at most 1024 bytes with no control character (`422` otherwise).
+
+A key is checked against its provider before it is kept, with one call that costs nothing, given 5 s: monid's
+discover of one result, Parallel's list of monitors, Browserbase's list of projects and TypeSafe's list of models (at
+`BROWSERBASE_BASE_URL` or `TYPESAFE_BASE_URL` when the server is started with one). A key the provider refuses (401)
+is `422 input_invalid`, its field's reason `refused_by_provider`, in plain words with the provider's first sentence
+(`Monid refused this key (401: Invalid API key format)`) and never any of the key, and nothing is kept: a key saved
+before stays as it was. Otherwise it is kept, and `GET` gives its row a `check`: `{state: "accepted", at}`, or
+`{state: "not_checked", reason, at}` when the provider would not answer the check (403: a key scoped away from that
+call may still work for its tools), did not answer in 5 s, could not be reached, answered a redirect (never followed,
+so the key goes nowhere else) or something else, or has no call that costs nothing. `check` is null when the key is
+not stored here (the server's own is not checked here); a key saved before this server checked keys reads
+`not_checked`, and is checked when saved again. A save of Browserbase's project id alone sends no key, and leaves its
+check as it was. A save whose check is still waiting when the server begins to close keeps nothing (`503
+unavailable`, while its connection lasts): the check stops waiting, and the server's lock, released at close, may be
+another server's by then. Under `--faux` a key is checked only against the fake its runs are given (`fauxMonid`,
+`fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
@@ -722,13 +779,16 @@ folders kept, before the run's process starts, whatever its harness; a name alre
 `docs-2/`), the same for the same files in the same order. The run reads them as any file of its workspace, and
 `GET /v2/runs/{id}/files` lists them. An agentic run is told of them in its first message, on every harness: after the
 input's `content` and a blank line, one line,
-`Files for this run: inputs/notes.txt (32 B), inputs/docs/plan.md (1.5 KB).`, each file by the path the run's tools take
-and its size, at most 20 and then how many more, and never past what the run's door takes in one message (fewer named,
-then only how many). That is the message the harness gets, so it is the timeline's first `user_message`; the run's
-`input` stays as it was sent. A run given no files is sent its `content` as it is. A deleted upload stays in the runs
-that copied it; a run started after names it in vain. Each upload is kept in `DIR/files/<file_id>/`, 0600.
-`upload.expires_at`, which the contract requires, is advisory and not enforced in this release: a `PUT` after it is
-still taken.
+`Files for this run: "inputs/notes.txt" (32 B), "inputs/docs/plan.md" (1.5 KB).`, each file by the path the run's tools
+take, quoted as a JSON string with a control, format or separator character as its `\uXXXX` escape (so no name forges an
+entry or reorders the line), and its size, at most 20 and then how many more, and never past what the run's door takes
+in one message (fewer named, then only how many). That is the message the harness gets, so it is the timeline's first
+`user_message`; the run's `input` stays as it was sent. A run given no files is sent its `content` as it is. A deleted
+upload stays in the runs that copied it; a run started after names it in vain. Each upload is kept in
+`DIR/files/<file_id>/`, 0600. A start clears the temp files a crashed upload left (`.incoming.*.tmp` in `DIR/files/`,
+`bytes.*.tmp` in a file's folder), each only when it is a regular file (a `DIR/files/` that is a link is not swept), and
+logs `event=uploads_swept removed=N`. `upload.expires_at`, which the contract requires, is advisory and not enforced in
+this release: a `PUT` after it is still taken.
 
 ## Agent home
 
