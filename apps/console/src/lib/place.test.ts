@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { narrowed, placeOf, placesOf, placeWords } from "./place";
+import { placeOf, placesOf, placeWords } from "./place";
 
 // The place shapes are the server's (definition.place, Run.place, capabilities.places); the console names no box itself.
 const PLACES = { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "bwrap", available: false, reason: "bwrap is not set up on this server." }, { id: "docker", available: true }, { id: "daytona", available: false, reason: "runs in the daytona box are not available yet" }] };
@@ -20,11 +20,5 @@ describe("places", () => {
     expect(placeWords({ mode: "sandbox", box: "docker" }, placesOf({ places: PLACES }))).toBe("Runs in a docker box");
     expect(placeWords({ mode: "runner" }, null)).toBe("Runs on the server");
     expect(placeWords(undefined, placesOf({ places: PLACES }))).toBe("Runs on the server");
-  });
-
-  it("marks a run its start narrowed to the server, and nothing else", () => {
-    expect(narrowed({ mode: "sandbox", box: "docker" }, { mode: "runner" })).toBe(true);
-    expect(narrowed({ mode: "sandbox", box: "docker" }, { mode: "sandbox", box: "docker" })).toBe(false);
-    expect(narrowed(undefined, { mode: "runner" })).toBe(false);
   });
 });
