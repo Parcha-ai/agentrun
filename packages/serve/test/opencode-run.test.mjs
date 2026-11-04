@@ -74,19 +74,38 @@ async function opencodeServe(t, gw) {
   return { api, standIn, data };
 }
 
-test("an opencode run whose cap is below one request's ceiling is refused before anything reaches the gateway: failed, spend_cap_reached, at $0", { timeout: 90_000 }, async (t) => {
+test("an opencode run whose cap can't cover one request's least is refused before anything reaches the gateway: failed, spend_cap_reached, at $0, in plain words", { timeout: 90_000 }, async (t) => {
   const gw = await gateway(t);
   gw.release();
   const { api } = await opencodeServe(t, gw);
-  // The gateway's model may answer 32k tokens at $2 a million: $0.064, past a $0.01 cap before anything is spent.
-  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.01 });
+  // The gateway's model answers at $2 a million output tokens: the least a request may be limited to, its answer's 1,024
+  // tokens, costs $0.002048 before its input, past a $0.001 cap.
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["failed"], { deadlineMs: 60_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
-  assert.match(ended.error?.message ?? "", /cap/i, "the refusal says it was the cap, in words");
+  const words = /^Not sent: this run's cap of \$0\.001 can't cover one .+ request \(at least \$(\d+\.\d+)\)\. Raise the cap to at least \$(\d+\.\d+) to run it\.$/.exec(ended.error.message);
+  assert.ok(words, ended.error.message);
+  assert.equal(words[2], words[1], "nothing spent or held: the cap to raise to is the least");
+  assert.ok(Number(words[1]) >= 0.002048, `the least covers the answer's 1,024 tokens: $${words[1]}`);
   assert.equal(gw.seen.length, 0, "no request reached the gateway");
   assert.equal(ended.cost.usd, 0);
+});
+
+test("an opencode run whose cap is under one request's ceiling runs: its request reaches the gateway with the output tokens the cap can buy, and the run completes", { timeout: 90_000 }, async (t) => {
+  const gw = await gateway(t);
+  gw.release();
+  const { api } = await opencodeServe(t, gw);
+  // 32,000 output tokens at $2 a million is $0.064, past a $0.05 cap: the request goes, limited to what is left buys.
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.05 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(gw.seen.length, 1, "one model request");
+  const limit = gw.seen[0].body.max_output_tokens;
+  assert.ok(Number.isSafeInteger(limit) && limit >= 1024 && limit < 32_000, `max_output_tokens is what $0.05 buys, at least the answer's 1,024 and under the ceiling: ${limit}`);
+  assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: 0.0012, requests: 1 });
+  assert.equal(rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text, "OpenCode answered.");
 });
 
 test("a run on opencode goes through the adapter's proxy to serve's gateway, priced from serve's catalog and booked once, with OpenCode's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {

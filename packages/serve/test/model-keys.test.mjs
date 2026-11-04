@@ -54,6 +54,17 @@ test("the host's model counts for a harness only when that harness runs it: clau
   assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast"), "openai/gpt-6-mini");
 });
 
+test("opencode runs the models codex runs, OpenAI's or the gateway's: an OpenAI key gives it its default, and another provider's model is skipped for it", () => {
+  // OpenCode's model requests go where codex's do (adapters.ts' codexProvider): OpenAI with its key, or the gateway.
+  assert.equal(hostModel(keyed("anthropic", "openai"), "default", "opencode"), "openai/gpt-6.1-sol", "an OpenAI key's default");
+  assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), undefined, "no OpenAI key: none");
+  assert.equal(hostModel({ AGENT_MODEL: "gpt-6-luna", AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", ...keyed("anthropic") }, "default", "opencode"), "gpt-6-luna", "the gateway's own id");
+  assert.equal(hostModel({ AGENT_MODEL: "openai/gpt-6-luna" }, "default", "opencode"), "openai/gpt-6-luna");
+  assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5", ...keyed("openai") }, "default", "opencode"), "openai/gpt-6.1-sol", "an Anthropic AGENT_MODEL is skipped for the OpenAI key's default");
+  assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5" }, "default", "opencode"), undefined, "an Anthropic AGENT_MODEL alone: none");
+  assert.deepEqual(MODEL_KEYS.find((row) => row.id === "openai").harnesses, ["pi", "codex", "opencode"], "the OpenAI key runs pi, codex and opencode");
+});
+
 // A key-less first run (npx, no key yet) is told what a person does: add a key in the console or where AgentRun starts.
 // Operator detail (--faux, AGENT_MODEL, a tier's variable) is the README's. A model no catalog knows is still named.
 test("with no model here, the refusal says what a person does: a model key in Settings or where AgentRun starts, no operator flags", async () => {
@@ -159,7 +170,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null }, "no restart");
   const offered = (await api("GET", "/capabilities")).body.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
   const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openai");
-  assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "codex"].filter((id) => offered.includes(id)), [{ name: "OPENAI_API_KEY", set: true, source: "stored" }]]);
+  assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "codex", "opencode"].filter((id) => offered.includes(id)), [{ name: "OPENAI_API_KEY", set: true, source: "stored" }]]);
   const started = await api("POST", "/agents/plain/runs", { input: { content: "What is six times seven?" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
