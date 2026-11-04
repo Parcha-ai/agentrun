@@ -166,6 +166,20 @@ export interface JudgeFromProviderOptions {
   loadImage?: LoadImage;
 }
 
+/** `promise`, or `signal`'s reason once it aborts first: a loader that does not watch its signal is cut all the same. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) { promise.catch(() => {}); return Promise.reject(signal.reason); }
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
+}
+
+/** Requests cut while their images loaded: nothing was sent, so judgeFromProviders never takes one for a request that
+ *  may have been billed. */
+const cutBeforeSending = new WeakSet<DecisionProviderError>();
+
 /** Loads a request's images through the host's `loadImage`, before anything is sent: a provider that takes no image input,
  *  a host that cannot load one, or an image that cannot be read is refused, and no request is made. */
 async function loadImages(provider: DecisionProvider, images: Record<string, string>, loadImage: LoadImage | undefined, signal: AbortSignal): Promise<{ loaded: Record<string, DecisionImage>; digests: DecisionImageDigest[] }> {
@@ -175,7 +189,7 @@ async function loadImages(provider: DecisionProvider, images: Record<string, str
   const digests: DecisionImageDigest[] = [];
   for (const [token, ref] of Object.entries(images)) {
     let image: { bytes: Uint8Array; mime: string };
-    try { image = await loadImage(ref, { signal }); }
+    try { image = await untilAborted(loadImage(ref, { signal }), signal); }
     catch (error) { throw new DecisionProviderError("invalid_request", `The image ${token} (${ref}) could not be read: ${String((error as Error)?.message ?? error).slice(0, 200)}`); }
     if (!(image?.bytes instanceof Uint8Array) || !image.bytes.byteLength || typeof image.mime !== "string") throw new DecisionProviderError("invalid_request", `The image ${token} (${ref}) read as no image bytes.`);
     loaded[token] = { bytes: image.bytes, mime: image.mime, ref };
@@ -185,20 +199,40 @@ async function loadImages(provider: DecisionProvider, images: Record<string, str
 }
 
 /** The interpreter's runJudge, answered by `provider`: the request goes to it with the decision's id, its signal and
- *  `deadlineMs`, and with the images it names, loaded through `loadImage`; a choice or score without a confidence gets one
- *  derived, and the result names each one's source and each image's digest. The answers are validated against the
- *  questions, and ones that do not match them are invalid_response. */
+ *  `deadlineMs`, and with the images it names, loaded through `loadImage` within that deadline (the provider gets what is
+ *  left of it; a load the deadline cuts is `timeout`, one the signal cuts `aborted`, and neither was sent); a choice or
+ *  score without a confidence gets one derived, and the result names each one's source and each image's digest. The
+ *  answers are validated against the questions, and ones that do not match them are invalid_response. */
 export function judgeFromProvider(provider: DecisionProvider, options: JudgeFromProviderOptions = {}): RunJudge {
   return async (params) => {
     const request: DecisionRequest = { label: params.label, kind: params.kind, state: params.state, questions: params.questions, ...(params.item ? { item: params.item } : {}), ...(params.executionPath !== undefined ? { executionPath: params.executionPath } : {}), ...(params.model !== undefined ? { model: params.model } : {}) };
     checkCapabilities(provider.capabilities, request);
     let digests: DecisionImageDigest[] | undefined;
+    const signal = params.signal ?? new AbortController().signal;
+    let deadlineMs = options.deadlineMs ?? null;
     if (params.images && Object.keys(params.images).length) {
-      const images = await loadImages(provider, params.images, options.loadImage, params.signal ?? new AbortController().signal);
+      // The deadline counts from before the images load, and loading is cut by it as by the run's signal.
+      const started = Date.now();
+      const loading = deadlineMs !== null ? AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]) : signal;
+      const cutWith = (reason: unknown) => {
+        const timedOut = (reason as { name?: unknown } | null)?.name === "TimeoutError";
+        const cut = new DecisionProviderError(timedOut ? "timeout" : "aborted", `${provider.id}: ${timedOut ? "the deadline passed" : "the request was cancelled"} while its images loaded; nothing was sent`, { cause: reason });
+        cutBeforeSending.add(cut);
+        return cut;
+      };
+      let images: Awaited<ReturnType<typeof loadImages>>;
+      try { images = await loadImages(provider, params.images, options.loadImage, loading); }
+      catch (error) { if (!loading.aborted) throw error; throw cutWith(loading.reason); }
+      // A load can end past the deadline before its timer fires (a loader's synchronous work, or hashing the last image,
+      // holds the thread): it is cut here, before anything is sent, and the provider gets only time that is left.
+      const elapsed = Date.now() - started;
+      if (loading.aborted) throw cutWith(loading.reason);
+      if (deadlineMs !== null && elapsed >= deadlineMs) throw cutWith(new DOMException("The decision's deadline passed while its images loaded", "TimeoutError"));
       request.images = images.loaded;
       digests = images.digests;
+      if (deadlineMs !== null) deadlineMs -= elapsed;
     }
-    const outcome = await provider.decide(request, { decisionId: params.decisionId ?? "", signal: params.signal ?? new AbortController().signal, deadlineMs: options.deadlineMs ?? null });
+    const outcome = await provider.decide(request, { decisionId: params.decisionId ?? "", signal, deadlineMs });
     const { answers, confidence_source } = completeConfidence(params.questions, (outcome.answers ?? {}) as Record<string, unknown>);
     try { validateAnswers(params.questions, answers); }
     catch (error) {
@@ -219,7 +253,8 @@ export function judgeFromProvider(provider: DecisionProvider, options: JudgeFrom
  *  `default`, with the node's pinned model, within the shorter of the node's `timeoutMs` and the provider's own
  *  `deadlineMs`: a node only ever shortens it. The node's bound is kept here: when it passes, the call is cut, and a cut
  *  call may already have been sent and billed, so it is `outcome_unknown` (the decision escalates as interrupted), never
- *  asked again. The result names the provider that answered. */
+ *  asked again. A call cut while its images load was not sent, and stays `timeout`. The result names the provider that
+ *  answered. */
 export function judgeFromProviders(options: { providers: Readonly<Record<string, DecisionProvider>>; default: string; deadlineMs?: number | null; loadImage?: LoadImage }): RunJudge {
   return async (params) => {
     const id = params.provider ?? options.default;
@@ -236,7 +271,7 @@ export function judgeFromProviders(options: { providers: Readonly<Record<string,
       const result = await judgeFromProvider(provider, { deadlineMs, ...(options.loadImage ? { loadImage: options.loadImage } : {}) })({ ...params, signal });
       return { ...result, provider: id };
     } catch (error) {
-      if (cut.signal.aborted && error instanceof DecisionProviderError && error.unsent !== true && (error.code === "aborted" || error.code === "timeout")) {
+      if (cut.signal.aborted && error instanceof DecisionProviderError && !cutBeforeSending.has(error) && error.unsent !== true && (error.code === "aborted" || error.code === "timeout")) {
         throw new DecisionProviderError("outcome_unknown", `${id}: cut by the node's timeoutMs (${node} ms) after it may have been sent`, {
           attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}), cause: error });
       }

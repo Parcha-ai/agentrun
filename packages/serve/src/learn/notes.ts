@@ -80,7 +80,32 @@ function marked(text: string, lines: readonly string[], replaced: readonly strin
  *  place of any of the three it had. */
 export function mergedNote(text: string, as: { origin: NoteOrigin; pending?: boolean }): string {
   if (!(NOTE_ORIGINS as readonly string[]).includes(as.origin)) throw new Error(`origin is ${NOTE_ORIGINS.join(" or ")}`);
-  return marked(text, [...(as.origin === "you" ? ["origin: you"] : []), ...(as.pending ? ["status: pending"] : [])], ["status", "superseded_by", "origin"]);
+  // The run's own `risky` mark is read by the grade (runMarkedRisky) and never kept: a held note says so by its status.
+  return marked(text, [...(as.origin === "you" ? ["origin: you"] : []), ...(as.pending ? ["status: pending"] : [])], ["status", "superseded_by", "origin", "risky"]);
+}
+
+/** `text`, a run's new note, without the mark its end-of-run turn may set (`risky:`), as the grader reads it: the grader
+ *  judges each note on its own, and the mark holds only what it keeps (parseVerdict). A text with no front matter is
+ *  as it is. */
+export function withoutRiskyMark(text: string): string {
+  const lf = text.replace(/\r\n/g, "\n");
+  const head = FRONT.exec(lf);
+  return head && head.index === 0 ? marked(lf, [], ["risky"]) : text;
+}
+
+/** Whether `text`, a run's new note, carries the mark its end-of-run turn sets on a risky rule: a `risky` key in its
+ *  front matter (reflectPrompt asks for `risky: true`), read as parseNoteFile reads a value (bare, or in one pair of
+ *  quotes). It fails closed: any value but an explicit no (`false`, `no`, `0`, or none) is a mark. */
+export function runMarkedRisky(text: string | undefined): boolean {
+  const head = text === undefined ? null : FRONT.exec(text.replace(/\r\n/g, "\n"));
+  if (!head || head.index !== 0) return false;
+  for (const line of head[1]!.split("\n")) {
+    const match = /^risky:(?:\s+(.*))?$/.exec(line);
+    if (!match) continue;
+    const value = unquoted((match[1] ?? "").trim()).trim().toLowerCase();
+    if (!["", "false", "no", "0"].includes(value)) return true;
+  }
+  return false;
 }
 
 /** `text`, a pending note's file, as the host leaves it when its owner approves it: active, no status; its origin kept. */
