@@ -21,7 +21,7 @@ import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./fil
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { healthOf, hostMemory, maxRunsOf, memoryLog, MIN_FREE_MIB, runsThatFit } from "./host.js";
+import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
@@ -455,8 +455,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const { token: doorToken } = await tokenIn(doorTokenFile);
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
-  // The memory runs are admitted by (host.ts), and each harness one of whose runs never fits in it, said once.
-  log?.(logLine("memory", memoryLog(hostMemory())));
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const base = { ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would

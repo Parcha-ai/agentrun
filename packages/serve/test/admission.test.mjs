@@ -1,6 +1,7 @@
 // Runs admitted by memory: each run reserves what a run of its harness takes, out of the host's memory less the
 // server's own. A harness whose one run never fits is unavailable, said in capabilities and at start, and its runs are
-// refused at once; one that fits but not now is 429 rate_limited, as over the cap on the count. The host's memory is
+// refused at once; one that fits but not now is 429 rate_limited, as over the cap on the count. A run already going (a
+// message's wake, a relaunch) takes no place, but counts once its process lives. The host's memory is
 // the container's limit (process.constrainedMemory), stood in for here: the server runs in this process.
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
@@ -8,7 +9,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as harness from "../dist/harness.js";
 import * as host from "../dist/host.js";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
 
 const MiB = 2 ** 20;
 // Read as names, not bindings: a build without them fails each test on its own, not the file at its import.
@@ -41,10 +43,9 @@ test("the memory math: what runs may hold is the host's memory less the server's
   assert.equal(neverFits("codex", 300 * MiB), "This server has 300 MB of memory and keeps 128 MB for itself; a codex run needs about 192 MB more, so it can't start here. pi runs fit.");
 });
 
-test("a 384 MB server: claude-agent is unavailable with why, in capabilities and its start log, its start refused at once with that reason; pi runs", async (t) => {
+test("a 384 MB server: claude-agent is unavailable with why in capabilities, its start refused at once with that reason; pi runs", async (t) => {
   withMemory(t, 384);
-  const lines = [];
-  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, log: (line) => lines.push(line) });
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const caps = (await api("GET", "/capabilities")).body;
   const offer = Object.fromEntries(caps.harnesses.map((h) => [h.id, h]));
   assert.equal(offer["claude-agent"].available, false, JSON.stringify(offer["claude-agent"]));
@@ -54,9 +55,6 @@ test("a 384 MB server: claude-agent is unavailable with why, in capabilities and
   assert.deepEqual([offer.pi.available, offer.pi.max_concurrent_runs, offer.pi.run_memory_mib], [true, 2, RUN_MIB.pi]);
   assert.deepEqual([offer.codex.available, offer.codex.max_concurrent_runs], [true, 1]);
   assert.equal(caps.limits.max_concurrent_runs, 2, "the count is pi's, the smallest run");
-  const said = lines.filter((line) => line.includes("event=memory"));
-  assert.equal(said.length, 1, `said once at start:\n${lines.join("\n")}`);
-  assert.match(said[0], /memory_mb=384 for_runs_mb=256 per_run_mb=pi:128,claude-agent:288,codex:192 claude-agent="This server has 384 MB/);
   // Saved with a warning, as any harness this host does not run; its run is refused at once, never a 429 to try again.
   const made = await api("POST", "/agents", agent("big", { harness: "claude-agent", instructions: "Answer the question." }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -110,4 +108,47 @@ test("--max-runs still bounds the count beside the memory: on 1 GB with a cap of
   assert.match(refused.body.error.message, /at most 1 runs at once/);
   await writeFile(join(data, "go"), "");
   await follow(api, first.body.run_id, ["completed"]);
+});
+
+test("two starts at once with a live run holding memory and room for one more: one starts and one is 429", { timeout: 120_000 }, async (t) => {
+  withMemory(t, 512);
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(data, "go");
+  assert.equal((await api("POST", "/agents", agent("small"))).status, 201);
+  const held = await api("POST", "/agents/small/runs", { input: { content: `Answer once ${go} exists.` } });
+  assert.equal(held.status, 202, JSON.stringify(held.body));
+  await follow(api, held.body.run_id, ["working"]);
+  // 384 MB for runs, 128 held by pi: room for one codex run (192), not two.
+  assert.equal((await api("POST", "/agents", agent("mid", { harness: "codex", instructions: `Wait for ${go} before the answer.` }))).status, 201);
+  const both = await Promise.all([1, 2].map(() => api("POST", "/agents/mid/runs", { input: { content: "hi" } })));
+  assert.deepEqual(both.map((res) => res.status).sort(), [202, 429], JSON.stringify(both.map((res) => res.body)));
+  assert.deepEqual(both.find((res) => res.status === 429).body.error.details, { max_concurrent_runs: 3, harness: "codex", needs_mb: 192, free_mb: 64 });
+  await writeFile(go, "");
+  await follow(api, held.body.run_id, ["completed"]);
+  await follow(api, both.find((res) => res.status === 202).body.run_id, ["completed"]);
+});
+
+test("after a restart on a host whose memory never holds a run's harness: a run that would open again fails with why, and a stopped one's message is refused with why; neither starts", { timeout: 120_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const never = join(data, "never");
+  const one = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
+  let open = true;
+  t.after(() => open && one.close());
+  const first = client(one.baseUrl, one.token);
+  assert.equal((await first("POST", "/agents", agent("big", { harness: "claude-agent", instructions: `Wait for ${never} before the answer.` }))).status, 201);
+  const working = (await first("POST", "/agents/big/runs", { input: { content: "hi" } })).body.run_id;
+  const stopped = (await first("POST", "/agents/big/runs", { input: { content: "hi" } })).body.run_id;
+  for (const id of [working, stopped]) await follow(first, id, ["working"]);
+  assert.equal((await first("POST", `/runs/${stopped}/stop`)).body.stopped, true);
+  await follow(first, stopped, ["input_required"]);
+  await one.close();
+  open = false;
+  withMemory(t, 384);
+  const { api } = await serve(t, { data, fauxHarness: FAUX_HARNESS });
+  const why = neverFits("claude-agent", 384 * MiB);
+  await follow(api, working, ["failed"]);
+  assert.deepEqual((await api("GET", `/runs/${working}`)).body.error.message, why);
+  const refused = await api("POST", `/runs/${stopped}/messages`, { content: "go on" });
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.message], [409, "agent_not_runnable", why], JSON.stringify(refused.body));
+  assert.deepEqual([(await api("GET", `/runs/${stopped}`)).body.status, (await api("GET", `/runs/${stopped}`)).body.state], ["input_required", "idle"]);
 });

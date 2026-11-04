@@ -211,12 +211,15 @@ in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs,
 once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28. A start that does not fit in what is left is
 `429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
 queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
-on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, the start log says it once, and its runs
-are `409 agent_not_runnable` with that reason. pi always has one place, however small the host.
+on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, and its runs are `409
+agent_not_runnable` with that reason. pi always has one place, however small the host.
 
 `--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
 apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
-(`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused.
+(`max_concurrent_runs`, beside `run_memory_mib`). A message to a run already going is never refused for a place, nor is
+the relaunch of one whose process went, and a run's process the next server adopts after a restart holds its harness's
+memory there. A run whose harness can never fit (the server restarted on a smaller host) is not started again: it fails
+with why if it was working, and a message to it is `409 agent_not_runnable`.
 
 A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
 counts only its own runs, and a run could be relaunched twice).

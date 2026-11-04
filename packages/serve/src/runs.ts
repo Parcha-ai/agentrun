@@ -150,8 +150,8 @@ export type Run = {
   agentId: string;
   kind: RevisionKind;
   revision: string;
-  /** The harness its revision names, read at its first message. */
-  harness?: string;
+  /** The harness its revision names (pi when it names none, or its revision is gone). */
+  harness: string;
   /** What its pinned revision's tools resolve from (tool-plane.ts), resolved again at each launch. */
   tooling?: Tooling;
   /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
@@ -565,7 +565,7 @@ export class Runs {
       warn(row.id, "its server stopped while it copied what its agent learned; it starts again with nothing learned");
     }
     const known = await this.options.agents.revision(row.agent, row.revision);
-    const run = this.blank(row, dir, meta, known?.version ?? 0, known ? await toolingOf(known.revision) : undefined, known ? harnessOfBody(known.revision.body) : undefined);
+    const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
@@ -591,11 +591,10 @@ export class Runs {
     return run;
   }
 
-  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, tooling?: Tooling, harness?: string): Run {
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, harness: string, tooling?: Tooling): Run {
     return {
-      id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
+      id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [], harness,
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
-      ...(harness ? { harness } : {}),
       ...(tooling ? { tooling } : {}),
     };
   }
@@ -954,6 +953,10 @@ export class Runs {
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
+        // A run already going is never refused a place, but one whose harness this host's memory never holds (after a
+        // restart on a smaller one) is not started: said, never tried.
+        const never = fresh ? undefined : neverFits(run.harness, this.memory);
+        if (never) throw new ApiError("agent_not_runnable", never, { details: { harness: run.harness } });
         if (!fresh) this.launch(run), (launched = true);
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
@@ -1191,11 +1194,14 @@ export class Runs {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
       if (!gone || !stalled || this.closing) return this.refresh(run);
-      if (run.relaunches < MAX_RELAUNCHES) {
+      // Opened again without a place, as a run already going, unless its harness never fits this host (a restart on a
+      // smaller one): that run fails with why.
+      const never = neverFits(run.harness, this.memory);
+      if (!never && run.relaunches < MAX_RELAUNCHES) {
         await this.pinSecrets(run);
         return this.relaunch(run);
       }
-      run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
+      run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
@@ -1351,7 +1357,8 @@ export class Runs {
    *  memory a run of its harness reserves (host.ts): both must be free. A run that has ended (failed, completed,
    *  cancelled) still holds its place until its process exits; a start that needs that place waits for it, up to that
    *  process's drain and kill, never refused for a place already being given back. A harness whose one run is more than
-   *  the whole memory for runs is refused at once, never a 429 (capabilities say so too). */
+   *  the whole memory for runs is refused at once, never a 429 (capabilities say so too). From the read of what is held
+   *  to the reservation nothing awaits, so two starts at once never both take the last of it. */
   private async takePlace(harness: string): Promise<() => void> {
     const { memory, options: { maxRuns: max } } = this;
     const need = runMibOf(harness);
@@ -1360,8 +1367,7 @@ export class Runs {
     for (const deadline = Date.now() + this.killAfterMs() + 1_000; ; await sleep(50)) {
       const holding = [...this.runs.values()].filter((run) => this.live(run));
       const counted = max === undefined || holding.length + this.starting < max;
-      let held = this.startingMib;
-      for (const run of holding) held += runMibOf(await this.harnessOf(run));
+      const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib);
       // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).
       const fits = held === 0 || held + need <= runsMemoryMib(memory);
       if (counted && fits) break;
@@ -1460,7 +1466,7 @@ export class Runs {
       meta.learning = failed === undefined ? { state: "seeded", reason: null, detail: null, at } : { state: "dropped", reason: "seed_failed", detail: failed, at };
       await this.setUp(started.runId, started.dir, meta);
     }
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, tooling, harnessOfBody(revision.body));
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling);
     run.moment = "other";
     // Before the run is known here, so nothing launches it first.
     await this.pinSecrets(run, revision);
@@ -1519,22 +1525,14 @@ export class Runs {
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
-  /** The harness its revision names, read once. */
-  private async harnessOf(run: Run): Promise<string> {
-    run.harness ??= ((await this.options.agents.revision(run.agentId, run.revision))?.revision.body as { harness?: string } | undefined)?.harness ?? DEFAULT_HARNESS;
-    return run.harness;
-  }
-
   /** Whether the run's harness takes a message mid-turn. */
-  private async steers(run: Run): Promise<boolean> {
-    if (run.kind !== "agentic") return true;
-    return steersMidTurn(await this.harnessOf(run));
+  private steers(run: Run): boolean {
+    return run.kind !== "agentic" || steersMidTurn(run.harness);
   }
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    let steers: boolean;
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -1545,9 +1543,8 @@ export class Runs {
       // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
       if (run.finishing && !run.outcome) await this.endWritten(run);
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
-      // Its harness, read from the agent store at the run's first message.
-      steers = await this.steers(run);
     } while (run.stopping);
+    const steers = this.steers(run);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
@@ -1591,7 +1588,7 @@ export class Runs {
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    const release = await this.takePlace(await this.harnessOf(run));
+    const release = await this.takePlace(run.harness);
     try {
       // Read again: the place may have been waited for, and the run (or its agent) archived meanwhile.
       const now = this.store.readRun(run.id);

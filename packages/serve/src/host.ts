@@ -55,17 +55,6 @@ export function memoryFull(harness: string, memory: number, heldMib: number): st
   return `This server's memory is held by the runs it has going: a ${harness} run needs about ${sizeOf(runMibOf(harness))}, and ${sizeOf(free)} of the ${sizeOf(runsMemoryMib(memory))} it has for runs is free; start this one when another ends.`;
 }
 
-/** The start log's line on memory: the host's, what runs may hold, what each harness's run reserves, and why each
- *  harness one of whose runs never fits does not. */
-export function memoryLog(memory: number): Record<string, string | number> {
-  return {
-    memory_mb: Math.floor(memory / MiB),
-    for_runs_mb: Math.max(0, runsMemoryMib(memory)),
-    per_run_mb: HARNESSES.map((id) => `${id}:${runMibOf(id)}`).join(","),
-    ...Object.fromEntries(HARNESSES.flatMap((id) => { const why = neverFits(id, memory); return why ? [[id, why]] : []; })),
-  };
-}
-
 /** The cap on how many runs at once: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. The
  *  memory each run reserves is checked beside it (runs.ts): both apply. */
 export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
