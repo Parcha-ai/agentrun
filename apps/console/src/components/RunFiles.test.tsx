@@ -53,6 +53,12 @@ describe("ArtifactViewer, closing", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("stays open when a press on the backdrop is let go inside the file", () => {
+    const { onClose, dialog, press } = viewer();
+    press(dialog, dialog.querySelector("article")!);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("still closes with its X", () => {
     const { onClose, dialog } = viewer();
     act(() => { dialog.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click(); });
