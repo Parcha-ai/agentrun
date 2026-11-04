@@ -181,6 +181,12 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 container every GPU of the host. `dockerBoxes({ user: "1000:1000" })` runs every program of its boxes as that uid:gid
 (`--user`), so what a box writes in a bound directory stays the host user's.
 It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
+`dockerBoxes({ dropCapabilities: true })` runs every box with `--cap-drop ALL` and `--security-opt no-new-privileges`, for a
+host whose boxes' programs never change user: as root a box then cannot make a device node in a directory it binds. A
+launcher that drops from root to another user (setpriv, runuser) needs Docker's default set, so it stays the default. The
+daemon is the one the docker CLI reaches: when `DOCKER_HOST`, or the docker context, names another machine (tcp://, ssh://)
+rather than a unix socket, `provider.mounts` is false and a spec with mounts is refused as `unsupported`, since that
+daemon would bind its own paths, not this machine's.
 
 ### Archil exec
 

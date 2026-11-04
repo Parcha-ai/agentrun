@@ -11,7 +11,8 @@ import { mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxMounts, mountSource } from "../dist/run-box.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { boxMounts, mountSource, runBox, runBoxProvider } from "../dist/run-box.js";
 import { writesHeld } from "../dist/workspace.js";
 import { startServe } from "../dist/index.js";
 import { client, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -134,6 +135,8 @@ test("fake docker: one create per run, with no network, serve's user, work/ alon
   const [args] = runs;
   assert.deepEqual(flag(args, "--network"), ["none"]);
   assert.deepEqual(flag(args, "--user"), [`${process.getuid()}:${process.getgid()}`]);
+  // No capability and no new privilege: as root (serve run as uid 0) the box still cannot make a device node in work/.
+  assert.deepEqual([flag(args, "--cap-drop"), flag(args, "--security-opt")], [["ALL"], ["no-new-privileges"]]);
   assert.deepEqual(flag(args, "--mount"), [`type=bind,source=${join(realpathSync(data), "runs", runId, "work")},target=${WORK}`]);
   assert.deepEqual(flag(args, "--workdir"), [WORK]);
   assert.deepEqual(flag(args, "--env"), ["LANG=C.UTF-8", "HOME=/tmp"], "the fixed environment, each NAME=value: a bare --env NAME would copy the host's");
@@ -194,6 +197,28 @@ test("fake docker: a run whose earlier process left a box gets that box's left c
   assert.equal(execs.length, 1, JSON.stringify(execs));
   assert.ok(execs[0].join(" ").includes(".pi-transport") && execs[0].join(" ").includes("kill -KILL"), "the one command kills what the earlier process left, before the file tools ran");
   assert.deepEqual(docker.runs(), [], "taken over: no create");
+});
+
+test("a Docker daemon on another machine (DOCKER_HOST tcp:// or ssh://) binds none of this machine's work/: the run's box is not bound, so read, write and edit go through the box", async (t) => {
+  const { codingSource } = await import("../dist/coding-tools.js");
+  const root = realpathSync(await scratch(t));
+  const dir = join(root, "runs", "r1");
+  await mkdir(join(dir, "work"), { recursive: true });
+  await writeFile(join(dir, "work", "a.txt"), "here");
+  // Put back as they were once the test ends; each case sets DOCKER_HOST itself.
+  withEnv(t, {}, ["DOCKER_HOST", "DOCKER_CONTEXT", "AGENTRUN_SERVE_FAUX"]);
+  const boundWith = async (host) => {
+    process.env.DOCKER_HOST = host;
+    return runBox(() => runBoxProvider(SANDBOX, process.env, root), { id: "r1", root, dir, place: SANDBOX }).bound();
+  };
+  assert.equal(await boundWith("unix:///var/run/docker.sock"), true);
+  for (const host of ["tcp://docker.example:2376", "ssh://builder@docker.example"]) {
+    assert.equal(await boundWith(host), false, host);
+    // The file tools then ask the box, never this machine's work/.
+    const box = { hostWork: join(dir, "work"), bound: () => boundWith(host), env: async () => { throw new Error("in the box"); } };
+    const read = codingSource(SANDBOX, box).tools.find((tool) => tool.name === "read");
+    await assert.rejects(read.execute({ path: "a.txt" }, {}, BACKGROUND_CONTEXT), /in the box/, host);
+  }
 });
 
 test("fake docker: a run's box is found by its label and taken over, its left commands killed first, with no create", { timeout: 90_000 }, async (t) => {

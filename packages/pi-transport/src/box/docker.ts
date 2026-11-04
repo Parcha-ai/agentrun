@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import {
@@ -30,6 +34,13 @@ export type DockerBoxesOptions = {
 	readonly docker?: string;
 	/** Image for a spec that names none. Default `debian:bookworm-slim`. */
 	readonly image?: string;
+	/**
+	 * Every box drops every capability (`--cap-drop ALL`) and gains none (`--security-opt no-new-privileges`), for a host
+	 * whose boxes' programs never change user: a box run as root then cannot make a device node in a directory it binds,
+	 * and no setuid or file-capability program gives it a privilege. Default: Docker's own set, which a launcher that
+	 * drops from root to another user (setpriv, runuser) needs.
+	 */
+	readonly dropCapabilities?: boolean;
 	/**
 	 * The user every program of a box runs as, `uid:gid` or `uid` (Docker's `--user`). Default: the image's. A host that
 	 * binds its own directories in names its own ids, so what the box writes there stays the host's to manage.
@@ -153,6 +164,39 @@ function parseFacts(label: string | undefined): BoxFacts | undefined {
 	}
 }
 
+/** A daemon address on this machine: a unix socket (or a Windows named pipe). */
+const LOCAL_HOST = /^(unix|npipe):\/\//;
+
+/**
+ * Where the docker CLI's daemon is, as it decides: DOCKER_HOST when set, else the context DOCKER_CONTEXT names, else the
+ * config's `currentContext` (`$DOCKER_CONFIG/config.json`, default `~/.docker`). No setting, a unix socket and the
+ * `default` context are this machine; any other address (tcp://, ssh://) is another one, and so is a context whose
+ * record (`contexts/meta/<sha256 of its name>/meta.json`) does not name a unix socket or cannot be read. `named` is the
+ * setting that points away, and `fix` what brings it back.
+ */
+export function dockerDaemon(env: NodeJS.ProcessEnv): { local: true } | { local: false; named: string; fix: string } {
+	const host = env.DOCKER_HOST ?? "";
+	if (host !== "")
+		return LOCAL_HOST.test(host)
+			? { local: true }
+			: { local: false, named: `DOCKER_HOST=${host}`, fix: "unset DOCKER_HOST" };
+	const config = env.DOCKER_CONFIG || join(homedir(), ".docker");
+	const read = (path: string): unknown => {
+		try {
+			return JSON.parse(readFileSync(path, "utf8"));
+		} catch {
+			return undefined;
+		}
+	};
+	const current = (read(join(config, "config.json")) as { currentContext?: unknown } | undefined)?.currentContext;
+	const name = env.DOCKER_CONTEXT || (typeof current === "string" ? current : "");
+	if (name === "" || name === "default") return { local: true };
+	const meta = read(join(config, "contexts", "meta", createHash("sha256").update(name).digest("hex"), "meta.json"));
+	const endpoint = (meta as { Endpoints?: { docker?: { Host?: unknown } } } | undefined)?.Endpoints?.docker?.Host;
+	if (typeof endpoint === "string" && LOCAL_HOST.test(endpoint)) return { local: true };
+	return { local: false, named: `docker context ${name}`, fix: "use the default docker context" };
+}
+
 /** `not_found` for a mount whose source this machine does not have, before Docker is asked: `-v` would make it an empty directory. */
 async function checkSources(mounts: readonly ParsedMount[]): Promise<BoxError | undefined> {
 	for (const { source } of mounts) {
@@ -194,6 +238,8 @@ function createError(stderr: string): BoxError {
  * machine, where the sources are checked.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
+	// Read once, as the docker CLI this provider runs reads them: a daemon on another machine binds none of this one's paths.
+	const daemon = dockerDaemon(process.env);
 	if (options.user !== undefined && !/^\d+(:\d+)?$/.test(options.user)) {
 		throw new Error(`the docker user ${options.user} is not uid or uid:gid`);
 	}
@@ -201,7 +247,7 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 
 	return {
 		name: "docker",
-		mounts: true,
+		mounts: daemon.local,
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
@@ -219,6 +265,11 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			const network = parseNetwork(spec.network) as { kind: "open" | "none" };
 			const mounts = parseMounts(spec.mounts);
 			if (mounts instanceof BoxError) return err(mounts);
+			if (!daemon.local && mounts.length > 0) {
+				const { named, fix } = daemon;
+				const message = `the Docker daemon is not on this machine (${named}), so it cannot bind this machine's ${mounts[0]!.source}: ${fix} to run boxes on this machine's Docker`;
+				return err(new BoxError("unsupported", message));
+			}
 			const missing = await checkSources(mounts);
 			if (missing !== undefined) return err(missing);
 			const facts: BoxFacts = {
@@ -242,6 +293,7 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 			for (const [key, value] of Object.entries(spec.env ?? {})) args.push("--env", `${key}=${value}`);
 			if (network.kind === "none") args.push("--network", "none");
+			if (options.dropCapabilities === true) args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges");
 			if (options.user !== undefined) args.push("--user", options.user);
 			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
 			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
