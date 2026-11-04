@@ -378,7 +378,7 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     if (!approval) return [row];
     const summary = `${approval === waiting ? "Waiting for your approval" : "Asked your approval"}: ${approval.tool} ${clip(approval.args_preview, 400)}`;
-    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW as TimelineEvent["kind"], summary, text: approval.args_preview, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(approval.args_preview, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: approval.args_preview, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(approval.args_preview, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
 }
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its

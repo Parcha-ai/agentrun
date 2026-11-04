@@ -8,4 +8,4 @@ kind: feature
 - Under `ask`, claude-agent's and codex's own web search, which runs inside the CLI where no call can wait, gives way to the kernel's (`native` picked: unavailable). Under `deny`, `web_search` and `web_fetch` resolve `unavailable: denied`, and the run still starts.
 - The learning lane's reflect turn writes and edits inside `work/.learning/` without asking under `ask`; never under `deny`, and never on a person's turn.
 - A workflow call node that calls a tool set to deny refuses its run (`409`, `details.denied`). `ask` does not apply to call nodes; a model node's asked call is refused, since no node can wait.
-- `@parcha/pi-durable-agent`: a revision's `toolSettings` keeps a catalog tool's name (`monid.run`), an MCP server's tool (`mcp:<server>/<tool>`) and its wildcard (`mcp:<server>/*`) as keys, beside a plain name.
+- `@parcha/pi-durable-agent`: a revision's `toolSettings` keeps a catalog tool's name (`monid.run`), an MCP server's tool (`mcp:<server>/<tool>`) and its wildcard (`mcp:<server>/*`) as keys, beside a plain name; its timeline's `TimelineKind` declares `tool_approval_requested`.

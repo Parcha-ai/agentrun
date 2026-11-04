@@ -41,7 +41,6 @@ import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, typ
 import { type Drive, EffectFailure, openDrive } from "@parcha/agentrun-kernel/kernel";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
-import { hostTools } from "./host-tools.js";
 import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
@@ -161,7 +160,7 @@ export const refusedText = (tool: string, note?: string): string => `The user de
 export const interruptedText = (tool: string): string => `This ${tool} call was interrupted while it waited for a person's approval; it was not run. If they approve it, it runs then and the run continues with its result.`;
 
 /** The Timeline row of a call that waits for an approval. */
-export const APPROVAL_ROW = "tool_approval_requested";
+export const APPROVAL_ROW = "tool_approval_requested" as const;
 /** A call's arguments shown on its approval, at most this many bytes. */
 export const ARGS_PREVIEW_BYTES = 2048;
 /** A result over this many bytes is spilled to work/ (see spill). */
@@ -411,6 +410,9 @@ export class RunGate {
    *  the run's own `approvals:` session, on the run's coding source: its intent is durable before it runs, its outcome
    *  after; a replay-safe call a crash cut off runs again, any other is answered interrupted and never runs again. */
   private async run(held: ApprovalRequest): Promise<ToolAnswer> {
+    // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
+    // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
+    const { hostTools } = await import("./host-tools.js");
     const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
     if (!tool) return { text: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.`, isError: true };
     this.drive ??= durableSessions(this.durable!.harness, this.context!)
