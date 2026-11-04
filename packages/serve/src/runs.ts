@@ -180,12 +180,24 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
 /** A run's answer or output as a view served it: `out`, redacted from `input` over the held values whose digest is `keys`. */
 type Served = { keys: string; input: unknown; out: unknown };
 
+/** GET /runs/{id}/graph's view (graph-view.ts, loaded when a graph is first read). */
+type GraphView = Awaited<ReturnType<typeof import("./graph-view.js")["runGraph"]>>;
+
+/** The most parts of a run's graph servedGraph keeps redacted; past it, it starts again. */
+const GRAPH_PARTS = 2048;
+
+/** A value's sha256, of its JSON. */
+const digestOf = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
+
 export type Run = {
   id: string;
   /** The values of the secrets each launch handed its process: what its errors never show, a key rotated since included. */
   handed?: Set<string>;
   /** What a view last served of its answer and its workflow output (runs.ts servedOnce), with what it was made from. */
   served?: { answer?: Served; output?: Served };
+  /** The parts of its graph a read last redacted (runs.ts servedGraph), by their content's digest, for the held values
+   *  whose digest is `keys`. */
+  servedParts?: { keys: string; parts: Map<string, unknown> };
   agentId: string;
   kind: RevisionKind;
   revision: string;
@@ -619,7 +631,7 @@ export class Runs {
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
-  private readonly graphs = new Map<string, object>();
+  private readonly graphs = new Map<string, GraphView>();
   private readonly adopting = new Map<string, Promise<Run>>();
   private readonly clock = new ChangeClock();
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
@@ -931,12 +943,31 @@ export class Runs {
    *  saved or deleted changes the values' digest, and the next view redacts again. */
   private servedOnce(run: Run, slot: "answer" | "output", input: unknown, redact: (values: string[]) => unknown): unknown {
     const values = this.refusedValues(run);
-    const keys = createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex");
+    const keys = digestOf([...values].sort());
     const last = run.served?.[slot];
     if (last && last.keys === keys && last.input === input) return last.out;
     const out = redact(values);
     run.served = { ...run.served, [slot]: { keys, input, out } };
     return out;
+  }
+
+  /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
+   *  no held secret, by its answer's rule (redactedOutput), each read once per content and held value set: a console
+   *  polls the graph while the run goes, and a call's output can be large. Its workflow and graph are its revision's. */
+  private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
+    const values = this.refusedValues(run);
+    const keys = digestOf([...values].sort());
+    if (run.servedParts?.keys !== keys) run.servedParts = { keys, parts: new Map() };
+    const parts = run.servedParts.parts;
+    const once = (value: unknown): unknown => {
+      const at = digestOf(value);
+      if (parts.has(at)) return parts.get(at);
+      const out = redactedOutput(value, values);
+      if (parts.size >= GRAPH_PARTS) parts.clear();
+      parts.set(at, out);
+      return out;
+    };
+    return { ...view, nodes: once(view.nodes), decisions: view.decisions.map(once), effects: view.effects.map(once) };
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -2178,13 +2209,13 @@ export class Runs {
     try {
       const view = await runGraph(given);
       this.graphs.set(run.id, view);
-      return { ...view, stale: false };
+      return this.servedGraph(run, { ...view, stale: false });
     } catch (error) {
       if (!storeBusy(error)) throw error;
       warn(run.id, "its store is busy; the graph answers its live view, stale");
       const held = this.graphs.get(run.id);
-      if (held) return { ...held, run: given.run, stale: true };
-      return { ...(await runGraph({ ...given, liveOnly: true })), stale: true };
+      if (held) return this.servedGraph(run, { ...held, run: given.run, stale: true });
+      return this.servedGraph(run, { ...(await runGraph({ ...given, liveOnly: true })), stale: true });
     }
   }
 
