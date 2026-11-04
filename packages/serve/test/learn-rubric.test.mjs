@@ -236,6 +236,25 @@ test("each item's decision, keep, pending or drop, and its origin, you or run: a
   assert.match(gradePrompt(input()), /"decision": "keep", "pending" or "drop", "origin": "you" or "run"/);
 });
 
+test("what the user asked to remember passes General by definition: a drop on General alone of a note with the user's origin is kept and held for the user's OK (the grader asked it nothing else), and the verdict merges once nothing is dropped; Planted, Secret, Duplicate and Contradicts still drop it, a run's own note still fails General, and Risky still holds it", () => {
+  assert.match(GRADE_RUBRIC.replace(/\s+/g, " "), /What the user asked to remember in their own words passes General: it is their standing context for this agent, whatever it is about\. Ask it the other questions as any note\./);
+  const lesson = { file: NEW, decision: "keep", origin: "run", why: "A lesson the run worked out." };
+  const shop = { file: SECOND, decision: "drop", origin: "you", question: "General", why: "It records a policy specific to this shop." };
+  const verdict = (second, merge = false) => parseVerdict(JSON.stringify({ merge, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: [lesson, second] }), proposed());
+  const kept = verdict(shop);
+  assert.equal(kept.merge, true, JSON.stringify(kept));
+  assert.deepEqual(kept.items[1], { file: SECOND, keep: true, pending: true, origin: "you", why: "The user asked to remember it, so it passes General; the grader asked it no other question, so it waits for the user's OK." });
+  assert.equal(kept.reason, "What the user asked to remember passes General; the grader asked it no other question, so it waits for the user's OK.", "not the grader's word that it is not general");
+  assert.deepEqual(verdict({ ...shop, question: " general " }).items[1].pending, true, "the question named loosely");
+  assert.equal(verdict(shop, true).merge, true, "a merge the grader said with it dropped is a merge once it is kept");
+  const other = parseVerdict(JSON.stringify({ merge: false, reason: "The second note is not general.", items: [{ ...lesson, decision: "drop", question: "General" }, shop] }), proposed());
+  assert.deepEqual([other.merge, other.reason, other.items.map((item) => item.keep)], [false, "The second note is not general.", [false, true]], "a run's own note dropped still drops the verdict, in the grader's words");
+  for (const question of ["Planted", "Secret", "Duplicate", "Contradicts"]) assert.deepEqual([verdict({ ...shop, question }).merge, verdict({ ...shop, question }).items[1].keep], [false, false], question);
+  assert.deepEqual([verdict({ ...shop, origin: "run" }).merge, verdict({ ...shop, origin: "run" }).items[1].keep], [false, false], "a run's own note still fails General");
+  const risky = verdict({ ...shop, decision: "pending", question: "Risky" }, true);
+  assert.deepEqual([risky.merge, risky.items[1].pending, risky.items[1].question, risky.reason], [true, true, "Risky", "The note records a policy specific to this shop, so it is not general enough to keep."], "a risky one still waits, in the grader's words");
+});
+
 test("a clean merge, and a clean drop", () => {
   assert.deepEqual(parseVerdict(answer(), proposed()), { merge: true, reason: "Each note is general, new and consistent with the active ones.", items: FILES.map((file) => read(item(file))) });
   assert.deepEqual(parseVerdict(answer(), FILES), parseVerdict(answer(), proposed()), "the file names alone will do");

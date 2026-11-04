@@ -19,7 +19,8 @@
 // no note, "Grade: drop <file>." keeps every note but that one and merges none, "Grade: pending <file>." keeps that one
 // to wait for its owner's OK (decision pending, origin you) and the rest, "Grade: risky <file>." keeps that one as the
 // run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: you <file>." keeps that one as what
-// the user asked in their own words (decision keep, origin you), and the rest, "Grade: sly." says merge and keeps
+// the user asked in their own words (decision keep, origin you), and the rest, "Grade: shop <file>." drops that one on
+// General with the user's origin (a weak grader's call on a shop's policy) and merges none, "Grade: sly." says merge and keeps
 // none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason that names
 // <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
@@ -107,6 +108,10 @@ function verdictOf(rules, files, faux) {
   const risky = /Grade: risky (\S+\.md)\./.exec(rules)?.[1];
   // "Grade: you <file>.": a note that keeps what the user asked, kept active with the user's origin.
   const theirs = /Grade: you (\S+\.md)\./.exec(rules)?.[1];
+  // "Grade: shop <file>.": what the user asked to remember, dropped on General as one shop's policy, as a weak grader
+  // does; the verdict then merges nothing.
+  const shop = /Grade: shop (\S+\.md)\./.exec(rules)?.[1];
+  if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", origin: "run", why: "It holds as a general rule." })) }));
   const kept = (file) => keep && file !== dropped;
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
