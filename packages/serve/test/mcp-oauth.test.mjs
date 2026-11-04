@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "@parcha/pi-durable-agent";
 import { McpServers } from "../dist/mcp-servers.js";
+import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -476,4 +477,16 @@ test("a resolver that never answers holds no refresh past the server's stop", as
   await launch;
   assert.ok(Date.now() - at < 1_000, `the stop waited ${Date.now() - at} ms on a stalled resolver`);
   assert.equal(readFileSync(join(data, "mcp-servers.json"), "utf8"), before, "nothing written");
+});
+
+test("the default network dials the address it is given, whatever the name: a name no resolver knows reaches the checked address", async (t) => {
+  const heard = [];
+  const http = createServer((req, res) => (heard.push(req.headers.host), res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}')));
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())));
+  const { port } = http.address();
+  const res = await systemNetwork.fetch(`http://pinned.invalid:${port}/probe`, { method: "GET" }, "127.0.0.1");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+  assert.deepEqual(heard, [`pinned.invalid:${port}`], "dialled at the address given, with the name as its Host");
 });

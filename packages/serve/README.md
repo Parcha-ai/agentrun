@@ -887,7 +887,10 @@ the callback, 10 minutes, cleared when it finishes), and a callback without it i
 start must come to the address the callback is under: one that came to another (the console opened under another
 name for this machine than the server's own address) is `409 wrong_origin`, with `details.open` the console's MCP
 page there.
-The redirect URI never changes with the address a request came to, so a registered client's stays valid. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
+The redirect URI never changes with the address a request came to, so a registered client's stays valid. Behind a
+proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and have the proxy pass the `Host` header
+and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
+and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
 refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`

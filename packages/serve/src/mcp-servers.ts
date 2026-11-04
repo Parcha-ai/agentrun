@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
-import { type ClientKind, MCP_SETTINGS_PAGE, McpSignIns, reasonOf, refreshed, refused, SIGN_IN_AGAIN, type TokenSet } from "./mcp-oauth.js";
+import { type ClientKind, MCP_SETTINGS_PAGE, McpSignIns, type OAuthNetwork, systemNetwork, reasonOf, refreshed, refused, SIGN_IN_AGAIN, type TokenSet } from "./mcp-oauth.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { isObject, unknownFields } from "./validate.js";
 
@@ -57,7 +57,7 @@ export class McpServers {
   readonly file: string;
   private readonly key: Buffer | undefined;
   private readonly sealCheck: string | undefined;
-  private readonly signIns = new McpSignIns();
+  private readonly signIns: McpSignIns;
   /** Each OAuth server's refresh under way: one at a time, so a rotating refresh token is spent once. */
   private readonly refreshing = new Map<string, Promise<void>>();
   /** The server's stop: aborts every refresh and code exchange under way, and from then on nothing is written. */
@@ -65,7 +65,9 @@ export class McpServers {
   /** The refreshes and callbacks under way, which close() waits out before the server lets its data directory go. */
   private readonly inflight = new Set<Promise<unknown>>();
 
-  constructor(data: string, env: NodeJS.ProcessEnv, private readonly version: string) {
+  /** `network`: how an MCP server off loopback's authorization server is reached (mcp-oauth.ts); tests give their own. */
+  constructor(data: string, env: NodeJS.ProcessEnv, private readonly version: string, private readonly network: OAuthNetwork = systemNetwork) {
+    this.signIns = new McpSignIns(network);
     this.file = join(data, MCP_SERVERS_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
     this.sealCheck = this.key && createHmac("sha256", this.key).update(`agentrun-serve ${FORMAT} key check`).digest("base64url");
@@ -266,7 +268,7 @@ export class McpServers {
       let no = !set.tokens.refresh_token && !!set.expires_at && Date.parse(set.expires_at) <= Date.now();
       if (set.tokens.refresh_token) {
         try {
-          next = await refreshed(set, kept.url, this.stopped.signal);
+          next = await refreshed(set, kept.url, this.stopped.signal, this.network);
         } catch (error) {
           no = await refused(error);
         }
