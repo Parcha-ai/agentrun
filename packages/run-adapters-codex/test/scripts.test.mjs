@@ -2,6 +2,7 @@
 // latest answer carried. Pure: no binary, no network.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { boundResult } from '@parcha/agentrun-kernel/process';
 import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, recoveryFacts, Scripts, settle, UNWATCHED } from '../dist/scripts.js';
 
 const line = (payload) => JSON.stringify({ timestamp: '2026-10-29T23:00:00Z', type: 'response_item', payload });
@@ -189,4 +190,13 @@ test("a finished script that prints the running phrase is still finished: only C
   // A wait that finished a cell, whose script printed the phrase, finishes it too.
   const ended = read(exec('call_a'), execYielded('call_a'), wait('call_w'), line({ type: 'function_call_output', call_id: 'call_w', output: [{ type: 'input_text', text: 'Script completed\nWall time 1 seconds\nOutput:\n' }, { type: 'input_text', text: printed.replace('7', '1') }] }));
   assert.deepEqual(ended.tie(undefined), { kind: 'none' });
+});
+
+test("a completed call's result past the host's bound: the store keeps it whole, Codex got it cut, and the two still agree", () => {
+  // The bridge hands Codex boundResult(result); the session keeps the whole result. Both records of one completed call
+  // agree when the rollout's text is the store's text cut by that same rule.
+  const whole = `charged ${'x'.repeat(130_000)}`;
+  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(whole).text))), { kind: 'completed', text: whole }, 'both, the rollout holding the cut of the stored result');
+  const other = `charged ${'y'.repeat(130_000)}`;
+  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(other).text))), { kind: 'interrupted' }, 'a cut of another text still disagrees');
 });
