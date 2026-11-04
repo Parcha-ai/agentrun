@@ -27,6 +27,9 @@ export interface DoorContext {
   emit(event: DoorEvent): void;
   /** A child the harness runs in, started as its own process group (`detached`): a drain kills the group before the exit. */
   adopt(pid: number): void;
+  /** Why `abort` is called: `request` (POST /abort, a submit past its bound), or `stop` (the instance is stopping: a
+   *  drain, a fence, a park), which no one asked of the turn. Unset on the other calls. */
+  readonly reason?: "request" | "stop";
 }
 
 /**
@@ -186,20 +189,20 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
     if (stopping) void killGroup(pid, start);
     else adopted.set(pid, start);
   };
-  const contextOf = (signal: AbortSignal, owner: object = {}): DoorContext => ({ run, signal, emit: (event) => emit(event, owner), adopt });
+  const contextOf = (signal: AbortSignal, owner: object = {}, reason?: DoorContext["reason"]): DoorContext => ({ run, signal, emit: (event) => emit(event, owner), adopt, ...(reason ? { reason } : {}) });
   const killAdopted = () => Promise.all([...adopted].map(([pid, start]) => killGroup(pid, start))).then(() => undefined);
   const settle = (root: ConversationId, requestId: string, n: 1 | 2, record: DoorRecord) =>
     run.harness.commit((tx) => append(tx, root, requestId, n, "door.status", { requestId, ...record }), base);
-  const abortHook = () => {
+  const abortHook = (reason: NonNullable<DoorContext["reason"]>) => {
     const stop = new AbortController();
     return within(
-      Promise.resolve().then(() => hook.abort(contextOf(stop.signal))),
+      Promise.resolve().then(() => hook.abort(contextOf(stop.signal, {}, reason))),
       abortMs,
     ).finally(() => stop.abort());
   };
   /** The hook's abort, then the open turn ended when it left the hook idle: POST /abort and a submit's timeout alike. */
   const abortTurn = async () => {
-    const result = await abortHook();
+    const result = await abortHook("request");
     if (result !== TIMEOUT && !hook.busy()) closeTurn();
     return result;
   };
@@ -321,7 +324,7 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
         return killAdopted();
       }
       stopped ??= (async () => {
-        if (pending > 0 || hook.busy()) await abortHook().catch(() => undefined);
+        if (pending > 0 || hook.busy()) await abortHook("stop").catch(() => undefined);
         closeTurn();
         await killAdopted();
       })();

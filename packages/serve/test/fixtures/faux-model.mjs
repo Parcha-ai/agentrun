@@ -210,6 +210,22 @@ export default function reply(context, faux) {
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
   // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
   if (first.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
+  // A final stop of the model's own with no text (turn-record.test.mjs): one empty text block (and an empty thinking
+  // block), only a thinking block, or no content at all; as
+  // the first answer, or as a follow-up's after an answer with text.
+  if (first.includes("Answer with one empty text block.")) return faux.message([faux.thinking(""), faux.text("")]);
+  if (first.includes("Answer only by thinking.") || last === "Now answer only by thinking.") return faux.message([faux.thinking("Nothing to add.")]);
+  if (first.includes("Answer with no content.") || last === "Now answer with no content.") return faux.message([]);
+  // A stop at the length limit (the model's max output tokens): text and no tool call, as a first answer or a follow-up's.
+  if (first.includes("Answer until the length runs out.") || last === "Now answer until the length runs out.") return faux.message("Cut short: the length ran out", { stopReason: "length" });
+  // One answer asks for two fetches (no such tool here, so both fail), then the turn stops with no text.
+  if (first.includes("Fetch two pages at once and both fail")) {
+    if (results === 0) return faux.message([faux.toolCall("web_fetch", { url: "http://a.example/" }), faux.toolCall("web_fetch", { url: "http://b.example/" })], { stopReason: "toolUse" });
+    return faux.message([]);
+  }
+  // A long tool phase on pi: two fetches, each held until its file exists (faux-web-hold.mjs), then the answer.
+  const gated = /Fetch the pages held until (\S+) and (\S+)\./.exec(first);
+  if (gated) return results < 2 ? faux.message(faux.toolCall("fetch_page", { url: `http://public.example/hold?until=${encodeURIComponent(gated[results + 1])}` }), { stopReason: "toolUse" }) : faux.message("Fetched both.");
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   // Asked at a learning run's end what to keep (learn/reflect.ts reflectPrompt): nothing.

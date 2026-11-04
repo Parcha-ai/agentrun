@@ -61,7 +61,7 @@ async function cancelledAfterAnswer(t, { cap, late } = {}) {
   const before = await watch(api, runId, (page, rows) => page.status === "working" && rows.some(answerRow), { deadlineMs: 30_000, what: "the answer's row, the run working" });
   const cancel = await api("POST", `/runs/${runId}/cancel`, {});
   assert.equal(cancel.status, 202, JSON.stringify(cancel.body));
-  assert.deepEqual([cancel.body.cancel_requested, cancel.body.already_terminal, cancel.body.status], [true, false, "working"], JSON.stringify(cancel.body));
+  assert.deepEqual([cancel.body.cancel_requested, cancel.body.already_terminal, cancel.body.status], [true, false, "cancelled"], JSON.stringify(cancel.body));
   // The cancel ends the turn. Its end, the second request's entry and cost with it, is read while the process is held,
   // so whatever that read publishes stays to be seen until the gate.
   const cost = 0.001 + (late ?? 0.001);
