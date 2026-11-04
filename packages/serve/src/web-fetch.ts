@@ -38,7 +38,7 @@ const PORTS = new Set(["", "80", "443"]);
 export const PAGES_HELD = 8;
 
 /** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. */
-export type WebPage = Page & { via: "parallel" | "direct"; parallel?: string };
+export type WebPage = Page & { via: "parallel" | "direct" | "stopped"; parallel?: string };
 /** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
 export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
 /** A page web_fetch could not read, and how it tried. */
@@ -151,11 +151,27 @@ async function readOnce(url: unknown, parallel: Extract | null | undefined, chec
   return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
 }
 
+/** The reads that have ended: only these leave `pages` past its bound (trim). */
+const settled = new WeakSet<Promise<WebRead | WebUnread>>();
+/** `pages` down to PAGES_HELD reads that have ENDED, dropping the least recently used of those first. Only ended reads
+ *  count toward the bound, and only they are dropped: a read under way stays until it ends (a caller may be about to
+ *  share it, and dropping it would read and bill the page again), and it never makes room by pushing out a page that has
+ *  ended. So the run holds at most PAGES_HELD ended reads plus the ones still under way, and trims again as each ends. */
+function trim(pages: Pages): void {
+  let ended = 0;
+  for (const read of pages.values()) if (settled.has(read)) ended++;
+  for (const [held, read] of pages) {
+    if (ended <= PAGES_HELD) return;
+    if (settled.has(read)) (pages.delete(held), ended--);
+  }
+}
+
 /** `reading`, or, as soon as `signal` stops this call, a failed page saying so (as a stopped read reads): the read
  *  itself goes on for the run's other callers of the URL, within its own time limits. */
-function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, parallel: Extract | null | undefined, signal?: AbortSignal): Promise<WebRead | WebUnread> {
+function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signal?: AbortSignal): Promise<WebRead | WebUnread> {
   if (!signal) return reading;
-  const stopped = (): WebUnread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "the call was stopped before the page was read", via: "direct", ...(parallel ? { parallel: "was stopped" } : {}) });
+  // No page came for this call, by any path: never "direct", which says the host was fetched.
+  const stopped = (): WebUnread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "the call was stopped before the page arrived", via: "stopped" });
   if (signal.aborted) return Promise.resolve(stopped());
   return new Promise((resolve, reject) => {
     const onStop = () => resolve(stopped());
@@ -177,7 +193,7 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
     if (pages && named !== undefined) {
       // Ahead of any caller's await, so no call sees a failed read kept.
       const drop = () => void (pages.get(named) === started && pages.delete(named));
-      void started.then((read) => { if (!read.ok) drop(); }, drop);
+      void started.then((read) => { settled.add(started); if (!read.ok) drop(); trim(pages); }, () => { settled.add(started); drop(); });
     }
     reading = started;
   }
@@ -185,9 +201,9 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
     // The last used last: the oldest goes past PAGES_HELD.
     pages.delete(named);
     pages.set(named, reading);
-    if (pages.size > PAGES_HELD) pages.delete(pages.keys().next().value!);
+    trim(pages);
   }
-  const read = await untilStopped(url, reading, parallel, signal);
+  const read = await untilStopped(url, reading, signal);
   if (!read.ok) return read;
   const { via, parallel: why, ...page } = read;
   return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
@@ -254,7 +270,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL): Too
   if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page). A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {

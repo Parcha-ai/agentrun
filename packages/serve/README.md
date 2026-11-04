@@ -637,7 +637,8 @@ with no content, a 5xx or not within 60 s, it is the guarded direct fetch, `via:
 Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
 refused earlier in this run`), and the model reads a line saying so; a 401 or 403 stops Parallel for the rest of the
 run. A fetch Parallel was not picked for says nothing of it. A URL passes the guard's own check before anything is sent to Parallel: a URL the guard
-refuses is refused and never leaves the machine.
+refuses is refused and never leaves the machine. A call stopped before its page arrived answers `ok: false` with
+`via: "stopped"`: no page came for it (the run's read of the URL goes on for its other calls).
 
 `web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
 $0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers

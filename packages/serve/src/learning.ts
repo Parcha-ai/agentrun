@@ -458,14 +458,15 @@ export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.ent
 });
 
 /** Test seams, tests only: once a part of an agent's learning folder is made (before its check), before a run's
- *  learned files are written, once its pin is in place, before what its end-of-run turn wrote is checked, and as each
- *  git call starts (its arguments). */
+ *  learned files are written, once its pin is in place, before what its end-of-run turn wrote is checked, as a run that
+ *  learns opens again for a follow-up, and as each git call starts (its arguments). */
 export const learningTestHooks: {
   git?: (args: readonly string[]) => void;
   afterMkdir?: (dir: string) => Promise<void> | void;
   beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;
   beforePropose?: (runDir: string) => Promise<void> | void;
+  beforeReopen?: (runDir: string) => Promise<void> | void;
 } = {};
 
 /** As the run in `runDir` settles after its end-of-run turn ended, before it reads ended and before a follow-up can
