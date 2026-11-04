@@ -11,7 +11,7 @@
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
-import { openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
+import { boundResult, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
 // cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
@@ -195,7 +195,9 @@ export function codeMode(deps: CodeModeDeps) {
 
     /** The outputs injected for the calls the rollout left dangling: a cut-off `exec` gets a custom tool call output from the log, in place of `items`';
      *  any other call keeps its generic output, as an item of its own kind, and code mode's `wait` is told that it had started. `since`: the
-     *  turn the dangling calls ran in: the interrupted one a recovery note resumes, or with none, the turn that ended last. */
+     *  turn the dangling calls ran in: the interrupted one a recovery note resumes, or with none, the turn that ended last. Every output is then
+     *  held to the host's bound as the tool bridge holds a call's result (`boundResult`): these come from the log, not through the bridge, and
+     *  both repairs (with a recovery note and without) inject what this leaves. */
     async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number): Promise<void> {
       const state: SessionState = ctx.state();
       const ties = (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data);
@@ -216,6 +218,7 @@ export function codeMode(deps: CodeModeDeps) {
         const { own, loose } = listed.get(c.callId)!;
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: execRecoveryOutput(own, loose) };
       });
+      for (const item of items) if (typeof item.output === "string") item.output = boundResult(item.output).text;
     },
 
     /** With no recovery note, the calls the rollout has no output for get theirs from the log before any turn is sent: a turn that ended without
