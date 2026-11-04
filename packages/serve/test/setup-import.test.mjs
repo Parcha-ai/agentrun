@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
@@ -362,18 +362,20 @@ const holding = (dir, value) => {
   return found;
 };
 
-test("a server stopped while setup counts a big home's sessions exits within its drain window: the count reads no session for keys", { timeout: 120_000 }, async (t) => {
+test("setup's count of a big home reads none of its sessions for keys: it answers, and the server stopped after it exits", { timeout: 120_000 }, async (t) => {
   const root = await scratch(t);
   const home = join(root, "home");
   const site = join(home, "code", "big");
   mkdirSync(site, { recursive: true });
   claudeSession(home, site, 1);
-  // 200 subagent files of about a megabyte each: a key scan over them takes many seconds, a count's listing none.
-  const notes = Array.from({ length: 20_000 }, (_, i) => `line ${i} of the subagent's notes, read and kept`).join("\n");
-  for (let k = 1; k <= 200; k++) claudeSubagent(home, site, 1, k, { answer: notes });
+  // One subagent's file of about 20 MB under 5,000 names (hard links: 20 MB on disk). A count that reads the sessions for
+  // keys reads every name, about 100 GB, for minutes; a count's listing reads none of them.
+  const notes = Array.from({ length: 400_000 }, (_, i) => `line ${i} of the subagent's notes, read and kept`).join("\n");
+  const first = claudeSubagent(home, site, 1, 1, { answer: notes });
+  for (let k = 2; k <= 5_000; k++) linkSync(first, join(dirname(first), `agent-a${k}.jsonl`));
   const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
   mkdirSync(temp, { recursive: true });
-  // The server's own drain window, set short: it answers SIGTERM within it.
+  // The server's own drain window, set short.
   const [DRAIN, DRAIN_MS] = ["2s", 2_000];
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--drain-timeout", DRAIN], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
@@ -392,13 +394,16 @@ test("a server stopped while setup counts a big home's sessions exits within its
     await sleep(50);
   }
   const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
-  // A server the CLI starts with no owner counts as it starts: stopped while that count runs.
-  const read = await call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
-  assert.ok([200, 202].includes(read.status), read.text);
+  // A server the CLI starts with no owner counts as it starts: a listing answers in moments, a scan would still be reading.
+  const read = () => call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  let found = await read();
+  for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
+  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 1 }], `the count read no subagent's file: ${err}`);
   const stopped = Date.now();
   if (alive) process.kill(-child.pid, "SIGTERM");
-  const outcome = await Promise.race([exited.then(() => "exited"), sleep(DRAIN_MS + 1_500).then(() => "still running")]);
-  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window (the count ${read.status === 202 ? "running" : "done"} when stopped)`);
+  // Unreferenced: the bound holds no exited test's process open.
+  const outcome = await Promise.race([exited.then(() => "exited"), sleep(DRAIN_MS + 10_000, "still running", { ref: false })]);
+  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window`);
 });
 
 test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
