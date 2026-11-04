@@ -180,7 +180,7 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   t.mock.timers.tick(BOOKING_WAIT_MS);
   await settles(() => first.events.includes("run_end"), "the turn ends once the wait runs out");
   // Its cost not in yet: the run's cost reads unknown, never a known $0.
-  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1 }, "one request, its cost unknown while it is out");
+  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 }, "one request, its cost unknown while it is out");
   // The cost comes in after the answer was written: it goes in on its own, with no next turn to carry it.
   late.book();
   await settles(async () => spend(await rootOf(first.harness)) === 0.003, "the late cost is in the run's spend with no next turn");
@@ -272,7 +272,7 @@ test("a late cost booked after a later request's (held past its turn's wait, and
   const first = await opened(storage, script.adapter);
   assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
   await waitedOut(t, script, 0, first.events, 1);
-  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1 }, "request 1 written at unknown cost, its cost still out");
+  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 }, "request 1 written at unknown cost, its cost still out: $0 known so far, 1 not priced");
   assert.deepEqual(await first.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, first.door), { accepted: true });
   // Turn 2 books both of its costs in the turn: it ends on them, the clock never moved.
   await settles(() => first.events.filter((e) => e === "run_end").length === 2, "turn 2 ends");
@@ -376,7 +376,7 @@ test("a booking that comes in as the run ends: before its process lets the store
     const entries = await reopened(storage);
     assert.deepEqual(requestsOf(entries, BOOKED).sort((a, b) => a - b), [1, 2], "each request once: the cut one booked by the next open");
     assert.deepEqual(pricings(entries), { 1: 1, 2: 1 }, "each once");
-    assert.deepEqual(usage(entries, true), { usd: null, requests: 2 }, "its cost unknown, never $0");
+    assert.deepEqual(usage(entries, true), { usd: null, requests: 2, so_far_usd: 0.002, unpriced: 1 }, "its cost unknown, never $0: $0.002 known so far, 1 not priced");
   }
 });
 
