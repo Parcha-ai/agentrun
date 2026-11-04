@@ -168,7 +168,7 @@ const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 /** Each run of 8 characters of `value`: none may be anywhere a person reads. */
 const pieces = (value) => Array.from({ length: value.length - 7 }, (_, i) => value.slice(i, i + 8));
 
-for (const [what, content] of [["across the summary's and the text's cut", "Fail across the cut."], ["base64-encoded", "Fail echoing an encoded key."], ["with a line break in its middle (its summary is its first line)", "Fail with a wrapped key."]]) {
+for (const [what, content] of [["across the summary's and the text's cut", "Fail across the cut."], ["base64-encoded", "Fail echoing an encoded key."], ["with a line break in its middle (its summary is its first line)", "Fail with a wrapped key."], ["on line after line, past what a row shows", "Fail repeating a held key."]]) {
   test(`an agentic run's error echoing a held key ${what}: no 8 characters of it on the Timeline or in the run's error`, { timeout: 60_000 }, async (t) => {
     withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
     const { api } = await serve(t);
@@ -212,4 +212,15 @@ test("redaction of a 400 KB error made to be slow to scan (repeated github_pat_)
   redacted("github_pat_".repeat(36_400), [CUT_KEY]);
   const took = performance.now() - started;
   assert.ok(took < 200, `${took.toFixed(0)} ms`);
+});
+
+// Redaction reads a bounded head of a long error, and the replacements before the head's end can pull text from past
+// the visible part into it: a copy of a key the head's end falls inside must not come into view. Held as one value,
+// CUT_KEY makes the head 2000 + 6 * 37 + 16 = 2238 characters, which ends inside the 59th of these 38-character lines.
+test("a long error repeating a held key, its redaction's head ending inside a copy: no 8 characters of the key are shown", () => {
+  for (const copies of [100, 2_000]) {
+    const shown = redacted(`${CUT_KEY}\n`.repeat(copies), [CUT_KEY]);
+    for (const piece of pieces(CUT_KEY)) assert.ok(!shown.includes(piece), `${copies} copies: ${piece} is shown`);
+    assert.ok(shown.includes("[redacted]"), `${copies} copies: ${shown.slice(0, 80)}`);
+  }
 });
