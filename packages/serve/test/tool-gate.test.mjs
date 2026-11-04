@@ -9,6 +9,7 @@
 // default; an MCP server's wildcard key mcp:<server>/* is kept and applied. The reflect carve-out holds under ask,
 // never under deny. No socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -330,4 +331,23 @@ test("with accounts off no one can approve: an ask, a catalog tool's default or 
   const on = await serve(t, GATE);
   assert.equal((await on.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   assert.equal((await on.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_fetch").ask_needs, undefined);
+});
+
+/** A held key, made at runtime (no credential-shaped literal), and whether `text` holds any 8 characters of it. */
+const HELD = ["not-a-secret", "approval-card-key", randomBytes(6).toString("hex")].join("-");
+const holdsPiece = (text, secret) => [...Array(Math.max(0, secret.length - 7)).keys()].some((i) => text.includes(secret.slice(i, i + 8)));
+
+test("a parked call whose arguments hold a held key shows no 8 characters of it on its approval row or its pending approval, as the Timeline redacts a call's arguments", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { PARALLEL_API_KEY: HELD });
+  await network(t);
+  const server = await serve(t, GATE);
+  assert.equal((await server.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const runId = await fetching(server.api, "keyed", "pi", `${PAGE}?k=${HELD}`);
+  const { view, rows } = await parked(server.api, runId);
+  const row = rows.find((r) => r.kind === "tool_approval_requested");
+  assert.ok(row && view.pending?.kind === "approval", "parked, with its row and its pending approval");
+  assert.equal(holdsPiece(JSON.stringify(row), HELD), false, `the approval row: ${JSON.stringify(row)}`);
+  assert.equal(holdsPiece(JSON.stringify(view.pending), HELD), false, `the pending approval: ${JSON.stringify(view.pending)}`);
+  const summary = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
+  assert.equal(holdsPiece(JSON.stringify(summary.pending), HELD), false, "the run's summary in the list");
 });
