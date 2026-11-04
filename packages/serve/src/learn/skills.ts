@@ -32,6 +32,21 @@ export function learnedPlace(path: string): LearnedPlace | undefined {
 /** Whether `name` is a good name for a folder of `kind`. */
 export const learnedName = (kind: LearnedPlace["kind"], name: string): boolean => (kind === "skill" ? SKILL_NAME : WORKFLOW_NAME).test(name);
 
+/** A one-line YAML value as the text it says: a double-quoted one decoded (its escapes, as JSON reads them), a
+ *  single-quoted one with its doubled quotes undone, a plain one as it is. A double-quoted one JSON can't read stays as
+ *  written between its quotes. */
+function unquoted(own: string): string {
+  if (/^"(.*)"$/.test(own)) {
+    try {
+      return String(JSON.parse(own)).trim();
+    } catch {
+      return own.slice(1, -1).trim();
+    }
+  }
+  if (/^'(.*)'$/.test(own)) return own.slice(1, -1).replace(/''/g, "'").trim();
+  return own.trim();
+}
+
 /** A SKILL.md's or a draft README's front matter: its lines, where it closes (the index of its closing `\n---\n`, in
  *  `lf`, the text with LF line ends) and each key's value, a folded or literal block value read as one line. A string
  *  is why there is none. */
@@ -47,7 +62,7 @@ function frontOf(text: string): { lf: string; end: number; value: (key: string) 
     const own = lines[at]!.slice(key.length + 1).trim();
     const more: string[] = [];
     for (const line of lines.slice(at + 1)) if (/^\s+\S/.test(line)) more.push(line.trim()); else break;
-    return (/^[>|][-+]?$/.test(own) ? more.join(" ") : own).replace(/^(["'])(.*)\1$/, "$2").trim();
+    return /^[>|][-+]?$/.test(own) ? more.join(" ").trim() : unquoted(own);
   };
   return { lf, end, value };
 }
