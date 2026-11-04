@@ -103,6 +103,23 @@ export function released(text: string): string {
   return `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
 }
 
+/** What a SKILL.md or a draft's README.md says of itself: `pending` while it waits for its owner's OK, `retired` once a
+ *  person retired it, else `active`. A run is given only an active one. */
+export function learnedStatus(text: string): "active" | "pending" | "retired" {
+  const front = frontOf(text);
+  const status = typeof front === "string" ? undefined : front.value("status");
+  return status === "pending" ? "pending" : status === "retired" ? "retired" : "active";
+}
+
+/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` last in its front matter
+ *  (any status line before it dropped), so no later run is given it. Throws on a text with no front matter. */
+export function retiredLearned(text: string): string {
+  const front = frontOf(text);
+  if (typeof front === "string") throw new Error(`it cannot be retired: ${front}`);
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
+  return `---\n${[...kept, "status: retired"].join("\n")}${front.lf.slice(front.end)}`;
+}
+
 /** A draft's `README.md` as the host writes it, from the workflow's name and the one-line description its block gives. */
 export const readmeOf = (name: string, description: string): string => `---\nname: ${name}\ndescription: ${description}\n---\n`;
 

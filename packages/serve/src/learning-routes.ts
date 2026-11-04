@@ -19,7 +19,7 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { approve, buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, isHeld, type LearnedNote, learnedFront, learnedName, learnedPlace, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, SKILLS_DIR, supersede, WORKFLOWS_DIR } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, isHeld, type LearnedNote, learnedFront, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, SKILLS_DIR, supersede, WORKFLOWS_DIR } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
 import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -207,7 +207,7 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
  *  workflow.json, with its `readme`), its description, `pending` while it waits for its owner's OK, the run whose merge
  *  last changed it, its size in bytes, and the ETag of the file that says whether it waits (a SKILL.md, a README.md),
  *  which an approval names. */
-type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending"; run: string | null; bytes: number; etag: string };
+type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string };
 /** By the folder and the commit: its skills and drafts, raw (each answer cuts them of the host's secrets as they are
  *  then), for the 8 commits last read. */
 const learnedAtCache = new Recent<{ skills: LearnedView[]; workflows: LearnedView[] }>(8, 4 << 20);
@@ -249,7 +249,7 @@ async function learnedAt(home: string, repo: string, sha: string): Promise<{ ski
     const front = texts.get(held);
     if (!front) continue;
     const said = learnedFront(front.text);
-    const item: LearnedView = { name: place.name, file: path, ...(place.kind === "workflow" ? { readme: held } : {}), description: said?.description ?? "", status: isHeld(front.text) ? "pending" : "active", run: runs.get(path) ?? null, bytes: size, etag: etagOf(front.oid) };
+    const item: LearnedView = { name: place.name, file: path, ...(place.kind === "workflow" ? { readme: held } : {}), description: said?.description ?? "", status: learnedStatus(front.text), run: runs.get(path) ?? null, bytes: size, etag: etagOf(front.oid) };
     (place.kind === "skill" ? skills : workflows).push(item);
   }
   const byName = (a: LearnedView, b: LearnedView) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -318,7 +318,7 @@ export async function learningLog(data: string, agentId: string, query: URLSearc
 /** The file a route names, decoded, for its `use`: a note's name; for a read MEMORY.md too, and a skill's SKILL.md or a
  *  draft's workflow.json or README.md (`skills/<name>/SKILL.md`, percent-encoded); for an approval a skill's SKILL.md or
  *  a draft's README.md, the file that says it waits. Anything else is 400. The name is never echoed. */
-function fileOf(raw: string, use: "read" | "write" | "approve"): string {
+function fileOf(raw: string, use: "read" | "write" | "approve" | "retire"): string {
   let file: string;
   try {
     file = decodeURIComponent(raw);
@@ -328,8 +328,9 @@ function fileOf(raw: string, use: "read" | "write" | "approve"): string {
   const place = learnedPlace(file);
   if (place) {
     if (!learnedName(place.kind, place.name)) throw new ApiError("bad_request", "A skill's folder is named with lowercase letters, digits and single dashes, a workflow's with lowercase letters, digits, dashes and underscores.");
-    if (use === "write") throw new ApiError("bad_request", "A skill or a workflow is changed by a run's learning, or approved by its owner: a person edits, creates and retires notes.");
+    if (use === "write") throw new ApiError("bad_request", "A skill or a workflow is changed by a run's learning, approved by its owner, or retired: a person edits and creates notes.");
     if (use === "approve" && place.kind === "workflow") throw new ApiError("bad_request", "A workflow is approved by its README.md, the file that says it waits.");
+    if (use === "retire" && place.kind === "workflow") throw new ApiError("bad_request", "A workflow is retired by its README.md, the file that says whether it is in use.");
     return file;
   }
   if (file === INDEX_FILE && use !== "read") throw new ApiError("bad_request", "MEMORY.md is built by the server from the active notes, one line each, and is never written: edit, create or retire a note instead.");
@@ -406,8 +407,8 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
  *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing,
  *  commit nothing. `refuse`: the host's secrets. */
 export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
-  const file = fileOf(raw, input.approve ? "approve" : "write");
-  // A skill's SKILL.md or a draft's README.md: only ever approved here.
+  const file = fileOf(raw, input.approve ? "approve" : input.body === undefined ? "retire" : "write");
+  // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
   const condition = conditionOf(input.ifMatch, input.ifNoneMatch, input.body !== undefined);
   let given: string | undefined;
@@ -448,9 +449,14 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       // Beside the note itself: what an approve marks of the notes the approved one supersedes.
       const also = new Map<string, string>();
       const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, Note>();
-      if (text === undefined && learned) {
+      if (text === undefined && learned && !input.approve) {
+        // Retired, as a note is: no later run is given it. One already retired is answered as it is; nothing else in
+        // the folder changes.
+        if (learnedStatus(current!.text) === "retired") return { status: 200, file, text: current!.text, etag: etagOf(current!.oid) };
+        text = retiredLearned(current!.text);
+      } else if (text === undefined && learned) {
         // Approved, it is no longer held: given to every later run. Nothing else in the folder changes.
-        if (!isHeld(current!.text)) throw new ApiError("bad_request", `The ${learned.kind === "skill" ? "skill" : "workflow"} is not waiting for an OK: it is active.`);
+        if (!isHeld(current!.text)) throw new ApiError("bad_request", `The ${learned.kind === "skill" ? "skill" : "workflow"} is not waiting for an OK: it is ${learnedStatus(current!.text)}.`);
         text = released(current!.text);
       } else if (text === undefined && input.approve) {
         const note = parseNoteFile(file, current!.text);

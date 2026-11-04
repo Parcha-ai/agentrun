@@ -3,6 +3,8 @@
 // files read as text, a person's edit and retire stay for notes, and the owner's password session in the console alone
 // makes a waiting skill or draft active, in one host commit. A run's learning names the skill and the workflow it kept.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, git, learner, LEARN, made, repoOf, started } from "./learn-support.mjs";
@@ -64,11 +66,12 @@ test("the agent's learning lists the skill and the workflow it learned beside it
   }
   for (const bad of ["skills/find-policies/run.sh", "skills/Find/SKILL.md", "workflows/x/other.json"]) assert.equal((await read(bad)).status, 400, bad);
   assert.equal((await read("skills/missing/SKILL.md")).status, 404);
-  // A person's edit, create and retire are for notes: a skill or a draft is changed by a run, or approved.
+  // A person's edit and create are for notes: a skill or a draft is changed by a run. A draft is retired by its README.md.
   const etag = (await read(SKILL_FILE)).headers.get("etag");
   const put = await api("PUT", `/agents/keeper/learning/files/${enc(SKILL_FILE)}`, { text: SKILL.replace("first", "second") }, { "if-match": etag });
   assert.equal(put.status, 400, JSON.stringify(put.body));
-  assert.equal((await api("POST", `/agents/keeper/learning/files/${enc(SKILL_FILE)}/retire`, undefined, { "if-match": etag })).status, 400);
+  const json = await read(DRAFT_FILE);
+  assert.equal((await api("POST", `/agents/keeper/learning/files/${enc(DRAFT_FILE)}/retire`, undefined, { "if-match": json.headers.get("etag") })).status, 400);
   assert.equal(git(repo, ["show", `main:${SKILL_FILE}`]), SKILL.trimEnd(), "nothing written");
   // The run's learning names the skill and the workflow it kept, on its read, its list and its learning whole.
   const kept = { skills: [{ file: SKILL_FILE, name: "find-policies" }], workflows: [{ file: DRAFT_FILE, name: "find-policies" }] };
@@ -124,4 +127,38 @@ test("a skill or a draft that waits for its owner's OK is listed pending, and ap
   assert.equal((await listing("flower")).workflows[0].status, "active");
   const top = (await api("GET", "/agents/flower/learning/log")).body.items[0];
   assert.deepEqual([top.by, top.files], [{ user: true, via: "console" }, [README_FILE]]);
+});
+
+test("a person retires a learned skill or a workflow draft as they retire a note: If-Match on its SKILL.md or its README.md, status: retired in one host commit, listed retired, and the next run no longer gets it; a stale ETag is 412, and a token may retire as it may retire a note", { timeout: 240_000 }, async (t) => {
+  const { api, data, repo } = await learned(t, "retirer");
+  const files = "/agents/retirer/learning/files";
+  const read = (file) => api("GET", `${files}/${enc(file)}`);
+  const before = (await read(SKILL_FILE)).headers.get("etag");
+  // A stale ETag: the version it names is not main's.
+  assert.equal((await api("POST", `${files}/${enc(SKILL_FILE)}/retire`, undefined, { "if-match": '"0000000000000000000000000000000000000000"' })).status, 412);
+  // The token retires it, as it retires a note: the file's text with status: retired, under its new ETag.
+  const retired = await api("POST", `${files}/${enc(SKILL_FILE)}/retire`, undefined, { "if-match": before });
+  assert.equal(retired.status, 200, JSON.stringify(retired.body));
+  assert.match(retired.body, /^---\n[\s\S]*\nstatus: retired\n[\s\S]*---\n# Find policies/);
+  assert.notEqual(retired.headers.get("etag"), before);
+  assert.equal(retired.headers.get("etag"), (await read(SKILL_FILE)).headers.get("etag"), "the ETag a read answers now");
+  assert.equal(git(repo, ["log", "-1", "--format=%s", "main"]), `learning: retired by a person: ${SKILL_FILE}`);
+  assert.deepEqual(git(repo, ["show", "--name-only", "--format=", "main"]).split("\n").filter(Boolean), [SKILL_FILE], "one file changed");
+  // A draft by its README.md.
+  const readme = await api("POST", `${files}/${enc(README_FILE)}/retire`, undefined, { "if-match": (await read(README_FILE)).headers.get("etag") });
+  assert.equal(readme.status, 200, JSON.stringify(readme.body));
+  assert.match(readme.body, /\nstatus: retired\n/);
+  // Listed retired.
+  const view = (await api("GET", "/agents/retirer/learning")).body;
+  assert.deepEqual([view.skills.map((s) => [s.file, s.status]), view.workflows.map((w) => [w.file, w.status])], [[[SKILL_FILE, "retired"]], [[DRAFT_FILE, "retired"]]]);
+  // Retiring it again answers it as it is, and commits nothing.
+  const main = git(repo, ["rev-parse", "main"]);
+  assert.equal((await api("POST", `${files}/${enc(SKILL_FILE)}/retire`, undefined, { "if-match": retired.headers.get("etag") })).status, 200);
+  assert.equal(git(repo, ["rev-parse", "main"]), main);
+  // The next run no longer gets it: not in its pin, not in its work.
+  const next = await started(api, "retirer");
+  const pin = JSON.parse(readFileSync(join(data, "runs", next, "learning.json"), "utf8"));
+  assert.ok(!(pin.skills ?? []).some((path) => path.startsWith("find-policies/")), JSON.stringify(pin));
+  assert.throws(() => readFileSync(join(data, "runs", next, "work", ".agents", "skills", "find-policies", "SKILL.md")), /ENOENT/);
+  await ended(api, next);
 });
