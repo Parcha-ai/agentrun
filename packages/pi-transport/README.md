@@ -171,8 +171,9 @@ the time the create call answered). Only Modal reports all of them and can restr
 (`networkBlockAll`) and reports `network: "none"` only once the sandbox's own read says Daytona blocked it; a sandbox it did not block
 (an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. It takes an
 allowlist of domains (a `*.` wildcard allowed) as Daytona's domain list (`domainAllowList`, which Daytona's egress proxy enforces,
-re-signing TLS with its own CA) and reports `network: "allowlist"` only once the sandbox's own read carries that list; a sandbox
-without it is deleted and the create refused as `unsupported` the same way. A CIDR in the list is refused. Daytona also
+re-signing TLS with its own CA) and reports `network: "allowlist"`, with the hosts in `allow`, only once the sandbox's own read
+carries that list (comma-separated, or a list of hosts); a sandbox without it, or with a value that is neither, is deleted and
+the create refused as `unsupported` the same way. A CIDR in the list is refused. Daytona also
 reports `diskGb` and `startedAt`. Local reports `network: "open"` and `startedAt`, the Archil exec box `startedAt`, and those two
 and Daytona refuse every other network, ports and capabilities as `unsupported`.
 

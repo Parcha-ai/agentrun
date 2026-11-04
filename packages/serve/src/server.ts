@@ -658,7 +658,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
   let daytonaNoList: string | undefined;
   const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
+    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", network_reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
   const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer.id === "docker" && image ? withImage(offer, image.state()) : offer.id === "daytona" ? daytonaNetwork(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
@@ -682,9 +682,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
-  const onNoBoxList = (code: string) => {
+  // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
+  const onNoBoxList = (code: string, message: string) => {
     daytonaNoList = code;
-    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code }));
+    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code, message }));
     boxOffers = offersNow();
     if (offers) recompose();
   };

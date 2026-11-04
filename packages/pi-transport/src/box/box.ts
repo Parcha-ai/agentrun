@@ -110,10 +110,15 @@ export type BoxFacts = {
 	readonly workspace: string;
 	readonly maxLifetimeMs: number | null;
 	/**
-	 * What the box may reach: `open`, `none`, or `allowlist` (the list itself is not repeated here). Absent means
-	 * unknown: a caller that needs `none` or an allowlist must refuse the box.
+	 * What the box may reach: `open`, `none`, or `allowlist` (its hosts in `allow`, where the provider reads them back).
+	 * Absent means unknown: a caller that needs `none` or an allowlist must refuse the box.
 	 */
 	readonly network?: "open" | "none" | "allowlist";
+	/**
+	 * The hosts an `allowlist` box may reach, lower-cased, as the provider reads them back from the box (Daytona). Absent
+	 * means the provider does not say: a caller that must hold a box to a list refuses one without it.
+	 */
+	readonly allow?: readonly string[];
 	/**
 	 * The ports the spec asked to reach from outside, each with the kind of address `Box.endpoint` gives; `[]` when the
 	 * provider made the box with none. Absent means unknown, not none: a caller that must be sure no port is exposed
