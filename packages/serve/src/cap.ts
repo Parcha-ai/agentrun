@@ -36,6 +36,14 @@ export const SPEND_CAP_REACHED = "spend_cap_reached";
 /** The option a request's worst case rides on from the cap to its marks (request-start.ts): what the cap held for it. A
  *  symbol, so no provider ever sends it. */
 export const HELD_USD = Symbol.for("agentrun.serve.held_usd");
+/** pi's messages for requests that ended on an error after their response had begun (an event came in first), as the
+ *  marks (request-start.ts) saw them: each left and the provider may have billed what it generated, so it counts at its
+ *  hold, as one stopped does. An error before any event (refused at the HTTP level: a 429, a 5xx) counts at its own
+ *  usage. Kept by identity, never on the message: pi writes the message to the store as strict JSON, which fails on a
+ *  symbol key. */
+const responseBegan = new WeakSet<AssistantMessage>();
+/** Records that `message` ended on an error after its response began. */
+export const markResponseBegan = (message: AssistantMessage): void => void responseBegan.add(message);
 /** The field of a request's end mark (REQUEST_ENDED) that says what the cap held for it, when its stream ended aborted
  *  or its summary failed: the request counts at that figure. Optional: an end with none (an older store, a run with no
  *  cap) leaves the request cut, at an unknown cost. */
@@ -152,34 +160,74 @@ export function spentIn(storeFile: string): number | null {
   // The store's own entries, as read (without the answers written below for a stopped request): openFigures reads them.
   const read: EntryLike[] = [];
   let marked = false;
-  // Each paid tool call marked and not settled, by call: what it was held at.
-  const calls = new Map<unknown, unknown>();
+  const rows: EntryLike[] = [];
   try {
-    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as EntryLike;
-      const data = (entry.data ?? {}) as Record<string, unknown>;
-      // A request this cap refused never left, and costs nothing: its mark and pi's error entry for it (an older store
-      // has the entry alone, which the timeline would count as answering an earlier request a crash cut). Nor did one
-      // whose start mark could not be written, whose error entry has no mark at all. A cancel's refusal is its mark
-      // (REQUEST_REFUSED) and pi's error for it, which close nothing together (openFigures, and the timeline).
-      if (refusedHere(entry) || notSentHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
-      if (entry.kind === TOOL_STARTED) calls.set(data.call, data[HELD_FIELD]);
-      if (entry.kind === TOOL_COST) calls.delete(data.call);
-      if (entry.kind === REQUEST_STARTED) marked = true;
-      // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
-      // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
-      if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
-      entries.push(entry);
-      read.push(entry);
-      const held = data[HELD_FIELD];
-      if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
-      // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
-      entries.push(typeof data.request === "string"
-        ? { kind: REQUEST_COST, data: { request: data.request, usd: held } }
-        : { kind: "pi.assistant", ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}), model: [{ role: "assistant", content: [], stopReason: "stop", usage: { cost: { total: held } }, timestamp: 0 }] });
-    }
+    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) rows.push(JSON.parse(String((row as { record: string }).record)) as EntryLike);
   } finally {
     db.close();
+  }
+  // pi's error entry for a request that ended on an error after its response began is left out, as an aborted one is: its
+  // end mark (`error`) counts it at its hold. pi writes the entry as the mark is written, before it or after, so each such
+  // mark takes the nearest error entry not yet taken among those after the earliest start holding its figure (a request's
+  // start and end marks hold the same, request-start.ts). Its own entry comes after its own start, so it is always among
+  // them. An error before every such start answered an earlier request (a 429, before any event): taken when a crash came
+  // between the mark and pi's entry, it would leave that request open at its hold. The marks with the fewest entries to
+  // choose from take first, so as many are taken as the marks' own entries in the store and no more errors are read as
+  // answers than are, one of which could close a start a crash cut; which one a mark takes, when errors overlap, moves no
+  // figure below what can have been spent, as an answer's choice of start does not (openFigures). An earlier start holding
+  // the very same figure (a 429's retry, with the same context) leaves its 429 takeable, so the spend then reads high,
+  // never low: telling the two apart needs to know which request each entry answers, and the marks do not say. An error
+  // with no such mark (before any event: a 429, a 5xx) is its request's answer.
+  // A cancel's refusal (REQUEST_REFUSED) answers the next error entry, as openFigures and the timeline read them: those are
+  // no request's, and no end mark takes one.
+  const stopOf = (entry: EntryLike) => (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason;
+  const errorsAt: number[] = [];
+  let refusals = 0;
+  rows.forEach((entry, at) => {
+    if (entry.kind === REQUEST_REFUSED) refusals += 1;
+    else if (entry.kind === "pi.assistant" && stopOf(entry) === "error" && !refusedHere(entry) && !notSentHere(entry)) {
+      if (refusals > 0) refusals -= 1;
+      else errorsAt.push(at);
+    }
+  });
+  const taken = new Set<number>();
+  const fieldsOf = (entry: EntryLike) => (entry.data ?? {}) as Record<string, unknown>;
+  const generationStart = (entry: EntryLike) => entry.kind === REQUEST_STARTED && typeof fieldsOf(entry).request !== "string" && fieldsOf(entry)[CAP_REFUSED_FIELD] !== true;
+  // Each such end mark, with the earliest start holding its figure (-1 for none: any error entry then).
+  const ends = rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry).error === true
+    ? [{ at, from: rows.findIndex((start, i) => i < at && generationStart(start) && figureOf(fieldsOf(start)[HELD_FIELD]) === figureOf(fieldsOf(entry)[HELD_FIELD])) }]
+    : []);
+  for (const { at, from } of ends.sort((a, b) => b.from - a.from)) {
+    let nearest = -1;
+    for (const error of errorsAt) if (error > from && !taken.has(error) && (nearest < 0 || Math.abs(error - at) < Math.abs(nearest - at))) nearest = error;
+    if (nearest >= 0) taken.add(nearest);
+  }
+  // Each paid tool call marked and not settled, by call: what it was held at.
+  const calls = new Map<unknown, unknown>();
+  for (const [at, entry] of rows.entries()) {
+    const data = (entry.data ?? {}) as Record<string, unknown>;
+    // A request this cap refused never left, and costs nothing: its mark and pi's error entry for it (an older store
+    // has the entry alone, which the timeline would count as answering an earlier request a crash cut). Nor did one
+    // whose start mark could not be written, whose error entry has no mark at all. A cancel's refusal is its mark
+    // (REQUEST_REFUSED) and pi's error for it, which close nothing together (openFigures, and the timeline).
+    if (refusedHere(entry) || notSentHere(entry) || (entry.kind === REQUEST_STARTED && data[CAP_REFUSED_FIELD] === true)) continue;
+    if (entry.kind === TOOL_STARTED) calls.set(data.call, data[HELD_FIELD]);
+    if (entry.kind === TOOL_COST) calls.delete(data.call);
+    if (entry.kind === REQUEST_STARTED) marked = true;
+    // pi's entry for a marked request stopped before its end (what had streamed of it): the request is counted by its
+    // marks instead, at the figure its end holds, or cut. Before the first mark (an older run) it stays unknown.
+    if (marked && entry.kind === "pi.assistant" && (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason === "aborted") continue;
+    if (taken.has(at)) continue;
+    entries.push(entry);
+    read.push(entry);
+    const held = data[HELD_FIELD];
+    // A summary that ended on an error after its response began (its cost mark says `failed`) counts at its hold.
+    if (entry.kind === REQUEST_COST && data.failed === true && figureOf(held) !== undefined) entries[entries.length - 1] = { ...entry, data: { ...data, usd: held } };
+    if (entry.kind !== REQUEST_ENDED || data.unsent === true || typeof held !== "number" || !Number.isFinite(held)) continue;
+    // The stopped request closed at what the cap held for it: a summary by its cost, a generation by an answer.
+    entries.push(typeof data.request === "string"
+      ? { kind: REQUEST_COST, data: { request: data.request, usd: held } }
+      : { kind: "pi.assistant", ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}), model: [{ role: "assistant", content: [], stopReason: "stop", usage: { cost: { total: held } }, timestamp: 0 }] });
   }
   // A paid tool call a crash cut (marked, never settled) counts at its held figure, settled by it here, as a cut request.
   for (const [call, figure] of calls) entries.push({ kind: TOOL_COST, data: { call, usd: figureOf(figure) ?? null } });
@@ -433,12 +481,14 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // "out of budget" is final to pi-ai's retry policy, whatever digits the amounts hold.
     errorMessage: why,
   });
-  /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end, or that failed with
-   *  no answer, counts at `worst`, what the cap held for it (as spentIn reads its end mark); without one (a deferred
-   *  response) it is unknown, as is a cost that is not a number, from then on. */
+  /** Adds what `answer` cost to what the run has spent once it settles. One stopped before its end, one that ended on an
+   *  error after its response began (markResponseBegan: its usage is what had streamed, not what the provider can have
+   *  billed), or that failed with no answer, counts at `worst`, what the cap held for it (as spentIn reads its end mark);
+   *  without one (a deferred response) it is unknown, as is a cost that is not a number, from then on. */
   const count = (answer: Promise<AssistantMessage>, worst?: number) => {
     const add = (cost: unknown) => void (spent = spent !== null && typeof cost === "number" && Number.isFinite(cost) ? spent + cost : null);
-    return answer.then((message) => add(message.stopReason === "aborted" ? worst : message.usage?.cost?.total), () => add(worst));
+    const cut = (message: AssistantMessage) => message.stopReason === "aborted" || (message.stopReason === "error" && responseBegan.has(message));
+    return answer.then((message) => add(cut(message) ? worst : message.usage?.cost?.total), () => add(worst));
   };
   /** Sends a request judged to fit at `worst`, holding that until `answer` settles. */
   const admit = (worst: number, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> => {
