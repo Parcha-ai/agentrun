@@ -166,8 +166,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     const body = writes && route.method !== "DELETE" ? {} : undefined;
     const anonymous = await call(server.port, { method: route.method, path, headers: writes ? page(server) : {}, body });
     if (["getCapabilities", "getOpenapi", "getHealth"].includes(route.name)) assert.ok([200, 503].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
-    // The browser back from an authorization server carries no token: its state is the check (400 without one).
-    else if (["mcpOAuthCallback", "mcpOAuthClient"].includes(route.name)) assert.ok([200, 400].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
+    // The browser back from an authorization server carries no token: its state and the cookie its start set are the
+    // check (403 without the cookie).
+    else if (["mcpOAuthCallback", "mcpOAuthClient"].includes(route.name)) assert.ok([200, 400, 403].includes(anonymous.status), `${route.method} ${path}: ${anonymous.status}`);
     else assert.equal(anonymous.status, 401, `${route.method} ${path} with no credential: ${anonymous.text}`);
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
