@@ -105,11 +105,16 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
   return valueMatcher(secrets)(out) ? "[redacted]" : out;
 }
 
-/** `value`, a run's workflow output, with redactedAnswer applied to each string in it, its shape kept. */
+/** `value`, a run's workflow output, with redactedAnswer applied to each string in it, property NAMES included (a
+ *  dictionary field can be keyed by anything a run wrote), its shape kept. Two names of one object that come out the same
+ *  would merge one value over the other: that object is withheld whole, as "[redacted]". */
 export function redactedOutput(value: unknown, secrets: readonly string[]): unknown {
   if (typeof value === "string") return redactedAnswer(value, secrets);
   if (Array.isArray(value)) return value.map((item) => redactedOutput(item, secrets));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactedOutput(item, secrets)]));
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).map(([key, item]) => [redactedAnswer(key, secrets), redactedOutput(item, secrets)] as const);
+    return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : "[redacted]";
+  }
   return value;
 }
 
