@@ -106,3 +106,25 @@ test("two parallel workflow nodes that browse each keep their evidence file", as
   assert.equal(files.length, 2, files.join(", "));
   for (const name of files) assert.match(await readFile(join(evidence, name), "utf8"), /The answer is forty-two\./, name);
 });
+
+const REFUSED_BROWSER = new URL("./fixtures/faux-browser-refused.mjs", import.meta.url).pathname;
+const REFUSED_WORDS = "Browserbase refused BROWSERBASE_API_KEY (401): set it where AgentRun starts, or save it in Settings → Tool keys.";
+
+for (const [tools, other] of [[["browser", "read"], false], [["browser", "web_fetch"], true]]) {
+  test(`a refused Browserbase key reads as the model keys' refusals do, names web_fetch only when the run has it (${tools.join(", ")}), and opens no session on the Timeline`, async (t) => {
+    withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" });
+    const { api } = await serve(t, { fauxBrowser: REFUSED_BROWSER });
+    assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools } })).status, 201);
+    const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const { rows } = await follow(api, started.body.run_id, ["completed"]);
+    const failed = rows.find((row) => row.kind === "tool_result" && row.tool_name === "snapshot");
+    assert.equal(failed?.tool_status, "failed", JSON.stringify(rows));
+    const said = (await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer;
+    assert.ok(said.includes(REFUSED_WORDS), said);
+    assert.doesNotMatch(said, /\bplanes?\b|\blanes?\b|executor/, said);
+    assert.equal(/web_fetch/.test(said), other, said);
+    assert.ok(failed.summary.includes("Browserbase refused BROWSERBASE_API_KEY (401)"), failed.summary);
+    assert.equal(rows.some((row) => /Opened a live browser session/.test(row.summary ?? "")), false, "no session was opened");
+  });
+}

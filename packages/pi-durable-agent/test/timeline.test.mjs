@@ -934,3 +934,18 @@ test("a run's process that opened again after the last one ended unfinished is a
   reducer.apply([{ type: "snapshot", entries }]);
   assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
 });
+
+test("a live browser session reads as opened only once a browser call got one, right before that call; a refused open opens none", () => {
+  const refused = JSON.stringify({ ok: false, code: "auth", message: "The browser provider refused its credential (401)." });
+  const tag = (r) => `${r.kind}${r.tool_use_id ? `:${r.tool_use_id}` : ""}${SESSION.test(r.summary ?? "") ? ":session" : ""}`;
+  const rows = timelineOf([
+    user("Browse.", 0),
+    assistant([call("a", "run", { code: 'await page.goto("https://example.com")' })], 1),
+    result("a", "run", refused, 2, { isError: true }),
+    assistant([call("b", "snapshot", {})], 3),
+    result("b", "snapshot", "- heading", 4),
+  ]);
+  assert.deepEqual(rows.filter((r) => r.kind !== "usage").map(tag), ["user_message", "tool_use:a", "tool_result:a", "phase:session", "tool_use:b", "tool_result:b"]);
+  const never = timelineOf([user("Browse.", 0), assistant([call("a", "run", { code: 'await page.goto("https://example.com")' })], 1), result("a", "run", refused, 2, { isError: true })]);
+  assert.equal(never.some((r) => SESSION.test(r.summary ?? "")), false, JSON.stringify(never.map(tag)));
+});

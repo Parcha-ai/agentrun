@@ -186,3 +186,27 @@ test("a value in the cause of a wrapped error is removed too, and redaction chan
   assert.doesNotMatch(JSON.stringify(failure), fragment);
   assert.equal(failure.code, classifyBrowserError(wrapped, false).code);
 });
+
+// The words a model reads name only what the run has: no internal word ("plane", "lane", "executor tools") and no tool
+// the host did not say the run holds. The host's words (`words`) say who refused which key and where to fix it.
+const INTERNAL = /\bplanes?\b|\blanes?\b|executor|\bfetch\b|web_fetch/;
+test("a refused credential and an unreachable browser say so in plain words, and name another tool only when the host says the run has one", () => {
+  const refused = Object.assign(new Error("x"), { status: 401 });
+  const gone = named("CDPConnectionClosedError");
+  const forbidden = Object.assign(new Error("x"), { status: 403 });
+  const slow = new DOMException("x", "TimeoutError");
+  for (const error of [refused, gone, forbidden, slow]) {
+    const { message } = classifyBrowserError(error, false);
+    assert.doesNotMatch(message, INTERNAL, message);
+  }
+  assert.match(classifyBrowserError(refused, false).message, /^The browser provider refused its credential \(401\)/);
+  assert.match(classifyBrowserError(gone, false).message, /could not be reached/);
+  const words = { refusedCredential: "Acme refused ACME_KEY (401): save it again.", otherSource: "web_fetch" };
+  const told = classifyBrowserError(refused, false, { words });
+  assert.ok(told.message.startsWith("Acme refused ACME_KEY (401): save it again."), told.message);
+  assert.match(told.message, /web_fetch still reads public pages/);
+  assert.doesNotMatch(told.message, /\bplanes?\b|\blanes?\b|executor/);
+  for (const error of [gone, forbidden, slow]) assert.match(classifyBrowserError(error, false, { words }).message, /web_fetch/, error.name);
+  assert.equal(classifyBrowserError(refused, false, { words: { refusedCredential: words.refusedCredential } }).message.includes("web_fetch"), false);
+  assert.equal(told.code, "auth");
+});
