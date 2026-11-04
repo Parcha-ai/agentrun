@@ -1,5 +1,6 @@
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { LearningField } from "@/components/LearningSwitch";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -19,7 +20,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
  *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
  *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off" };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -112,8 +113,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
     const p = await onSave(fields, note);
-    // A provider picked while the save was under way is not in it: the form keeps that pick, unsaved. Saved and unchanged
-    // since, the tool settings are the agent's own: the form shows them as the definition has them.
+    // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
+    // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
@@ -239,7 +240,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {!workflow && (
                 <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
-                  onChange={(next) => (same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+                  // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
+                  // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
+                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
               )}
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>
@@ -279,6 +282,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!workflow && !starting && caps.places && <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []} onChange={set} error={fieldError("place")} warning={fieldWarning("place")} />}
+              {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} tools={caps.tools} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
             </div>
           )}
 

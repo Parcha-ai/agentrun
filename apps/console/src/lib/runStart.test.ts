@@ -119,11 +119,3 @@ describe("exampleInput", () => {
     expect(e.fields).toEqual([{ name: "id", note: "The ticket." }, { name: "owner" }]);
   });
 });
-
-describe("startBody, on the server instead", () => {
-  it("a start narrowed to the server sends place: runner; an agentic one only", () => {
-    expect(startBody("agentic", { text: "hi", onServer: true })).toEqual({ ok: true, body: { input: { content: "hi" }, place: "runner" } });
-    expect(startBody("agentic", { text: "hi" })).toEqual({ ok: true, body: { input: { content: "hi" } } });
-    expect(startBody("workflow", { text: "{}", onServer: true })).toEqual({ ok: true, body: { input: {} } });
-  });
-});

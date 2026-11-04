@@ -1,5 +1,6 @@
 import { Archive, ArchiveRestore, ArrowLeft, Ban, Square } from "lucide-react";
 import { useState } from "react";
+import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -13,9 +14,9 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
-export function RunHeader({ run, agentName, actions = {}, costText, revisionPlace }: { run: Run; agentName: string; actions?: RunActions; costText?: string; revisionPlace?: unknown }) {
-  // Where it ran, as its start resolved it, marked when the start narrowed the revision's box to the server.
-  const ranIn = runPlaceWords(placeOf((run as { place?: unknown }).place), placeOf(revisionPlace));
+export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+  // Where it ran, as its start resolved it.
+  const ranIn = runPlaceWords(placeOf((run as { place?: unknown }).place));
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
@@ -39,6 +40,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, revisionPlac
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
               : <span className="font-mono" title={run.cost && run.cost.usd !== null && isEstimate(run.cost) ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}{bounded(run.cost) && <span className="text-muted-foreground"> · {CUT_NOTE}</span>}</span>}
+            <LearningChips run={run} link />
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>

@@ -11,6 +11,7 @@ import { problem, refusalTitle } from "@/lib/problem";
 import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
 import { costOf, type RunGraph, usd } from "@/lib/runGraph";
 import { latest } from "@/lib/viewing";
+import { useLearningSettle } from "@/lib/useLearningSettle";
 import type { ApiError, Run, RunFile, TimelineRow } from "@/lib/v2";
 
 // An ended workflow run's record carries its final cost (its graph's totals agree); while it goes, only the graph has it.
@@ -48,6 +49,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     if (run && harness.state === "loading") void readHarness(v2, run).then(setHarness);
   }, [run?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
   const offer = messageOffer(harness, caps);
+  useLearningSettle(run, () => refresh(), () => setFollows((n) => n + 1));
 
   const refresh = async () => {
     const n = runReads.begin();
@@ -111,10 +113,10 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   return (
     <div className="flex h-full min-h-0 flex-col">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
-      <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers} revisionPlace={harness.state === "read" ? harness.place : undefined}
+      <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} onMessage={message}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} onMessage={message}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), busy }} />
     </div>
   );

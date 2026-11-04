@@ -43,6 +43,7 @@ export {
 	type EnvironmentFacts,
 	environmentFacts,
 	type JevPlacerOptions,
+	jevClassifier,
 	jevPlacer,
 	type PlacementAsked,
 	PlacementError,

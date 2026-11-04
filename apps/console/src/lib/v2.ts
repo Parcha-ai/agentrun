@@ -1,5 +1,7 @@
 // The slice of agentrun.v2/0 the console reads, typed from the server's recorded responses (src/fixtures).
 
+import type { RunLearning } from "./learning";
+
 /** `paused`: a workflow run paused by POST /v2/runs/{id}/pause; its calls in flight finish and no node starts. */
 export type RunStatus = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled" | "paused";
 export type RunState = "working" | "waiting" | "idle";
@@ -37,11 +39,16 @@ export type Run = {
   result: { output?: unknown; final_answer?: string | null } | null;
   error: ApiError | null;
   cost: Cost | null;
+  /** Where the run's learning is: null for a run that does not learn, absent from a server without learning. */
+  learning?: RunLearning;
   archived_at: string | null;
   poll_after_ms?: number;
   /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
    *  at, and why). Null or absent on every other run. */
-  review?: RunReview | null;
+  review?: RunReview | null;  /** What a run waiting on a person waits for: its question and when it was asked. Null on every other run. */
+  pending?: { kind: "question"; question: string; asked_at: string } | null;
+  /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
+  imported_from?: { source: string; session: string } | null;
 };
 
 export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
@@ -97,7 +104,8 @@ export type ToolKeyField = { name: string; set: boolean; source: "server" | "sto
 /** A saved key's check with its provider: accepted, when; or not checked, why (in plain words) and when it last tried, if
  *  it did. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = { state: "accepted"; at: string } | { state: "not_checked"; reason: string; at?: string };
-export type ToolKey = { id: string; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[]; check?: ToolKeyCheck | null };
+/** `kind`: `model`, a model provider's key, which every run gets; `tool`, one a tool needs. Absent on an older server. */
+export type ToolKey = { id: string; kind?: "tool" | "model"; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[]; check?: ToolKeyCheck | null };
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */
 export type ToolKeysReenter = { reason: "seal_key_missing" | "seal_key_changed" | "file_unreadable"; fields: string[] };
 export type ToolKeys = { keys: ToolKey[]; reenter: ToolKeysReenter | null };

@@ -18,6 +18,16 @@ export interface ToolImage {
   data: string;
 }
 
+/**
+ * The most characters a host tool's result may hold: its text as the model reads it (`text.length`). Each harness tells
+ * its CLI to pass a result this long to the model whole: the Claude Agent CLI otherwise saves one past 50,000 characters
+ * to a file and tells the model to read it (which a confined session cannot), and Codex cuts the middle of one past its
+ * truncation policy. It is a ceiling over the tools' own caps, with room: a host keeps each of its tools' results under
+ * it, and pages what is longer; serve's host-bounds test holds every one of its host tools to it. The Claude Agent CLI
+ * takes at most 500,000 here.
+ */
+export const HOST_RESULT_MAX_CHARS = 120_000;
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;
@@ -25,9 +35,10 @@ export interface HostTool {
   inputSchema: Record<string, unknown>;
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
-  /** The tool's answer: its text, and any images it shows (a screenshot), which a harness that can show them sends the
-   *  model with the text. `sessionDir` is the runner's own, when it has one: a tool that runs a node of its own (the
-   *  delegate) gives its child a private directory the same way, by the child's key. */
+  /** The tool's answer: its text (at most HOST_RESULT_MAX_CHARS characters), and any images it shows (a screenshot),
+   *  which a harness that can show them sends the model with the text. `sessionDir` is the runner's own, when it has
+   *  one: a tool that runs a node of its own (the delegate) gives its child a private directory the same way, by the
+   *  child's key. */
   call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
 }
 
@@ -78,6 +89,11 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
+  /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
+  outputTokensAsked?: number;
+  /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
+   *  provider takes when it thinks (the proxy's policy says). Absent: 1,024. */
+  outputTokensLeast?: number;
 }
 
 /** What a paid request cost, once it completed. */
@@ -115,6 +131,9 @@ export interface ModelPort {
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {
   turn: number;
+  /** The most output tokens, thinking included, the request may be sent with: what is left of its host's spend cap can
+   *  buy. The session's model proxy writes it into the body; absent, the request goes as asked. */
+  outputTokensMax?: number;
 }
 
 /** What the host lends a session. */

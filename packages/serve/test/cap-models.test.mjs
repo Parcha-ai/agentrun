@@ -8,6 +8,10 @@ import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
 import { chargeOf, monidClient } from "../dist/monid.js";
 import fakeMonid, { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { bookedIn, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
+import { parallelExtract } from "../dist/web-fetch.js";
+import { webSearch } from "../dist/web-search.js";
+import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -43,7 +47,7 @@ test("a request in flight holds its worst case: a second that fits alone but not
   const second = await capped.streamSimple(priced, context).result();
   assert.equal(sent.length, 1, "the second request was not sent while the first was in flight");
   assert.equal(second.stopReason, "error");
-  assert.match(second.errorMessage, /^spend_cap_reached: /);
+  assert.match(second.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   sent[0].end(0.0001);
   await first.result();
   await new Promise((resolve) => setImmediate(resolve));
@@ -79,7 +83,7 @@ test("a paid call under way holds what it is held at: a model request that fits 
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "not sent while the paid call is under way");
   const refused = await request.result();
-  assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.001000, and with \$0\.001000 spent the run would pass its cap of \$0\.0015: the run is out of budget\.$/);
+  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.001 for requests still answering, of its $0.0015 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.01 to run it.");
   call.settle(0.0002);
   assert.deepEqual(await call.paid, { result: 0.0002 });
   const admitted = capped.streamSimple(priced, context);
@@ -99,7 +103,7 @@ test("a paid call that fails counts at what it was held at, as a model request t
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
   const refused = await request.result();
-  assert.match(refused.errorMessage, /^spend_cap_reached: .*with \$0\.001000 spent the run would pass its cap of \$0\.0015/);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\./);
 });
 
 /** monid's run of `endpoint` on the tests' fake: /slow runs until it is stopped, /late answers TIMED_OUT. */
@@ -188,17 +192,19 @@ test("the input is priced at the cache-write price when it is dearer than input,
   }
 });
 
-test("the worst case is the model's full output ceiling, not the max tokens a request asks for: a thinking budget can raise any request to it", async () => {
-  // No input price, $1 per million output tokens, a ceiling of 1,000: the worst case is $0.001 whatever the request asks.
-  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+test("a request is held at the output it is sent with: what it asks for, and on an API whose thinking takes a budget, the budget pi-ai adds to it", async () => {
+  // No input price, $1 per million output tokens, a ceiling of 1,000: asking 100 tokens with no thinking, the worst case is
+  // $0.0001; thinking on Anthropic's API, pi-ai adds the budget, so it is the ceiling's $0.001.
   const asks = { maxTokens: 100 };
-  for (const [cap, sends] of [[0.0005, 0], [0.0011, 1]]) {
+  const plain = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const thinking = { ...plain, api: "anthropic-messages" };
+  for (const [priced, options, cap, sends] of [[plain, asks, 0.0005, 1], [thinking, { ...asks, reasoning: "high" }, 0.0005, 0], [thinking, { ...asks, reasoning: "high" }, 0.0011, 1]]) {
     const { models, sent } = fakeModels();
     const capped = await capModels(models, cap, 0);
-    const answer = capped.streamSimple(priced, context, asks);
-    assert.equal(sent.length, sends, `a cap of ${cap}: the worst case is the ceiling's $0.001, not the asked 100 tokens' $0.0001`);
+    const answer = capped.streamSimple(priced, context, options);
+    assert.equal(sent.length, sends, `${priced.api}, ${JSON.stringify(options)}, a cap of ${cap}`);
     if (sends) sent[0].end(0);
-    else assert.match((await answer.result()).errorMessage, /could cost up to \$0\.001000/);
+    else assert.match((await answer.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run's cap of \$0\.0005 can't cover one m request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
     await answer.result();
   }
 });
@@ -216,7 +222,7 @@ test("pi's input is bounded by its context's UTF-8 bytes, never pi's average: a 
   const capped = await capModels(models, cap, 0);
   const answer = await capped.streamSimple(priced, dense).result();
   assert.equal(sent.length, 0, "not sent: its byte bound passes the cap");
-  assert.match(answer.errorMessage, /^spend_cap_reached: /);
+  assert.match(answer.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
 });
 
 test("pi under a cap: a model serve has no price for is refused, a model the catalog lists at $0 passes", async () => {
@@ -282,6 +288,40 @@ test("a tool's own request adds its hosted tool's allowance to its input bound a
     const answer = capped.completeSimple(priced, search);
     assert.equal(requests.length, sent, `a cap of $${cap}`);
     requests[0]?.end(0.001);
-    if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached: /);
+    if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   }
+});
+
+test("a Parallel search under way holds its fee for the cap: a model request beside it that fits only without it is refused, and goes once the search answered and charged nothing", async (t) => {
+  // A request's worst case is $0.001 (1,000 output tokens at $1 a million), and a fast search is held at its $0.001: a
+  // $0.0015 cap holds one of the two, never both, whichever branch, tool round or harness each comes from.
+  const mode = process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH;
+  process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = "422";
+  t.after(() => (mode === undefined ? delete process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH : (process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = mode)));
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0015, 0);
+  t.after(() => useSpend(undefined));
+  // The search reaches Parallel and is held there until released.
+  let arrived, release;
+  const reached = new Promise((resolve) => (arrived = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const send = async (url, init) => (arrived(), await held, fakeParallel(url, init));
+  const records = [];
+  const ledger = { call: "c1", record: async (kind, data) => void records.push([kind, data.heldUsd ?? data.usd]) };
+  const search = bookedIn(ledger, () => webSearch({ query: "widgets", n: 2 }, parallelExtract(CANARY, send)));
+  await reached;
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "not sent while the search is under way");
+  // The refusal counts the search's fee as held (#1539's words, as main's paid-call hold test reads them).
+  assert.equal((await request.result()).errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.001 for requests still answering, of its $0.0015 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.01 to run it.");
+  // Parallel refused the search (422): it charged nothing, and its hold is gone.
+  release();
+  assert.deepEqual(await search, { error: "Parallel's search answered 422" });
+  assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", 0]]);
+  const admitted = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "with the search's hold released at $0, the request fits");
+  sent[0].end(0);
+  await admitted.result();
 });

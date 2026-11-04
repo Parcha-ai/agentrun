@@ -17,7 +17,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.contract, "agentrun.v2/0");
   assert.equal(body.limits.max_upload_bytes, 50 * 2 ** 20);
   assert.equal(body.limits.max_files_per_run, 20);
-  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1" });
+  assert.deepEqual(body.models, { source: "faux", route_prefix: null, fast: "faux/faux-1", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null });
   assert.equal(body.features.quotes, false);
   assert.deepEqual(body.features.home, { export: false, import: false, check: false });
   assert.deepEqual(body.features.runs, { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true });
@@ -44,23 +44,21 @@ test("capabilities answer without a credential and say what this server offers: 
 });
 
 test("without a default model a revision that names none is refused before it starts, and so is one whose model has no key here (409)", async (t) => {
-  const saved = { url: process.env.AGENT_MODEL_BASE_URL, model: process.env.AGENT_MODEL, key: process.env.OPENAI_API_KEY };
-  delete process.env.AGENT_MODEL_BASE_URL;
-  delete process.env.AGENT_MODEL;
-  delete process.env.OPENAI_API_KEY;
-  t.after(() => Object.assign(process.env, saved.url ? { AGENT_MODEL_BASE_URL: saved.url } : {}, saved.model ? { AGENT_MODEL: saved.model } : {}, saved.key ? { OPENAI_API_KEY: saved.key } : {}));
-  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null });
-  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1" }, "a tier with no model of its own takes the default");
+  // No model key either: a provider's key gives the host a default (model.ts' MODEL_KEYS).
+  withEnv(t, {}, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
+  assert.deepEqual((await capabilities({})).models, { source: "providers", route_prefix: null, fast: null, default: null, strong: null, ready: false, needs: "key" });
+  assert.deepEqual((await capabilities({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "m-1", AGENT_MODEL_FAST: "m-fast" })).models, { source: "gateway", route_prefix: "agent-model", fast: "agent-model/m-fast", default: "agent-model/m-1", strong: "agent-model/m-1", ready: true, needs: null }, "a tier with no model of its own takes the default");
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.match(refused.body.error.message, /names no model, and this host has no default/);
+  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts\./);
+  assert.doesNotMatch(refused.body.error.message, /--faux|AGENT_MODEL/, "a person's words: no operator flags");
   assert.equal((await api("POST", "/agents", agent("keyless", { model: "openai/gpt-5" }))).status, 201);
   const keyless = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
   assert.equal(keyless.body.error.code, "agent_not_runnable");
-  assert.match(keyless.body.error.message, /no key for openai/);
+  assert.match(keyless.body.error.message, /No OpenAI key here for openai\/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
   const unknown = await api("POST", "/agents", agent("unknown", { model: "openai/no-such-model" }));
   assert.equal(unknown.status, 422, "a model pi-ai does not know never runs here: refused at save (runnable.test.mjs)");
   assert.match(unknown.body.error.fields[0].message, /knows no model no-such-model of openai/);
@@ -266,9 +264,10 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.deepEqual(toolRefusal(["bash"], {}, "nodes").unbound, ["bash"], "a workflow's model node runs no shell");
   assert.deepEqual(toolRefusal(["ask_person"], {}, "nodes").unbound, ["ask_person"], "a workflow's model node cannot ask the person");
   assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["browser", ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]], ["monid.discover", ["MONID_API_KEY"]], ["monid.inspect", ["MONID_API_KEY"]], ["monid.run", ["MONID_API_KEY"]], ["pdf_pages", undefined], ["llm", undefined]]);
-  // web_search needs no key: Claude's and Codex's own search; pi with no model named, Exa's keyless search; Parallel picked
+  // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
+  // (Claude's own search is an explicit pick); Parallel picked
   // without its key, missing.
-  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "native", codex: "native" });
+  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native" });
   assert.deepEqual(toolsView({}, { web_search: { provider: "parallel" } }).filter((t) => t.resolves).map((t) => [t.name, t.available, t.missing]), [["web_fetch", true, undefined], ["web_search", false, ["PARALLEL_API_KEY"]]]);
   // An unavailable tool always says why: a provider pick's own words, or the variables it needs.
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");
