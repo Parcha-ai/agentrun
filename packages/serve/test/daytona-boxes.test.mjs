@@ -308,6 +308,48 @@ test("a run's box that Daytona paused while the run waited is started again, nev
   assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "written after the last pull", "the next turn ran in the same box");
 });
 
+test("a run's box caught pausing is waited for and started again, never replaced", { timeout: 180_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const data = join(await scratch(t), "agents");
+  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url });
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const firstApi = client(first.baseUrl, first.token);
+  assert.equal((await firstApi("POST", "/agents", { definition: { id: "midway", name: "midway", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
+  const run = await probe(firstApi, "midway", [{ tool: "bash", args: { command: "printf one > turn1.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }, { tool: "bash", args: { command: "cat box-only.txt > turn2.txt" } }]);
+  await follow(firstApi, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+  await fileList(firstApi, run.run_id);
+  await first.close();
+  const [box] = fake.sandboxes.values();
+  await writeFile(fake.pathOf(box.id, "run/agentrun/run/work/box-only.txt"), "written after the last pull");
+  // Caught mid-pause: it settles a few reads on.
+  fake.pause(box.id, 3);
+  const second = await serve(t, { data, faux: PROBE });
+  assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
+  await follow(second.api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  assert.equal(fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").length, 1, "no second box was made");
+  assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "written after the last pull", "the next turn ran in the same box");
+});
+
+test("an agent's edit to a file the host filed and mirrored into the box comes back: queued at the open or sent live", { timeout: 180_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  withEnv(t, { MONID_API_KEY: MONID_KEY });
+  const { api, data } = await onDaytona(t, fake, { fauxMonid: FAUX_MONID });
+  assert.equal((await api("POST", "/agents", { definition: { id: "editor", name: "editor", instructions: "Probe.", place: DAYTONA, tools: ["bash", "monid.discover"] } })).status, 201);
+  const plan = [
+    // Filed before any box is open: queued, then sent at the open.
+    { tool: "monid_discover", args: { query: "everything at once" } },
+    { tool: "bash", args: { command: "true" } },
+    // Filed with the box open: sent at once.
+    { tool: "monid_discover", args: { query: "everything at once, again" } },
+    { tool: "bash", args: { command: "ls evidence/monid/*.json | wc -l; for f in evidence/monid/*.json; do printf edited > \"$f\"; done" } },
+  ];
+  const run = await probe(api, "editor", plan);
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  const filed = readdirSync(join(data, "runs", run.run_id, "work", "evidence", "monid"));
+  assert.equal(filed.length, 2, filed.join(", "));
+  for (const name of filed) assert.equal(readFileSync(join(data, "runs", run.run_id, "work", "evidence", "monid", name), "utf8"), "edited", `the box's edit of ${name} came back`);
+});
+
 test("a Daytona that does not block a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY, blocks: false });
   const { api, data } = await onDaytona(t, fake);

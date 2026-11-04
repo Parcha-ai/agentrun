@@ -167,6 +167,11 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
       rmSync(boxDir(sandbox.id), { recursive: true, force: true });
       return json(res, 200, {});
     }
+    // A transition under way settles after so many reads of the sandbox.
+    if (sandbox.settle && --sandbox.settle.reads <= 0) {
+      sandbox.state = sandbox.settle.to;
+      sandbox.settle = undefined;
+    }
     return json(res, 200, info(sandbox, true));
   };
 
@@ -186,8 +191,13 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
       const sandbox = sandboxes.get(id);
       if (sandbox && sandbox.autoStopInterval > 0) stop(sandbox);
     },
-    /** Daytona's pause of sandbox `id`, as a class that pauses when idle makes it. */
-    pause: (id) => void (sandboxes.get(id).state = "paused"),
+    /** Daytona's pause of sandbox `id`, as a class that pauses when idle makes it; with `reads`, it is `pausing` for that
+     *  many reads of it first, as a pause under way is. */
+    pause: (id, reads = 0) => {
+      const sandbox = sandboxes.get(id);
+      sandbox.state = reads > 0 ? "pausing" : "paused";
+      sandbox.settle = reads > 0 ? { reads, to: "paused" } : undefined;
+    },
     /** Where a sandbox's box path is on this machine. */
     pathOf: (id, path) => join(boxDir(id), path),
   };
