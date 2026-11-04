@@ -419,3 +419,48 @@ test("web_fetch takes its provider from the run's plane: none or kernel is the d
   assert.deepEqual(await fetchFor(plane("unavailable: parallel picked, no PARALLEL_API_KEY"), PUBLIC, net), { ok: false, url: PUBLIC, status: 0, title: "", text: "", links: [], error: "web_fetch does not run here: parallel picked, no PARALLEL_API_KEY" }, "no via: nothing was read");
   assert.deepEqual(net.dialled, [], "nothing fetched");
 });
+
+test("calls for one URL at once share one read that no single caller's stop ends: the first stops early, the second still gets the page, and the run keeps it, all from one extract", async () => {
+  const text = `${"shared ".repeat(3_000)}end`;
+  const asked = [];
+  // Parallel answers after 200 ms, and stops when the request's own signal does.
+  const send = async (_url, init) => {
+    asked.push(JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 200);
+      init.signal?.addEventListener("abort", () => (clearTimeout(timer), reject(init.signal.reason)), { once: true });
+    });
+    return new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Shared", full_content: text }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const extract = parallelExtract(CANARY, send);
+  const held = new Map();
+  const soon = new AbortController();
+  const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const [first, second] = await Promise.all([
+    webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, signal: soon.signal }),
+    later(10).then(() => webFetch(PUBLIC, { ...network(), parallel: extract, pages: held })),
+    later(50).then(() => soon.abort()),
+  ]);
+  assert.equal(first.ok, false, "the caller that stopped gets no page");
+  assert.deepEqual([second.ok, second.via, second.text.slice(0, 7)], [true, "parallel", "shared "], `the other caller's read went on: ${second.error ?? ""} ${second.parallel ?? ""}`);
+  assert.deepEqual(asked, [1_000_001], "one billed extract");
+  const third = await webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, offset: 10_000 });
+  assert.deepEqual([third.ok, asked.length], [true, 1], "the run kept the page: a later part asks Parallel nothing");
+});
+
+test("a page's links are read in one pass: a page of unclosed `](` takes no longer than its length, and an ordinary page's links are the same as before", async () => {
+  const answering = (fullContent) => async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content: fullContent }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  const links = Array.from({ length: 200 }, (_, n) => `[l${n}](https://links.example/${n}) `).join("");
+  // Each unclosed `](` used to be scanned to the end of the text again: quadratic in the page's length.
+  for (const reps of [40_000, 450_000]) {
+    const hostile = `${links}${"](".repeat(reps)}`;
+    const started = performance.now();
+    const read = await parallelExtract(CANARY, answering(hostile)).read(PUBLIC);
+    const ms = performance.now() - started;
+    assert.ok(ms < 500, `${hostile.length.toLocaleString("en-US")} characters read in ${Math.round(ms)} ms, not under 500`);
+    assert.deepEqual([read.ok, read.links.length + (read.links_omitted ?? 0)], [true, 200], "the 200 real links, within the caps or counted");
+  }
+  const ordinary = "See [a](https://a.example/x), [w](https://en.wikipedia.org/wiki/Foo_(bar)) and [a again](https://a.example/x#part), then ]( broken, [rel](/relative) and [b](https://b.example/y).";
+  const read = await parallelExtract(CANARY, answering(ordinary)).read(PUBLIC);
+  assert.deepEqual(read.links, ["https://a.example/x", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/y"]);
+});
