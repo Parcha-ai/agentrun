@@ -50,7 +50,27 @@ export type Run = {
   pending?: { kind: "question"; question: string; asked_at: string } | BudgetPending | null;
   /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
   imported_from?: { source: string; session: string } | null;
+  /** The schedule that started it and its firing (serve's trigger/1); null for a run a caller started, absent from an
+   *  older server. The schedule may have been deleted since. */
+  trigger?: { id: string; firing_key: string } | null;
 };
+
+/** When a schedule fires (serve's trigger/1): a five-field cron line in an IANA zone, one time, or every N seconds (60
+ *  or more) on the grid from `start_at`. */
+export type TriggerSource =
+  | { kind: "schedule"; cron: string; timezone: string }
+  | { kind: "schedule"; at: string }
+  | { kind: "schedule"; every_s: number; start_at: string };
+/** What a firing does: start a run of `agent_id` with `input`, capped at `max_cost_usd`. */
+export type TriggerTarget = { kind: "start_run"; agent_id: string; input: { content?: string } & Record<string, unknown>; max_cost_usd: number; effort?: string };
+export type FiringStatus = "due" | "started" | "skipped" | "failed" | "missed";
+/** One firing: by the schedule or by hand (Run now), for `nominal_at`, and what came of it. `count`: a missed row's
+ *  times; `attempts` and `retry_at`: a due one a full server keeps for later. */
+export type Firing = { key: string; by: "schedule" | "manual"; nominal_at: string; status: FiringStatus; at: string; run_id: string | null; reason: string | null; error: { code: string; message: string } | null; count?: number; attempts?: number; retry_at?: string };
+/** A schedule (GET /v2/triggers): `next_at` null when it is paused or has no time left; `last_firing` null until it fires. */
+export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; overlap: "skip"; last_firing: Firing | null };
+/** A create's or an edit's body: the parts the form holds. */
+export type TriggerInput = { name?: string; enabled?: boolean; source?: TriggerSource | { kind: "schedule"; every_s: number; start_at?: string }; target?: TriggerTarget };
 
 export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
 
