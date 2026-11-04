@@ -22,7 +22,8 @@ const policy = {
   filtered: (text) => events(text).some((e) => e.stop === 'refusal'),
 };
 
-/** The provider's answer in two pieces: the stop, then (once `release` resolves) the end with the usage. */
+/** The provider's answer in two pieces: the stop, then (once `release` resolves) the end with the usage, or, with `last`
+ *  null, the provider cutting the answer off there (an error part way). */
 function twoPieces(release, last = '{"end":true,"usage":{"input":12,"output":3,"cacheRead":0}}') {
   const encoder = new TextEncoder();
   // As a real fetch does, an abort of the request ends its body with an error.
@@ -33,6 +34,7 @@ function twoPieces(release, last = '{"end":true,"usage":{"input":12,"output":3,"
       controller.enqueue(encoder.encode('data: {"stop":"refusal"}\n\n'));
       await release;
       if (cut) return;
+      if (last === null) return controller.error(new Error('the provider reset the stream'));
       controller.enqueue(encoder.encode(`data: ${last}\n\n`));
       controller.close();
     },
@@ -70,6 +72,8 @@ test('an answer the provider stopped on its content filter, its client gone at t
   await send(p.url, (req) => { client = req; });
   for (const end = Date.now() + 10_000; !booked.length; await sleep(20)) assert.ok(Date.now() < end, 'the request is booked');
   assert.deepEqual([booked[0].input, booked[0].output, booked[0].usd], [12, 3, 0.002], `booked at its usage: ${JSON.stringify(booked[0])}`);
+  assert.equal(booked.length, 1, 'booked once');
+  assert.equal(booked[0].stoppedAfterBytes, undefined, 'by its usage alone: no streamed figure beside it');
 });
 
 test('a guard: any other answer whose client leaves is cut off and booked at an unknown cost, as before', { timeout: 30_000 }, async (t) => {
@@ -165,4 +169,27 @@ test("a guard: the proxy's close waits for a stopped answer at most 5 s, then cu
   assert.ok(Date.now() - started < 8_000, `the close is bounded: ${Date.now() - started} ms`);
   for (const end = Date.now() + 5_000; !booked.length; await sleep(20)) assert.ok(Date.now() < end, 'the request is booked');
   assert.equal(booked[0].usd, null, `an answer cut short costs what is unknown: ${JSON.stringify(booked[0])}`);
+  // Its client stopped it (the halt), so it is counted by what streamed (the stop's piece), never by its usage too.
+  assert.equal(booked.length, 1, 'booked once');
+  assert.equal(booked[0].stoppedAfterBytes, Buffer.byteLength('data: {"stop":"refusal"}\n\n'), `counted by what streamed: ${JSON.stringify(booked[0])}`);
+});
+
+test('a stopped answer the provider cuts off while it is read on after its client left ended on an error, not a stop: booked once at an unknown cost, with no streamed figure', { timeout: 30_000 }, async (t) => {
+  const booked = [];
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  let client;
+  const p = await startModelProxy({
+    policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: () => 0.002, log: () => {},
+    hooks: { beforeRequest: async () => {}, afterRequest: async (usage) => { booked.push(usage); } },
+    fetch: twoPieces(released, null),
+    onFiltered: () => { client.destroy(); setTimeout(release, 50); },
+  }, KEY);
+  t.after(() => p.close());
+  await send(p.url, (req) => { client = req; });
+  for (const end = Date.now() + 10_000; !booked.length; await sleep(20)) assert.ok(Date.now() < end, 'the request is booked');
+  await sleep(100);
+  assert.equal(booked.length, 1, 'booked once');
+  assert.equal(booked[0].usd, null, `an answer cut short costs what is unknown: ${JSON.stringify(booked[0])}`);
+  assert.equal(booked[0].stoppedAfterBytes, undefined, `the provider's error is no stop, though its client had left: ${JSON.stringify(booked[0])}`);
 });
