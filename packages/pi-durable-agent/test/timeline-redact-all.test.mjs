@@ -89,3 +89,44 @@ test("a browser run whose sent URL holds a held key in its path and its query: t
   assert.ok(rows.some((r) => r.kind === "tool_result" && /request sent/.test(r.summary ?? "")), shown(rows));
   assert.deepEqual(leaks(rows), [], shown(rows));
 });
+
+// A key a stream wraps (its head in one delta, a line break and its tail in the next) is found only when the redactor
+// sees the whole stream, and one whose tail has not streamed yet cannot be found at all. So a live block shows what the
+// host's `redactLive` returns of its whole stream: the stream redacted whole, then held back by a fixed tail, the most a
+// held value can take in its widest form. The stand-ins below find the key split by whitespace, and hold back HOLD.
+const SPLIT = new RegExp([...KEY].map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s*"), "g");
+const redactWs = (text) => text.replace(SPLIT, "[redacted]");
+const HOLD = 6 * KEY.length + 16;
+const redactLive = (text) => {
+  const visible = text.length - HOLD;
+  if (visible <= 0) return "";
+  const out = redactWs(text);
+  const shift = text.length - out.length + 2 * (out.split("[redacted]").length - 1);
+  const keep = visible - shift;
+  return keep <= 0 ? "" : out.slice(0, keep);
+};
+const PAD = "Working through the request, step by step, with care. ".repeat(12);
+
+for (const [how, kind, start, delta] of [["thinking", "thinking", "thinking_start", "thinking_delta"], ["text", "text", "text_start", "text_delta"]]) {
+  test(`a live ${how} block whose key is wrapped across two deltas (head, then a line break and the tail): no update shows any part of it`, () => {
+    const reducer = timelineReducer({ conversationId: 1, redact: redactWs, redactLive });
+    reducer.apply([{ type: "message_start", message: { role: "assistant", content: [] } }]);
+    const [head, tail] = [KEY.slice(0, 20), KEY.slice(20)];
+    const updates = [
+      reducer.apply([{ type: "message_update", usage: {}, changes: [{ type: start, contentIndex: 0, block: { type: kind, [kind]: "" } }, { type: delta, contentIndex: 0, delta: `${PAD}Using ${head}` }] }]),
+      // The stream ends on the tail: as its last word, a holdback of the last word would drop it and leave the head.
+      reducer.apply([{ type: "message_update", usage: {}, changes: [{ type: delta, contentIndex: 0, delta: `\n${tail}` }] }]),
+      reducer.apply([{ type: "message_update", usage: {}, changes: [{ type: delta, contentIndex: 0, delta: ` now. ${PAD}` }] }]),
+    ];
+    for (const update of updates) assert.deepEqual(leaks(update.rows), [], shown(update.rows));
+    assert.deepEqual(leaks(reducer.rows()), [], shown(reducer.rows()));
+  });
+
+  test(`a live ${how} block where only a key's head has streamed: no update shows any part of it`, () => {
+    const reducer = timelineReducer({ conversationId: 1, redact: redactWs, redactLive });
+    reducer.apply([{ type: "message_start", message: { role: "assistant", content: [] } }]);
+    const update = reducer.apply([{ type: "message_update", usage: {}, changes: [{ type: start, contentIndex: 0, block: { type: kind, [kind]: "" } }, { type: delta, contentIndex: 0, delta: `${PAD}Using ${KEY.slice(0, 20)}` }] }]);
+    assert.deepEqual(leaks(update.rows), [], shown(update.rows));
+    assert.deepEqual(leaks(reducer.rows()), [], shown(reducer.rows()));
+  });
+}
