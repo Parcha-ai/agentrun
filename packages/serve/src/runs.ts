@@ -1864,8 +1864,10 @@ export class Runs {
     const working = status === "queued" || (status === "working" && state === "working");
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
-    // A follow-up to a run the person stopped: its turn had ended, so a process this message starts resumes nothing.
-    if (status === "input_required" && state === "idle") run.followUpOpen = true;
+    // A follow-up to a run the person stopped, whose process has gone: its turn had ended, so the process this message
+    // starts resumes nothing. With its process live the message starts none, and a relaunch after that process dies
+    // under the message is a crash's, which keeps its row.
+    if (status === "input_required" && state === "idle" && !this.live(run)) run.followUpOpen = true;
     run.submitted++;
     this.refresh(run);
     try {
