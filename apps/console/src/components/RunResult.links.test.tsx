@@ -1,0 +1,103 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { RunDetail } from "./RunDetail";
+import { messageFeatures, runFixture } from "@/fixtures";
+import { markdown } from "@/lib/format";
+import type { Run, RunFile } from "@/lib/v2";
+
+// A link in a run's answer is resolved by the browser against the console's own page, so a relative one (the file an
+// agent wrote, linked by its name) used to send the console's tab to a server path that is no page at all. A link that
+// names one of the run's files opens it in the run's file viewer; any other relative link reads as its text and goes
+// nowhere; a link to a site is as it was.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+let root: ReturnType<typeof createRoot> | undefined;
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+
+const f = runFixture("run.with-files");
+const file = (path: string, content_type: string | null = "text/markdown; charset=utf-8"): RunFile => ({ path, size_bytes: 12, modified_at: "2026-11-04T12:00:00.000Z", content_type });
+const files = [file("hello.md"), file("notes/plan.md")];
+const answer = "I wrote [hello.md](hello.md). See also [x](other/missing.md), [top](#top) and [site](https://example.com).";
+
+async function open(final_answer: string, readFile = vi.fn(async (r: RunFile) => `# ${r.path}\n\nSee [hello.md](../hello.md).`)) {
+  const run = { ...f.run, status: "completed", state: "idle", result: { ...f.run.result, final_answer } } as Run;
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => {
+    root!.render(createElement(RunDetail, { run, agentName: "writer", messages: messageFeatures, harnessSteers: true, rows: [], files, readFile, actions: {}, tab: "report" }));
+  });
+  const report = () => host.querySelector("article.report") as HTMLElement;
+  const named = (text: string) => [...report().querySelectorAll("a, button")].find((e) => e.textContent === text) as HTMLElement | undefined;
+  const click = async (el: Element) => {
+    let ev!: MouseEvent;
+    await act(async () => { ev = new MouseEvent("click", { bubbles: true, cancelable: true }); el.dispatchEvent(ev); });
+    return ev;
+  };
+  return { host, report, named, click, readFile };
+}
+
+describe("a link in a run's answer", () => {
+  it("one that names a run file opens that file in the viewer, and is no link the browser would follow", async () => {
+    const page = await open(answer);
+    expect(page.report().querySelector('a[href="hello.md"]')).toBeNull();
+    const before = location.href;
+    const link = page.named("hello.md");
+    expect(link, "the file's name is still there to click").toBeTruthy();
+    expect(link!.hasAttribute("href")).toBe(false);
+    await page.click(link!);
+    expect(location.href).toBe(before);
+    expect(page.readFile).toHaveBeenCalledWith(files[0]);
+    expect(page.host.querySelector("dialog[aria-label='hello.md']")).not.toBeNull();
+  });
+
+  it("a relative one that names no run file, or a fragment, reads as its text and goes nowhere", async () => {
+    const page = await open(answer);
+    for (const href of ["other/missing.md", "#top"]) expect(page.report().querySelector(`[href="${href}"]`), href).toBeNull();
+    expect(page.report().textContent).toContain("See also x, top and site.");
+    const before = location.href;
+    for (const text of ["x", "top"]) {
+      const el = page.named(text);
+      if (el) await page.click(el);
+    }
+    expect(location.href).toBe(before);
+    expect(page.readFile).not.toHaveBeenCalled();
+    expect(page.host.querySelector("dialog")).toBeNull();
+  });
+
+  it("a link to a site is as it was", async () => {
+    const page = await open(answer);
+    const site = page.report().querySelector('a[href="https://example.com"]');
+    expect(site?.outerHTML).toBe(new DOMParser().parseFromString(markdown("[site](https://example.com)"), "text/html").querySelector("a")!.outerHTML);
+    expect(site?.outerHTML).toBe('<a href="https://example.com">site</a>');
+  });
+
+  it("a ./ path names the run file too, and a path in a folder names the file at that path", async () => {
+    const page = await open("Both: [a](./hello.md) and [b](notes/plan.md).");
+    await page.click(page.named("b")!);
+    expect(page.readFile).toHaveBeenCalledWith(files[1]);
+    expect(page.report().querySelector('a[href="./hello.md"]')).toBeNull();
+    expect(page.named("a")?.hasAttribute("href")).toBe(false);
+  });
+
+  it("in the viewer, a Markdown file's link to another run file opens that one, resolved from the file's folder", async () => {
+    const page = await open("Read [the plan](notes/plan.md).");
+    await page.click(page.named("the plan")!);
+    const dialog = () => page.host.querySelector("dialog") as HTMLElement;
+    expect(dialog().getAttribute("aria-label")).toBe("notes/plan.md");
+    const inside = [...dialog().querySelectorAll("article button, article a")].find((e) => e.textContent === "hello.md");
+    expect(inside?.hasAttribute("href")).toBe(false);
+    await page.click(inside!);
+    expect(page.readFile).toHaveBeenLastCalledWith(files[0]);
+    expect(page.host.querySelector("dialog")?.getAttribute("aria-label")).toBe("hello.md");
+  });
+});
+
+describe("markdown with no run files (a note, an editor preview)", () => {
+  it("keeps no relative link: each reads as its text", () => {
+    const html = markdown("[a](hello.md) [b](/v2/x) [c](#top) [d](//example.com/x) [e](https://example.com) [f](mailto:a@example.com)");
+    expect(html).not.toMatch(/href="(hello\.md|\/v2\/x|#top|\/\/example\.com\/x)"/);
+    expect(html).toContain('<a href="https://example.com">e</a>');
+    expect(html).toContain('<a href="mailto:a@example.com">f</a>');
+    expect(html.replace(/<[^>]+>/g, "").trim()).toBe("a b c d e f");
+  });
+});
