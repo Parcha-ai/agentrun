@@ -312,7 +312,12 @@ go through `work/` by path.
   resolver settings (its nameservers and search domains), with no network to use them. Its environment is
   `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
   server's uid:gid, so what it writes in `work/` stays this server's. It starts from [the box's image](#the-boxs-image).
-  It has no CPU, memory or process limits yet.
+  It may use 2 CPUs' time, 4 GiB of memory, swap included, and 1,024 processes and threads (`--cpu-period 100000
+  --cpu-quota 200000 --memory 4g --memory-swap 4g --pids-limit 1024`), so a runaway build or a fork bomb stops in the
+  box. `AGENTRUN_BOX_CPUS` (at least `0.01`), `AGENTRUN_BOX_MEMORY` (with its unit, such as `8g`, and at least `6m`) and
+  `AGENTRUN_BOX_PIDS` (at most 4,194,304) change them; any other value refuses the start. `AGENTRUN_BOX_CPUS` caps CPU
+  time, as a CFS quota (the cap `--cpus` sets), so it holds whatever CPU count Docker's VM has, and where the kernel
+  gives Docker no CPU controller (a rootless Docker without one delegated), Docker ignores it with a warning.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
