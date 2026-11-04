@@ -690,8 +690,82 @@ test("a Codex request whose hidden reasoning (a short summary) came before 8,000
   const nano = (usd) => Math.round(usd * 1e9) / 1e9;
   // All it was sent, and medium's 8,192-token budget less the summary's bytes.
   assert.deepEqual(
-    { hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
-    { hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(booked.stoppedAfterBytes + 8_192 - Buffer.byteLength(summary))) },
-    'the text and the unseen reasoning both count',
+    { streamed: booked.stoppedAfterBytes, hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
+    { streamed: Buffer.byteLength(summary) + Buffer.byteLength(text), hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(Buffer.byteLength(summary) + Buffer.byteLength(text) + 8_192 - Buffer.byteLength(summary))) },
+    'the summary and the text it sent, and the unseen reasoning, count',
+  );
+});
+
+test("the content a Responses stream shows, as the policy reads each event: answer text, reasoning and tool call arguments count their delta's bytes; the wire's own fields and every other event count none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.contentBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('response.output_text.delta', { sequence_number: 9, item_id: 'msg_1', output_index: 1, content_index: 0, delta: 'The answer é', logprobs: [], obfuscation: 'Xk3a9QwE' })),
+      bytes(event('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: 'Weighing' })),
+      bytes(event('response.reasoning_text.delta', { item_id: 'rs_1', delta: 'step two' })),
+      bytes(event('response.function_call_arguments.delta', { item_id: 'fc_1', delta: '{"q":"x"}' })),
+      bytes(event('response.custom_tool_call_input.delta', { item_id: 'ct_1', delta: 'ls -la' })),
+      bytes(event('response.created', { response: { id: 'resp_1' } })),
+      bytes(event('response.completed', { response: {} })),
+    ],
+    [Buffer.byteLength('The answer é'), 8, 8, 9, 6, 0, 0],
+  );
+});
+
+test("the #1592 walk on codex: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text in the Responses API's own framing, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
+  // As the provider frames each piece: its sequence number, item id, indexes, logprobs and obfuscation, around a few
+  // characters of text; about 11.7 wire bytes a character.
+  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(12).slice(0, 1_146);
+  let seq = 0;
+  const piece = (delta) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', sequence_number: seq++, item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, delta, logprobs: [], obfuscation: 'Xk3a9QwEr' })}\n\n`;
+  const stream = `event: response.created\ndata: ${JSON.stringify({ type: 'response.created', sequence_number: seq++, response: { id: 'resp_1' } })}\n\n`
+    + Array.from({ length: Math.ceil(text.length / 3) }, (_, i) => piece(text.slice(i * 3, i * 3 + 3))).join('');
+  assert.ok(Buffer.byteLength(stream) > 10 * text.length, `setup: the wire is the provider's framing, ${Buffer.byteLength(stream)} bytes for ${text.length} characters`);
+  const reports = [];
+  let reported;
+  const done = new Promise((resolve) => (reported = resolve));
+  const p = await startModelProxy({
+    policy: codexPolicy({ model: 'session-model', tools: ['lookup'] }),
+    hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { reports.push(u); reported(); } },
+    model: 'session-model',
+    origin: 'https://provider.invalid',
+    credential: () => 'provider-secret',
+    price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
+    fetch: async (_url, init) => new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  }, KEY);
+  after(() => p.close());
+  await new Promise((resolve) => {
+    const { hostname, port } = new URL(p.url);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}`, accept: 'text/event-stream' } }, (res) => {
+      let read = 0;
+      // The person stops 6.3 s in, once these 1,146 characters have reached the harness.
+      res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, reasoning: { effort: 'none' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] }));
+  });
+  await done;
+  const [booked] = reports;
+  // The cap as serve keeps it: $100 a million output, input free, a $0.50 cap; a request is held at what is left (here
+  // 5,000 tokens, $0.50), counts a stop at what streamed plus 1,024 tokens, and the next is refused unless 1,024 tokens fit.
+  const cap = 0.5;
+  const price = (tokens) => tokens * 100 / 1e6;
+  const stoppedUsd = (tokens) => price(Math.min(5_000, tokens + 1_024));
+  const store = (await import('@parcha/agentrun-kernel/testing')).memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:walk'), { key: 'chat:walk', beforeRequest: (r) => (r.spentUsd === null || r.spentUsd + price(1_024) > cap ? { refuse: 'spend_cap_reached' } : { holdUsd: cap - r.spentUsd, stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'session-model' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  const goOn = await booking.models.beforeRequest({ model: 'session-model' }).then(() => 'admitted', (error) => `refused: ${error?.message ?? error}`);
+  assert.deepEqual(
+    { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn },
+    { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' },
+    'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes',
   );
 });

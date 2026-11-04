@@ -200,6 +200,12 @@ const RECORDED_STREAM = readFileSync(new URL('./fixtures/messages-stream-claude-
 const RECORDED_BODY = readFileSync(new URL('./fixtures/messages-body-claude-sonnet-5-5.json', import.meta.url), 'utf8');
 /** Each kind of token at its own rate, per million. */
 const RATES = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+/** The content a Messages stream carries, as a stop counts it: each delta's text, thinking and tool input, UTF-8 bytes. */
+const messagesContentBytes = (sse) => sse.split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5))).reduce((sum, data) => {
+  const d = data.type === 'content_block_delta' ? data.delta : undefined;
+  const piece = d?.type === 'text_delta' ? d.text : d?.type === 'thinking_delta' ? d.thinking : d?.type === 'input_json_delta' ? d.partial_json : '';
+  return sum + Buffer.byteLength(piece ?? '');
+}, 0);
 const priced = (_model, u) => (u.input * RATES.input + u.output * RATES.output + u.cacheRead * RATES.cacheRead + (u.cacheWrite ?? 0) * RATES.cacheWrite) / 1e6;
 
 test('a recorded real answer, streamed and whole, is booked with its input, output and cache tokens and its price', async () => {
@@ -261,7 +267,9 @@ test("a stream its client stops part way is booked unknown, with the bytes it wa
       await proxy.close();
     }
   }
-  assert.deepEqual([booked[0].usd, booked[0].stoppedAfterBytes], [null, Buffer.byteLength(first)], 'stopped by its client: unknown, with what it was sent');
+  // What it was sent counts as its content (the text, thinking and tool input of its deltas, UTF-8), not the wire's bytes.
+  assert.deepEqual([booked[0].usd, booked[0].stoppedAfterBytes], [null, messagesContentBytes(first)], 'stopped by its client: unknown, with the content it was sent');
+  assert.ok(messagesContentBytes(first) < Buffer.byteLength(first), 'the content is less than the wire bytes');
   assert.deepEqual([booked[1].usd, booked[1].stoppedAfterBytes], [null, undefined], 'broken off by the provider: unknown, at its hold as before');
 });
 
@@ -708,7 +716,7 @@ test("the lead's case: a Messages request thinking at budget_tokens 8,192, stopp
   // exactly (to the nano-dollar) stoppedUsd(what streamed), with nothing of the budget on top.
   const nano = (usd) => Math.round(usd * 1e9) / 1e9;
   const thinking = 40 * Buffer.byteLength('Let me check the ledger against the totals. '.repeat(5));
-  assert.deepEqual({ hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) }, { hidden: 8_192, reasoning: thinking, counted: nano(stoppedUsd(booked.stoppedAfterBytes)) }, 'its thinking budget and the thinking it was sent booked, and nothing of the budget counted on top of thinking that streamed');
+  assert.deepEqual({ streamed: booked.stoppedAfterBytes, hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) }, { streamed: thinking, hidden: 8_192, reasoning: thinking, counted: nano(stoppedUsd(thinking)) }, 'its thinking, its thinking budget and the thinking it was sent booked, and nothing of the budget counted on top of thinking that streamed');
 });
 
 test("the reasoning a Messages stream shows, as the policy reads each event: a thinking delta counts its bytes; text, a tool call's JSON, a signature and every other event count none", () => {
@@ -770,8 +778,73 @@ test("a Messages request thinking at budget_tokens 8,192 whose short thinking su
   await booking.models.afterRequest(booked);
   const nano = (usd) => Math.round(usd * 1e9) / 1e9;
   assert.deepEqual(
-    { hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
-    { hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(booked.stoppedAfterBytes + 8_192 - Buffer.byteLength(summary))) },
-    'the text and the unseen thinking both count',
+    { streamed: booked.stoppedAfterBytes, hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
+    { streamed: Buffer.byteLength(summary) + Buffer.byteLength(text), hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(Buffer.byteLength(summary) + Buffer.byteLength(text) + 8_192 - Buffer.byteLength(summary))) },
+    'the summary and the text it sent, and the unseen thinking, count',
+  );
+});
+
+test("the content a Messages stream shows, as the policy reads each event: text, thinking and a tool call's JSON count their delta's bytes; a signature and every other event count none", () => {
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.contentBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('content_block_delta', { index: 1, delta: { type: 'text_delta', text: 'The answer é' } })),
+      bytes(event('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'Weighing' } })),
+      bytes(event('content_block_delta', { index: 2, delta: { type: 'input_json_delta', partial_json: '{"q":' } })),
+      bytes(event('content_block_delta', { index: 0, delta: { type: 'signature_delta', signature: 'EqQBCgIYAhIM' } })),
+      bytes(event('message_start', { message: { id: 'msg_1', content: [], usage: { input_tokens: 10, output_tokens: 1 } } })),
+      bytes(event('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 9 } })),
+    ],
+    [Buffer.byteLength('The answer é'), 8, 5, 0, 0, 0],
+  );
+});
+
+test("the #1592 walk on claude-agent: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text in the Messages API's own framing, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
+  const writer = anthropicPolicy({ model: 'claude-main', tools: [], maxOutputTokens: 32_000 });
+  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(12).slice(0, 1_146);
+  const sse = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
+  const stream = sse('message_start', { message: { id: 'msg_w', type: 'message', role: 'assistant', model: 'claude-main', content: [], usage: { input_tokens: 10, output_tokens: 1 } } })
+    + sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
+    + Array.from({ length: Math.ceil(text.length / 3) }, (_, i) => sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: text.slice(i * 3, i * 3 + 3) } })).join('');
+  assert.ok(Buffer.byteLength(stream) > 20 * text.length, `setup: the wire is the provider's framing, ${Buffer.byteLength(stream)} bytes for ${text.length} characters`);
+  const streaming = async (_url, init) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(stream));
+      init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  let report;
+  const done = new Promise((resolve) => (report = resolve));
+  const proxy = await startModelProxy({ policy: writer, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: priced, hooks: { beforeRequest: async () => {}, afterRequest: async (u) => report(u) }, fetch: streaming }, 'session-key');
+  let booked;
+  try {
+    await new Promise((resolve) => {
+      const req = request(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' } }, (res) => {
+        let read = 0;
+        res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+        res.on('error', resolve);
+        res.on('close', resolve);
+      });
+      req.on('error', resolve);
+      req.end(JSON.stringify(body({ stream: true, max_tokens: 5_000 })));
+    });
+    booked = await done;
+  } finally {
+    await proxy.close();
+  }
+  const cap = 0.5;
+  const price = (tokens) => tokens * 100 / 1e6;
+  const stoppedUsd = (tokens) => price(Math.min(5_000, tokens + 1_024));
+  const store = memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:walk'), { key: 'chat:walk', beforeRequest: (r) => (r.spentUsd === null || r.spentUsd + price(1_024) > cap ? { refuse: 'spend_cap_reached' } : { holdUsd: cap - r.spentUsd, stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'claude-main' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  const goOn = await booking.models.beforeRequest({ model: 'claude-main' }).then(() => 'admitted', (error) => `refused: ${error?.message ?? error}`);
+  assert.deepEqual(
+    { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn },
+    { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' },
+    'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes',
   );
 });
