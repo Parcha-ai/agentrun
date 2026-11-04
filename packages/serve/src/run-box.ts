@@ -1,9 +1,9 @@
-// A sandbox run's box: one per run, made on its first tool call and labelled with the run's id, so the label is the
-// record. A run's process that starts again finds it by that label and first kills the commands the process before it
-// left running. Serve destroys it at every settle (a cancel included) and at archive, and its start sweeps the boxes of
-// runs that have ended. A box gets the run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no
-// key or token enters it) and no network. pi-transport is an optional peer of this package: it is loaded only for a run
-// whose place is a box.
+// A sandbox run's box: one per run, made on the first call that runs in it and labelled with the run's id, so the label
+// is the record (a bound box's read, write and edit run on this machine: bound-files.ts). A run's process that starts
+// again finds it by that label and first kills the commands the process before it left running. Serve destroys it at
+// every settle (a cancel included) and at archive, and its start sweeps the boxes of runs that have ended. A box gets the
+// run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it) and no network.
+// pi-transport is an optional peer of this package: it is loaded only for a run whose place is a box.
 //
 // Docker's box is made here, in the run's process, as this server's user, with work/ bound. A Daytona box is remote: it
 // cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), seeds
@@ -84,7 +84,7 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
  *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. `mirror`, on a remote
  *  box: copies a file the run's host tools filed in work/ (at `path`, relative to it) into the box, now when the box is open,
  *  else at its open. */
-export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
+export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
 
 /** Where a run's box comes from: a provider of this process's own (Docker, or the tests' faux box), or, for a remote box,
  *  the server's relay in data root `relay`. */
@@ -118,11 +118,42 @@ export function runBox(source: BoxSource, run: { id: string; root: string; dir: 
     });
     return held;
   };
+  let binds: Promise<boolean> | undefined;
+  let checked: Promise<void> | undefined;
+  const env = async (context: Context): Promise<ExecutionEnv> => (await opened(context)).env;
   return {
     // The bind's source, or what a remote box is seeded from: a path another harness names under it is the same file in
     // the box (coding-tools.ts boxPath).
     hostWork: join(run.dir, "work"),
-    env: async (context) => (await opened(context)).env,
+    env,
+    // Whether the provider binds it (BoxProvider.mounts): then the file tools may work on it here (bound-files.ts). A
+    // remote box binds nothing.
+    bound() {
+      if ("relay" in source) return Promise.resolve(false);
+      const provider = source.provider;
+      binds ??= provider().then((boxes) => boxes.mounts === true, (error: unknown) => {
+        binds = undefined;
+        throw error;
+      });
+      return binds;
+    },
+    // Before a file tool works on work/ here, once a process: a box an earlier process of the run left may still run a
+    // command that changes work/, so that box is taken over (env: its left commands killed first). None, none is made.
+    // A remote box's file tools never work here.
+    leftEnded(context) {
+      if ("relay" in source) return Promise.resolve();
+      const provider = source.provider;
+      checked ??= (async () => {
+        if (held) return void (await held);
+        const listed = await (await provider()).list({ [RUN_LABEL]: run.id }, context);
+        if (!listed.ok) throw listed.error;
+        if (listed.value.length) await env(context);
+      })().catch((error: unknown) => {
+        checked = undefined;
+        throw error;
+      });
+      return checked;
+    },
     ...("relay" in source
       ? {
           // An open (or opening) box is written now; with none, the file waits for the box's open.

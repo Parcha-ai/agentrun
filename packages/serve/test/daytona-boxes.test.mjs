@@ -63,7 +63,8 @@ async function upload(server, path, text) {
   const bytes = Buffer.from(text);
   const made = await server.api("POST", "/files", { path, size_bytes: bytes.length });
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const sent = await fetch(`${server.baseUrl}${made.body.upload.url}`, { method: "PUT", headers: { authorization: `Bearer ${server.token}`, "content-type": "application/octet-stream" }, body: bytes });
+  // upload.url starts at the server's root (or is whole): resolved against the server's address, never the /v2 base.
+  const sent = await fetch(new URL(made.body.upload.url, server.url), { method: "PUT", headers: { authorization: `Bearer ${server.token}`, "content-type": "application/octet-stream" }, body: bytes });
   const answer = await sent.text();
   assert.equal(sent.status, 200, answer);
   return JSON.parse(answer).file_id ?? made.body.file_id;

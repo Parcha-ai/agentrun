@@ -12,8 +12,9 @@ import { authContextOf, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
-import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
+import { createRegistry, type Extension, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
+import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
@@ -33,6 +34,7 @@ import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
+import { EnvironmentLine, environmentLine } from "./environment.js";
 import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
 
@@ -44,6 +46,19 @@ export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 const TOOL_FAILED = "agentrun_serve_tool_failed";
 
 export { promptOf };
+
+/** A run's process that opens to go on with a run its last process left unfinished writes that on the root
+ *  (RUN_RESUMED), so the run's timeline shows it from the store, which the settle's read keeps: after a crash (that
+ *  process died holding the run, and left it `running`) or after the server stopped (it drained, `sleeping`). A first
+ *  open, a follow-up's and a wake from a park get none. A run whose root conversation was never made writes nothing
+ *  and opens as before: the root comes with a workflow run's task (its start) and with an agentic run's first message,
+ *  so a process that died or drained before then left none. */
+async function markResumed({ harness, context, generation, previous }: BeforeResume): Promise<void> {
+  const drained = previous?.status === "sleeping" && isObject(previous.detail) && previous.detail.reason === "drained";
+  const after = previous?.status === "running" ? "crash" : drained ? "server_stop" : undefined;
+  if (!after || !(await harness.conversation(ROOT_CONVERSATION_ID, context))) return;
+  await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
+}
 
 /** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
 async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
@@ -90,6 +105,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
   const registry = createRegistry();
+  // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
+  // installed first so it comes before every other extension's and the instructions.
+  if (revision.kind === "agentic") registry.install(EnvironmentLine);
   registry.install(coding.extension);
   // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
   const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
@@ -99,7 +117,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
     const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
+    // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
+    // opened with that day.
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions].filter(Boolean), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
     // The harness's own files (its homes, its state) go in a private directory beside the workspace, never in it. It works
@@ -113,7 +133,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never, { listed: !chosen.unpriced.has(model!.modelId) });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
-    return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
+    return { models: {}, registry: createRegistry(), door, onOpen, beforeResume: markResumed } as unknown as AppOptions;
   }
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
   searchOn(models);
@@ -138,7 +158,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async ({ harness }: BeforeResume) => { for (const settle of settles) await settle(harness); },
+    beforeResume: async (run: BeforeResume) => { await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).
