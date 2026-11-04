@@ -1110,7 +1110,9 @@ with the token, an archived agent's too:
   `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
   or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`,
   on an active or a pending note. This server has no route that approves a pending note yet: it waits, listed with
-  `status: pending` and read by no run. A stale
+  `status: pending` and read by no run, and an edit keeps it waiting: a `PUT` that drops or changes its status is 400
+  with the rule `status`, so a token holder cannot make a held rule active by writing it back. A note a person
+  creates with `status: pending` waits the same way. A stale
   ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
   passes the same structural checks as a run's (`checkNote`, in `src/learn/check.ts`), and no grader: a refusal is 400 with
   `problems`, and nothing is written. A retire is how a person revokes a note, so it checks the note's format alone:

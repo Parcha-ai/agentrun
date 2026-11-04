@@ -353,6 +353,13 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       if (condition.match && !(current && condition.match.includes(etagOf(current.oid)))) throw new ApiError("precondition_failed", current ? "The note changed since it was read (a run's merge, or another edit): read it again." : held ? notNote : "There is no such note on main: create it with If-None-Match: *.");
       if (condition.absent && held) throw new ApiError("precondition_failed", current ? "The folder has a note by this name: read it, then edit it with If-Match." : notNote);
       let text = given;
+      // A note that waits for its owner's OK is made active by an approval alone: an edit keeps it waiting, so one that
+      // drops or changes its status is refused, whoever sends it.
+      if (given !== undefined && current) {
+        const was = parseNoteFile(file, current.text);
+        const now = parseNoteFile(file, given);
+        if (!Array.isArray(was) && was.status === "pending" && !Array.isArray(now) && now.status !== "pending") throw refused([printable({ rule: "status", path: file, detail: "it waits for its owner's OK: an edit keeps status: pending, only an approval makes it active, and a retire takes it out" }, input.refuse)]);
+      }
       const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, Note>();
       if (text === undefined) {
         const note = parseNoteFile(file, current!.text);
