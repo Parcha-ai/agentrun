@@ -821,6 +821,17 @@ describe("the Learning tab's skills and workflows", () => {
       expect(t.button(/^Retire read-receipts$/)).toBeTruthy();
     });
 
+    it("says who retired one and when even when that change is past the first page of changes: the next pages are read for it", async () => {
+      const v = learned({ skill: "retired", workflow: "retired" });
+      v.log = { ...v.log, next_cursor: "l1" };
+      const t = await open(agent(true), { learning: async () => v, read: reads, log: async () => ({ items: [{ by: { user: true }, commit: "c0", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE, README_FILE] }], total: 4, next_cursor: null }) });
+      expect(t.calls).toContain("log after l1");
+      await t.click(/^Earlier skills/);
+      await t.click(/^Earlier workflows/);
+      expect(t.host.querySelector('section[aria-label="Earlier skills"]')!.textContent).toContain("Retired by you ·");
+      expect(t.host.querySelector('section[aria-label="Earlier workflows"]')!.textContent).toContain("Retired by you ·");
+    });
+
     it("an archived agent's skills have no Retire", async () => {
       const t = await open({ ...agent(true), archived_at: "2026-11-03T17:00:00Z" }, { learning: async () => learned(), read: reads });
       expect(t.card("find-policies")).not.toBeNull();
