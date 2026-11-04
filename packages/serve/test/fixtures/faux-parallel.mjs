@@ -2,7 +2,7 @@
 // of Parallel's API (the tests' fake). It answers every question, and each extract with the URL's full content, or as
 // AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT says: "errors" lists the URL in `errors`, a number answers that HTTP status. A
 // search answers `max_results` results (search()), or the HTTP status AGENTRUN_TEST_FAUX_PARALLEL_SEARCH names, and a list
-// of monitors (GET /v1/monitors, a saved key's check) answers none. It counts
+// of monitors (GET /v1/monitors, a saved key's check) answers none; "slow:<ms>" answers a search after that long. It counts
 // as authorized only the canary key, and files one line per call (with the process that made it) in the file
 // AGENTRUN_TEST_FAUX_PARALLEL_CALLS names. Like Parallel's API, it reports no cost.
 import { appendFileSync } from "node:fs";
@@ -18,7 +18,7 @@ export default async function fakeParallel(url, init = {}) {
   if (key !== CANARY) return new Response(JSON.stringify({ error: { message: "invalid key" } }), { status: 401, headers: { "content-type": "application/json" } });
   if (path === "/v1/monitors") return new Response(JSON.stringify({ monitors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   if (path === "/v1/extract") return extract(body.urls, process.env.AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT ?? "");
-  if (path === "/v1/search") return search(body, process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH ?? "");
+  if (path === "/v1/search") return search(body, process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH ?? "", init.signal);
   const answers = Object.fromEntries(Object.entries(body.questions ?? {}).map(([id, q]) => {
     if (q.type === "choice") {
       const options = Object.keys(q.criteria);
@@ -45,8 +45,14 @@ const LONG_EXCERPT = `${"Widgets are registered in Delaware under file 1234567. 
 
 /** Parallel's search answer to `body`, as `mode` says: `max_results` results (10 when it asks none), the first with a
  *  null title, two excerpts (one with a markdown link) and a publish date, the rest one short excerpt and none. */
-function search(body, mode) {
+async function search(body, mode, signal) {
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+  // "slow:<ms>": the answer comes after that long, as a slow Parallel's would (a fetch's abort still ends it).
+  const slow = /^slow:(\d+)$/.exec(mode);
+  if (slow) await new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, Number(slow[1]));
+    signal?.addEventListener("abort", () => (clearTimeout(timer), reject(signal.reason ?? new DOMException("aborted", "AbortError"))), { once: true });
+  });
   if (/^\d+$/.test(mode)) return json({ type: "error", error: { ref_id: "ref-faux-2", message: `faux status ${mode}` } }, Number(mode));
   const count = body.advanced_settings?.max_results ?? 10;
   const results = Array.from({ length: count }, (_, i) => i === 0
