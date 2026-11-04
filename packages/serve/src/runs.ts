@@ -1226,13 +1226,15 @@ export class Runs {
     void this.saveMeta(run).catch((error: Error) => warn(run.id, `what its process thinks at is not saved: ${error.message}`));
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
-    // A run on the host's default (its revision names no model, and the host no AGENT_MODEL) gets the model the server's
-    // keys give, never the key: behind a gateway its process holds the gateway's key alone (keysFor) and could not
-    // tell. A tier the host names keeps its own (hostModel reads the tier's variable first). pi and codex choose through
-    // the gateway (chooseModel); claude-agent never does, and holds the key its route sends, which gives its default.
+    // A run on the host's default (its revision names no model) gets the model the server picks for its harness, never
+    // the key that gave it: behind a gateway its process holds the gateway's key alone (keysFor) and could not tell. It is
+    // the run's last choice (model.ts hostModel: the tier's variable, then AGENT_MODEL where the harness runs it, then a
+    // key the run holds, then this), so a host's setting the harness can run still wins; and one it cannot (AGENT_MODEL
+    // on Anthropic's model, for codex) no longer leaves the run with none. pi and codex choose through the gateway
+    // (chooseModel); claude-agent never does, and holds the key its route sends, which gives its default.
     delete env[KEY_MODEL_ENV];
     const harness = run.tooling?.harness ?? DEFAULT_HARNESS;
-    const keyModel = run.tooling && !run.tooling.model && !served.AGENT_MODEL && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
+    const keyModel = run.tooling && !run.tooling.model && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
     if (keyModel) env[KEY_MODEL_ENV] = keyModel;
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
