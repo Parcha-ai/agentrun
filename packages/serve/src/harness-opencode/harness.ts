@@ -36,6 +36,11 @@ export const AGENT = "hands";
 /** How long one try of a drive's event stream may take to say `server.connected`, and how many tries a drive has. */
 export const EVENT_CONNECT_MS = 10_000;
 export const EVENT_TRIES = 3;
+/** How long a drive that was not stopped waits, at its end, for the host tool calls still running to settle, when the
+ *  kernel gives it no deadline (DriveContext.deadline). Codex waits for its in-flight calls the same way
+ *  (run-adapters-codex/src/harness.ts:815-819 and :1125-1128), bounded by its own invocation deadline, which is
+ *  codex-internal (invocationDeadline: the World's runtime deadline, else 10 minutes); this is opencode's own bound. */
+export const CALLS_SETTLE_MS = 30_000;
 
 export interface OpenCodeHarnessOptions {
   /** The kernel's tools: exactly the host's (and `read_skill_file` with skills). */
@@ -267,15 +272,22 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       ...(options.fetch ? { fetch: options.fetch } : {}),
     }, proxyKey);
     const mcpKey = randomBytes(32).toString("base64url");
-    const mcp = await startMcpServer({
-      tools: bridge.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
-      key: mcpKey,
-      log,
-      call: async (name, args, callSignal) => {
-        const callId = await calls.take(name, args, AbortSignal.any([callSignal, signal]));
-        return bridge.call(name, args, callId, callSignal);
-      },
-    });
+    // A start that fails here closes the model proxy it opened: the drive's own close is the finally below.
+    let mcp: Awaited<ReturnType<typeof startMcpServer>>;
+    try {
+      mcp = await startMcpServer({
+        tools: bridge.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+        key: mcpKey,
+        log,
+        call: async (name, args, callSignal) => {
+          const callId = await calls.take(name, args, AbortSignal.any([callSignal, signal]));
+          return bridge.call(name, args, callId, callSignal);
+        },
+      });
+    } catch (error) {
+      await proxy.close().catch(() => {});
+      throw error;
+    }
 
     // The turn in flight: what the event stream tells it.
     let turn: { messageID: string; busy: boolean; accepted: boolean; error?: string; text: Map<string, string>; finalText: string; end: (outcome: Outcome) => void } | undefined;
@@ -392,7 +404,13 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         if (!current?.accepted || !sessionID) return;
         const status = await live.request("GET", "/session/status", undefined, signal).catch(() => undefined);
         const mine = isPlain(status?.body) ? status.body[sessionID] : undefined;
-        if (status?.status !== 200 || (isPlain(mine) && (mine.type === "busy" || mine.type === "retry"))) return;
+        if (status?.status !== 200) return;
+        // Still running: its busy status may have come while no one listened, so the turn is marked busy here, and its
+        // idle, on the stream now open, ends it.
+        if (isPlain(mine) && (mine.type === "busy" || mine.type === "retry")) {
+          current.busy = true;
+          return;
+        }
         // The turn ended while no one listened: its answer and its error are what OpenCode recorded of it, read back, and
         // the text the session has not had yet is said before the turn ends.
         const listed = await live.request("GET", `/session/${sessionID}/message`, undefined, signal).catch(() => undefined);
@@ -557,6 +575,9 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       stopped.abort(new Error("the drive ended"));
       server?.kill();
       await Promise.race([server?.exited, sleep(5_000)]);
+      // The host's tool calls still running settle before the drive ends, as codex's do: the next drive reads their real
+      // outcome, and no retry runs beside them. Not on a stop, which aborts them (close() waits for those briefly).
+      if (!ctx.signal.aborted) await mcp.settle(ctx.deadline !== undefined ? Math.max(0, ctx.deadline - Date.now()) : CALLS_SETTLE_MS);
       await mcp.close().catch(() => {});
       await proxy.close().catch(() => {});
     }

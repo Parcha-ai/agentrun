@@ -43,8 +43,16 @@ export interface McpServerOptions {
 export interface McpServer {
   /** The endpoint: `/mcp` on the loopback interface, on the port the system chose. */
   readonly url: string;
+  /** Waits, at most `ms`, for the calls under way to settle (a host tool's own run, whatever became of its client):
+   *  true when none is left. */
+  settle(ms: number): Promise<boolean>;
+  /** Stops the server: the calls under way are aborted, then waited for, at most CLOSE_SETTLE_MS, so none outlives the
+   *  drive that started it unless it ignores its abort that long. */
   close(): Promise<void>;
 }
+
+/** How long close() waits for the calls it aborted to settle. */
+export const CLOSE_SETTLE_MS = 5_000;
 
 /** The MCP protocol versions this server speaks; a client's own is answered in kind when it is one of them. */
 const VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -82,6 +90,15 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
   const known = new Set(tools.map((t) => t.name));
   const progressMs = options.progressMs ?? 15_000;
   const open = new Set<AbortController>();
+  // Each call's own run (options.call), until it settles: what settle() and close() wait for.
+  const running = new Set<Promise<unknown>>();
+  const settle = async (ms: number): Promise<boolean> => {
+    if (running.size === 0) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = await Promise.race([Promise.allSettled([...running]).then(() => true), new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), ms)))]);
+    clearTimeout(timer);
+    return done && running.size === 0;
+  };
   let closed = false;
 
   const server = createServer((req, res) => {
@@ -154,7 +171,10 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
       send({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress } });
     }, progressMs);
     try {
-      const answer = await options.call(name, args, controller.signal);
+      const work = options.call(name, args, controller.signal);
+      running.add(work);
+      void work.then(() => running.delete(work), () => running.delete(work));
+      const answer = await work;
       const content: unknown[] = [{ type: "text", text: answer.text }, ...(answer.images ?? []).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }))];
       answered = true;
       send({ jsonrpc: "2.0", id, result: { content, isError: answer.isError } });
@@ -179,10 +199,12 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
   url.port = String(address.port);
   return {
     url: url.href,
+    settle,
     async close() {
       if (closed) return;
       closed = true;
       for (const controller of open) controller.abort(new Error("the session's MCP server closed"));
+      if (!(await settle(CLOSE_SETTLE_MS))) options.log?.("opencode: a host tool call was still running when the MCP server closed", { running: running.size });
       server.closeAllConnections?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
