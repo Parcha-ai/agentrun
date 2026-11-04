@@ -36,8 +36,10 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 export type FauxAction =
   | { say: string; usd?: number | null }
   | { call: string; args?: unknown; usd?: number | null }
-  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
-  | { calls: { call: string; args?: unknown }[]; usd?: number | null }
+  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
+   *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
+   *  response, so a call can end before the request that asked for it is paid. */
+  | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean }
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission. */
   | { end: true; usd?: number | null }
@@ -130,13 +132,18 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
-            await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             stats.requests += 1;
             const index = cursor++;
-            await append(FAUX_RECORDS.request, { index });
+            // The output limit it was admitted with (what is left of a spend cap can buy), as a real adapter's proxy would
+            // write it into the body: filed, for a test to see.
+            const limit = ticket ? ticket.outputTokensMax : undefined;
+            await append(FAUX_RECORDS.request, { index, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
             if ("fail" in action) return await end("failed", action.fail);
-            await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const book = () => io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const bookAfter = "calls" in action && action.bookAfter === true;
+            if (!bookAfter) await book();
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end("completed");
             else {
@@ -152,6 +159,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
                 io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
               }
+              if (bookAfter) await book();
             }
           }
         } catch (error) {

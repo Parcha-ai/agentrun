@@ -371,6 +371,8 @@ test("pi's confinement holds for another harness's read: a link out of the works
   const read = toolResults(rows).at(-1);
   assert.match(read[0], /outside the workspace/, JSON.stringify(read));
   assert.doesNotMatch(read[0], /not for the agent/);
+  // Named as the call gave it: neither the server's data directory nor where the link points.
+  namesOnlyGiven(rows.filter((r) => r.kind === "tool_result").at(-1), "out.txt", [data, dir], "claude-agent");
 });
 
 test("another harness's file tools name the workspace's paths relative to it: a path out of it, a missing file and a write, with no result naming the server's data directory", { timeout: 60_000 }, async (t) => {
@@ -612,4 +614,48 @@ test("the run's thinking level reaches the harness's session: the revision's, an
     await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     assert.equal(await answer(api, run.body.run_id), said);
   }
+});
+
+/**
+ * A refused call's row names the path the call gave, as given, and no other: neither a directory of `roots` (the server's
+ * data directory, where a link points), as named or as resolved, nor any other absolute path on the host.
+ */
+function namesOnlyGiven(row, given, roots, who) {
+  const said = `${row.summary ?? ""}\n${row.tool_result_preview ?? ""}`;
+  assert.equal(row.tool_status, "failed", `${who}: ${said}`);
+  assert.ok((row.tool_result_preview ?? "").includes(`${given}: outside the workspace`), `${who}: the refusal names ${given} as given: ${said}`);
+  for (const root of new Set(roots.flatMap((root) => [root, realpathSync(root)]))) assert.ok(!said.includes(root), `${who}: the refusal of ${given} names ${root}: ${said}`);
+  // An absolute path starts at a "/" no name, dot or "<" comes before: pi's "</harness>", closing its error block, is none.
+  assert.doesNotMatch(said.split(given).join(""), /(?<![\w.~<-])\/[\w.-]/, `${who}: the refusal of ${given} names an absolute host path: ${said}`);
+  assert.doesNotMatch(said, /resolves to/, `${who}: the refusal of ${given} names where it resolves to: ${said}`);
+}
+
+test("a read refused outside the run names the path it was given, as given, on pi, claude-agent and codex: up out of the run, absolute, and a link out of the workspace, never the data directory or a host path", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const reads = (rows) => rows.filter((r) => r.kind === "tool_result" && r.tool_name === "read");
+  for (const harness of ["claude-agent", "codex"]) {
+    const runId = await started(api, `outside-${harness}`, "Read outside the run.", harness, ["read"]);
+    const refused = reads((await follow(api, runId, ["completed"], { deadlineMs: 55_000 })).rows);
+    assert.equal(refused.length, 2, `${harness}: ${JSON.stringify(refused)}`);
+    refused.forEach((row, i) => namesOnlyGiven(row, ["../../.token", "/etc/hostname"][i], [data], harness));
+  }
+  // On pi, the reads wait for a link the test plants in the run's workspace, to a file outside it.
+  const dir = await scratch(t);
+  const go = join(dir, "go");
+  await writeFile(join(dir, "secret.txt"), "not for the agent");
+  const given = ["../../.token", "/etc/hostname", "out.txt"];
+  assert.equal((await api("POST", "/agents", agent("outside-pi", { tools: ["read"] }))).status, 201);
+  const pi = await api("POST", "/agents/outside-pi/runs", { input: { content: `Read these paths once ${go} exists: ${JSON.stringify(given)}` } });
+  assert.equal(pi.status, 202, JSON.stringify(pi.body));
+  const work = join(data, "runs", pi.body.run_id, "work");
+  for (let i = 0; !existsSync(work); i++) {
+    assert.ok(i < 300, "the run's workspace");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await symlink(join(dir, "secret.txt"), join(work, "out.txt"));
+  await writeFile(go, "");
+  const refused = reads((await follow(api, pi.body.run_id, ["completed"], { deadlineMs: 55_000 })).rows);
+  assert.equal(refused.length, 3, `pi: ${JSON.stringify(refused)}`);
+  refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi"));
+  assert.ok(refused.every((row) => !JSON.stringify(row).includes("not for the agent")));
 });

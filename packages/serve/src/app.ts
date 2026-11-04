@@ -28,13 +28,14 @@ import { withLearned } from "./learning.js";
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
+import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
@@ -85,7 +86,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -107,6 +108,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(coding.extension);
   // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
   const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
+  // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
+  // (effort-guidance.ts). None without an effort.
+  const guidance = effortGuidance(process.env[EFFORT_ENV]);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
@@ -115,7 +119,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions].filter(Boolean), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
     // The harness's own files (its homes, its state) go in a private directory beside the workspace, never in it. It works
@@ -164,7 +168,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = await promptOf(learned, Object.keys(revision.body.skills), where.work);
+    const instructions = [await promptOf(learned, Object.keys(revision.body.skills), where.work), guidance].filter(Boolean).join("\n\n");
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};

@@ -12,6 +12,8 @@ import { test } from "node:test";
 import { spentIn, useSpend } from "../dist/cap.js";
 import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
 import { parallelExtract, webFetch } from "../dist/web-fetch.js";
+import * as kernel from "@parcha/agentrun-kernel";
+import * as searches from "../dist/web-search.js";
 import { PARALLEL_SEARCH_URL, webSearch } from "../dist/web-search.js";
 import { exaSearch } from "../dist/exa-keyless.js";
 import * as keyless from "../dist/exa-keyless.js";
@@ -73,6 +75,23 @@ test("results are mapped and clipped into the one search shape: excerpts joined 
   assert.deepEqual(await webSearch({ query: "  " }, parallelExtract(CANARY, send)), { error: "web_search needs a query" });
   assert.equal(sent.length, 2, "an empty query is not sent");
 }));
+
+test("an answer is held to the host's result bound: past it, the least relevant results are left out and counted (omitted); one within it is whole, followed by the line asking for citations", () => {
+  const hit = (i, snippet) => ({ url: `https://s.example/${i}`, title: `Result ${i}`, snippet });
+  const small = { provider: "parallel", query: "widgets", results: [hit(1, "One."), hit(2, "Two.")] };
+  assert.equal(searches.searchText(small), `${JSON.stringify(small)}\n${searches.CITE}`);
+  assert.equal(searches.searchText({ error: "no" }), '{"error":"no"}');
+  const quoted = { provider: "parallel", query: "widgets", results: Array.from({ length: 25 }, (_, i) => hit(i, '"'.repeat(3_000))) };
+  const text = searches.searchText(quoted);
+  assert.ok(searches.SEARCH_MAX_CHARS < kernel.HOST_RESULT_MAX_CHARS, "under the host's result bound");
+  assert.ok(text.length <= searches.SEARCH_MAX_CHARS, `${text.length} characters`);
+  assert.ok(text.endsWith(`\n${searches.CITE}`));
+  const kept = JSON.parse(text.slice(0, -searches.CITE.length - 1));
+  assert.ok(kept.results.length > 10 && kept.results.length < 25, `${kept.results.length} kept`);
+  assert.deepEqual(kept.results, quoted.results.slice(0, kept.results.length), "the most relevant, in order, each whole");
+  assert.equal(kept.omitted, 25 - kept.results.length);
+  assert.ok(text.length > searches.SEARCH_MAX_CHARS - 7_000, "as many as fit");
+});
 
 test("n is 1 to 25, 10 when it is not a number above zero", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
