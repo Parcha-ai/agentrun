@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { WebhookPage } from "./WebhookPage";
 import { createClient } from "@/lib/client";
 import type { Webhook, WebhookAttempt } from "@/lib/v2";
@@ -162,5 +162,19 @@ describe("WebhookPage", () => {
     const none = await open(server({ webhook: { configured: false }, attempts: [] }).v2, "unavailable");
     expect(none.host.textContent).toContain("can't keep a webhook secret");
     expect(none.button(/^Save$/)?.disabled).toBe(true);
+  });
+});
+
+// The deliveries' times read as every other time in the console does (one helper), in the viewer's own zone.
+describe("WebhookPage's times, in the viewer's zone (Puerto Rico, UTC-4)", () => {
+  let was: string | undefined;
+  beforeAll(() => { was = process.env.TZ; process.env.TZ = "America/Puerto_Rico"; });
+  afterAll(() => { if (was === undefined) delete process.env.TZ; else process.env.TZ = was; });
+  it("shows an attempt at 20:50:47Z, and when it is tried again, as the console's other times", async () => {
+    const { v2 } = server({ webhook: SET, attempts: [attempt({ at: "2026-11-04T20:50:47Z", status_code: 503, error: "answered 503", retry_at: "2026-11-04T20:55:47Z" })] });
+    const page = await open(v2);
+    const row = page.rows()[0]!.textContent ?? "";
+    expect(row).toContain("Nov 4, 4:50 PM");
+    expect(row).toContain("tried again Nov 4, 4:55 PM");
   });
 });
