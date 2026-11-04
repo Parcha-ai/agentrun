@@ -541,6 +541,38 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
 });
 
+test("an edit of a note whose text holds a value made secret after it was written is refused, whatever the ETag: its read shows [redacted], so saving it would write [redacted] over the hidden text; main untouched, and the editor is told why", { timeout: 120_000 }, async (t) => {
+  // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
+  const value = ["vault", "code", process.pid, Date.now().toString(36)].join("-");
+  withEnv(t, {}, ["AGENT_MODEL_API_KEY"]);
+  const first = await serve(t);
+  const { data } = first;
+  await made(first.api, learner("masked"));
+  const repo = repoOf(data, "masked");
+  const files = "/agents/masked/learning/files";
+  const VAULT = note("Vault", "Where the vault code is", `The vault code is ${value}.\nAsk the shift lead before opening it.\n`);
+  assert.equal((await first.api("PUT", `${files}/vault.md`, { text: VAULT }, { "if-none-match": "*" })).status, 201);
+  await first.close();
+
+  // The server again, with the vault code as a launcher's secret (the model key).
+  process.env.AGENT_MODEL_API_KEY = value;
+  const { api } = await serve(t, { data });
+  const read = await api("GET", `${files}/vault.md`);
+  const shownText = typeof read.body === "string" ? read.body : read.body.text;
+  assert.ok(shownText.includes("The vault code is [redacted].") && !shownText.includes(value), shownText);
+  const main = git(repo, ["rev-parse", "main"]);
+  // The person edits an unrelated line of what they were shown, with the note's own ETag.
+  const edited = shownText.replace("Ask the shift lead", "Ask the duty manager");
+  const put = await api("PUT", `${files}/vault.md`, { text: edited }, { "if-match": read.headers.get("etag") });
+  assert.equal(put.status, 400, JSON.stringify(put.body));
+  assert.deepEqual(put.body?.error?.problems?.map((p) => [p.rule, p.path]), [["secret_value", "vault.md"]]);
+  assert.match(put.body.error.problems[0].detail, /secret/i);
+  assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
+  assert.ok(git(repo, ["show", "main:vault.md"]).includes(`The vault code is ${value}.`), "the hidden text is kept");
+  // A retire is still the way out.
+  assert.equal((await api("POST", `${files}/vault.md/retire`, undefined, { "if-match": read.headers.get("etag") })).status, 200);
+});
+
 test("a file on main that is not a note (over the read cap, not UTF-8, executable or a link) is never written over: a create of its name is 412, and an edit or a retire by its blob is 412 with no hint to create it, main untouched", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t);
   await made(api, learner("holder"));

@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -352,6 +352,12 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       const notNote = "The folder's file by this name on main is no note (not a regular UTF-8 file of at most 1 MiB), and a person's write never replaces it.";
       if (condition.match && !(current && condition.match.includes(etagOf(current.oid)))) throw new ApiError("precondition_failed", current ? "The note changed since it was read (a run's merge, or another edit): read it again." : held ? notNote : "There is no such note on main: create it with If-None-Match: *.");
       if (condition.absent && held) throw new ApiError("precondition_failed", current ? "The folder has a note by this name: read it, then edit it with If-Match." : notNote);
+      // A note whose text holds one of the host's secrets as they are now (a value made secret after it was written) is
+      // read cut of it, under its own ETag: an edit of what was shown would write the cut over the hidden text. Only a
+      // retire reaches it.
+      if (given !== undefined && current && secretsShown(input.refuse).holds(current.text)) {
+        throw refused([{ rule: "secret_value", path: file, detail: "This note holds a value the server now keeps secret, so its text was shown with that value hidden, and saving would replace the hidden text. Retire it and write a new note instead." }]);
+      }
       let text = given;
       if (text === undefined) {
         const note = parseNoteFile(file, current!.text);
