@@ -16,6 +16,7 @@
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import { CONTENT_FILTERED } from "../types.js";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -55,6 +56,9 @@ export interface ProviderPolicy {
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
+  /** Whether the provider stopped a completed answer on its content filter (a refusal), read from its text as `usageOf`
+   *  reads it, never by matching its words. Absent: the policy cannot tell, and no answer is read as stopped. */
+  filtered?(text: string): boolean;
   /** Called once for each request the proxy forwards that the provider answers, as the answer starts. Requests overlap (a
    *  client's background calls run beside its turn), so what it keeps is for the sink to tell apart: each call returns its own
    *  observer. The observer is given each piece of the answer as text, BEFORE that piece is written to the client, so what it
@@ -145,6 +149,9 @@ export interface ModelProxyOptions {
   headers?: Readonly<Record<string, string>>;
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
+  /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
+   *  (`ProviderPolicy.filtered`): the harness halts the turn with it, before its client asks for the answer again. */
+  onFiltered?: (message: string) => void;
 }
 
 /** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
@@ -514,6 +521,27 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** The ids its headers gave it. */
     let ids: Record<string, string> | undefined;
     let reported: number | undefined;
+    /** Whether the provider's content-filter stop was told (once an answer). */
+    let filteredTold = false;
+    /** Tells the harness the provider stopped this answer on its content filter, when `text` (the answer so far, or the
+     *  kept window of it) says so: once, and never failing the answer. */
+    const tellFiltered = (text: string): void => {
+      if (filteredTold || !policy.filtered) return;
+      let stopped = false;
+      try {
+        stopped = policy.filtered(text);
+      } catch (error) {
+        say(`model proxy (${policy.id}): whether the provider's content filter stopped the answer could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+      if (!stopped) return;
+      filteredTold = true;
+      say(`model proxy (${policy.id}): the provider stopped the answer on its content filter`);
+      try {
+        options.onFiltered?.(CONTENT_FILTERED);
+      } catch (error) {
+        say(`model proxy (${policy.id}): onFiltered threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+    };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
@@ -558,6 +586,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
               watcher = undefined;
             }
           }
+          // The provider's content-filter stop, read before the client has the piece that carries it: the harness ends the
+          // turn before its client acts on the stop (asks for the refused answer again, or ends the turn its own way).
+          if (upstream.ok && text.includes("\n")) tellFiltered((tail + text).slice(-USAGE_WINDOW));
           // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
           if (!res.write(chunk)) {
             // One wait, and nothing left behind: whichever comes first takes both listeners off.
@@ -636,6 +667,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // An answer whose stop no piece showed before it ended (a whole JSON body): read whole once it is booked.
+    if (seen?.ok) tellFiltered(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`);
   };
 
   const server = createServer((req, res) => { void serve(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed", req); else res.destroy(); }); });

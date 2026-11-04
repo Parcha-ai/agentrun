@@ -316,6 +316,27 @@ export function anthropicUsage(text: string): AnthropicUsage | undefined {
   return bookedUsage({ ...startUsage, ...(isPlain(lastDelta) ? lastDelta : {}) });
 }
 
+/** Whether a Messages answer ended on the provider's refusal (`stop_reason: "refusal"`, its content filter): a whole body's
+ *  `stop_reason`, or a stream's last `message_delta` stop. Read by parsing, never by matching text, each SSE `data:` line
+ *  on its own, as anthropicUsage reads them. */
+export function anthropicFiltered(text: string): boolean {
+  const lines = text.split(/\r?\n/);
+  if (!lines.some((line) => line.startsWith("data:") || line.startsWith("event:"))) {
+    let body: unknown;
+    try { body = JSON.parse(text); } catch { return false; }
+    return isPlain(body) && body.stop_reason === "refusal";
+  }
+  let stop: unknown;
+  for (const line of lines) {
+    if (!line.startsWith("data:")) continue;
+    try {
+      const event: unknown = JSON.parse(line.slice(5));
+      if (isPlain(event) && event.type === "message_delta" && isPlain(event.delta) && "stop_reason" in event.delta) stop = event.delta.stop_reason;
+    } catch { /* cut at the kept window's edge, or not JSON: skipped */ }
+  }
+  return stop === "refusal";
+}
+
 /** The Claude Agent CLI's provider policy for one session. */
 /** The image blocks in `value`, at any depth (a tool's result holds them). */
 function imagesIn(value: unknown): number {
@@ -363,5 +384,6 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     outputLeast: anthropicOutputLeast,
     limitOutput: limitAnthropicOutput,
     usageOf: anthropicUsage,
+    filtered: anthropicFiltered,
   };
 }

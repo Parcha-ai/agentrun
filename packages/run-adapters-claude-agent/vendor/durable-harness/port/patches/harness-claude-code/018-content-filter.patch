@@ -1,0 +1,19 @@
+Patch: 018-content-filter
+Reason: a provider that stops an answer on its content filter (Anthropic's refusal stop) has the CLI handle it its own way, asking for the refused answer again turn after turn; the session's model proxy reads the stop in the answer it passes and says it once (onFiltered, with the kernel's CONTENT_FILTERED), and the harness halts the turn as it does for a refused key, failed in those words
+Upstream: ours
+Pins: a provider's content-filter stop ends a claude-agent turn at once: one request, failed with the content-filter text
+---
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+index e4d549c..6803033 100644
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -454,6 +454,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+         },
+         // A refused key fails the turn at the provider's first 401, in the words the CLI would end on after its retries.
+         onKeyRefused: (detail) => ctx.halt?.(new Error(`Failed to authenticate. API Error: 401${detail ? ` ${detail}` : ''}`)),
++        // A provider's content filter stopping an answer fails the turn at once, in the model proxy's words, so the CLI
++        // never asks for the refused answer again.
++        onFiltered: (message) => ctx.halt?.(new Error(message)),
+         // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
+         ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-agent gateway: ${message}`, fields) } : {}),
+       });

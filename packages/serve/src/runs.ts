@@ -43,6 +43,7 @@ import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
@@ -884,6 +885,8 @@ export class Runs {
     // the words after it.
     const capped = CAP_REFUSAL_PREFIX.exec(message);
     if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: message.slice(capped[0].length), retryable: false } };
+    // The provider's content filter stopped the answer (content-filter.ts): moderated, in words a person can act on.
+    if (contentFiltered(message)) return { outcome: "failed", error: { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false } };
     return { outcome: "failed", error: { code: "run_failed", message: this.errorWords(run, message) ?? message, retryable: false } };
   }
 

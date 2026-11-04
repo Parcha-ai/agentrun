@@ -245,6 +245,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(price ? { price } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
+      ...(route.onFiltered ? { onFiltered: route.onFiltered } : {}),
     }, key);
     const lost = new AbortController();
     const children = new Set<SessionProcess>();

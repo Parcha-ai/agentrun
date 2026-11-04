@@ -128,6 +128,9 @@ export interface GatewayHandlerOptions {
   target: string;
   track?: unknown;
   onCap?: (cap: "turnUsd" | "sessionUsd" | "concurrency") => void;
+  /** The provider stopped an answer on its content filter (CONTENT_FILTERED, as the model proxy says it): no retry of the
+   *  refused answer can pass, so the harness ends the turn at once rather than let Codex ask again. */
+  onFiltered?: (message: string) => void;
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
 export interface GatewayHandler {

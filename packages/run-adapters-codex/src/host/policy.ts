@@ -245,6 +245,37 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
 }
 
 /** The usage a Responses answer reports at its end (`endValue`), or undefined, an unknown cost, when it reports none. */
+/**
+ * Whether the provider stopped the answer on its content filter: the stream's terminal event (or a whole body) is an
+ * `incomplete` response whose `incomplete_details.reason` is `content_filter`. Read by parsing each `data:` line on its
+ * own, as endValue reads the usage, never by matching text; an answer cut at its output limit (`max_output_tokens`) is not one.
+ */
+export function filtered(text: string): boolean {
+  let end: unknown;
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (!data.startsWith("{")) continue;
+    try {
+      const event: unknown = JSON.parse(data);
+      if (isPlain(event) && typeof event.type === "string" && PAID_END.has(event.type)) end = event.response;
+    } catch {
+      continue; // a line the window cut
+    }
+  }
+  if (end === undefined) {
+    const whole = text.trimStart();
+    if (!whole.startsWith("{")) return false;
+    try {
+      const body = JSON.parse(whole) as unknown;
+      if (isPlain(body) && body.object === "response") end = body;
+    } catch {
+      return false;
+    }
+  }
+  return isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "content_filter";
+}
+
 export function usageOf(text: string): ProxyUsage | undefined {
   return usageFrom(endValue(text, "usage"));
 }
@@ -463,6 +494,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       const usage = usageOf(text);
       return usage && { ...usage, webSearches: webSearchesOf(text) ?? null };
     } : usageOf,
+    filtered,
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
     unwatched: options.announce ? () => options.announce!.failed() : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),

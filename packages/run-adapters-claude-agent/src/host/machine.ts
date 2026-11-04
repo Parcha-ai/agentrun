@@ -195,6 +195,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(options.proxy.price ? { price: withWebSearches(options.proxy.price) } : {}),
       ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
+      ...(route.onFiltered ? { onFiltered: route.onFiltered } : {}),
       onResponse: ({ path, status }) => {
         if (path !== "/v1/messages/count_tokens" || counted) return;
         counted = true;
