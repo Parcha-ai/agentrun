@@ -248,6 +248,17 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
   };
 }
 
+/** A JSON string's body as JSON reads it, from a capture that a cut may have ended mid-escape (a lone backslash, or a
+ *  \\u with fewer than four digits, is dropped); the capture as it came if it still does not read. */
+function jsonString(body: string): string {
+  const whole = body.replace(/((?:^|[^\\])(?:\\\\)*)\\(?:u[0-9a-fA-F]{0,3})?$/, "$1");
+  try {
+    return JSON.parse(`"${whole}"`) as string;
+  } catch {
+    return whole;
+  }
+}
+
 /** How much of a refusal's body is read for its words, and how long it is waited for: the turn ends either way. */
 const REFUSAL_BYTES = 4096;
 const REFUSAL_WAIT_MS = 2000;
@@ -285,7 +296,8 @@ export function refusalDetail(text: string): string {
     said = typeof body.error === "object" ? body.error?.message : body.error ?? body.message ?? text;
   } catch {
     // A body cut before its end: its message, if that much came; never the raw JSON.
-    said = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text)?.[1] ?? (text.trimStart().startsWith("{") ? "" : text);
+    const caught = /"message"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(text)?.[1];
+    said = caught === undefined ? (text.trimStart().startsWith("{") ? "" : text) : jsonString(caught);
   }
   return String(typeof said === "string" ? said : text).split("\n")[0]!.trim().slice(0, 200);
 }

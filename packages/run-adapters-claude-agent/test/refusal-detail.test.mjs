@@ -24,6 +24,10 @@ test("a 401 body cut inside its message, even mid-escape: the words that came, d
   assert.equal(refusalDetail(escaped.slice(0, escaped.indexOf('\\"') + 1)), "Key");
 });
 
+test("an escaped backslash before u00 is whole text, not a cut escape", () => {
+  assert.equal(refusalDetail('{"error":{"message":"path C:\\\\u00'), "path C:\\u00");
+});
+
 test("a body that is no JSON: its text; one that is cut JSON with no message: nothing", () => {
   assert.equal(refusalDetail("User not found."), "User not found.");
   assert.equal(refusalDetail('{"type":"error","error":{"type":"authenti'), "");
