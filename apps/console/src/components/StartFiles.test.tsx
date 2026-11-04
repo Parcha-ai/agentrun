@@ -72,3 +72,66 @@ describe("Playground, files", () => {
     expect(page.host.querySelector('[aria-label="Attached files"]')).toBeNull();
   });
 });
+
+// While a start is under way the files can't change; a screen left with files nobody ran deletes them, never those a run
+// started with; the Playground says why Send request waits, in either view.
+describe("Start screens, files and the start", () => {
+  const attach = (host: HTMLElement) => [...host.querySelectorAll("button")].find((b) => /Attach files/.test(b.textContent ?? "")) as HTMLButtonElement;
+  const removeBtn = (host: HTMLElement) => host.querySelector('[aria-label="Remove invoice.pdf"]') as HTMLButtonElement | null;
+  const leave = () => { act(() => root!.unmount()); root = undefined; };
+
+  it("RunBar: no file can be added or removed while the start is under way, and the run's files are kept after it", async () => {
+    const { pending, upload } = uploads();
+    let answer: (v: unknown) => void = () => {};
+    const deleted: string[] = [];
+    const v2 = { startRun: () => new Promise((r) => { answer = r; }), deleteUpload: async (id: string) => { deleted.push(id); return ""; } } as unknown as Client;
+    const page = mount(createElement(RunBar, { agent: agentFixture("invoice-checker"), efforts: [], v2, go: () => {}, upload }));
+    page.type(page.host.querySelector("textarea")!, "Check this invoice.");
+    page.pick(pdf());
+    await act(async () => { pending[0]!(made); await Promise.resolve(); });
+    await act(async () => { page.button(/Run/).click(); await Promise.resolve(); });
+    expect(attach(page.host).disabled).toBe(true);
+    expect(removeBtn(page.host)!.disabled).toBe(true);
+    await act(async () => { answer({ run: { run_id: "run_1" }, status: 202 }); await Promise.resolve(); await Promise.resolve(); });
+    leave();
+    expect(deleted).toEqual([]);
+  });
+
+  it("RunBar: a sent file is deleted when the page is left without a run", async () => {
+    const { pending, upload } = uploads();
+    const deleted: string[] = [];
+    const v2 = { startRun: async () => ({ run: { run_id: "run_1" }, status: 202 }), deleteUpload: async (id: string) => { deleted.push(id); return ""; } } as unknown as Client;
+    const page = mount(createElement(RunBar, { agent: agentFixture("invoice-checker"), efforts: [], v2, go: () => {}, upload }));
+    page.pick(pdf());
+    await act(async () => { pending[0]!(made); await Promise.resolve(); });
+    leave();
+    expect(deleted).toEqual([made.file_id]);
+  });
+
+  it("Playground: no file can be added while the request is sent, and the next request starts with none", async () => {
+    const { pending, upload } = uploads();
+    let answer: (r: StartResult) => void = () => {};
+    const onSend = () => new Promise<StartResult>((r) => { answer = r; });
+    const page = mount(createElement(Playground, { agents: [agentFixture("invoice-checker")], efforts: [], origin: "http://serve.test", agentId: "invoice-checker", onSend, upload, removeUpload: async () => "" }));
+    page.type(page.host.querySelector("textarea")!, "Check this invoice.");
+    page.pick(pdf());
+    await act(async () => { pending[0]!(made); await Promise.resolve(); });
+    await act(async () => { page.button(/Send request/).click(); await Promise.resolve(); });
+    expect(attach(page.host).disabled).toBe(true);
+    expect(removeBtn(page.host)!.disabled).toBe(true);
+    await act(async () => { answer({ status: 202, ms: 1, body: { run_id: "run_1" }, runId: "run_1" }); await Promise.resolve(); await Promise.resolve(); });
+    expect(page.host.querySelector('[aria-label="Attached files"]')).toBeNull();
+    expect(attach(page.host).disabled).toBe(false);
+  });
+
+  it("Playground: says why Send request waits, and shows the files being sent in the JSON view too", async () => {
+    const { upload } = uploads();
+    const page = mount(createElement(Playground, { agents: [agentFixture("invoice-checker")], efforts: [], origin: "http://serve.test", agentId: "invoice-checker", onSend: async () => ({ status: 202, ms: 1, body: {} }), upload }));
+    page.type(page.host.querySelector("textarea")!, "Check this invoice.");
+    page.pick(pdf());
+    expect(page.host.textContent).toContain("The run can start once every file is sent.");
+    act(() => page.button(/^JSON$/).click());
+    expect(page.host.querySelector('[aria-label="Attached files"]')?.textContent).toContain("invoice.pdf");
+    expect(page.host.textContent).toContain("The run can start once every file is sent.");
+  });
+});
