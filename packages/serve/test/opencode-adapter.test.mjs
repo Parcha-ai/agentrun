@@ -424,3 +424,22 @@ test("an opencode turn stopped before its prompt was placed, then a message in t
     "the stopped prompt is never sent: the stop leaves the turn open to settle, and the next message is the only one sent",
   );
 });
+
+test("a host tool's result past the host's bound reaches OpenCode cut there, saying so, and its end is flagged truncated", { timeout: 60_000 }, async () => {
+  const BOUND = 120_000;
+  const whole = "x".repeat(130_000);
+  const big = { name: "big", description: "Reads a big file.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: async () => ({ text: whole }) };
+  const { adapter: a, provider: p } = adapter([{ call: "hands_big", callId: "call_big" }, { text: "Read it." }]);
+  const store = memorySessionStore();
+  const s = await session(a, store, spec([big]));
+  await s.session.send("Read the big file.");
+  assert.deepEqual(await s.session.turnEnd(), { status: "completed" });
+  await s.session.close();
+  const ended = s.events.find((e) => e.type === "tool_end" && e.name === "big");
+  assert.equal(ended?.truncated, true, "the host hears the call's end flagged truncated");
+  // What OpenCode handed the model: the call's output in the next request, within the bound, ending with where it was cut.
+  const output = p.seen.at(-1).body.input.find((i) => i.type === "function_call_output" && i.call_id === "call_big")?.output;
+  const text = typeof output === "string" ? output : JSON.stringify(output);
+  assert.ok(text.length <= BOUND + 200, `${text.length} characters reached the model`);
+  assert.match(text, /\[cut at \d+ of 130000 characters\]/);
+});
