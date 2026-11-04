@@ -2,7 +2,8 @@
 // a kind in; --include-deleted brings in the sessions of folders that no longer exist (a deleted worktree's), each folder
 // its own agent, and nothing else the import leaves out.
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
@@ -105,4 +106,36 @@ test("a session of two files is one session left out, and a deleted folder under
   const deleted = await importing.planImport({ home: at, env: ENV, temp, deleted: true });
   assert.deepEqual(deleted.projects.map((p) => p.name), ["billing-api-retries"]);
   assert.deepEqual(deleted.skipped.map((s) => s.kind), ["temp"], "--include-deleted leaves the temp folder's session out, as its line said");
+});
+
+test("a key in a deleted folder's session, or in the folder's name, is in no byte the import keeps and no line it prints, with --include-deleted or without", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const temp = join(root, "tmp");
+  mkdirSync(temp, { recursive: true });
+  // Tokens of formats secretlint's rules find, made here and random: no environment holds them.
+  const pick = (n) => Array.from(randomBytes(n), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62]).join("");
+  const github = () => `${["gh", "p"].join("")}_${pick(36)}`;
+  const k = { folder: github(), prompt: github(), slack: [["xo", "xb"].join(""), pick(12).replace(/\D/g, "1"), pick(13).replace(/\D/g, "2"), pick(24)].join("-") };
+  // A worktree deleted since its session: its folder named after a token, the session's text holding two more.
+  const gone = join(at, "worktrees", `rotate-${k.folder}`);
+  claudeSession(at, gone, 31, { prompt: `Rotate ${k.prompt} today.`, output: `SLACK=${k.slack}` });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importing.importCommand(["--data", data, ...args], "usage", { home: at, temp, env: ENV, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  // Without the flag, its file and folder are named only with --verbose: cut where printed.
+  const named = await run("--dry-run", "--verbose");
+  assert.ok(named.some((line) => line.startsWith("skipped ") && line.includes("[redacted]")), named.join("\n"));
+  const dry = await run("--dry-run", "--include-deleted");
+  const lines = await run("--include-deleted", "--verbose");
+  assert.ok(lines.some((line) => line.includes("new agent")), lines.join("\n"));
+  for (const [kind, value] of Object.entries(k)) assert.ok(![...named, ...dry, ...lines].some((line) => line.includes(value)), `${kind} printed`);
+  const kept = readdirSync(data, { recursive: true, withFileTypes: true }).map((entry) => [join(entry.parentPath, entry.name), entry.isFile() ? readFileSync(join(entry.parentPath, entry.name)) : Buffer.alloc(0)]);
+  for (const [kind, value] of Object.entries(k)) for (const [path, bytes] of kept) assert.ok(!path.includes(value) && !bytes.includes(value), `${kind} in ${path.slice(data.length + 1)}`);
+  assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
+  assert.ok(dry.includes("3 secrets would be removed"), dry.filter((line) => /removed/.test(line)).join(" "));
+  assert.ok(lines.includes("3 secrets removed"), lines.filter((line) => /removed/.test(line)).join(" "));
 });
