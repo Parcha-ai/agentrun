@@ -39,6 +39,11 @@ export default function reply(context, faux) {
       if (answered) return faux.message("Submitted.");
       return faux.message(faux.toolCall("submit", { note: "ok", n: 1, dict: { [CUT_KEY]: "found", nested: { [CUT_KEY]: "deep", kept: "yes" } } }), { stopReason: "toolUse" });
     }
+    // A node whose record carries an all-digit held key as a number (final-answer-redact.test.mjs holds it as the model key).
+    if (canary.includes("Submit the held number")) {
+      if (answered) return faux.message("Submitted.");
+      return faux.message(faux.toolCall("submit", { note: "ok", n: Number(["1234", "5678", "9012"].join("")), kept: 42 }), { stopReason: "toolUse" });
+    }
     // A node whose record carries the key in a string field (final-answer-redact.test.mjs holds CUT_KEY as a key).
     if (canary.includes("Submit the held key")) {
       if (answered) return faux.message("Submitted.");
