@@ -52,6 +52,12 @@ const RULE_WORDS: Record<string, string> = {
   status: "a note status that only the server sets",
   supersedes: "a replaced note that isn't there to replace",
   index_full: "too many notes (retire one first)",
+  skill: "a skill whose header is not in shape",
+  skill_outcome: "a skill from a run that didn't finish its job",
+  too_many_skills: `more than ${CAPS.skills} skill at once`,
+  workflow: "a workflow that can't run here",
+  no_tool_list: "a workflow whose tools couldn't be checked",
+  executable_node: "a workflow that runs code or commands",
 };
 /** What a person must not see stored in a note at all: a secret, or what hides text. */
 const MUST_NOT_STORE = new Set(["secret_value", "secret_shape", "invisible_unicode"]);

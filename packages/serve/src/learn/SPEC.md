@@ -15,9 +15,11 @@ then what it says by one grader (`GRADE_RUBRIC`).
 ## The folder
 
 ```
-MEMORY.md                 the index the next run reads: one line per active note, built by the host
-refund-policy-path.md     one note per file
+MEMORY.md                         the index the next run reads: one line per active note, built by the host
+refund-policy-path.md             one note per file
 prefers-tables.md
+skills/find-policies/SKILL.md     a skill: how to do a job the agent does again
+workflows/find-policies/          a workflow draft: its workflow.json and its README.md, together
 ```
 
 The folder is plain git with one branch, `main`; git is its history and its undo. The host is its only writer: no run
@@ -49,6 +51,20 @@ letter or digit, then `.md`, and never `MEMORY.md`.
 
 One `key: value` per line, a value bare or in one pair of quotes. Keys it does not know are left alone. The body after
 the front matter is the memory itself.
+
+## A skill and a workflow draft
+
+A skill is `skills/<name>/SKILL.md`, alone in its folder: front matter whose `name` is the folder's name and whose
+`description` says when to use it, then the steps. Its name is the shared skills convention's: 1 to 64 lowercase
+letters, digits and single dashes. A run adds or changes at most one skill, and only when its job completed: a skill is
+what every later run reads as how to do the job, so only a run that did the job writes one.
+
+A workflow draft is `workflows/<name>/workflow.json` and `workflows/<name>/README.md`, both or neither; its name is 1
+to 64 lowercase letters, digits, dashes and underscores, starting with a letter or digit. The workflow DSL's own
+`validateWorkflow` judges the draft, with no code run (`executeCode: false`) and the agent's tools as the list a node may
+name: the tools its definition grants that a workflow's model or call node runs on this server, so a harness's own tool
+(`Bash`, `exec_command`, `apply_patch`) is never on it. With no list, a draft that names any tool is refused. A draft
+holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
 ## The index
 
@@ -83,6 +99,8 @@ Over a cap is refused, never cut.
 | Notes one run's new notes supersede, together | 8 |
 | Active notes after the merge | 200, the index's lines |
 | Changed paths in one run | 64; over it nothing else is read |
+| One skill's `SKILL.md`, a draft's `workflow.json` or `README.md` | 32768 bytes |
+| Skills one run adds or changes | 1 |
 
 ## The checks
 
@@ -91,14 +109,14 @@ Over a cap is refused, never cut.
 | Rule | Meaning |
 | --- | --- |
 | `too_many_files` | more than 64 changed paths |
-| `outside` | a path that is not a `.md` file at the folder's top |
-| `file_name` | a `.md` file whose name is not a note's |
+| `outside` | a path that is not a `.md` file at the folder's top, a skill's `SKILL.md` or a draft's two files |
+| `file_name` | a `.md` file whose name is not a note's, or a skill's or draft's folder whose name is not one |
 | `file_mode` | a link, a folder or anything else that is not a regular file |
 | `encoding` | not UTF-8, in a file or its name |
 | `edited` | a file that was there, changed |
-| `deleted` | a file that was there, gone |
+| `deleted` | a file that was there, gone: a note, a skill or a draft's file |
 | `exists` | a new file whose name the folder holds, a superseded note's included |
-| `too_large` | a note over 4096 bytes; a run's note over 4068 |
+| `too_large` | a note over 4096 bytes; a run's note over 4068; a skill's or a draft's file over 32768 |
 | `too_many_notes` | more than 8 new notes |
 | `invisible_unicode` | a character a reader does not see, by code point |
 | `secret_shape` | text shaped like a secret, by kind, in a note or its name |
@@ -107,13 +125,19 @@ Over a cap is refused, never cut.
 | `status` | a note that sets `status`, `superseded_by` or `origin` |
 | `supersedes` | `supersedes` naming a note that is not active, or one another new note supersedes too, or more than 8 notes superseded |
 | `index_full` | the index would pass 200 lines |
+| `skill` | a `SKILL.md` whose front matter does not name its folder or has no description |
+| `skill_outcome` | a skill from a run whose job did not complete |
+| `too_many_skills` | more than one skill added or changed |
+| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, an empty README, or one of the two files without the other |
+| `no_tool_list` | a draft that names a tool, checked with no tool list |
+| `executable_node` | a draft with a `code` node, or a call via shell or executor |
 
 - A character a reader does not see: format and default-ignorable characters (zero-width, bidi controls, tag
   characters), private use, line and paragraph separators and control characters other than tab and newline. An
   emoji's joiners and variation selectors, and the joiners some scripts need between letters, are text.
 - Text shaped like a secret: well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys, JSON web
   tokens, URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
-  it, percent or form encoded, in base64 or in hex.
+  it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 
