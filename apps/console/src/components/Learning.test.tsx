@@ -585,7 +585,7 @@ describe("the Learning tab's skills and workflows", () => {
   const DRAFT_FILE = "workflows/check-refunds/workflow.json";
   const README_FILE = "workflows/check-refunds/README.md";
   const SKILL_TEXT = "---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. Open the policies page first.\n";
-  const learned = (status: { skill?: "active" | "pending"; workflow?: "active" | "pending" } = {}) => view({
+  const learned = (status: { skill?: "active" | "pending" | "retired"; workflow?: "active" | "pending" | "retired" } = {}) => view({
     skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: status.skill ?? "active", run: "run-b", bytes: 92, etag: '"skill-v1"' }],
     workflows: [{ name: "check-refunds", file: DRAFT_FILE, readme: README_FILE, description: "Checks a store's refund window", status: status.workflow ?? "active", run: "run-a", bytes: 640, etag: '"readme-v1"' }],
   } as Partial<AgentLearning>);
@@ -613,9 +613,9 @@ describe("the Learning tab's skills and workflows", () => {
     await t.click(/^Show the workflow check-refunds$/);
     expect(t.calls).toContain(`read ${DRAFT_FILE}`);
     expect(flow.textContent).toContain('"name": "check-refunds"');
-    // No edit and no retire: a skill or a workflow is a run's to change.
+    // No edit: a skill or a workflow is a run's to change; a person approves or retires it.
     expect(t.button(/^Edit find-policies$/)).toBeUndefined();
-    expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+    expect(t.button(/^Edit check-refunds$/)).toBeUndefined();
   });
 
   it("an agent with none shows neither section, and an older server's answer without them breaks nothing", async () => {
@@ -658,5 +658,114 @@ describe("the Learning tab's skills and workflows", () => {
     const t = await open(agent(true), { learning: async () => learned({ skill: "pending" }), caps: { learning: { pending: true, approve: false, approve_needs: "password" } } });
     expect(t.card("find-policies")!.textContent).toContain("Approving needs your password sign-in.");
     expect(t.button(/^Approve find-policies$/)).toBeUndefined();
+  });
+
+  it("an approve answered 412 says it changed, in the notes' words, and the tab is not read again", async () => {
+    const t = await open(agent(true), { learning: async () => learned({ skill: "pending" }), read: reads, caps: { learning: { pending: true, approve: true } }, approve: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
+    await t.click(/^Approve find-policies$/);
+    expect(t.calls).toContain(`approve ${SKILL_FILE} "skill-v1"`);
+    expect(t.card("find-policies")!.textContent).toContain("It changed since you opened it. Reload the tab to see the newest version.");
+    expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(1);
+  });
+
+  describe("retiring one", () => {
+    it("an active skill has Retire: it asks first, in the notes' words, and retires on the listing's version of its SKILL.md, with no read", async () => {
+      let n = 0;
+      const t = await open(agent(true), { learning: async () => (++n === 1 ? learned() : learned({ skill: "retired" })), read: reads });
+      await t.click(/^Retire find-policies$/);
+      const dialog = t.host.querySelector('[role="alertdialog"]')!;
+      expect(dialog.getAttribute("aria-label")).toBe("Retire find-policies?");
+      expect(dialog.textContent).toContain("Retire it? Later runs stop getting it. It stays under Earlier skills.");
+      expect(document.activeElement?.textContent).toBe("Yes, retire");
+      // Esc, as Keep, leaves it.
+      await t.key(dialog, "Escape");
+      expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+      expect(t.calls.some((c) => c.startsWith("retire"))).toBe(false);
+      await t.click(/^Retire find-policies$/);
+      await t.click(/^Keep$/);
+      expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+      await t.click(/^Retire find-policies$/);
+      await t.click(/^Yes, retire$/);
+      expect(t.calls).toContain(`retire ${SKILL_FILE} "skill-v1"`);
+      expect(t.calls.some((c) => c.startsWith("read"))).toBe(false);
+      expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(2);
+      // Read again, it is retired: out of the list in use, under Earlier skills, no longer counted.
+      expect(t.card("find-policies")).toBeNull();
+      const skills = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
+      expect(skills.textContent).toContain("No skill is in use: the next run gets none.");
+      const earlier = skills.querySelector('section[aria-label="Earlier skills"]') as HTMLElement;
+      expect(earlier?.textContent).toContain("Earlier skills1 no longer given");
+      await t.click(/^Earlier skills/);
+      expect(earlier.textContent).toContain("find-policies");
+      expect(earlier.textContent).toContain("Retired");
+      expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+      expect(t.button(/^Approve find-policies$/)).toBeUndefined();
+    });
+
+    it("retiring a skill that is open retires the version it shows, as Approve does: the one read when it opened", async () => {
+      const t = await open(agent(true), { learning: async () => learned(), read: reads });
+      await t.click(/^Show the skill find-policies$/);
+      expect(t.card("find-policies")!.textContent).toContain("Open the policies page first.");
+      await t.click(/^Retire find-policies$/);
+      await t.click(/^Yes, retire$/);
+      expect(t.calls).toContain(`retire ${SKILL_FILE} "v-${SKILL_FILE}"`);
+    });
+
+    it("a draft workflow is retired by its README, never its workflow.json, and moves under Earlier workflows", async () => {
+      let n = 0;
+      const t = await open(agent(true), { learning: async () => (++n === 1 ? learned() : learned({ workflow: "retired" })), read: reads });
+      await t.click(/^Retire check-refunds$/);
+      expect(t.host.querySelector('[role="alertdialog"]')!.textContent).toContain("Retire it? Later runs stop getting it. It stays under Earlier workflows.");
+      await t.click(/^Yes, retire$/);
+      expect(t.calls).toContain(`retire ${README_FILE} "readme-v1"`);
+      expect(t.calls.some((c) => c.startsWith(`retire ${DRAFT_FILE}`))).toBe(false);
+      expect(t.card("check-refunds")).toBeNull();
+      const flows = t.host.querySelector('section[aria-label="Workflows it learned"]') as HTMLElement;
+      expect(flows.textContent).toContain("No workflow is in use: the next run gets none.");
+      expect(flows.querySelector('section[aria-label="Earlier workflows"]')?.textContent).toContain("Earlier workflows1 no longer given");
+      // The skill beside it is untouched.
+      expect(t.card("find-policies")).not.toBeNull();
+    });
+
+    it("one that changed since the listing (412) says so in the notes' words, and is not retired", async () => {
+      const t = await open(agent(true), { learning: async () => learned(), read: reads, retire: async () => { throw new ClientError(412, "precondition_failed", "changed"); } });
+      await t.click(/^Retire find-policies$/);
+      await t.click(/^Yes, retire$/);
+      expect(t.card("find-policies")!.textContent).toContain("It changed since you opened it. Reload the tab to see the newest version.");
+      expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(1);
+    });
+
+    it("any other refusal says the skill was not retired, in the problem card's words", async () => {
+      const t = await open(agent(true), { learning: async () => learned(), read: reads, retire: async () => { throw new ClientError(400, "bad_request", "A workflow is retired by its README.md."); } });
+      await t.click(/^Retire find-policies$/);
+      await t.click(/^Yes, retire$/);
+      expect(t.card("find-policies")!.textContent).toContain("The skill was not retired.");
+    });
+
+    it("one the server lists retired has no Retire and no Approve, is not counted, and says who retired it and when", async () => {
+      const v = learned({ skill: "retired", workflow: "retired" });
+      v.skills = [...v.skills!, { name: "read-receipts", file: "skills/read-receipts/SKILL.md", description: "Read a receipt", status: "pending", run: "run-b", bytes: 40, etag: '"rr-v1"' }];
+      v.log = { ...v.log, items: [{ by: { user: true }, commit: "c4", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE] }, ...v.log.items] };
+      const t = await open(agent(true), { learning: async () => v, read: reads, caps: { learning: { pending: true, approve: true } } });
+      const skills = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
+      expect(skills.textContent).toContain("1 skill: how to do a job it does again");
+      await t.click(/^Earlier skills/);
+      await t.click(/^Earlier workflows/);
+      expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+      expect(t.button(/^Approve find-policies$/)).toBeUndefined();
+      expect(t.button(/^Retire check-refunds$/)).toBeUndefined();
+      expect(t.button(/^Approve check-refunds$/)).toBeUndefined();
+      expect(skills.querySelector('section[aria-label="Earlier skills"]')!.textContent).toContain("Retired by you ·");
+      // One that waits has Approve and Retire, as a note that waits does.
+      expect(t.button(/^Approve read-receipts$/)).toBeTruthy();
+      expect(t.button(/^Retire read-receipts$/)).toBeTruthy();
+    });
+
+    it("an archived agent's skills have no Retire", async () => {
+      const t = await open({ ...agent(true), archived_at: "2026-11-03T17:00:00Z" }, { learning: async () => learned(), read: reads });
+      expect(t.card("find-policies")).not.toBeNull();
+      expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+      expect(t.button(/^Retire check-refunds$/)).toBeUndefined();
+    });
   });
 });
