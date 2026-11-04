@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { seal } from "@parcha/pi-durable-agent";
 import { McpServers } from "../dist/mcp-servers.js";
+import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
@@ -326,24 +327,32 @@ test("a stop aborts a refresh waiting on its authorization server: it returns wi
   assert.equal(read.body.credential, "expired");
 });
 
-/** A public MCP server and its authorization server, at made-up https names answered in this process (the server under
- *  test runs here too): `metadata` is what the authorization server publishes. Every request to a name answered here
- *  is logged; any other goes out as it would. */
-function publicFakes(t, metadata) {
-  const real = globalThis.fetch;
-  const log = [];
+/** The network a store reaches a public MCP server's authorization server on (mcp-servers.ts OAuthNetwork), with no
+ *  socket: the made-up https names resolve to `answers(host)` (default the public address fixtures/fake-network.mjs
+ *  gives), and a request is answered here: `metadata` is what the authorization server publishes. `dialled` records
+ *  each request's URL with the address it was dialled at; `looked` each name looked up. */
+async function publicNetwork(metadata = {}, answers) {
+  const publicAddress = (await fakeNetwork().lookup("public.example"))[0];
+  const dialled = [], looked = [];
   const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(input instanceof Request ? input.url : String(input));
-    if (!url.hostname.endsWith(".example.test")) return real(input, init);
-    log.push(url.href);
-    if (url.href === "https://mcp.example.test/.well-known/oauth-protected-resource/mcp") return json({ resource: "https://mcp.example.test/mcp", authorization_servers: ["https://as.example.test"] });
-    if (url.href === "https://as.example.test/.well-known/oauth-authorization-server") return json({ issuer: "https://as.example.test", authorization_endpoint: "https://as.example.test/authorize", token_endpoint: "https://as.example.test/token", registration_endpoint: "https://as.example.test/register", response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], ...metadata });
-    if (url.href === "https://as.example.test/register") return json({ client_id: "public-client", redirect_uris: ["http://127.0.0.1/cb"] });
-    return new Response("not here", { status: 404 });
+  const network = {
+    lookup: async (host) => (looked.push(host), answers ? answers(host, publicAddress) : [publicAddress]),
+    fetch: async (url, init, address) => {
+      dialled.push([url, address]);
+      if (url === "https://mcp.example.test/.well-known/oauth-protected-resource/mcp") return json({ resource: "https://mcp.example.test/mcp", authorization_servers: ["https://as.example.test"] });
+      if (url === "https://as.example.test/.well-known/oauth-authorization-server") return json({ issuer: "https://as.example.test", authorization_endpoint: "https://as.example.test/authorize", token_endpoint: "https://as.example.test/token", registration_endpoint: "https://as.example.test/register", response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], ...metadata });
+      if (url === "https://as.example.test/register") return json({ client_id: "public-client", redirect_uris: ["http://127.0.0.1/cb"] });
+      return new Response("not here", { status: 404 });
+    },
   };
-  t.after(() => (globalThis.fetch = real));
-  return log;
+  return { network, dialled, looked, publicAddress };
+}
+
+/** A store on a scratch directory reaching the network `net`, under seal key `key`. */
+async function storeOn(t, key, net, data) {
+  const store = new McpServers(data ?? (await scratch(t)), { AGENTRUN_SEAL_KEY: key }, "test", net.network);
+  store.attach("http://127.0.0.1:4321");
+  return store;
 }
 
 /** `DIR/mcp-servers.json` holding one OAuth server `pub` at the public made-up name, signed in a minute before its
@@ -367,10 +376,7 @@ async function target(t) {
 
 test("a public MCP server's authorization server may not steer this server to a private address: sign-in and refresh refuse it, and the target hears nothing", async (t) => {
   const key = sealKey();
-  withEnv(t, { AGENTRUN_SEAL_KEY: key });
-  const { api, data } = await serve(t);
   const inside = await target(t);
-  const start = () => api("POST", "/settings/mcp-servers/pub/oauth/start", { url: "https://mcp.example.test/mcp" });
   for (const [metadata, words] of [
     [{ token_endpoint: inside.url }, /the authorization server's token endpoint is a private address; refused/],
     [{ registration_endpoint: inside.url }, /the authorization server's registration endpoint is a private address; refused/],
@@ -380,20 +386,47 @@ test("a public MCP server's authorization server may not steer this server to a 
     ],
     [{ authorization_endpoint: "http://as.example.test/authorize" }, /the authorization server's authorization endpoint is not https; refused/],
   ]) {
-    publicFakes(t, metadata);
-    const refused = await start();
-    assert.equal(refused.status, 424, JSON.stringify(refused.body));
-    assert.match(refused.body.error.message, words);
+    const net = await publicNetwork(metadata);
+    const store = await storeOn(t, key, net);
+    await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => error.code === "upstream_failed" && words.test(error.message));
+    assert.ok(!net.dialled.some(([url]) => url.endsWith("/register")) || !metadata.registration_endpoint, "no registration sent");
   }
   assert.deepEqual(inside.hits, [], "the private target heard nothing");
 
   // A token set that names a private token endpoint (as one saved before this rule would): its refresh sends nothing.
-  publicFakes(t, {});
+  const net = await publicNetwork();
+  const data = await scratch(t);
   savedPublic(data, key, inside.url);
-  const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
+  const store = await storeOn(t, key, net, data);
   assert.equal(store.get("pub").credential, "sealed", "the token set opens, so its refresh is tried");
   await store.headersForRun("pub");
   assert.deepEqual(inside.hits, [], "the refresh did not reach the private target");
+  assert.deepEqual(net.dialled, [], "nor anything else");
+});
+
+test("fail closed: an authorization server whose name does not resolve is refused with words, and nothing is sent to it", async (t) => {
+  const net = await publicNetwork({}, (host, address) => {
+    if (host === "as.example.test") throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+    return [address];
+  });
+  const store = await storeOn(t, sealKey(), net);
+  await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => /couldn't resolve the authorization server's endpoint https:\/\/as\.example\.test\/\S*; refused/.test(error.message));
+  assert.ok(net.looked.includes("as.example.test"));
+  assert.ok(!net.dialled.some(([url]) => url.startsWith("https://as.example.test/")), "nothing sent to the name that did not resolve");
+});
+
+test("a request is dialled at the address checked, never at the name's next answer: a name that turns private after its check is never reached there", async (t) => {
+  // The authorization server's name answers public once, then the private address (fixtures/fake-network.mjs's evil
+  // name's): the check of each request looks it up once, and the request is dialled at that address, never resolved again.
+  const privateAddress = (await fakeNetwork().lookup("evil.example"))[0];
+  let asked = 0;
+  const net = await publicNetwork({}, (host, address) => (host === "as.example.test" && asked++ > 0 ? [privateAddress] : [address]));
+  const store = await storeOn(t, sealKey(), net);
+  await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => /the authorization server's (?:endpoint https:\/\/as\.example\.test\/\S*|address|registration endpoint|authorization endpoint|token endpoint) is a private address; refused/.test(error.message));
+  const toAs = net.dialled.filter(([url]) => url.startsWith("https://as.example.test/"));
+  assert.ok(toAs.length >= 1, "the first request, checked public, went out");
+  assert.ok(toAs.every(([, address]) => address === net.publicAddress), `each was dialled at the address its check saw: ${JSON.stringify(toAs)}`);
+  assert.ok(!net.dialled.some(([, address]) => address === privateAddress), "never at the private answer");
 });
 
 test("two tabs signing in at once each keep their own cookie, and both finish; a finished sign-in clears its cookie", async (t) => {
