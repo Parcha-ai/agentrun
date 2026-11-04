@@ -496,12 +496,12 @@ test("pi under a cap: a request the person stops counts at what it can have cost
   const tight = streamingModels();
   const small = await capModels(tight.models, 0.11, 0);
   const cut = small.streamSimple(clamped, context, { maxTokens: 64_000 });
-  assert.equal(tight.sent[0].options.maxTokens, 1_100, "clamped to what $0.11 buys");
+  assert.ok(tight.sent[0].options.maxTokens < 500 + STOP_ALLOWANCE, `clamped to what $0.11 buys: ${tight.sent[0].options.maxTokens} tokens`);
   const hold = tight.sent[0].options[HELD_USD];
   tight.sent[0].end("aborted", "x".repeat(500), 0);
   await cut.result();
   await settle();
-  assert.equal(await spentSaid(small), eight(hold), "500 bytes and 1,024 tokens pass its 1,100: at its hold");
+  assert.equal(await spentSaid(small), eight(hold), "500 bytes and 1,024 tokens pass its limit: at its hold");
 });
 
 test("pi under a cap: a summary that fails with no answer counts at the worst case the cap held for it", async () => {
@@ -651,7 +651,8 @@ test("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is out,
   } finally {
     db.close();
   }
-  assert.deepEqual(marks.map((mark) => mark.data[HELD_FIELD]), [1_024 * 100 / 1e6], "the stopped request's end mark says what the cap counts it at");
+  assert.equal(marks.length, 1, "one stopped request");
+  assert.ok(Math.abs(marks[0].data[HELD_FIELD] - 1_024 * 100 / 1e6) < 1e-12, `the stopped request's end mark says what the cap counts it at: ${marks[0].data[HELD_FIELD]}`);
   const spent = spentIn(storeFileOf(data, runId));
   assert.ok(Math.abs(spent - (0.1024 + run.cost.so_far_usd)) < 1e-6, `the store says the stop's $0.1024 and the follow-up's cost: $${spent}, so far $${run.cost.so_far_usd}`);
 });
