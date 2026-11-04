@@ -182,7 +182,7 @@ test("a notice that throws never stops a close: the listener, the runs' processe
     thrown = true;
     throw new Error("the notice failed");
   };
-  const { close, pid, first } = await midTurn(t, data, { notice });
+  const { close, pid, first, runId } = await midTurn(t, data, { notice });
   t.after(() => first.close().catch(() => undefined));
   // Bounded: a close that stops at the notice fails here by name, never as the file's timeout.
   let timer;
@@ -192,7 +192,16 @@ test("a notice that throws never stops a close: the listener, the runs' processe
   assert.equal(outcome, "closed", "the close finished though a notice threw");
   assert.equal(alive(pid), false, "the run's process is gone");
   await assert.rejects(fetch(`${first.baseUrl}/health`), "the listener is closed");
-  const next = await startServe({ data, port: 0, faux: FAUX });
-  t.after(() => next.close());
-  assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200, "the data root is free");
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "3s" });
+  let nextClosed;
+  const closeNext = () => (nextClosed ??= next.close());
+  t.after(closeNext);
+  const api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", "/agents")).status, 200, "the data root is free");
+  // The next server opens the run the stop cut again. It is ended, and that server closed, here in the test: node:test
+  // runs a test's after hooks in the order they were added, the data root's removal first, so a server still serving a
+  // run there would write under it (ENOTEMPTY). The hook stays as a backstop.
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(api, runId, ["cancelled"], { deadlineMs: 60_000 });
+  await closeNext();
 });
