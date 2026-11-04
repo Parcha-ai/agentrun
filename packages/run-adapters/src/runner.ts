@@ -65,8 +65,10 @@ export type BeforeRequest = (request: {
 /** A request admitted and not yet answered, as a budget holds it. */
 export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
- *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. */
-export type Admission = { holdUsd?: number; outputTokensMax?: number };
+ *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
+ *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
+ *  streamed, in tokens (one a byte), never more than `holdUsd`; without it, at `holdUsd`. */
+export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number };
 
 export interface HarnessRunnerOptions {
   /** The run's store, through whoever owns it. */
@@ -163,6 +165,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let turns = inherited.length;
   /** What the host held for each request, by turn: what it counts at when its own cost never comes in. */
   const held = new Map<number, number>();
+  /** What the host counts each request of this process at if its client stops it part way (Admission.stoppedUsd). */
+  const stoppedAt = new Map<number, (streamedTokens: number) => number>();
   requests.forEach((data, i) => {
     const figure = heldFigure(data.heldUsd);
     if (figure !== undefined) held.set(inherited[i]!, figure);
@@ -173,10 +177,11 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let spentUsd: number | null = 0;
   for (const r of options.records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
-    const data = r.data as { turn?: number; usd?: number | null };
+    const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown };
     const turn = data.turn ?? inherited.find((t) => !answered.has(t)) ?? 0;
     answered.add(turn);
-    spentUsd = spent(spentUsd, data.usd === null ? held.get(turn) : (data.usd ?? 0));
+    // A cost that never came in: at the figure its answer was booked at (a stopped request's), else what was held for it.
+    spentUsd = spent(spentUsd, data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0));
   }
   for (const turn of inherited) if (!answered.has(turn)) spentUsd = spent(spentUsd, held.get(turn));
   // The ids each request's response gave it, kept as its headers arrived: a request cut off after them reached the provider.
@@ -235,6 +240,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }) } }]);
     turns = turn;
     if (hold !== undefined) held.set(turn, hold);
+    const stoppedUsd = verdict && "stoppedUsd" in verdict && typeof verdict.stoppedUsd === "function" ? verdict.stoppedUsd : undefined;
+    if (stoppedUsd) stoppedAt.set(turn, stoppedUsd);
     // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
     // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
     // Its record is written, so it costs a turn of the cap, never money.
@@ -270,12 +277,19 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const turn = ticket?.turn ?? open[0]?.turn ?? turns;
       const at = open.findIndex((f) => f.turn === turn);
       if (at >= 0) open.splice(at, 1);
-      // A cost that never came in (a response cut short): at what the host held for the request, else unknown.
-      spentUsd = spent(spentUsd, usage.usd === null ? held.get(turn) : usage.usd);
+      // A cost that never came in (a response cut short): at what the host held for the request, else unknown. One its
+      // client stopped part way at what the host counts it at by what streamed (one token a byte), never more than that.
+      const hold = held.get(turn);
+      const stoppedUsd = stoppedAt.get(turn);
+      stoppedAt.delete(turn);
+      const stopped = usage.usd === null && hold !== undefined && stoppedUsd && typeof usage.stoppedAfterBytes === "number" && usage.stoppedAfterBytes >= 0 ? heldFigure(stoppedUsd(usage.stoppedAfterBytes)) : undefined;
+      const figure = stopped === undefined ? hold : Math.min(hold!, stopped);
+      spentUsd = spent(spentUsd, usage.usd === null ? figure : usage.usd);
       try {
-        // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped.
+        // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped. A
+        // stopped one keeps the figure it counts at (`heldUsd`), so a later process counts it the same.
         const covers = (r: SessionRecord) => usage.providerIds !== undefined && (r.data as { turn?: number }).turn === turn;
-        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }], covers);
+        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: figure!, stopped: true }) } }], covers);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
         if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);

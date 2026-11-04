@@ -97,6 +97,20 @@ export function pathProblem(path: string): string | undefined {
   return undefined;
 }
 
+/** What a request sent, as its JSON (a string quoted), cut to 40 characters (an ellipsis the 40th when it is longer):
+ *  by code points, so a surrogate pair is never split. A value JSON.stringify cannot write (nested past the stack, as a
+ *  parsed body can be) is named as such: describing a bad value never fails the refusal. */
+const shown = (value: unknown): string => {
+  let json: string;
+  try {
+    json = JSON.stringify(value) ?? String(value);
+  } catch {
+    return "a value too deep to show";
+  }
+  const chars = [...json];
+  return chars.length > 40 ? `${chars.slice(0, 39).join("")}\u2026` : chars.join("");
+};
+
 /** `name` for the first, then `name-2`, `name-3`, ... before its extension (`report-2.pdf`), cut to fit a name on disk:
  *  its stem first, down to one character, then its extension. */
 export function suffixed(name: string, n: number): string {
@@ -376,7 +390,7 @@ export class Uploads {
     for (const [i, id] of ids.entries()) {
       const field = `file_ids[${i}]`;
       if (typeof id !== "string" || !ID.test(id)) {
-        issues.push({ field, reason: "wrong_type", message: `${field} is a file id` });
+        issues.push({ field, reason: "wrong_type", message: `${field} is ${shown(id)}, not a file id: use the file_id an upload answered (POST /v2/files answers it under file.file_id).` });
         continue;
       }
       const file = await this.get(id);

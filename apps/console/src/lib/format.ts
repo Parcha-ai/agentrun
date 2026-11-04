@@ -2,7 +2,11 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { Cost } from "./v2";
 
-export const clock = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+/** A run's short label, the one every place that shows one uses: the id's last 8 characters. Run ids are UUIDv7s, whose
+ *  leading digits are the start time (the same for runs started within about a minute); the tail is random. */
+export const runLabel = (id: string) => id.slice(-8);
+
+export const clock =(iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
 export const when = (iso: string) =>
   new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" });
 

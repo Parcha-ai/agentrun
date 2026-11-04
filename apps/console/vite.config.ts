@@ -35,7 +35,15 @@ export default defineConfig({
       },
     },
   },
-  resolve: { alias: { "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)), "@": fileURLToPath(new URL("./src", import.meta.url)) } },
+  resolve: {
+    alias: {
+      "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
+      // The timeline library's tool names and pi-browser's tool list, from their sources (each imports nothing of Node).
+      "@timeline": fileURLToPath(new URL("../../packages/pi-durable-agent/src/timeline", import.meta.url)),
+      "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
   build: { outDir: "dist", assetsInlineLimit: 0 },
   test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], ...(workers ? { minWorkers: 1, maxWorkers: workers } : {}) },
 });
