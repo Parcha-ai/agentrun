@@ -19,7 +19,7 @@ import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
@@ -186,6 +186,8 @@ export type Run = {
   finishStop?: boolean;
   /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
   reopening?: Promise<void>;
+  /** A follow-up to a run whose turn had ended is on its way: a launch it makes opens the run for it (FOLLOW_UP_OPEN_ENV). */
+  followUpOpen?: true;
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
@@ -1163,8 +1165,10 @@ export class Runs {
     this.secrets.set(run.revision, await secretsFor(revision));
   }
 
-  private launch(run: Run): void {
+  private launch(run: Run, followUp = run.followUpOpen === true): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
+    // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
+    run.followUpOpen = undefined;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
     // reads its revision's first (pinSecrets); one that did not hands no tool key.
     const secrets = handover(this.secrets.get(run.revision) ?? NO_TOOL_KEYS, this.options.storedKeys);
@@ -1183,6 +1187,9 @@ export class Runs {
     void this.saveMeta(run).catch((error: Error) => warn(run.id, `what its process thinks at is not saved: ${error.message}`));
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // Opened for a person's follow-up to a run whose turn had ended: nothing it resumes was cut (app.ts markResumed).
+    delete env[FOLLOW_UP_OPEN_ENV];
+    if (followUp) env[FOLLOW_UP_OPEN_ENV] = "1";
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
@@ -1693,6 +1700,8 @@ export class Runs {
     const working = status === "queued" || (status === "working" && state === "working");
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
+    // A follow-up to a run the person stopped: its turn had ended, so a process this message starts resumes nothing.
+    if (status === "input_required" && state === "idle") run.followUpOpen = true;
     run.submitted++;
     this.refresh(run);
     try {
@@ -1701,6 +1710,8 @@ export class Runs {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);
       throw error;
+    } finally {
+      run.followUpOpen = undefined;
     }
     return { mode, messageId };
   }
@@ -1745,7 +1756,8 @@ export class Runs {
       // A run that learns finds its agent's notes in its work again (learning-run.ts).
       await this.learning.onReopen(run);
       this.refresh(run);
-      this.launch(run);
+      // Opened for the follow-up: the run had answered, so its open resumes nothing.
+      this.launch(run, true);
     } finally {
       // Launched, it holds its place as a live run.
       release();

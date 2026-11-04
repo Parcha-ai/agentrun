@@ -14,6 +14,9 @@ export const RUN_CANCELLED = "cancelled";
 /** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
  *  or exits: found at a start, the server went down while it launched the run. */
 export const RUN_LAUNCHING = "launching";
+/** Set in a run's process environment when the server opens the run for a person's follow-up to a run whose turn had
+ *  ended (it answered, or the person stopped it): that open resumes no cut work, so it writes no "resumed" row (app.ts). */
+export const FOLLOW_UP_OPEN_ENV = "AGENTRUN_FOLLOW_UP_OPEN";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
 

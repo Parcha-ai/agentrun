@@ -20,7 +20,7 @@ import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
-import { readJson, RUN_META } from "./files.js";
+import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
@@ -56,6 +56,9 @@ export { promptOf };
 async function markResumed({ harness, context, generation, previous }: BeforeResume): Promise<void> {
   const drained = previous?.status === "sleeping" && isObject(previous.detail) && previous.detail.reason === "drained";
   const after = previous?.status === "running" ? "crash" : drained ? "server_stop" : undefined;
+  // A follow-up's open, which the server names (FOLLOW_UP_OPEN_ENV): the run's turn had ended, and the record its last
+  // process left is its server letting it go once it answered (a drain, as a server stop writes one), not cut work.
+  if (process.env[FOLLOW_UP_OPEN_ENV] === "1") return;
   if (!after || !(await harness.conversation(ROOT_CONVERSATION_ID, context))) return;
   await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
 }
