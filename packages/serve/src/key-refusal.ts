@@ -44,8 +44,8 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
-/** The most of a run's error serve ever shows: a Timeline row's text, cut at 2000 characters (pi-durable-agent's
- *  CAPS.text; its summary at 500), which the error box reads too. */
+/** The most of a run's error or a tool's output serve ever shows: a Timeline row's text, cut at 2000 characters
+ *  (pi-durable-agent's CAPS.text; a summary and a tool result's preview at 500), which the error box reads too. */
 const SHOWN = 2000;
 
 /** `text`, a run's error as serve shows it, with no held secret in it: the one rule learning's checker uses
