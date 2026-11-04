@@ -306,6 +306,10 @@ go through `work/` by path.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
+- It has no capability and can gain none (`--cap-drop ALL`, `--security-opt no-new-privileges`), so even as root (a
+  server run as uid 0) it cannot make a device node in `work/`. Its Docker daemon must be this machine's: where
+  `DOCKER_HOST`, or the docker context, names another machine (tcp://, ssh://), no box is made, since that daemon would
+  bind its own paths, and the refusal says which setting to undo.
 - The container is labelled `agentrun.run=<run id>`, and the label is its only record. A run's process that starts again
   after a crash finds it by the label and first kills the commands the dead process left running. It is destroyed when
   the run ends (completed, failed or cancelled: a follow-up after a completed run gets a fresh one, with the same
