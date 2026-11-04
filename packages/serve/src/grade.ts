@@ -1,8 +1,10 @@
 // Learning, its grade and its merge: once a run's proposal passed the checks (propose.ts), one grader decides whether its
 // new notes join the agent's main, and the host merges them.
-// - The grader is learn/grade.ts' gradePrompt, asked as one bounded completion on the agent's own model, against main as
-//   it is now: each active note's index line, and the whole text only of the notes the proposal supersedes, so the
-//   prompt is bounded whatever the folder holds (GRADE_CAPS). Its answer is read by parseVerdict, which fails closed. A
+// - The grader is learn/grade.ts' gradePrompt, asked as one bounded completion against main as it is now: each active
+//   note's index line, the whole text only of the notes the proposal supersedes, and what the user said in the run, so
+//   the prompt is bounded whatever the folder holds (GRADE_CAPS). It runs on the model the server names for grading
+//   (learning.ts gradeModelOf: `--grade-model`, else its strong tier), else on the agent's own. Its answer is read by parseVerdict,
+//   which fails closed. A
 //   call cut off at its bound spent what nobody knows: the grade's cost is then unknown, never $0. Before it, and only
 //   when this server has an independent judge (Jev), each new note goes through the injection screen: pi-browser's page
 //   classifier with its own INJECTION_THRESHOLD. A score at or over it refuses the proposal, and no score refuses it too.
@@ -16,7 +18,7 @@
 // The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "./learn/index.js";
+import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
 import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel, claudeProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
@@ -155,12 +157,20 @@ export function graderAuth(provider: RunProvider) {
   return { env: async (asked: string) => (asked === name ? (await provider.credential()) || undefined : undefined), fileExists: async () => false };
 }
 
-/** One completion on the agent's own model, as its run's process picks it (app.ts): claude-agent's from pi-ai's catalog,
- *  sent where and as the run's own requests go (claudeProvider), any other harness's by runModels (the gateway, pi-ai's
- *  providers, or the faux module), at its revision's thinking; counted in `cost` (a call that fails has an unknown cost). */
-async function agentModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost): Promise<Complete> {
+/** One completion for the grader: on the model the server names for grading (`named`), picked as a workflow's strong
+ *  tier is (runModels: the gateway, pi-ai's providers, or the faux module); else on the agent's own model, as its run's
+ *  process picks it (app.ts): claude-agent's from pi-ai's catalog, sent where and as the run's own requests go
+ *  (claudeProvider), any other harness's by runModels. At its revision's thinking; counted in `cost` (a call that fails
+ *  has an unknown cost). */
+async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost, named: string | undefined): Promise<Complete> {
   let chosen;
-  if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
+  if (named) {
+    // The strong tier named over `env` itself, never a copy of it: the server's keys are properties that do not list
+    // (secrets.ts withSecrets), so a spread would leave every one out. runModels and pi-ai's auth read each by name.
+    const tiered = Object.create(env, { AGENT_MODEL_STRONG: { value: named, enumerable: true } }) as NodeJS.ProcessEnv;
+    const picked = await runModels(tiered, undefined, ["strong"]);
+    chosen = { models: picked.models, model: picked.byTier.get("strong")! };
+  } else if (agent.harness === "claude-agent" && !env[FAUX_HARNESS_ENV]) {
     const choice = claudeModel(env, agent.model);
     if ("why" in choice) throw new Error(choice.why);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
@@ -210,10 +220,11 @@ async function independentJudge(env: NodeJS.ProcessEnv, cost: GradeCost): Promis
   };
 }
 
-/** The screen (only with an independent judge), then the grader: the first note the screen refuses or cannot judge, the
- *  grader's verdict, or why the grader gave none; with what it spent. Rejects only when `signal` (the server closing)
- *  aborts it: nothing is decided then. */
-export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
+/** The screen (only with an independent judge), then the grader, on `gradeModel` when the server names one (gradeModelOf),
+ *  given `asked`, what the user said in the run: the first note the screen refuses or cannot judge, the grader's verdict,
+ *  or why the grader gave none; with what it spent. Rejects only when `signal` (the server closing) aborts it: nothing
+ *  is decided then. */
+export async function judgeProposal(input: { runId: string; agent: Agent; main: GradeMain; proposed: NoteText[]; asked?: readonly string[]; gradeModel?: string; env: NodeJS.ProcessEnv; signal: AbortSignal; gradeTimeoutMs?: number }): Promise<Judged> {
   const { runId, agent, main, proposed, env, signal } = input;
   const cost: GradeCost = { usd: 0, tokens: { ...NO_TOKENS } };
   const judge = await independentJudge(env, cost);
@@ -231,8 +242,8 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
   }
   try {
     const { gradePrompt, parseVerdict } = await import("./learn/index.js");
-    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed });
-    const grader = await agentModel(env, agent, cost);
+    const prompt = gradePrompt({ run: runId, instructions: agent.instructions, active: main.active, superseded: main.superseded, proposed, ...(input.asked ? { asked: input.asked } : {}) });
+    const grader = await graderModel(env, agent, cost, input.gradeModel);
     const answer = await bounded(input.gradeTimeoutMs ?? GRADE_TIMEOUT_MS, signal, cost, (grade) => grader({ prompt, maxTokens: GRADE_MAX_TOKENS }, grade));
     return { verdict: parseVerdict(answer.text, proposed), cost };
   } catch (error) {
@@ -241,16 +252,22 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
   }
 }
 
-/** Merges run `runId`'s proposal into main as main is now, in the agent's queue: one commit on main (its parent main)
- *  that adds the new notes, marks each note they supersede and rebuilds MEMORY.md, its message `learning: <run>: merged`,
+/** Merges run `runId`'s proposal into main as main is now, in the agent's queue, as `verdict` judged its notes: one commit
+ *  on main (its parent main) that adds the new notes, each with its `origin` and a pending one with `status: pending`
+ *  (in no index, so no run reads it, until a person approves it), marks each note a kept one supersedes (a pending
+ *  note's wait for its approval) and rebuilds MEMORY.md, its message `learning: <run>: merged`,
  *  `reason` and the run's Run-Id; moved onto main only from the commit it was made on, once more on a main that moved
  *  meanwhile. Then the checked-out files are main's. A run a commit on main already names is that commit. `problems`
- *  when main, as it is now, takes the notes no more (mergeProblems), or when a note they supersede is not the blob the
- *  grade read (`graded`, readForGrade's): a person changed it since, and their text stands. `checkout` is why the files
- *  could not be brought in line, when they could not: main is merged all the same. */
-export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string, graded: Readonly<Record<string, string>>): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
+ *  when main, as it is now, takes the notes no more (mergeProblems), or when a note the merge marks superseded is not
+ *  the blob the grade read (`graded`, readForGrade's): a person changed it since, and their text stands. A note held for
+ *  its owner's OK marks nothing (supersededBy), so what it names is not checked. `checkout` is why the files could not
+ *  be brought in line, when they could not: main is merged all the same. */
+export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string, graded: Readonly<Record<string, string>>, verdict?: Verdict): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
   const home = homeOf(data, agentId);
-  const added = proposedOf(proposal);
+  // Each note as main keeps it: its origin, the grader's (a run's when it names none), and a pending one waiting.
+  const judged = new Map((verdict?.items ?? []).map((item) => [item.file, item]));
+  const texts = proposal.notes.map(({ file, text }) => ({ file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run", pending: judged.get(file)?.pending === true }) }));
+  const added = proposedOf({ ...proposal, notes: texts });
   return withAgentRepo(data, agentId, async () => {
     const repo = await agentFolder(data, agentId);
     const checkout = (sha: string) => checkOut(repo, sha);
@@ -261,13 +278,16 @@ export function mergeProposal(data: string, agentId: string, runId: string, prop
       const main = await readMain(home, repo, sha);
       const problems = problemsOf(main, added);
       if (problems.length) return { problems };
-      // The verdict was on the text the grade read: a note superseded that is another blob now is never marked on it.
-      const changed = added.flatMap((note) => note.supersedes.filter((old) => main.oids.get(old) !== graded[old]).map((old): Problem => ({ rule: "supersedes", path: note.file, detail: `${old} changed after the grade read it` })));
+      // What the merge marks superseded (a note held for its owner's OK marks nothing).
+      const replaced = supersededBy(added);
+      // The verdict was on the text the grade read: a note this merge marks that is another blob now is never marked on
+      // it.
+      const changed = [...replaced].filter(([old]) => main.oids.get(old) !== graded[old]).map(([old, by]): Problem => ({ rule: "supersedes", path: by, detail: `${old} changed after the grade read it` }));
       if (changed.length) return { problems: changed };
       const notes = notesOf(main);
-      // The new tree: main's, with the new notes, the superseded ones marked, and the index rebuilt from what is active then.
-      const files = new Map(proposal.notes.map(({ file, text }) => [file, text]));
-      const replaced = new Map(added.flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
+      // The new tree: main's, with the new notes, the ones the kept notes supersede marked, and the index rebuilt from
+      // what is active then (a pending note is not).
+      const files = new Map(texts.map(({ file, text }) => [file, text]));
       for (const [old, by] of replaced) files.set(old, supersede(main.texts.get(old)!, by));
       const after = [...notes.filter((note) => !replaced.has(note.file)), ...added];
       files.set(INDEX_FILE, buildIndex(after));
