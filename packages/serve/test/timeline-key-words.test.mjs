@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { agent, follow, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve, withEnv } from "./support.mjs";
+import { withoutLoopback } from "../dist/key-refusal.js";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const KEY = `not-a-secret-${"openrouter-key"}`;
@@ -78,4 +79,52 @@ test("pi: a gateway that refuses its key (401): the Timeline row says what the r
   assert.ok(rows.length > 0);
   for (const row of rows) assert.deepEqual([row.summary, row.text], [words, words], JSON.stringify(row));
   assert.ok(!JSON.stringify(timeline).includes(KEY), "the key is nowhere on the Timeline");
+});
+
+// A workflow's nodes run on their own tiers' models, and an error row does not say which one failed. With the default
+// tier on OpenAI and the strong tier on Anthropic, a strong node's 401 must not read as OpenAI refusing OPENAI_API_KEY:
+// the row keeps the provider's own words (no loopback address) rather than name a key that may be the wrong one.
+test("a workflow whose tiers send different keys: a node's 401 keeps its own words on the Timeline, never another tier's key", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: "not-a-secret-openai-key", ANTHROPIC_API_KEY: "not-a-secret-anthropic-key" }, [...NAMES, "AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
+  const { api } = await serve(t);
+  const flow = answerFlow("Fail with a refused key.");
+  flow.root.steps[0].tier = "strong";
+  assert.equal((await api("POST", "/agents", flowAgent("tiers", flow))).status, 201);
+  const started = await api("POST", "/agents/tiers/runs", { input: { question: "x" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["failed"], { deadlineMs: 50_000 });
+  const timeline = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body;
+  const rows = errorRows(timeline.rows);
+  assert.ok(rows.length > 0, JSON.stringify(timeline.rows.map((r) => [r.kind, r.summary])));
+  assert.ok(!JSON.stringify(timeline).includes("OPENAI_API_KEY"), JSON.stringify(rows));
+  assert.ok(rows.some((row) => row.text === '401: {"message":"User not found","code":401}'), JSON.stringify(rows));
+});
+
+test("only a loopback host is taken out: a public host whose name starts like one keeps its address", () => {
+  for (const kept of ["see https://localhost.run/x", "see http://127.0.0.1.nip.io/y", "see https://localhost-proxy.example.com/z", "see http://localhostx/w"]) assert.equal(withoutLoopback(kept), kept);
+  assert.equal(withoutLoopback("failed at http://localhost:8000/v1/responses: no"), "failed at a local address: no");
+  assert.equal(withoutLoopback("failed at http://localhost/v1 now"), "failed at a local address now");
+  assert.equal(withoutLoopback("failed at http://127.0.0.1"), "failed at a local address");
+  assert.equal(withoutLoopback("unexpected status 500, url: http://127.0.0.1:39543/v1/responses"), "unexpected status 500");
+});
+
+test("a refused key's plain words carry no loopback address either: a gateway that names one in its 401", { timeout: 60_000 }, async (t) => {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "Authentication rejected by http://localhost:8000/v1/responses", code: 401 } })));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  withEnv(t, { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${server.address().port}/api`, AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_API_KEY: KEY, AGENT_MODEL_PRICE: "1,2,0.5" }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  assert.equal((await api("POST", "/agents", agent("rejected"))).status, 201);
+  const started = await api("POST", "/agents/rejected/runs", { input: { content: "Say hi." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["failed"], { deadlineMs: 50_000 });
+  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  const timeline = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body;
+  const words = "The gateway at AGENT_MODEL_BASE_URL refused AGENT_MODEL_API_KEY (401: Authentication rejected by a local address): set it where AgentRun starts.";
+  assert.equal(run.error?.message, words, JSON.stringify(run.error));
+  for (const row of errorRows(timeline.rows)) assert.deepEqual([row.summary, row.text], [words, words], JSON.stringify(row));
+  assert.ok(!JSON.stringify(timeline).includes("localhost:8000") && !JSON.stringify(run).includes("localhost:8000"), "no loopback address anywhere");
 });
