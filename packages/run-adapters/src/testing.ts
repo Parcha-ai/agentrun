@@ -37,8 +37,8 @@ export type FauxAction =
   | { say: string; usd?: number | null }
   | { call: string; args?: unknown; usd?: number | null }
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
-   *  `bookAfter`: the calls run before the answer's cost is booked, as Claude Code runs a call while its response still
-   *  streams, so a call can end before the request that asked for it is paid. */
+   *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
+   *  response, so a call can end before the request that asked for it is paid. */
   | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean }
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission. */

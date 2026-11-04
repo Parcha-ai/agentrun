@@ -197,9 +197,6 @@ export function adapterRun(
   const later = (work: () => Promise<void>) => (writing = writing.then(work, work));
 
   const commit = <T>(change: (tx: Tx) => Promise<T>) => run!.harness.commit(change, context);
-  /** Results whose call still waits in `calls` (its answer not paid yet, so flush holds the answer's entry): each is
-   *  written with the entry that holds its call, right after it, never before. */
-  const held: { callId: string; write: (tx: Tx) => Promise<unknown> }[] = [];
 
   /** A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
    *  own, so the run's spend counts it, once; any other is a duplicate. */
@@ -237,10 +234,6 @@ export function adapterRun(
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
         if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
-        for (const result of held.filter((h) => content.calls.some((c) => c.id === h.callId))) {
-          await result.write(tx);
-          held.splice(held.indexOf(result), 1);
-        }
       });
       if (marked !== undefined) written.add(marked);
       if (request) priced.add(request.request);
@@ -304,15 +297,15 @@ export function adapterRun(
       }
     }
     else if (event.type === "tool_end") {
-      const write = (tx: Tx) => tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
-        model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.") }], isError: event.isError, timestamp: now() } as never],
-        data: { diagnostics: [] },
-      });
       void flush();
-      // A call can end before the answer that asked for it is paid (Claude Code runs it while the response still
-      // streams): its call still waits in `calls`, so its result waits with it, and goes in right after it.
-      if (calls.some((c) => c.id === event.callId)) held.push({ callId: event.callId, write });
-      else later(() => commit(write).then(() => undefined));
+      later(() =>
+        commit(async (tx) => {
+          await tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
+            model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.") }], isError: event.isError, timestamp: now() } as never],
+            data: { diagnostics: [] },
+          });
+        }).then(() => undefined),
+      );
     }
   };
 

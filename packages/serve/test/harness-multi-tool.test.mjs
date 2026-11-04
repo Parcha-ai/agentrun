@@ -2,8 +2,8 @@
 // claude-agent and codex alike: serve's adapter path, which writes the session's requests, calls and results to the run,
 // is the same for both. The run completes with its final answer, both files are written, both calls show under the
 // answer that asked for them and before their results, and no call reads as interrupted. The same holds when the calls
-// end before the answer that asked for them is paid, as Claude Code runs a call while its response still streams: each
-// result is stored after its call, and the run's metrics count each call once, none failed.
+// end before the answer that asked for them is paid, as with Claude Code, whose cost comes in after its response: each
+// result is stored before its call, and the timeline and the run's metrics still read each as its call's, once.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -47,7 +47,7 @@ test(`${harness}: two tool calls in one answer, then the closing answer: the run
   assert.equal(rows.findLast((r) => r.kind === "usage")?.usage.requests, 2, "two model requests: the one that asked for both calls, and the answer");
 });
 
-test("claude-agent: two tool calls that end while their answer still streams, before it is paid: each result is stored after its call, none reads as interrupted, and the run's metrics count two calls, none failed", async (t) => {
+test("claude-agent: two tool calls that end before their answer is paid: their results are stored first, and each still reads as its call's, once, none interrupted, and the run's metrics count two calls, none failed", async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   assert.equal((await api("POST", "/agents", agent("streamed", { harness: "claude-agent", instructions: "Write two files while answering.", tools: ["read", "write", "edit"] }))).status, 201);
   const started = await api("POST", "/agents/streamed/runs", { input: { content: "Write the word alpha to a.md and the word beta to b.md." } });
@@ -57,7 +57,7 @@ test("claude-agent: two tool calls that end while their answer still streams, be
   assert.deepEqual([last.status, last.final], ["completed", true], `${last.status}/${last.state}`);
   const shown = JSON.stringify(rows.map((r) => [r.seq, r.kind, r.summary]));
 
-  // The store: each result entry after the answer entry that holds its call.
+  // The store: each result entry before the answer entry that holds its call, as the bridge writes a result at once.
   const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
   const entries = db.prepare("SELECT id, record FROM entries WHERE conversation_id = 1 ORDER BY id").all().map((r) => ({ id: r.id, ...JSON.parse(r.record) }));
   db.close();
@@ -65,9 +65,10 @@ test("claude-agent: two tool calls that end while their answer still streams, be
   for (const e of entries) if (e.kind === "pi.assistant") for (const b of e.model?.[0]?.content ?? []) if (b.type === "toolCall") callAt.set(b.id, e.id);
   const stored = entries.filter((e) => e.kind === "pi.tool-result").map((e) => [e.model[0].toolCallId, callAt.get(e.model[0].toolCallId), e.id]);
   assert.equal(stored.length, 2, JSON.stringify(stored));
-  for (const [call, at, result] of stored) assert.ok(at !== undefined && at < result, `the result of ${call} (entry ${result}) is stored after its call (entry ${at})`);
+  for (const [call, at, result] of stored) assert.ok(at !== undefined && result < at, `the result of ${call} (entry ${result}) is stored before its call (entry ${at})`);
 
-  // The timeline: each call once, before its one result, which names its file; nothing interrupted.
+  // The timeline reads each such result as its call's: each call once, before its one result, which names its file;
+  // nothing interrupted.
   const uses = rows.filter((r) => r.kind === "tool_use");
   const results = rows.filter((r) => r.kind === "tool_result");
   assert.deepEqual(uses.map((r) => r.tool_input_preview), ["a.md", "b.md"], shown);
