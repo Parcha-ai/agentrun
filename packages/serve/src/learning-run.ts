@@ -392,6 +392,7 @@ export class LearningRuns {
    *  seed where the run took it away, so the follow-up finds the notes its instructions name where they say. A fault
    *  leaves it without. */
   async onReopen(run: Run): Promise<void> {
+    await learningTestHooks.beforeReopen?.(run.dir);
     const dir = join(run.dir, "work", LEARNED_DIR);
     if (!run.meta.reflect || (await lstat(dir).then(() => true, () => false))) return;
     try {
