@@ -573,7 +573,9 @@ cap, each `monid.run` is held as a model request is: unless what the run has spe
 price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
 refused with a `spend_cap_reached` error the model reads, naming its price and the cap (and, when the allowance was
 used, that `monid.inspect` gives a quote), and monid is never called. Runs go one at a time under a cap, and on
-claude-agent and codex the check holds each model request still in flight at its worst case. `discover` and `inspect`
+claude-agent and codex the check holds each model request still in flight at its worst case. A run sent holds its
+figure until its charge is in, on every harness: a model request checked meanwhile counts it beside what the run has
+spent, and a run that fails without an answer counts at it. `discover` and `inspect`
 cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call them as
 host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent again
 (`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
@@ -592,6 +594,22 @@ A tool's key comes from one of two places. The server's own environment, through
 this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
 none of still lists, with nothing in `unlocks`. A field the server is started with is the server's, and wins: saving
 it is `409 key_set_by_server`. A value is text of at most 1024 bytes with no control character (`422` otherwise).
+
+A key is checked against its provider before it is kept, with one call that costs nothing, given 5 s: monid's
+discover of one result, Parallel's list of monitors, Browserbase's list of projects and TypeSafe's list of models (at
+`BROWSERBASE_BASE_URL` or `TYPESAFE_BASE_URL` when the server is started with one). A key the provider refuses (401)
+is `422 input_invalid`, its field's reason `refused_by_provider`, in plain words with the provider's first sentence
+(`Monid refused this key (401: Invalid API key format)`) and never any of the key, and nothing is kept: a key saved
+before stays as it was. Otherwise it is kept, and `GET` gives its row a `check`: `{state: "accepted", at}`, or
+`{state: "not_checked", reason, at}` when the provider would not answer the check (403: a key scoped away from that
+call may still work for its tools), did not answer in 5 s, could not be reached, answered a redirect (never followed,
+so the key goes nowhere else) or something else, or has no call that costs nothing. `check` is null when the key is
+not stored here (the server's own is not checked here); a key saved before this server checked keys reads
+`not_checked`, and is checked when saved again. A save of Browserbase's project id alone sends no key, and leaves its
+check as it was. A save whose check is still waiting when the server begins to close keeps nothing (`503
+unavailable`, while its connection lasts): the check stops waiting, and the server's lock, released at close, may be
+another server's by then. Under `--faux` a key is checked only against the fake its runs are given (`fauxMonid`,
+`fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
