@@ -401,6 +401,46 @@ test("a server stopped while setup counts a big home's sessions exits within its
   assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window (the count ${read.status === 202 ? "running" : "done"} when stopped)`);
 });
 
+test("a server stopped while setup still lists a home's session files exits at once: the count, which writes nothing, is ended, not waited for", { timeout: 120_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "many");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  // 150,000 empty session files: a count lists and stats every one before it reads any, for seconds.
+  const many = join(home, ".claude", "projects", "-many");
+  mkdirSync(many, { recursive: true });
+  for (let k = 0; k < 150_000; k++) writeFileSync(join(many, `${k}.jsonl`), "");
+  const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
+  mkdirSync(temp, { recursive: true });
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
+  t.after(async () => {
+    if (alive) process.kill(-child.pid, "SIGKILL");
+    await exited;
+  });
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 30_000; !/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.test(out); ) {
+    assert.ok(Date.now() < deadline, `the server started: ${out}${err}`);
+    await sleep(50);
+  }
+  const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
+  // A server the CLI starts with no owner counts as it starts: stopped while that count still lists.
+  const read = await call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.deepEqual([read.status, read.json], [202, { counting: true }], read.text);
+  const stopped = Date.now();
+  if (alive) process.kill(-child.pid, "SIGTERM");
+  // Unreferenced: the bound holds no exited test's process open.
+  const outcome = await Promise.race([exited.then(() => "exited"), sleep(5_000, "still running", { ref: false })]);
+  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM, the count still listing`);
+  assert.equal(err, "", "no line on stderr: an ended count is no failed one");
+});
+
 test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
   // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
   // of the server's has one. The seal key is one a server takes: 32 bytes in base64.

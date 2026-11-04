@@ -765,6 +765,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       worker.once("exit", (code) => {
         workers.delete(worker);
         if (answer) answered(answer);
+        // A count the close ended: stopped, not failed (the next start counts again).
+        else if (closing && task === "plan") answered({ stopped: true });
         else failed(new Error(`the import's worker ended (${code}) with no answer`));
       });
     });
@@ -1744,11 +1746,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
     }
     if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
-    // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
-    // after close.
+    // An import under way stops between two session files and is waited for: nothing writes the store after close. A
+    // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
-    for (const worker of workers.keys()) worker.postMessage("stop");
+    for (const [worker, { task }] of workers) {
+      if (task === "plan") void worker.terminate();
+      else worker.postMessage("stop");
+    }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
