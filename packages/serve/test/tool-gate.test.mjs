@@ -19,6 +19,7 @@ import { deniedText, gateToolCall, RunGate, TURN_ORIGIN_FILE, waitingText } from
 import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { agent, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
@@ -350,4 +351,27 @@ test("a parked call whose arguments hold a held key shows no 8 characters of it 
   assert.equal(holdsPiece(JSON.stringify(view.pending), HELD), false, `the pending approval: ${JSON.stringify(view.pending)}`);
   const summary = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
   assert.equal(holdsPiece(JSON.stringify(summary.pending), HELD), false, "the run's summary in the list");
+});
+
+test("on pi, monid's calls at their default ask park by their settings keys, and each approved one runs once through the kernel", { timeout: 120_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const server = await serve(t, { accounts: true, openSetup: true, fauxMonid: fixture("faux-monid.mjs") });
+  const answer = await owner(server);
+  const { api } = server;
+  assert.equal((await api("POST", "/agents", agent("enrich-asks", { tools: ["monid.discover", "monid.inspect", "monid.run"] }))).status, 201);
+  const started = await api("POST", "/agents/enrich-asks/runs", { input: { content: "Enrich with monid: Ada at Example." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  for (const tool of ["monid.discover", "monid.inspect", "monid.run"]) {
+    await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+    const { pending } = (await api("GET", `/runs/${runId}`)).body;
+    assert.equal(pending?.tool, tool, "parked by its settings key");
+    assert.equal((await answer(runId, pending.id, { decision: "allow" })).status, 204);
+    await follow(api, runId, ["working", "completed"], { deadlineMs: 55_000 });
+  }
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.match((await api("GET", `/runs/${runId}`)).body.result.final_answer, /"full_name":"Ada"/);
+  const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(seen.map((call) => call.path), ["/v1/discover", "/v1/inspect", "/v1/run"], "each approved call once");
 });
