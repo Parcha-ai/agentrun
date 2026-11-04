@@ -433,6 +433,77 @@ test("pi under a cap: a request stopped before its end counts at the worst case 
   assert.match((await third.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.002 of its \$0\.0025 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
 });
 
+/** Requests the test ends itself, each recorded with the options it went with: `end(stopReason, text, total)` streams
+ *  `text` as its content and ends it so. */
+function streamingModels() {
+  const sent = [];
+  const send = (m, ctx, options) => {
+    const events = createAssistantMessageEventStream();
+    const end = (stopReason, text, total) => {
+      const message = { role: "assistant", content: text ? [{ type: "text", text }] : [], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } }, stopReason, timestamp: Date.now() };
+      events.push(stopReason === "aborted" ? { type: "error", reason: "aborted", error: message } : { type: "done", reason: "stop", message });
+      events.end(message);
+    };
+    sent.push({ options, end });
+    return events;
+  };
+  return { sent, models: { stream: send, streamSimple: send, complete: (...a) => send(...a).result(), completeSimple: (...a) => send(...a).result(), streamDeferred: send, fetchDeferred: (...a) => send(...a).result() } };
+}
+/** $100 a million output tokens, input free, a 64,000-token ceiling: what it asks for passes a $1 cap, so it is clamped. */
+const clamped = { ...model({ input: 0, output: 100, cacheRead: 0, cacheWrite: 0 }, { maxTokens: 64_000, contextWindow: 200_000 }), reasoning: false };
+/** $10,000 a million output tokens: its least (1,024 tokens) is $10.24, which no cap here can buy. */
+const dear = { ...model({ input: 0, output: 10_000, cacheRead: 0, cacheWrite: 0 }), reasoning: false };
+/** What the cap says a run has spent, from its refusal of a request on `dear`. */
+const spentSaid = async (capped) => {
+  const why = (await capped.streamSimple(dear, context).result()).errorMessage;
+  const said = /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$(\d+(?:\.\d+)?) of its /.exec(why ?? "");
+  assert.ok(said, `refused, saying what was spent: ${why}`);
+  return Number(said[1]);
+};
+/** The tokens a stopped request counts beyond what it streamed: what the provider may have made after the last event. */
+const STOP_ALLOWANCE = 1_024;
+const eight = (usd) => Math.round(usd * 1e8) / 1e8;
+
+test("pi under a cap: a request the person stops counts at what it can have cost, never past its hold: its input, each byte it streamed as a token, and 1,024 tokens more; a clamped one no longer takes the rest of the cap, so the next request goes", async () => {
+  // QA 7.4: a $1 cap, $0.004 spent; the request is clamped to what $0.996 buys and held at that, then stopped.
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0.004);
+  const first = capped.streamSimple(clamped, context, { maxTokens: 64_000 });
+  assert.equal(sent[0].options.maxTokens, 9_960, "clamped to what is left");
+  sent[0].end("aborted", "Half of one.md", 0.0002);
+  await first.result();
+  await settle();
+  const next = capped.streamSimple(clamped, context, { maxTokens: 64_000 });
+  assert.equal(sent.length, 2, "the follow-up is sent: the stop counted what it can have cost, not the $0.996 held for it");
+  // 14 bytes streamed and 1,024 tokens more, at $100 a million: $0.1038, beside the $0.004 spent before.
+  sent[1].end("stop", "Done.", 0.001);
+  await next.result();
+  await settle();
+  assert.equal(await spentSaid(capped), eight(0.004 + (14 + STOP_ALLOWANCE) * 100 / 1e6 + 0.001), "$0.004, the stop at $0.1038, the follow-up's $0.001");
+  // Its input counts in full: on a model whose input is priced, the stop is its hold less the output it was held for,
+  // plus what it streamed and the allowance.
+  const other = streamingModels();
+  const run = await capModels(other.models, 1, 0);
+  const asked = run.streamSimple({ ...clamped, cost: { input: 10, output: 100, cacheRead: 0, cacheWrite: 0 } }, context, { maxTokens: 64_000 });
+  const [held, most] = [other.sent[0].options[HELD_USD], other.sent[0].options.maxTokens];
+  other.sent[0].end("aborted", "abc", 0);
+  await asked.result();
+  await settle();
+  const input = held - most * 100 / 1e6;
+  assert.ok(input > 0, `the input is priced: $${input}`);
+  assert.equal(await spentSaid(run), eight(input + (3 + STOP_ALLOWANCE) * 100 / 1e6), "the input, 3 bytes and the allowance");
+  // Never past its hold: a stop whose stream and allowance pass what it was held for counts at the hold.
+  const tight = streamingModels();
+  const small = await capModels(tight.models, 0.11, 0);
+  const cut = small.streamSimple(clamped, context, { maxTokens: 64_000 });
+  assert.equal(tight.sent[0].options.maxTokens, 1_100, "clamped to what $0.11 buys");
+  const hold = tight.sent[0].options[HELD_USD];
+  tight.sent[0].end("aborted", "x".repeat(500), 0);
+  await cut.result();
+  await settle();
+  assert.equal(await spentSaid(small), eight(hold), "500 bytes and 1,024 tokens pass its 1,100: at its hold");
+});
+
 test("pi under a cap: a summary that fails with no answer counts at the worst case the cap held for it", async () => {
   const { models, sent } = fakeModels();
   const capped = await capModels({ ...models, completeSimple: () => Promise.reject(new Error("the connection reset")) }, 0.0015, 0);
@@ -563,6 +634,26 @@ test("a capped pi run stopped mid-answer, when what the cap held for the stopped
   assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
   assert.match(run.error.message, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
   assert.equal(run.cost.usd, null, "the refusal never balances the stopped request: unknown, not $0");
+});
+
+test("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is out, goes on: the stop counts what it can have cost (nothing streamed and 1,024 tokens, $0.1024), never the rest of the cap, in its process and in its store", async (t) => {
+  // The faux model's request asks 16,384 tokens at $100 a million, $1.64: under $1 it is clamped to what is left and held
+  // at nearly all of it. Stopped before it streamed anything, it counts its free input and the 1,024-token allowance.
+  const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
+  const runId = await stopped(api, "qa-stop", 1);
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
+  const run = await finished(api, runId);
+  assert.deepEqual([run.status, run.error?.code ?? null, run.result?.final_answer], ["completed", null, "On go on: done."], `the follow-up runs: ${JSON.stringify(run.error)}`);
+  const db = new DatabaseSync(storeFileOf(data, runId), { readOnly: true });
+  let marks;
+  try {
+    marks = db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(row.record)).filter((entry) => entry.kind === REQUEST_ENDED);
+  } finally {
+    db.close();
+  }
+  assert.deepEqual(marks.map((mark) => mark.data[HELD_FIELD]), [1_024 * 100 / 1e6], "the stopped request's end mark says what the cap counts it at");
+  const spent = spentIn(storeFileOf(data, runId));
+  assert.ok(Math.abs(spent - (0.1024 + run.cost.so_far_usd)) < 1e-6, `the store says the stop's $0.1024 and the follow-up's cost: $${spent}, so far $${run.cost.so_far_usd}`);
 });
 
 test("a capped pi run refused for room with no stop: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
