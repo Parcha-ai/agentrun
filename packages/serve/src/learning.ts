@@ -16,7 +16,7 @@
 // run's directory (`learning-turn.json`); its notes are checked from there (propose.ts), graded and merged into main
 // (grade.ts). The copy in the run's work is only for reading: nothing the run writes there is ever kept.
 //
-// The skills the agent wrote are in the folder too, one folder each under `skills/` (LEARNED_SKILLS). A run
+// The skills the agent wrote are in the folder too, one folder each under `skills/` (SKILLS_DIR). A run
 // gets those of its commit beside its revision's own, in `work/.agents/skills/`, read with plumbing as its notes are: a
 // skill named like one of the revision's is the revision's, and the learned ones fit their own budget
 // (LEARNED_SKILLS_BUDGET) within what the revision's leave of the adapters' cap on a run's skills, so they never push the
@@ -33,7 +33,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
-import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, valueMatcher, type Verdict } from "./learn/index.js";
+import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, SKILLS_DIR, valueMatcher, type Verdict } from "./learn/index.js";
 import { homeOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
@@ -194,9 +194,6 @@ export type Pin = { seed: string; section?: string; learned?: string; skills?: s
  *  first. */
 export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[]; recent?: string[]; skills?: LearnedSkill[] };
 
-/** Where the skills an agent wrote are in its learning folder: `<name>/SKILL.md` and the skill's other files, one folder
- *  each. */
-export const LEARNED_SKILLS = "skills";
 /** The most bytes of learned skills one run gets, every file of each together. They get no more than what the
  *  revision's own skills leave of the adapters' cap on a run's skills in all (SKILL_BYTES): over that cap an adapter
  *  refuses the whole set, and every skill, the revision's too, would be inlined in the prompt (skills.ts splitSkills). */
@@ -463,15 +460,15 @@ export async function readSeed(cwd: string, repo: string, sha: string): Promise<
   return seed;
 }
 
-/** The skills commit `sha` holds under LEARNED_SKILLS, read with plumbing, by name. A skill is read when its folder's
+/** The skills commit `sha` holds under SKILLS_DIR, read with plumbing, by name. A skill is read when its folder's
  *  name and each of its files' paths are in shape, it holds a SKILL.md, and each file is a regular one (mode 100644) in
  *  UTF-8; else it is named in `skipped`. Only an active skill is a run's, one whose SKILL.md sets no status (or
  *  `active`): one held for its owner's OK (`status: pending`), or with any other status, is left out as a note that is
  *  not active is (readSeed). One over LEARNED_SKILLS_BUDGET, which no run could get, is held with its bytes and none of
- *  its files. A symbolic link or a submodule at LEARNED_SKILLS or anywhere under it throws, as a read
+ *  its files. A symbolic link or a submodule at SKILLS_DIR or anywhere under it throws, as a read
  *  git fails does: the run starts with nothing learned, and no link is ever laid in its work or followed. */
 export async function readSkills(cwd: string, repo: string, sha: string): Promise<{ skills: LearnedSkill[]; skipped: string[] }> {
-  const listed = (await git(cwd, repo, ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", sha, "--", LEARNED_SKILLS])).toString("utf8").split("\0").filter(Boolean);
+  const listed = (await git(cwd, repo, ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", sha, "--", SKILLS_DIR])).toString("utf8").split("\0").filter(Boolean);
   const found = new Map<string, { path: string; oid: string; size: number }[]>();
   const refused = new Set<string>();
   const skipped: string[] = [];
@@ -479,14 +476,14 @@ export async function readSkills(cwd: string, repo: string, sha: string): Promis
     const tab = entry.indexOf("\t");
     const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
     const path = entry.slice(tab + 1);
-    if (path !== LEARNED_SKILLS && !path.startsWith(`${LEARNED_SKILLS}/`)) continue;
+    if (path !== SKILLS_DIR && !path.startsWith(`${SKILLS_DIR}/`)) continue;
     if (mode === "120000" || mode === "160000") throw new Error(`the learning folder's ${path} is a ${mode === "120000" ? "symbolic link" : "submodule"}, and the host never lays one in a run`);
     if (type === "tree") continue;
-    if (path === LEARNED_SKILLS) {
+    if (path === SKILLS_DIR) {
       skipped.push(`${path} (not a folder)`);
       continue;
     }
-    const [name = "", ...rest] = path.slice(LEARNED_SKILLS.length + 1).split("/");
+    const [name = "", ...rest] = path.slice(SKILLS_DIR.length + 1).split("/");
     const file = rest.join("/");
     const why = !SKILL_NAME.test(name) || !file ? "not in a skill's folder named in lowercase letters, digits and dashes" : !SKILL_FILE_PATH.test(file) ? "not a plain path inside a skill" : mode !== "100644" || type !== "blob" || !oid ? `mode ${mode}` : undefined;
     if (why) {
@@ -498,7 +495,7 @@ export async function readSkills(cwd: string, repo: string, sha: string): Promis
   for (const [name, files] of [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (refused.has(name)) continue;
     if (!files.some(({ path }) => path === "SKILL.md")) {
-      skipped.push(`${LEARNED_SKILLS}/${name} (no SKILL.md)`);
+      skipped.push(`${SKILLS_DIR}/${name} (no SKILL.md)`);
       continue;
     }
     const bytes = files.reduce((sum, { size }) => sum + size, 0);
@@ -511,7 +508,7 @@ export async function readSkills(cwd: string, repo: string, sha: string): Promis
     try {
       texts = Object.fromEntries(files.map(({ path }, i) => [path, utf8.decode(blobs[i]!)]));
     } catch {
-      skipped.push(`${LEARNED_SKILLS}/${name} (not UTF-8)`);
+      skipped.push(`${SKILLS_DIR}/${name} (not UTF-8)`);
       continue;
     }
     const status = statusOf(texts["SKILL.md"]);
@@ -551,7 +548,7 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
     // A skill's place is its file changed last's; by name (readSkills' order) among skills changed in one commit.
     const skillPlace = new Map<string, number>();
     for (const [file, at] of order) {
-      const name = file.startsWith(`${LEARNED_SKILLS}/`) ? file.slice(LEARNED_SKILLS.length + 1).split("/")[0]! : undefined;
+      const name = file.startsWith(`${SKILLS_DIR}/`) ? file.slice(SKILLS_DIR.length + 1).split("/")[0]! : undefined;
       if (name !== undefined && at < (skillPlace.get(name) ?? Number.POSITIVE_INFINITY)) skillPlace.set(name, at);
     }
     const placeOf = (skill: LearnedSkill) => skillPlace.get(skill.name) ?? Number.POSITIVE_INFINITY;
