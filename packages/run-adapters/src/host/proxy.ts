@@ -531,7 +531,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let keepReading = false;
     /** That the client left before the answer reached it whole (the harness stopped the request). */
     let clientLeft = false;
-    /** The bytes of the answer the client was sent. */
+    /** The bytes of the answer the client was sent (and, for one read on after its content-filter stop, read after its
+     *  client left: what the provider streamed). */
     let sentBytes = 0;
     /** That the answer ended because its client left part way, not because the provider or this proxy ended it. */
     let stoppedByClient = false;
@@ -679,7 +680,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       answered = { ok: upstream.ok };
     } catch (error) {
       // Its client had left before this (a stop): read now, as the proxy's own end below closes the response too.
-      stoppedByClient = clientLeft && began?.ok === true;
+      // Only this proxy's abort ends a stop: an answer read on after its client left (its content-filter stop) that the
+      // provider ends with an error is no stop.
+      stoppedByClient = clientLeft && began?.ok === true && controller.signal.aborted;
       say(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
       else res.destroy();
