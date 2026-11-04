@@ -32,3 +32,16 @@ test("a body that is no JSON: its text; one that is cut JSON with no message: no
   assert.equal(refusalDetail("User not found."), "User not found.");
   assert.equal(refusalDetail('{"type":"error","error":{"type":"authenti'), "");
 });
+
+test("a whole body with no string message (error null, or a message that is no string): no detail, never the raw JSON", () => {
+  assert.equal(refusalDetail('{"error":null}'), "");
+  assert.equal(refusalDetail('{"error":null,"code":401}'), "");
+  assert.equal(refusalDetail('{"error":{"type":"authentication_error","message":42}}'), "");
+  assert.equal(refusalDetail('{"error":{"message":{"text":"nested"}}}'), "");
+});
+
+test("control characters in the provider's words (ESC, CR, NUL, other C0 and C1) never reach the run's error", () => {
+  assert.equal(refusalDetail(JSON.stringify({ error: { message: "bad\u001b key\r\u0000 here\u0085!" } })), "bad key here!");
+  const cut = JSON.stringify({ error: { message: "cut\u0007 short\u009b" } });
+  assert.equal(refusalDetail(cut.slice(0, cut.length - 3)), "cut short");
+});
