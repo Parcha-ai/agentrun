@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { clock, cost, markdown, when } from "./format";
+import { clock, cost, markdown, runLabel, when } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
 
@@ -145,5 +145,13 @@ describe("when and clock, in the viewer's zone", () => {
     process.env.TZ = "Asia/Tokyo";
     expect(when(AT)).toBe("Nov 5, 5:50 AM");
     expect(clock(AT)).toBe("05:50 AM");
+  });
+});
+
+// One short label for a run everywhere: the id's random tail, so runs started in the same second differ.
+describe("runLabel", () => {
+  it("is the last 8 characters of the id, different for two UUIDv7s of the same millisecond", () => {
+    expect(runLabel("01a1a869-ce4e-7cf5-abf8-c5407893934a")).toBe("7893934a");
+    expect(runLabel("01a1a869-ce4e-7d11-9a02-3f6b0e21d7c5")).toBe("0e21d7c5");
   });
 });
