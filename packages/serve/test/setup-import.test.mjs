@@ -273,11 +273,11 @@ test("under its launcher (node started from a string), setup counts this machine
   mkdirSync(temp, { recursive: true });
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
   t.after(async () => {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {}
+    if (alive) process.kill(-child.pid, "SIGTERM");
     await exited;
   });
   let [out, err] = ["", ""];
@@ -353,6 +353,45 @@ const holding = (dir, value) => {
   return found;
 };
 
+test("a server stopped while setup counts a big home's sessions exits within its drain window: the count reads no session for keys", { timeout: 120_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "big");
+  mkdirSync(site, { recursive: true });
+  claudeSession(home, site, 1);
+  // 200 subagent files of about a megabyte each: a key scan over them takes many seconds, a count's listing none.
+  const notes = Array.from({ length: 20_000 }, (_, i) => `line ${i} of the subagent's notes, read and kept`).join("\n");
+  for (let k = 1; k <= 200; k++) claudeSubagent(home, site, 1, k, { answer: notes });
+  const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
+  mkdirSync(temp, { recursive: true });
+  // The server's own drain window, set short: it answers SIGTERM within it.
+  const [DRAIN, DRAIN_MS] = ["2s", 2_000];
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--drain-timeout", DRAIN], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config } });
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
+  t.after(async () => {
+    if (alive) process.kill(-child.pid, "SIGKILL");
+    await exited;
+  });
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (const deadline = Date.now() + 30_000; !/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.test(out); ) {
+    assert.ok(Date.now() < deadline, `the server started: ${out}${err}`);
+    await sleep(50);
+  }
+  const port = Number(/AGENTRUN_BASE_URL=http:\/\/[^:]+:(\d+)/.exec(out)[1]);
+  // A server the CLI starts with no owner counts as it starts: stopped while that count runs.
+  const read = await call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  assert.ok([200, 202].includes(read.status), read.text);
+  const stopped = Date.now();
+  if (alive) process.kill(-child.pid, "SIGTERM");
+  const outcome = await Promise.race([exited.then(() => "exited"), sleep(DRAIN_MS + 1_500).then(() => "still running")]);
+  assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM with a ${DRAIN} drain window (the count ${read.status === 202 ? "running" : "done"} when stopped)`);
+});
+
 test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
   // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
   // of the server's has one. The seal key is one a server takes: 32 bytes in base64.
@@ -370,11 +409,11 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   mkdirSync(temp, { recursive: true });
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config, ...keys } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
   t.after(async () => {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {}
+    if (alive) process.kill(-child.pid, "SIGTERM");
     await exited;
   });
   let [out, err] = ["", ""];

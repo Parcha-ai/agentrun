@@ -18,7 +18,7 @@ const MAX_CELLS = 1_000_000;
 
 /** `after` against `before`, line by line, as their longest common subsequence keeps them: every line of both texts is in
  *  the answer once and in its order, so no word is lost. `null` when too many lines differ to compare. */
-export function lineDiff(before: string, after: string): DiffLine[] | null {
+function lineDiff(before: string, after: string): DiffLine[] | null {
   const [a, b] = [before.split("\n"), after.split("\n")];
   let [start, end] = [0, 0];
   while (start < a.length && start < b.length && a[start] === b[start]) start += 1;

@@ -6,6 +6,7 @@ import { Chip } from "@/components/ui/chip";
 import { bounded, cost, CUT_NOTE, isEstimate, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
+import { placeOf, runPlaceWords } from "@/lib/place";
 
 export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; busy?: "stop" | "cancel" | "archive" | null };
 
@@ -13,6 +14,8 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+  // Where it ran, as its start resolved it.
+  const ranIn = runPlaceWords(placeOf((run as { place?: unknown }).place));
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review);
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
@@ -31,7 +34,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-muted-foreground">
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
-            <span className="font-mono">{run.kind} · rev {run.agent_version}</span>
+            <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>

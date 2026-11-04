@@ -5,7 +5,7 @@
 // are left out by name; an imported run takes no message, and a stop, a cancel or a restart moves nothing of it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -352,6 +352,399 @@ test("the CLI's import cuts the server's own keys out of what it keeps, wherever
   const after = openStoreReader(data);
   t.after(() => after.close());
   assert.equal(after.listRuns().length, runs.length, "no run made twice");
+});
+
+/** A key of every format secretlint's recommended rules find, though no environment holds it: each made here, random
+ *  (the private key a real one, made here), so no scanner reads this file as holding one, and none is anyone's. */
+function shapedKeys() {
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const URL64 = `${ALNUM}_-`;
+  const OPENAI = ["T3Blbk", "FJ"].join("");
+  const pem = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey.trim();
+  return {
+    anthropic: ["sk", "ant", "api03", pick(93, URL64)].join("-") + "AA",
+    openaiProject: ["sk", "proj", `${pick(74, ALNUM)}${OPENAI}${pick(74, ALNUM)}`].join("-"),
+    openai: ["sk", `${pick(20, ALNUM)}${OPENAI}${pick(20, ALNUM)}`].join("-"),
+    github: `${["gh", "p"].join("")}_${pick(36, ALNUM)}`,
+    githubFine: ["github", "pat", pick(82, `${ALNUM}_`)].join("_"),
+    slack: [["xo", "xb"].join(""), pick(12, "0123456789"), pick(13, "0123456789"), pick(24, ALNUM)].join("-"),
+    stripe: ["sk", "live", pick(24, ALNUM)].join("_"),
+    pem: { block: pem, lines: pem.split("\n").slice(1, -1) },
+  };
+}
+
+test("an import cuts every key secretlint finds though no environment holds it, wherever a session or project holds one, and says how many it removed", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "payments");
+  const k = shapedKeys();
+  // The project's instructions and a skill, its content and its folder's name.
+  mkdirSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`), { recursive: true });
+  // A second folder named after another token: the two stay two skills.
+  mkdirSync(join(site, ".claude", "skills", `rotate-${k.github}`), { recursive: true });
+  writeFileSync(join(site, ".claude", "skills", `rotate-${k.github}`, "SKILL.md"), "---\nname: rotate-again\n---\nThe second one.\n");
+  writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${k.stripe}.\n${k.pem.block}\n`);
+  writeFileSync(join(site, ".claude", "skills", `rotate-${k.githubFine}`, "SKILL.md"), `---\nname: rotate\n---\nThe old key was ${k.openai}\n`);
+  // A session's text (a .env an agent printed), its first message (the run's title), a subagent's answer, and a
+  // session file named after a key (its records carry no session id, so the import names the session after its file).
+  claudeSession(at, site, 1, { prompt: `Rotate ${k.anthropic} and ${k.github} today.`, output: `cat .env:\nOPENAI_API_KEY=${k.openai}\nSLACK=${k.slack}` });
+  claudeSubagent(at, site, 1, 1, { answer: `The colleague's key is ${k.openai} and the bot's ${k.slack}.` });
+  const named = claudeSession(at, site, 2, { prompt: "Check the logs.", output: `Found ${k.openaiProject} in the logs.` });
+  const records = readFileSync(named, "utf8").trimEnd().split("\n").map((line) => { const { sessionId: _, ...rest } = JSON.parse(line); return JSON.stringify(rest); });
+  rmSync(named);
+  writeFileSync(join(dirname(named), `${k.openaiProject}.jsonl`), `${records.join("\n")}\n`);
+  utimesSync(join(dirname(named), `${k.openaiProject}.jsonl`), new Date(minute(10)), new Date(minute(10)));
+  // A file named after a token that is no session: skipped, and its name printed in the skipped line.
+  const unnamed = `${["gh", "s"].join("")}_${randomBytes(18).toString("hex")}`;
+  writeFileSync(join(dirname(named), `${unnamed}.jsonl`), "not a session\n");
+  utimesSync(join(dirname(named), `${unnamed}.jsonl`), new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  // No environment holds any of them.
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  const dry = await run("--dry-run");
+  const lines = await run();
+  const values = { ...k, pem: k.pem.lines };
+  const kinds = Object.keys(values).length;
+  // Every byte the import kept, and every name under the data directory.
+  const kept = [];
+  const walk = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); kept.push([path, entry.isDirectory() ? Buffer.alloc(0) : readFileSync(path)]); if (entry.isDirectory()) walk(path); } };
+  walk(data);
+  const left = Object.entries(values).flatMap(([kind, value]) => (Array.isArray(value) ? value : [value]).flatMap((v) => kept.filter(([path, bytes]) => bytes.includes(v) || path.includes(v)).map(([path]) => `${kind} in ${path.slice(data.length + 1)}`)));
+  assert.deepEqual(left, [], "no key or token is anywhere in what the import kept");
+  assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
+  assert.ok(dry.includes(`${kinds} secrets would be removed`), `the dry run counts what the import removes: ${dry.filter((l) => /removed/.test(l))}`);
+  // Nothing it printed names a key: the skipped file's name is cut where it is printed.
+  for (const [kind, value] of [...Object.entries(values).flatMap(([kind, v]) => (Array.isArray(v) ? v : [v]).map((x) => [kind, x])), ["skipped file", unnamed]]) assert.ok(![...dry, ...lines].some((l) => l.includes(value)), `${kind} printed`);
+  assert.ok(lines.some((l) => l.startsWith("skipped ") && l.includes("[redacted].jsonl")), "the skipped line, its name cut");
+  // Each is counted once, however many places held it (the private key one of them).
+  assert.ok(lines.includes(`${kinds} secrets removed`), `the import says it removed ${kinds}: ${lines.filter((l) => /removed/.test(l))}`);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.equal(reader.listRuns().length, 2, "both sessions are in, the one named after a key under its id as kept");
+  assert.ok(reader.listRuns().some((r) => /^redacted-[0-9a-f]{16}$/.test(r.importedFrom.session)));
+  const skills = Object.keys(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.skills).filter((path) => path.endsWith("SKILL.md"));
+  assert.equal(skills.length, 2, `the two folders named after keys stay two skills: ${skills}`);
+  assert.ok(skills.every((path) => /redacted-[0-9a-f]{12}\//.test(path)), skills.join(" "));
+});
+
+test("keys in a JSON string a session holds, as Codex keeps a shell's output and as Claude Code keeps a printed file, are cut and counted once", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "vault");
+  mkdirSync(site, { recursive: true });
+  const k = shapedKeys();
+  const config = JSON.stringify({ anthropic: k.anthropic, github: k.github, slack: k.slack, stripe: k.stripe, private_key: k.pem.block });
+  // Codex: the shell's output is a JSON string in the record, the printed file a JSON string inside that.
+  codexSession(at, site, 1, { output: JSON.stringify({ output: `$ cat config.json\n${config}`, metadata: { exit_code: 0, duration_seconds: 0.4 } }) });
+  // Claude Code: the printed file is the tool result's text.
+  claudeSession(at, site, 2, { output: config });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  for (const value of [k.anthropic, k.github, k.slack, k.stripe, ...k.pem.lines]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(value), `${file.slice(data.length + 1)} holds ${value.slice(0, 8)}…`);
+  assert.ok(lines.includes("5 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("this repository's own source, imported as a session's output, has nothing cut from it", async (t) => {
+  const repo = new URL("../../../", import.meta.url).pathname;
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (["node_modules", "dist", ".git", "coverage", "storybook-static"].includes(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(ts|tsx|mjs)$/.test(entry.name)) files.push(path);
+    }
+  };
+  for (const top of ["packages", "apps"]) walk(join(repo, top));
+  // One file holds a key-shaped literal on purpose: packages/learn/test/check.test.mjs, whose checker test plants a Slack
+  // bot token's shape (its `xoxb-` string) to see it refused. It is left out; every other file must come through whole.
+  const source = files.filter((file) => !file.endsWith(join("learn", "test", "check.test.mjs")));
+  assert.ok(source.length > 300, `the source read: ${source.length} files`);
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "agentrun");
+  mkdirSync(site, { recursive: true });
+  // Each file printed whole by a session, about a megabyte of source a session.
+  let [n, chunk, size] = [1, [], 0];
+  const flushed = () => (chunk.length && claudeSession(at, site, n++, { prompt: "Read the source.", output: chunk.join("\n") }), (chunk = []), (size = 0));
+  for (const file of source) {
+    const text = readFileSync(file, "utf8");
+    chunk.push(`==> ${file.slice(repo.length)}\n${text}`);
+    size += text.length;
+    if (size > 1_000_000) flushed();
+  }
+  flushed();
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  assert.ok(lines.includes("0 secrets removed"), `${source.length} files: ${lines.filter((l) => /removed/.test(l)).join(" ")}`);
+});
+
+test("secretlint finds nothing in code that names keys and passwords", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  for (const line of [
+    "const apiKey = process.env.OPENAI_API_KEY;",
+    "user.password = bcrypt.hashSync(password, 10);",
+    "const { accessKeyId, secretAccessKey } = await sts.assumeRole({ RoleArn: roleArn }).promise();",
+    'headers: { "x-api-key": config.apiKey, authorization: `Bearer ${session.accessToken}` }',
+  ])
+    assert.deepEqual(await secretsIn(line), [], line);
+});
+
+test("setup's count reads no session through secretlint; an import reads each run once, as it reads it, and a plan only each session's id", async (t) => {
+  const { secretlintCalls } = await import("../dist/secret-cut.js");
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "count");
+  mkdirSync(site, { recursive: true });
+  for (let n = 1; n <= 5; n++) claudeSession(at, site, n);
+  const env = { PATH: "/usr/bin" };
+  const before = secretlintCalls.count;
+  // As setup's count asks for it (import-worker.ts): a listing, no transcript kept, so no scan.
+  const counted = await planImport({ home: at, env, all: true, keys: false });
+  assert.equal(counted.projects[0].sessions.length, 5);
+  assert.equal(secretlintCalls.count, before, "the count read no session through secretlint");
+  const store = openStore(join(root, "agents"));
+  t.after(() => store.close());
+  const plan = await planImport({ home: at, env, all: true }, store);
+  const planned = secretlintCalls.count;
+  assert.equal(planned - before, 5, "the import's plan reads each session's id alone, no file");
+  await runImport(store, plan, { home: at, env, all: true });
+  assert.equal(secretlintCalls.count - planned, 1 + 5, "the import: its project's own text once, and each run once");
+});
+
+test("a key a session still being written adds after the plan read it is cut all the same: the import finds keys in what it reads", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "live");
+  mkdirSync(site, { recursive: true });
+  const file = claudeSession(at, site, 1, { prompt: "Deploy it." });
+  const env = { PATH: "/usr/bin" };
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  const plan = await planImport({ home: at, env, all: true }, store);
+  // Written after the plan: one more message of the person's, holding a key.
+  const key = shapedKeys().github;
+  const first = JSON.parse(readFileSync(file, "utf8").split("\n").find((line) => line.includes('"type":"user"')));
+  appendFileSync(file, `${JSON.stringify({ ...first, uuid: "late-1", timestamp: minute(30), message: { role: "user", content: `Rotate ${key} now.` } })}\n`);
+  const report = await runImport(store, plan, { home: at, env, all: true });
+  assert.equal(report.agents[0]?.runs, 1, JSON.stringify(report.agents));
+  for (const [path, bytes] of keptUnder(data)) assert.ok(!bytes.includes(key), `${path.slice(data.length + 1)} holds the key`);
+  assert.equal(report.secretsRemoved, 1);
+});
+
+test("a key found in a project's sessions is cut from its instructions too, where it stands bare: every key of a project is known before any of it is written", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "infra");
+  mkdirSync(site, { recursive: true });
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  // Its last character a letter or a digit: secretlint's AWS rule ends the 40 characters at a word boundary, so a secret
+  // that ends in "/" or "+" is one it does not find (a known miss, pinned in its own test).
+  const secret = `${pick(39, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+")}${pick(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")}`;
+  // Bare in the project's instructions, no name or id beside it: no rule finds it there.
+  writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
+  // Beside its name in a session: secretlint's AWS rule finds it.
+  claudeSession(at, site, 1, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: () => {} }), 0);
+  for (const form of [secret, secret.replaceAll("/", "\\/")]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(form), `${file.slice(data.length + 1)} holds the secret`);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.match(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.instructions, /Deploy with \[redacted\] on Fridays\./);
+});
+
+test("a key found in one project's sessions is cut from another project's instructions where it stands bare, though that project is imported first: every key is known before anything is written", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  // In the import's order (by path), the docs project comes first.
+  const [docs, infra] = [join(at, "code", "a-docs"), join(at, "code", "b-infra")];
+  for (const dir of [docs, infra]) mkdirSync(dir, { recursive: true });
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  // Its last character a letter or a digit: secretlint's AWS rule ends the 40 characters at a word boundary, so a secret
+  // that ends in "/" or "+" is one it does not find (a known miss, pinned in its own test).
+  const secret = `${pick(39, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+")}${pick(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")}`;
+  // Bare in the first project's instructions; beside its name only in the second project's session.
+  writeFileSync(join(docs, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
+  claudeSession(at, docs, 1, { prompt: "Tidy the docs." });
+  claudeSession(at, infra, 2, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: () => {} }), 0);
+  for (const form of [secret, secret.replaceAll("/", "\\/")]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(form), `${file.slice(data.length + 1)} holds the secret`);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.match(reader.readAgent(agentIdOf(docs)).revisions.find((r) => r.current).body.instructions, /Deploy with \[redacted\] on Fridays\./);
+});
+
+test("what the CLI prints is cut with every key the import finds: a secret beside its name in one project's session is cut where another project's folder name holds it bare", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  const secret = pick(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+  // Bare in the first project's folder name (printed with its path); beside its name only in the second project's session.
+  const [docs, infra] = [join(at, "code", `a-${secret}`), join(at, "code", "b-infra")];
+  for (const dir of [docs, infra]) mkdirSync(dir, { recursive: true });
+  claudeSession(at, docs, 1, { prompt: "Tidy the docs." });
+  claudeSession(at, infra, 2, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  for (const args of [["--dry-run"], []]) {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    assert.ok(!lines.some((line) => line.includes(secret)), `${args.join(" ") || "import"}: ${lines.filter((line) => line.includes(secret)).join("\n")}`);
+    assert.ok(lines.some((line) => line.includes("a-[redacted]")), lines.join("\n"));
+  }
+});
+
+test("a known miss of secretlint's AWS rule, pinned: an AWS secret whose last character is not a letter or a digit is not found", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  const body = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbC";
+  // secretlint's AWS rule (@secretlint/secretlint-rule-aws, reportAWSSecretAccessKey, in the recommended preset) matches
+  // `([A-Za-z0-9/\+=]{40})${QUOTE}\b`: the trailing \b needs a word character last, so a secret that ends in "/", "+"
+  // or "=" is not found. A later preset that fixes the rule turns this test red: then drop the test and the known miss
+  // in the PR's description.
+  for (const last of ["/", "+", "="]) assert.deepEqual(await secretsIn(`AWS_SECRET_ACCESS_KEY=${body}${last}\nnext`), [], last);
+  assert.deepEqual(await secretsIn(`AWS_SECRET_ACCESS_KEY=${body}a\nnext`), [`${body}a`]);
+});
+
+test("an import's plan reads no subagent file through secretlint: a subagent of a session the import leaves out is never read", async (t) => {
+  const { secretlintCalls } = await import("../dist/secret-cut.js");
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "fresh");
+  mkdirSync(site, { recursive: true });
+  // A session written a moment ago (left out: it may still be running), with a subagent's file.
+  const live = claudeSession(at, site, 1);
+  utimesSync(live, new Date(), new Date());
+  claudeSubagent(at, site, 1, 1, { answer: "notes ".repeat(10_000) });
+  const before = secretlintCalls.count;
+  const plan = await planImport({ home: at, env: { PATH: "/usr/bin" }, all: false });
+  assert.equal(plan.projects.length, 0, "the live session is left out");
+  assert.equal(secretlintCalls.count, before, "no subagent file read through secretlint");
+});
+
+
+test("a secretlint-disable line in what an import reads turns no rule off: a key after it in the same run is cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "lint");
+  mkdirSync(site, { recursive: true });
+  const token = `${["gh", "p"].join("")}_${Array.from(randomBytes(36), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62]).join("")}`;
+  // A repository's own secretlint config printed in one turn, a token in the next.
+  claudeSession(at, site, 1, { prompt: `$ cat .secretlintrc.js\n// ${"secretlint"}-disable`, output: `GITHUB_TOKEN=${token}` });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(token), `${file.slice(data.length + 1)} holds the token`);
+  assert.ok(lines.includes("1 secret removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("reading text through secretlint leaves no performance marks behind in the process", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  const before = performance.getEntriesByType("mark").length;
+  for (let i = 0; i < 5; i++) await secretsIn(`round ${i}: ${["gh", "p"].join("")}_${"a1B2c3D4e5F6g7H8i9J0".repeat(2).slice(0, 36)}`);
+  assert.equal(performance.getEntriesByType("mark").length, before);
+});
+
+test("what the CLI prints is cut with the saved tool keys too: a skipped file named after one is printed cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "saved");
+  mkdirSync(site, { recursive: true });
+  const file = claudeSession(at, site, 1);
+  const seal = randomBytes(32).toString("base64");
+  const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
+  const named = join(dirname(file), `${saved}.jsonl`);
+  writeFileSync(named, "not a session\n");
+  utimesSync(named, new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  mkdirSync(data, { recursive: true });
+  new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => lines.push(line) }), 0);
+  assert.ok(!lines.some((line) => line.includes(saved)), lines.join("\n"));
+  assert.ok(lines.some((line) => line.startsWith("skipped ") && line.includes("[redacted].jsonl")), lines.join("\n"));
+});
+
+test("the README says what an import removes and what it leaves", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+  assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));
+});
+
+test("a key of the environment's that holds a slash, across a skill's folders, leaves no part of itself in what the import keeps, and the skill stays one skill", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "deploys");
+  // A 65-character key, two 32-character halves around its "/", as a base64 secret can hold one: the first half ends the
+  // skill's folder name and the second names a folder in it.
+  const [head, tail] = [randomBytes(16).toString("hex"), randomBytes(16).toString("hex")];
+  mkdirSync(join(site, ".claude", "skills", `push-${head}`, tail), { recursive: true });
+  writeFileSync(join(site, ".claude", "skills", `push-${head}`, "SKILL.md"), "---\nname: push\n---\nPush it.\n");
+  writeFileSync(join(site, ".claude", "skills", `push-${head}`, tail, "notes.md"), "Notes.\n");
+  claudeSession(at, site, 1, { prompt: "Push the release." });
+  const data = join(root, "agents");
+  const key = `${head}/${tail}`;
+  const printed = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", OPENAI_API_KEY: key }, out: (line) => printed.push(line) }), 0);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  const paths = Object.keys(reader.readAgent(agentIdOf(site)).revisions.find((r) => r.current).body.skills).sort();
+  // No half of the key is left: not in a kept path, not in any byte of the data directory, not in what the CLI printed.
+  for (const half of [head, tail]) {
+    assert.ok(paths.every((path) => !path.includes(half)), `no kept path holds a half of the key: ${paths.join(" ")}`);
+    for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(half), `${file} holds a half of the key`);
+    assert.ok(!printed.join("\n").includes(half), printed.join("\n"));
+  }
+  // And the skill stays one skill: its SKILL.md and its notes under the one folder, kept as `redacted-` and a hash.
+  assert.equal(paths.length, 2, paths.join(" "));
+  const folders = new Set(paths.map((path) => path.split("/")[0]));
+  assert.equal(folders.size, 1, paths.join(" "));
+  const [folder] = folders;
+  assert.match(folder, /^redacted-[0-9a-f]{12}$/);
+  assert.ok(paths.includes(`${folder}/SKILL.md`), paths.join(" "));
+  assert.ok(printed.includes("1 secret removed"), printed.join("\n"));
+});
+
+test("a key in a project's path counts once, in the dry run and in the import: finding the folders it touches counts nothing", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  // A key in a folder's name, with a folder after it: blanking each to find the folders the key touches is no cut.
+  const site = join(at, "code", `keys-${shapedKeys().github}`, "app");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: "Build it." });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines.filter((line) => /secrets? (would be )?removed/.test(line));
+  };
+  assert.deepEqual(await run("--dry-run"), ["1 secret would be removed"]);
+  assert.deepEqual(await run(), ["1 secret removed"]);
+});
+
+test("a key of the environment's that holds a slash, across a project's own folders, leaves no part of itself in the agent's name", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [head, tail] = [randomBytes(16).toString("hex"), randomBytes(16).toString("hex")];
+  const site = join(at, "code", `deploy-${head}`, tail);
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: "Deploy it." });
+  const data = join(root, "agents");
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", OPENAI_API_KEY: `${head}/${tail}` }, out: () => {} }), 0);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  const { agent } = reader.readAgent(agentIdOf(site));
+  assert.match(agent.name, /^redacted-[0-9a-f]{12}$/, `the agent's name holds no half of the key: ${agent.name}`);
+  for (const half of [head, tail]) for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(half), `${file} holds a half of the key`);
 });
 
 /** The server's own key names: the launcher's SECRETS list, read as secrets.ts reads it (loading secrets.ts here would take

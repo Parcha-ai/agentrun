@@ -151,7 +151,8 @@ export async function startRun(api, id, content, extra = {}, skills) {
   return run.body;
 }
 
-/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until` and settled. */
+/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
+ *  once its page is final, any other status on the first page that leaves no change behind it. */
 export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
   const view = new Map();
   const pages = [];
@@ -165,7 +166,9 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
     for (const id of page.drop) view.delete(id);
     for (const row of page.rows) view.set(row.id, row);
     after = page.next_after;
-    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more && (page.unchanged || page.rows.length === 0);
+    // A page's status and its rows are read together, so a page with no more to come has every row up to that status. A
+    // second, empty page to confirm it would only return when its long poll runs out.
+    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more;
     if (until.includes(page.status) && settled) break;
     assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}: last ${page.status}/${page.state}`);
   }
@@ -174,8 +177,9 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.
- *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for. */
-export async function responsesEndpoint(t, text, tokens) {
+ *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for.
+ *  `incomplete`: each answer stops at its length instead (response.incomplete, max_output_tokens: pi's stopReason "length"). */
+export async function responsesEndpoint(t, text, tokens, { incomplete = false } = {}) {
   const asked = [];
   const bodies = [];
   const models = [];
@@ -186,14 +190,18 @@ export async function responsesEndpoint(t, text, tokens) {
     req.on("end", () => {
       if (req.method === "POST") bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "null"));
       if (req.method === "POST") models.push(bodies.at(-1)?.model);
-      const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const item = { type: "message", id: "msg_1", role: "assistant", status: incomplete ? "incomplete" : "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const usage = { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens };
+      const end = incomplete
+        ? { type: "response.incomplete", response: { id: "resp_1", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [item], usage } }
+        : { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage } };
       res.writeHead(200, { "content-type": "text/event-stream" });
       for (const event of [
         { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
         { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
         { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
         { type: "response.output_item.done", output_index: 0, item },
-        { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens } } },
+        end,
       ]) res.write(`data: ${JSON.stringify(event)}\n\n`);
       res.end();
     });

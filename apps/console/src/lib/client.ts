@@ -2,7 +2,7 @@ import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature } from "./v2";
+import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -20,6 +20,9 @@ export class ClientError extends Error {
   }
   toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
 }
+
+/** A failed request as a page says it: a refusal as the server's `code: message`, any other failure by its message. */
+export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
 
 /** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
  *  workflow ("" for the document itself). */
@@ -43,7 +46,8 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
+/** `limits`: this server's own (the largest upload, the most files a run names); absent on an older server. */
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature }; limits?: { max_upload_bytes?: number; max_files_per_run?: number } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
@@ -139,7 +143,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
-    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number }, idempotencyKey: string) => {
+    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
       return { run: r.body, status: r.status };
     },
@@ -150,6 +154,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return call<TimelinePage>("GET", `${run(id)}/timeline${q.size ? `?${q}` : ""}`, { signal });
     },
     listFiles: (id: string) => call<RunFiles>("GET", `${run(id)}/files`),
+    /** Deletes an upload (`DELETE /v2/files/{id}`): one the person removed before a run named it. */
+    deleteUpload: (fileId: string) => call<string>("DELETE", `/files/${encodeURIComponent(fileId)}`),
     readFile: (id: string, path: string) => call<string>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { text: true }),
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
@@ -177,6 +183,21 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** The webhook, never its secret (a serve extension). */
+    webhook: () => call<Webhook>("GET", "/settings/webhook"),
+    /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
+    saveWebhook: (url: string) => call<WebhookSaved>("PUT", "/settings/webhook", { body: { url } }),
+    removeWebhook: () => call<unknown>("DELETE", "/settings/webhook"),
+    /** A `webhook.test` message, tried once now: its attempt. */
+    testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** The last attempts, newest first. */
+    webhookDeliveries: () => call<{ attempts: WebhookAttempt[] }>("GET", "/settings/webhook/deliveries"),
+    /** A message of the log sent again, once now, under its webhook-id: its attempt. */
+    redeliverWebhook: (id: string) => call<WebhookAttempt>("POST", `/settings/webhook/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
+    /** The server's provider per capability that has a choice (its default where it sets none). */
+    toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
+    /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
+    saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };

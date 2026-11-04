@@ -87,7 +87,8 @@ describe("the program's environment", () => {
 	it("is PATH, HOME, LANG, the incarnation and the spec's settings: nothing of the box's own (inheritEnv false by default)", async () => {
 		const box = await aBox({ BOX_PLAIN_SETTING: "from-the-box" });
 		getOrThrow(await launch(box, "bare", { argv: program, env: { APP_MODE: "home" } }, context));
-		const seen = await until("the program's environment", () => fileIn(box, "seen-env"));
+		// The shell creates seen-env empty before env writes it: the wait is for its text, not the file.
+		const seen = await until("the program's environment", async () => (await fileIn(box, "seen-env")) || undefined);
 		const names = seen
 			.split("\n")
 			.filter(Boolean)
@@ -106,7 +107,7 @@ describe("the program's environment", () => {
 		getOrThrow(
 			await launch(box, "inherits", { argv: program, inheritEnv: ["BOX_PLAIN_SETTING", "BOX_ABSENT"] }, context),
 		);
-		const seen = await until("the program's environment", () => fileIn(box, "seen-env"));
+		const seen = await until("the program's environment", async () => (await fileIn(box, "seen-env")) || undefined);
 		expect(seen).toContain("BOX_PLAIN_SETTING=from-the-box\n");
 		expect(seen).not.toContain("BOX_OTHER");
 		expect(seen).not.toContain("BOX_ABSENT");

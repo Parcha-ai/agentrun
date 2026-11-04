@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -15,24 +16,24 @@ import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
-import { NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
+import { NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
-import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
+import { DATA_ENV, HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
+import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
-import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
+import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
-import { type Place, placesOf, resolvePlace } from "./place.js";
+import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, toolCostOf } from "./runs.js";
+import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
@@ -40,7 +41,8 @@ import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { keyOf, SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
+import { outcomes } from "./usage.js";
+import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
@@ -138,7 +140,8 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
-  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else from this host's memory: host.ts); over it, 429. */
+  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
+   *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
   /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
   minFreeBytes?: number;
@@ -149,8 +152,14 @@ export type ServeOptions = {
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
+  /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
+  beforeAbort?: (runId: string) => Promise<void> | void;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
+  reflectTimeoutMs?: number;
+  /** How long a run's grader may take before it is cut off and the run's learning dropped (default 3 min). */
+  gradeTimeoutMs?: number;
   /** Whether runs learn (`--learning`; default AGENTRUN_SERVE_LEARNING, else `on`). `on`: a run of an agent whose
    *  definition says `learning: true` starts from what its agent learned. `off`: no run this server starts does, whatever
    *  its agent's definition says, and its `learning` is null. */
@@ -164,7 +173,8 @@ export type ServeOptions = {
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; close(): Promise<void> };
+/** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -186,11 +196,14 @@ const SESSION_S = SESSION_MS / 1000;
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
  *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
- *  from the page's own origin (page.ts). Only a PUT carries it: a PUT is never a CORS-simple request, so a page of
- *  another origin cannot send one without a preflight, which this server never answers. */
+ *  with the page's own Origin (page.ts). Only a PUT or a POST carries it. The Origin is the lock: a browser sends it with
+ *  every cross-origin request and every POST and PUT, and a page cannot set it, so a page of another origin, even on this
+ *  host's other ports (which the cookie's SameSite does not tell apart), never gets the session for a raw write. A PUT
+ *  from another origin needs a preflight besides, which this server never answers; a raw POST does not, so a raw POST
+ *  route only stores bytes (`POST /files`): nothing runs until a JSON request names them. */
 export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
-  | { method: "PUT"; pattern: RegExp; name: string; capability?: string; raw: true };
+  | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
@@ -226,8 +239,11 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
-  { method: "POST", pattern: /^\/files$/, name: "createFile" },
+  { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
+  { method: "GET", pattern: /^\/files$/, name: "listFiles" },
+  { method: "GET", pattern: /^\/files\/([^/]+)$/, name: "getFile" },
   { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", raw: true },
+  { method: "DELETE", pattern: /^\/files\/([^/]+)$/, name: "deleteFile" },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
@@ -246,8 +262,12 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
 ];
 
+/** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
+ *  learning/). */
+const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
+
 /** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
-export const takesBytes = (method: string | undefined, path: string): boolean => method === "PUT" && ROUTES.some((r) => r.raw === true && r.method === "PUT" && r.pattern.test(path));
+export const takesBytes = (method: string | undefined, path: string): boolean => (method === "PUT" || method === "POST") && ROUTES.some((r) => r.raw === true && r.method === method && r.pattern.test(path));
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
 /** A workflow run's title: its agent's name and a few words of its input, never the input's JSON ("Batch review: 20
@@ -263,14 +283,28 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
-/** The server's reading of `base` with its secrets, saved keys among them, and its capabilities on it, the harnesses'
- *  offers included, under its learning switch (`learning`, AGENTRUN_SERVE_LEARNING's when not given) and its tool
- *  settings (`toolSettings`, what each web tool resolves to): made at the start and again at each save or delete of a key
- *  and each PUT of the tool settings, so a key saved later can make a harness or a provider available with no restart.
- *  `boxes`: what the box registry set up at the start (boxes.ts), the same in every reading. */
+/** `env` as the harnesses' offers are made from it: without the tool keys' fields (TOOL_FIELDS), which no harness reads.
+ *  So the offers never depend on a tool key, and its save or delete leaves them as they are. */
+export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const descriptors = Object.getOwnPropertyDescriptors(env);
+  for (const name of TOOL_FIELDS) delete descriptors[name];
+  return Object.defineProperties({}, descriptors) as NodeJS.ProcessEnv;
+}
+
+/** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
+ *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
+ *  the offers probed again, never shown. */
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
+
+/** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
+ *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
+ *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
+ *  box offers (`boxes`, what the box registry set up at the start, boxes.ts). The server makes it once at its start and
+ *  then remakes only the parts a write changes (startHolding). */
 export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
-  return { env, caps: await capabilities(env, maxRuns, learning ?? learningOf(env), toolSettings, boxes) };
+  const offers = await harnessOffers(offersEnvOf(env));
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
@@ -282,23 +316,25 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
- *  offers (capabilities, through readingOf at the start and after each key or tool-settings write). */
+ *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
 function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const models = modelSource(env);
+  // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
+  const memory = hostMemory();
   return {
     backend: "local",
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
-    /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses,
+    /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
+    harnesses: harnesses.map((offer) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes),
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
-    tools: toolsView(env, toolSettings).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    tools: toolsView(env, toolSettings, noBoxReason(boxes)).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -324,7 +360,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: false, during_run: true },
       quotes: false,
-      usage: { basis: "estimate", meters: ["tokens", "tools"] },
+      usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       browser: "none",
@@ -351,7 +387,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       max_upload_bytes: MAX_UPLOAD_BYTES,
       max_files_per_run: MAX_FILES_PER_RUN,
       max_message_chars: MAX_MESSAGE,
-      max_concurrent_runs: maxRuns,
+      // pi's: the smallest run, so the most at once. A heavier harness fits fewer (harnesses[].max_concurrent_runs).
+      max_concurrent_runs: Math.min(maxRuns, runsThatFit(DEFAULT_HARNESS, memory)),
       timeline_max_wait_ms: MAX_WAIT_MS,
       timeline_page_rows: PAGE_ROWS,
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
@@ -436,30 +473,57 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const base = { ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
+  // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
+  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev };
+  const checkFetch = async (id: string): Promise<typeof fetch | undefined> => {
+    if (!options.faux) return fetch;
+    const fake = fakes[id];
+    return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : undefined;
+  };
+  // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
+  const stopping = new AbortController();
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
-  // The server's reading, saved keys with it (storedKeys), and its capabilities under its tool settings: made again at
-  // each save or delete of a key, the one writer of its file, and at each PUT of the tool settings, both through this one
-  // recompute, so capabilities, the harnesses' offers, save checks and run checks see either with no restart and no
-  // request opening the file. A reading a later write overtook is dropped, so a key write and a settings write never
-  // leave capabilities stale. The first is made once saved keys are read (below), so the offers are checked once at the
-  // start.
+  // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
+  // `offers`, what each harness offers, probed from env without the tool keys (offersEnvOf), the one slow part (each
+  // CLI's package and pins, codex's binary hashed); and `caps`, the capabilities document made from both under the tool
+  // settings and the box offers. A write remakes only the parts it changes, before it answers: a PUT of the tool
+  // settings, caps; a save or delete of a key, env and caps, and the offers only when what they are made from changed,
+  // which no tool key is. So a write answers at once, and capabilities, save checks and run checks after it see it, with
+  // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
   let env = withSecrets(base, "all", storedKeys);
-  let caps!: Awaited<ReturnType<typeof readingOf>>["caps"];
-  let latest = 0;
+  let offers!: HarnessCapability[];
+  let caps!: ReturnType<typeof capabilitiesWith>;
+  // The box offers are probed once, below, before the first reading is made.
+  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers));
+  // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
+  let offersFrom: readonly (string | undefined)[] | undefined;
+  let probes = 0;
+  const probe = async (why: string) => {
+    const mine = ++probes;
+    const from = offersInputs(env);
+    const started = performance.now();
+    const next = await harnessOffers(offersEnvOf(env));
+    log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
+    if (mine !== probes) return;
+    [offers, offersFrom] = [next, from];
+    recompose();
+  };
+  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. */
   const keysChanged = async () => {
-    const mine = ++latest;
-    // The box offers are probed once, below, before the first reading is made.
-    const next = await readingOf(base, maxRuns, storedKeys, learning, settings.get(), boxOffers);
-    if (mine === latest) ({ env, caps } = next);
+    env = withSecrets(base, "all", storedKeys);
+    const inputs = offersInputs(env);
+    if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
+    else await probe("key");
   };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
@@ -473,10 +537,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   stops.push(() => webhooks.close());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
+  // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
+  // temp file found now is a crashed one's.
+  const swept = await uploads.sweep();
+  if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
+  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
+  if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -497,7 +566,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
-  await keysChanged();
+  await probe("start");
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
@@ -657,14 +726,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const workflowShape = ({ workflow, tools, harness, place, toolSettings }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"] }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}) });
   const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
-  /** What keeps `revision` from running here at `place` (its own, or narrowed to the runner), checked before anything
+  /** What keeps `revision` from running here at `place` (its own, else this host's default), checked before anything
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
-   *  does not have yet. A run narrowed to the runner runs without bash. `capped`: the run has a spend cap, which a web
-   *  tool's resolution reads (tool-plane.ts). */
+   *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place };
-    if (shape.kind === "agentic" && place.mode === "runner" && revision.body.place?.mode === "sandbox") shape.tools = (shape.tools ?? []).filter((tool) => !toolOf(tool)?.sandboxOnly);
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, offers });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -680,7 +747,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers });
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : workflowShape(revision), settings.get(), { boxes: boxOffers, offers });
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -699,9 +766,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
-      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id", "place"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
-      // A run may narrow its agent's place to the runner, never widen it: the only place a request names.
-      if (body.place !== undefined && body.place !== "runner") issues.push({ field: "place", reason: "not_an_option", message: 'place is "runner": a run may narrow its agent\'s place to the runner, and names no other' });
+      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
       if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
       if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -718,11 +783,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const input = body.input as Json;
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
-      const place = resolvePlace(revision.body.place as Place | undefined, body.place === "runner" ? "runner" : undefined);
+      const place = resolvePlace(revision.body.place as Place | undefined);
       await runnable(revision, place, { capped: body.max_cost_usd !== undefined });
       const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, input) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
-      return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
+      // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
+      // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
+      return { status: 202, body: await runs.view(run, { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
 
@@ -871,7 +938,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  the name check holds for the spellings it knows, and this for any other a disk takes. */
   async function notHostOwned(home: string, rel: string, agentId: string, write: boolean): Promise<void> {
     const owned = await ownedByIdentity(home, rel);
-    if (owned) throw hostOwnedRefusal(owned, agentId, write);
+    if (owned) throw hostOwnedRefusal(owned, agentId, write, ownedReadAt(agentId));
   }
 
   /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
@@ -914,6 +981,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
     const total = { usd: 0, unpriced: 0 };
+    // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
+    // passes as $0.
+    const add = (key: string, usd: number | null) => {
+      const line = lines.get(key) ?? lines.set(key, { usd: 0, unpriced: 0 }).get(key)!;
+      for (const sum of [line, total]) {
+        if (usd === null) sum.unpriced++;
+        else sum.usd += usd;
+      }
+    };
+    // A line's key for the ledger's entries, as each run's is above: by agent, by day, by meter, or one line.
+    const lineKey = (agent: string, at: string, meter: string) => (group === "agent" ? agent : group === "day" ? at.slice(0, 10) : group === "meter" ? meter : "local");
     for (const row of await agents.request(() => agents.store.listRuns())) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
@@ -935,6 +1013,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       if (usd === null) total.unpriced++;
       else total.usd += usd;
+    }
+    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
+    for (const entry of (await outcomes(data)).values()) {
+      const at = Date.parse(entry.at);
+      if (at >= from && at < to) add(lineKey(entry.agent, entry.at, "learning"), entry.cost);
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
@@ -1038,7 +1121,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
     const matching = ROUTES.filter((r) => r.pattern.test(path));
-    if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
+    // `/v2` twice: a path an answer gives (upload.url, a Location) appended to the /v2 base, where it starts at the root.
+    if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, caps);
@@ -1151,22 +1235,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           const { mode, messageId } = await runs.message(run, content);
-          const view = await runs.view(run);
-          return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status: view.status, state: view.state, poll_after_ms: 1000 } };
+          // The run's state as the message left it, from the run itself: the stored row (its view's) would make a
+          // message already taken answer home_busy while another connection holds the agent store.
+          const { status, state } = statusOf(run);
+          return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "stopRun": {
         const run = await needRun(id);
         const stopped = await runs.stop(run);
-        const view = await runs.view(run);
-        return send(res, 200, { run_id: run.id, stopped, status: view.status, state: view.state });
+        // From the run itself, as a message's answer: a stop that happened is never answered home_busy.
+        const { status, state } = statusOf(run);
+        return send(res, 200, { run_id: run.id, stopped, status, state });
       }
       case "cancelRun": {
         const run = await needRun(id);
         const requested = await runs.cancel(run);
-        const view = await runs.view(run);
-        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
+        return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: statusOf(run).status });
       }
       case "archiveRun":
       case "unarchiveRun": {
@@ -1192,7 +1278,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "readHomeFile": {
         await needAgent(id);
-        const rel = homePath(second!, id, false);
+        const rel = homePath(second!, id, false, ownedReadAt(id));
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
         await notHostOwned(home, rel, id, false);
@@ -1233,7 +1319,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {
-          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get()).catch(() => [])) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get(), { offers }).catch(() => [])) {
             if (blocker.host) warnings.push(blocker.message);
             else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
           }
@@ -1250,26 +1336,61 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
       }
       case "createFile": {
+        // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
+        // contract's JSON reservation, its bytes sent after with PUT /files/{file_id}.
+        if (url.searchParams.has("path") || !isJson(req)) {
+          const received = await uploads.take(url.searchParams, req.headers["content-type"], req);
+          try {
+            const answer = await idempotent(req, "/files", received.fingerprint, async () => ({ status: 201, body: await received.commit() }));
+            return send(res, answer.status, answer.body, answer.headers);
+          } finally {
+            await received.discard();
+          }
+        }
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await uploads.reserve(body) }));
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "uploadFile":
         return send(res, 200, await uploads.receive(id, req));
+      case "listFiles": {
+        // This server's own: its uploads, newest first, a page at a time, so an id is never lost with the answer that gave it.
+        const limit = limitOf(url.searchParams.get("limit"));
+        const offset = cursorOf(url.searchParams.get("cursor"));
+        const ids = await uploads.ids();
+        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => uploads.get(fileId)))).filter((file) => file !== null);
+        return send(res, 200, { files, next_cursor: nextCursor(offset + limit, ids.length) });
+      }
+      case "getFile": {
+        const file = await uploads.get(id);
+        if (!file) throw new ApiError("not_found", `no file ${id}: GET /v2/files lists the files this server keeps`);
+        return send(res, 200, file);
+      }
+      case "deleteFile":
+        await uploads.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter)] as const);
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter) });
+        const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
+        // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
+        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
         return send(res, 200, toolKeys.view(caps.harnesses));
-      case "saveToolKey":
-        // Never through `idempotent`: its record keeps the body, and this body is the values.
-        toolKeys.save(id, await bodyOf(req));
+      case "saveToolKey": {
+        // Never through `idempotent`: its record keeps the body, and this body is the values. Checked against its
+        // provider before it is kept: a key the provider refuses is 422, and nothing is kept.
+        const body = await bodyOf(req);
+        const check = await toolKeys.check(id, body, checkFetch, stopping.signal);
+        // A server that began to close stores nothing: it may have released its lock, and another server may hold this
+        // directory and its keys by now.
+        if (stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the key was not saved.");
+        toolKeys.save(id, body, check);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "deleteToolKey":
         toolKeys.remove(id);
         await keysChanged();
@@ -1283,9 +1404,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
         settings.put(body as ToolSettingsMap);
-        // The same recompute a key write makes (keysChanged): env and capabilities again, under these settings and the
-        // keys saved now, so neither write can leave the other's capabilities stale.
-        await keysChanged();
+        // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
+        recompose();
         return send(res, 200, withDefaults(settings.get()));
       }
       case "getWebhook":
@@ -1374,10 +1494,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env)),
     async close() {
       // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
       // after close.
       closing = true;
+      stopping.abort();
       for (const worker of workers.keys()) worker.postMessage("stop");
       await Promise.all([...workers.values()].map((w) => w.exit));
       await importing;
