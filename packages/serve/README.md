@@ -492,7 +492,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, offset?, next_offset?, html_chars?, converted?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
@@ -520,18 +520,22 @@ redirect to one are all refused, as is any scheme but http(s). A URL on a port o
 a part of the page's text: about `max_chars` characters from `offset` (20,000 by default, at least 200, at most
 50,000; a quote or a line break counts two, as the JSON answer holds it, and a part holds one character at least, so
 it always advances), its length as `chars`. A part that is not the whole page says so: `truncated` while more follows,
-`next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's extract gives it
-only for a page shorter than it was asked for), and for an agent a line after the JSON says which characters these are
-and the call that reads on. A page whose HTML is longer than 1,000,000 characters (scripts and styles aside) is cut
-before it is read: every part gives `html_chars`, the page's whole length, and no `original_chars`, its text is the
-start of the page, and the last part's line says `The page was cut at 1,000,000 characters of HTML before reading; the
-rest wasn't read.` `converted: "text"` says the text is the page's plain text, its conversion to markdown having run
-out of time. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000
-characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
-reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via:
-"tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by
-default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
-run starts (`409`).
+`next_offset` where it begins, `original_chars` the page's whole length where it is known, and for an agent a line
+after the JSON says which characters these are and the call that reads on. A page whose HTML is longer than 1,000,000
+characters (scripts and styles aside) is cut before it is read: every part gives `html_chars`, the page's whole
+length, and no `original_chars`, its text is the start of the page, and the last part's line says `The page was cut at
+1,000,000 characters of HTML before reading; the rest wasn't read.` `converted: "text"` says the text is the page's
+plain text, its conversion to markdown having run out of time. A page is read to its first 1,000,000 characters: an
+`offset` at or past them is refused, and the last part a read reaches of a longer page has `beyond_read`. The links,
+absolute http(s) only, come with the part at offset 0: at most 200, in 20,000 characters, with `links_omitted`
+counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
+run keeps what it read of its last 8 pages by the URL asked for: every later part of that URL comes from it, with no
+request, so a page's parts are always one read's. Through Parallel that is one billed extract a page a run, asked for
+its first 1,000,001 characters (the extract has no offset: its text always starts at the page's start). A refusal or a
+failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent reads why, and a workflow
+can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool", tool: "web_fetch"` gets
+it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
+shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
 
 On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
@@ -625,9 +629,9 @@ Every provider answers one shape, `{provider, query, results: [{url, title, snip
 naming the one that served it (`native`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
 the model reads ends with one line asking it to cite the URL of each result it relies on.
 
-`web_fetch` answers a Page with `via`; a text cut at 60,000 characters says so, `truncated: true`
-with `original_chars`, its whole length, where it is known (Parallel cuts a page itself and gives none; no paging). With Parallel picked the page is read through Parallel's
-extract (`POST https://api.parallel.ai/v1/extract`, its full content as the text, about $0.001 a URL) and `via` is
+`web_fetch` answers a Page with `via`, a part of the page at a time (`offset`, `max_chars`, as above). With Parallel
+picked the page is read through Parallel's extract (`POST https://api.parallel.ai/v1/extract`, its full content as the
+text, about $0.001 an extract, one a page a run) and `via` is
 `"parallel"`, with status 200 and the absolute links of its markdown; when Parallel lists the URL in its errors, answers
 with no content, a 5xx or not within 60 s, it is the guarded direct fetch, `via: "direct"`, with `parallel` saying why
 Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
