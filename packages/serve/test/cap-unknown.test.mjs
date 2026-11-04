@@ -524,6 +524,18 @@ test("a capped pi run steered mid-answer: the answer in flight finishes, never a
 const storeFileOf = (data, runId) => join(data, "runs", runId, "store", "run.sqlite");
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const finished = async (api, runId) => (await follow(api, runId, ["completed", "failed", "cancelled"]), view(api, runId));
+/** The same, or the run paused at its cap (input_required, pending budget). */
+const pausedOrEnded = async (api, runId) => (await follow(api, runId, ["input_required", "completed", "failed", "cancelled"]), view(api, runId));
+const PAUSED = ["input_required", "waiting", null, "budget"];
+/** Once a paused run's process has let it go (its run.json says released): its store is then free to read. */
+async function letGo(data, runId) {
+  const record = () => (existsSync(join(data, "runs", runId, "run.json")) ? JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")) : null);
+  for (let i = 0; !["sleeping", "paused", "done", "failed"].includes(String(record()?.status)); i++) {
+    assert.ok(i < 400, `the paused run's process let it go: ${JSON.stringify(record())}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+const pausedState = (run) => [run.status, run.state, run.error, run.pending?.kind];
 /** A run under a cap of `cap` whose turn is stopped while its first request is in flight, once it reads stopped. */
 async function stopped(api, id, cap) {
   const runId = await inFlight(api, id, "Take your time.", cap);
@@ -553,19 +565,19 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   assert.equal(run.cost.usd, null);
 });
 
-test("a capped pi run stopped mid-answer, when what the cap held for the stopped request leaves no room for another request's least: the next request is refused with the cap's message, and the run's cost shows unknown, never $0", async (t) => {
+test("a capped pi run stopped mid-answer, when what the cap held for the stopped request leaves no room for another request's least: the next request is refused with the cap's message, the run pauses at its cap, and its cost shows unknown, never $0", async (t) => {
   // $1.70 holds one request's worst case of about $1.64, and leaves $0.06 after it: not another's least, 1,024 tokens at
   // $0.0001.
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
   const runId = await stopped(api, "tight", 1.7);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
-  const run = await finished(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
+  const run = await pausedOrEnded(api, runId);
+  assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
+  assert.match(run.pending.said, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
   assert.equal(run.cost.usd, null, "the refusal never balances the stopped request: unknown, not $0");
 });
 
-test("a capped pi run refused for room with no stop: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
+test("a capped pi run refused for room with no stop pauses at its cap: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   // A probe: one paid request (asking the person), to learn what one costs.
   assert.equal((await api("POST", "/agents", agent("probe", { tools: ["ask_person"] }))).status, 201);
@@ -579,9 +591,11 @@ test("a capped pi run refused for room with no stop: its cost stays the known to
   const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: (1_024 * 100) / 1e6 + first / 2 })).body.run_id;
   await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
-  const run = await finished(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+  const run = await pausedOrEnded(api, runId);
+  assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
   assert.equal(run.cost.usd, first, "the known total, never null");
+  // Paused, its process is let go: its store is read once that process has released it.
+  await letGo(data, runId);
   const db = new DatabaseSync(storeFileOf(data, runId), { readOnly: true });
   const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
   db.close();
@@ -645,11 +659,11 @@ test("a capped pi run whose process is killed mid-request is opened again and go
   assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the cap counts the cut request at its held worst case: $${spent}`);
 });
 
-test("a capped pi run whose process is killed mid-request, when the held worst case leaves no room for another request's least: the next process refuses the request with the cap's message", { timeout: 120_000 }, async (t) => {
+test("a capped pi run whose process is killed mid-request, when the held worst case leaves no room for another request's least: the next process refuses the request with the cap's message, and the run pauses at its cap", { timeout: 120_000 }, async (t) => {
   // $1.70 holds one request's $1.64, and leaves $0.06: not another's least.
   const { api, runId, signal } = await killedMidRequest(t, 1.7);
-  const run = await finished(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
+  const run = await pausedOrEnded(api, runId);
+  assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
+  assert.match(run.pending.said, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
   assert.equal(existsSync(signal), false, "the request is not sent again");
 });
