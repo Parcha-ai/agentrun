@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
+import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription } from "../dist/learned-workflow.js";
 import { REPLAY } from "../dist/host-tools.js";
 import { git } from "./learn-support.mjs";
@@ -52,16 +53,19 @@ function entries(data, runId, kinds) {
   }
 }
 
-/** Agent `id` on `harness`, learning, with `files` learned; one run of ASK, ended: its id, rows and view. */
-async function ran(api, data, id, harness, files, tools = []) {
-  assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ASK, tools }))).status, 201);
+/** Agent `id` on `harness`, learning, with `files` learned (`extra`: more of its definition); one run of ASK (`fields`:
+ *  more of its start, a cap), ended: its id, rows and view. */
+async function ran(api, data, id, harness, files, tools = [], { extra = {}, fields = {}, deadlineMs = 60_000, ask = ASK } = {}) {
+  assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, tools, ...extra }))).status, 201);
   await folderWith(data, id, files);
-  const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK } });
+  const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs });
   return { runId, rows, view: (await api("GET", `/runs/${runId}`)).body };
 }
+/** The learned_workflow call's result row in `rows`. */
+const learnedResult = (rows) => rows.find((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL);
 
 test("learned_workflow is never run again after a crash, on any harness, and says each workflow and what it does", () => {
   assert.equal(LEARNED_WORKFLOW_TOOL, "learned_workflow");
@@ -112,3 +116,131 @@ for (const [why, extra] of [["waits for its owner's OK", "status: pending\n"], [
     assert.ok(!rows.some((row) => row.kind === "tool_result" && row.tool_status === "success" && row.tool_name === LEARNED_WORKFLOW_TOOL));
   });
 }
+
+// Review fixes (#1616): each red first against the head before them.
+
+/** A one-node workflow whose call node searches the web for the input's question. */
+const searchFlow = () => ({
+  v: 2, name: "answer",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Search: { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 1 } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Search", path: "found" },
+  root: { node: "chain", steps: [{ node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 60 }] },
+});
+
+test("the tool's description gives its workflows a budget: by name, each whose line fits what is left of it; the pin names the ones left out", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const long = "Answers a question as a number. ".repeat(100);
+  const files = {};
+  for (const name of ["a-flow", "b-flow", "c-flow", "d-flow"]) {
+    files[`workflows/${name}/workflow.json`] = JSON.stringify(answerFlow());
+    files[`workflows/${name}/README.md`] = `---\nname: ${name}\ndescription: ${long}\n---\n`;
+  }
+  const { runId } = await ran(api, data, "budgeted", "pi", files);
+  const pin = pinOf(data, runId);
+  // Each line is 3,209 bytes: two fit the 8 KiB, and the next two are left out.
+  assert.equal(learning.LEARNED_WORKFLOWS_BUDGET, 8 * 1024);
+  assert.deepEqual([pin.workflows, pin.workflows_left_out], [["a-flow", "b-flow"], ["c-flow", "d-flow"]], JSON.stringify(pin));
+  const kept = JSON.parse(readFileSync(join(data, "runs", runId, "learned-workflows.json"), "utf8"));
+  assert.ok(Buffer.byteLength(learnedWorkflowDescription(kept)) < learning.LEARNED_WORKFLOWS_BUDGET + 512, "the description stays within its budget and its two lines of what the tool does");
+});
+
+test("a learned workflow's model node runs with its own signal: a sibling branch that fails stops it at once, never after its own answer", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const flow = answerFlow();
+  flow.root.steps = [{ node: "parallel", label: "both", branches: [
+    { node: "extract", label: "slow", instructions: "Answer the question.", out: "Answer", as: "answer" },
+    { node: "extract", label: "tooled", instructions: "Answer the question.", out: "Answer", as: "other", tools: ["web_fetch"] },
+  ] }];
+  const began = Date.now();
+  // The question is the node's prompt (its state): "Take your time" holds the faux model's answer 60 s, until it is stopped.
+  const { rows } = await ran(api, data, "siblings", "pi", flowFiles("answer", flow), ["web_fetch"], { deadlineMs: 45_000, ask: "Use the learned workflow answer on Take your time." });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /runs without tools here/, JSON.stringify(result));
+  assert.ok(Date.now() - began < 40_000, `the slow node (60 s) was stopped with its sibling: ${Date.now() - began} ms`);
+});
+
+test("a learned workflow's model node of a tier the run has no model of runs on the run's own model, never on one the run was not made with", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL_FAST: "faux-fast" });
+  const { api, data } = await serve(t, { learning: "on" });
+  const flow = answerFlow();
+  flow.root.steps[0].tier = "fast";
+  const { rows, view } = await ran(api, data, "tiered", "pi", flowFiles("answer", flow));
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /\{\\?"answer\\?":42\}/);
+  assert.equal(view.status, "completed");
+});
+
+test("a learned workflow's call node through a paid web tool is booked under the learned_workflow call: marked at its price and settled, in the run's cost", { timeout: 120_000 }, async (t) => {
+  const { CANARY } = await import("./fixtures/faux-parallel.mjs");
+  const file = join(await scratch(t), "parallel.jsonl");
+  withEnv(t, { PARALLEL_API_KEY: CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: file }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
+  const { api, data } = await serve(t, { learning: "on", fauxParallel: new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname });
+  const { runId, rows, view } = await ran(api, data, "paid", "pi", flowFiles("answer", searchFlow()), ["web_search"], { extra: { tool_settings: { web_search: { provider: "parallel" } } } });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /registry\.example/, JSON.stringify(result));
+  const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
+  const paid = entries(data, runId, ["agentrun.tool_started", "agentrun.tool_cost"]);
+  assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.charged_by, entry.heldUsd ?? entry.usd]), [["agentrun.tool_started", "web_search", "parallel", 0.001], ["agentrun.tool_cost", "web_search", "parallel", 0.001]]);
+  assert.ok(paid.every((entry) => entry.call === `${use.tool_use_id}/Search@${paid[0].call.split("@")[1]}`), `booked under the tool's call, as its node's own: ${paid.map((entry) => entry.call)}`);
+  assert.equal(view.cost.usd, 0.001, "the faux model is $0: the run's cost is Parallel's fee");
+});
+
+test("a claude-agent run's learned workflow searches natively through the run's models: its call node's web_search on the provider's hosted search", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const upstream = join(dir, "upstream.jsonl");
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, fauxUpstream: new URL("./fixtures/faux-upstream.mjs", import.meta.url).pathname });
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
+  const { rows } = await ran(api, data, "native-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /public\.example/, JSON.stringify(result));
+  const sent = readFileSync(upstream, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
+});
+
+const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
+/** The run's harness requests' records, from its store: each with the worst case its cap held it at. */
+function harnessRequests(data, runId) {
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  try {
+    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
+  } finally {
+    db.close();
+  }
+}
+
+// The faux model priced on output alone, $100 a million tokens: a request's least (1,024 tokens) is $0.1024. The faux
+// harness books each of its requests at $0.001. Under the faux harness claude-agent and codex run one path.
+test("a capped codex run's learned workflow is held to what the harness left of the cap: its node's request is refused when the harness's spend leaves less than its least", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  // $0.103 less the harness's $0.001 leaves $0.102: not the node's $0.1024, which the cap alone would hold.
+  const { runId, rows } = await ran(api, data, "capped-flow", "codex", flowFiles("answer", answerFlow()), [], { fields: { max_cost_usd: 0.103 } });
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /model_error/, JSON.stringify(result));
+  assert.equal(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.capRefused === true).length, 1, "the cap refused its node's request: its own start mark");
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started", "agentrun.request_cost"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no learned request was sent");
+});
+
+test("a capped codex run's harness counts its learned workflow's cost: its next request is held to what is left after it", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+  const cap = 0.25;
+  const { runId, rows } = await ran(api, data, "counted-flow", "codex", flowFiles("answer", answerFlow()), [], { fields: { max_cost_usd: cap } });
+  assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
+  const side = entries(data, runId, ["agentrun.request_cost"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL).map((entry) => entry.usd);
+  assert.equal(side.length, 1, JSON.stringify(side));
+  assert.ok(side[0] >= 0.0002, `the learned request cost something: ${side[0]}`);
+  const held = harnessRequests(data, runId).map((request) => request.heldUsd);
+  assert.equal(held.length, 2, JSON.stringify(held));
+  // The second is limited to what is left of the cap after the first ($0.001) and the learned request, to the token.
+  const left = cap - 0.001 - side[0];
+  assert.ok(held[1] <= left + 1e-9 && held[1] > left - 0.0001 - 1e-9, `the harness's next request held at ${held[1]}, what is left after the learned workflow's $${side[0]} is ${left}`);
+});
