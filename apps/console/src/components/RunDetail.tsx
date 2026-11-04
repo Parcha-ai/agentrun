@@ -40,10 +40,14 @@ export type RunDetailProps = {
 type Tab = "graph" | "report" | "timeline" | "files";
 
 /** What the Report tab says while a run has no answer and has not ended: only a queued or working run is writing it. One
- *  that asked a question waits for the answer (in the box below, where the server takes one from here); a stopped one
- *  (input required, idle) stopped before it wrote one, and a message continues it; a paused workflow run starts no step
- *  until it is resumed. */
-function beforeAnswer(run: Pick<Run, "status" | "state">, view: RunView): { title: string; note: string; spin: boolean } {
+ *  that waits on a kind of thing this console doesn't know (its `pending.kind`, a newer server's; nothing else of it is
+ *  read) waits for the person, whatever its state; one that asked a question (named so, or from a server that sends no
+ *  `pending`) waits for the answer, in the box below where the server takes one from here; a stopped one (input
+ *  required, idle) stopped before it wrote one, and a message continues it; a paused workflow run starts no step until
+ *  it is resumed. */
+function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunView): { title: string; note: string; spin: boolean } {
+  const kind = (run.pending as { kind?: unknown } | null | undefined)?.kind;
+  if (run.status === "input_required" && kind !== undefined && kind !== "question") return { title: "Waiting for you", note: "The run continues once you give it what it waits on.", spin: false };
   if (run.status === "input_required" && run.state === "waiting") return { title: "Waiting for your answer", note: view.messageMode === "answer" ? "The run continues when you reply below." : "The run continues once the question is answered.", spin: false };
   if (run.status === "input_required") return { title: "Stopped", note: `Stopped before it wrote an answer.${view.canMessage ? " Send a message below to continue it." : ""}`, spin: false };
   if (run.status === "paused") return { title: "Paused", note: "No new step starts until it's resumed. The answer appears here when it finishes.", spin: false };
