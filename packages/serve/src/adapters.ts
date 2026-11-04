@@ -221,13 +221,13 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
-/** The model key a run on `harness` (claude-agent or codex) of `model` (the revision's; none, the host's default for the
+/** The model key a run on `harness` (claude-agent, codex, or opencode, which takes codex's route) of `model` (the revision's; none, the host's default for the
  *  harness) takes: the one its requests carry on the route its provider below takes, as key-refusal.ts' runKeyOf names
  *  it. codex: the gateway's when AGENT_MODEL_BASE_URL is set, else OpenAI's, or OpenRouter's on OpenRouter's route;
  *  claude-agent: Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike, or OpenRouter's on OpenRouter's route.
  *  None for pi, whose keys are its models' (model.ts' modelKeys). */
 export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?: string): string[] {
-  if (harness !== "codex" && harness !== "claude-agent") return [];
+  if (harness !== "codex" && harness !== "claude-agent" && harness !== "opencode") return [];
   const key = runKeyOf(env, harness, model);
   return key ? [key.field] : [];
 }
