@@ -481,13 +481,14 @@ describe("App, the playground when its agents can't be read", () => {
 // card) shows a bar while capabilities say no model is ready, and it goes by itself once they say ready.
 describe("App, the no-model bar", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const serve = (models: () => Record<string, unknown>, routes = true, stats?: unknown) => {
+  // `keys`: how the server keeps tool keys (features.tool_keys): sealed, routes with no seal key, or no key routes at all.
+  const serve = (models: () => Record<string, unknown>, keys: "sealed" | "unavailable" | false = "sealed", stats?: unknown) => {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(routes ? { tool_keys: { routes: true, at_rest: "sealed" } } : {}) }, models: models() });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(keys ? { tool_keys: { routes: true, at_rest: keys } } : {}) }, models: models() });
       if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
       if (path === "/v2/stats") return stats ? json(200, stats) : json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
@@ -584,7 +585,7 @@ describe("App, the no-model bar", () => {
     const step = (host: HTMLElement) => host.querySelector('section[aria-label="Start here"]');
     // Nothing of the owner's has run yet, so the first screen shows the start-here panel.
     const fresh = { agents: 0, runs: { total: 0, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 0 }, archived: { agents: 0, runs: 0 }, analytics: { ...ANALYTICS, by_source: [] } };
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, fresh);
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "sealed", fresh);
     const keys = await mount("");
     await until(() => !!step(keys)?.textContent?.includes("Add a model key"));
     expect(keys.querySelector('section[aria-label="Model key"]')).not.toBeNull();
@@ -599,8 +600,16 @@ describe("App, the no-model bar", () => {
     expect(step(none)?.textContent).toContain("Then reload this page");
     expect(step(none)?.textContent).not.toContain("card above");
     act(() => root!.unmount()); root = undefined;
+    // Key routes but no seal key: the server refuses every save (no_sealing_key), so the card can't take one.
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable", fresh);
+    const unsealed = await mount("");
+    await until(() => !!step(unsealed)?.textContent?.includes("Add a model key"));
+    expect(step(unsealed)?.textContent).toContain("AGENT_MODEL");
+    expect(step(unsealed)?.textContent).toContain("Then reload this page");
+    expect(step(unsealed)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
     // AGENT_MODEL is the problem, which the card says no key fixes: the step keeps the env text.
-    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), true, fresh);
+    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), "sealed", fresh);
     const model = await mount("");
     await until(() => !!step(model)?.textContent?.includes("Add a model key"));
     expect(step(model)?.textContent).toContain("AGENT_MODEL");
