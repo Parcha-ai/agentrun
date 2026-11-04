@@ -3,6 +3,7 @@
 // holds on every harness. Only the shapes the harnesses give count (REFUSED); a 401 anywhere else in an error (a
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
+import { redactSecrets } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS, openRouterOnly } from "./model.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -43,10 +44,14 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
-/** `text` with every held secret's value (8 characters or more; a shorter one would match ordinary words) as
- *  [redacted]: the one redaction rule for whatever a run's error shows, a refused key's words and any other. */
+/** The longest error text redaction reads, in UTF-8 bytes; a longer one is shown whole as "[redacted]". */
+const REDACT_MAX = 1 << 20;
+
+/** `text`, a run's error as serve shows it, with no held secret in it: the one rule learning's checker uses
+ *  (learn/secrets.ts redactSecrets: each value as written, JSON-escaped, base64 at each offset, hex and percent-encoded,
+ *  and secret-shaped text), over `secrets`, the values the server holds and handed its run. */
 export function redacted(text: string, secrets: readonly string[]): string {
-  return secrets.reduce((out, secret) => (secret.length >= 8 ? out.split(secret).join("[redacted]") : out), text);
+  return redactSecrets(text, secrets, REDACT_MAX);
 }
 
 /** A provider's 401 as each harness puts it, at the start of the run's error:
@@ -72,13 +77,23 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
 }
 
 /** Codex's errors end on the address it sent the request to (", url: " and then serve's own loopback model proxy, with
- *  its port and /v1/responses); any loopback address in a run's error is the host's, never a person's. */
-const LOOPBACK_TAIL = /,?\s*url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?\S*\s*$/i; // key-gate: loopback-rule strips the loopback proxy address codex prints
+ *  its port and /v1/responses); any loopback address in a run's error is the host's, never a person's. Only a loopback
+ *  host itself: a host name that only starts with a loopback name goes on past it, is a public host, and keeps its
+ *  address. Every pattern is tried at one place or advances past what it read, so a rewrite takes time in proportion to
+ *  the text. */
+const LOOPBACK_TAIL = /^url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?\S*\s*$/i; // key-gate: loopback-rule strips the loopback proxy address codex prints
 const LOOPBACK = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?[^\s,;:)\x22\x27\]]*/gi; // key-gate: loopback-rule replaces any loopback address in a run error
+const LOOPBACK_BARE = /(?<![\w.\/-])(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)(?![\w.-])/gi; // key-gate: loopback-rule replaces a bare loopback address with its port, a refused connection to the proxy
 
-/** `text`, a run's error, with no loopback address in it: Codex's `url:` tail goes, and any other becomes "a local
- *  address". Only a loopback host itself: a host name that only starts with a loopback name goes on
- *  past it, is a public host, and keeps its address. */
+/** `text`, a run's error, with no loopback address in it: Codex's `url:` tail goes (tried at the last "url:" only), and
+ *  any other, with a scheme or bare with its port, becomes "a local address". */
 export function withoutLoopback(text: string): string {
-  return text.replace(LOOPBACK_TAIL, "").replace(LOOPBACK, "a local address");
+  let at = -1;
+  for (const found of text.matchAll(/url:/gi)) at = found.index;
+  let out = text;
+  if (at >= 0 && LOOPBACK_TAIL.test(text.slice(at))) {
+    out = text.slice(0, at).trimEnd();
+    if (out.endsWith(",")) out = out.slice(0, -1);
+  }
+  return out.replace(LOOPBACK, "a local address").replace(LOOPBACK_BARE, "a local address");
 }

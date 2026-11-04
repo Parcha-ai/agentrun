@@ -112,6 +112,9 @@ export type TimelineOptions = {
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
    *  to its workspace. The entries, the call's arguments and its input preview, are not changed. Default: as given. */
   path?: (path: string) => string;
+  /** What an error row says, made safe by the host before the row is cut (its secrets taken out): applied to an error
+   *  row's summary and text whole, so a cut never falls inside what it takes out. Default: as given. */
+  redact?: (text: string) => string;
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -420,6 +423,10 @@ function createProjector(options: TimelineOptions) {
     };
     const parent = fields.parent_tool_use_id ?? children.get(conv);
     if (parent !== undefined) row.parent_tool_use_id = parent;
+    if (kind === "error" && options.redact) {
+      if (row.summary !== null) row.summary = options.redact(row.summary);
+      if (row.text !== null) row.text = options.redact(row.text);
+    }
     if (row.summary !== null) row.summary = clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);

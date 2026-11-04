@@ -41,7 +41,8 @@ import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
-import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
@@ -152,6 +153,8 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
 /** One run as this server holds it. */
 export type Run = {
   id: string;
+  /** The values of the secrets each launch handed its process: what its errors never show, a key rotated since included. */
+  handed?: Set<string>;
   agentId: string;
   kind: RevisionKind;
   revision: string;
@@ -717,7 +720,7 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
-    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir) }));
+    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -781,7 +784,7 @@ export class Runs {
   /** A run's error as a person reads it, in its error box and on its Timeline row alike: a refused key in plain words
    *  (plainKey), else the harness's text with no loopback address (withoutLoopback: Codex names serve's own proxy). */
   private errorWords(run: Run, text: string | undefined): string | undefined {
-    return text ? this.shown(this.plainKey(run, text) ?? text) : text;
+    return text ? this.shown(run, this.plainKey(run, text) ?? text) : text;
   }
 
   /** An error row as served: its summary and text in errorWords' terms. The run's own rows, which its status reads, keep
@@ -789,22 +792,29 @@ export class Runs {
   private servedError(run: Run, row: TimelineEvent): TimelineEvent {
     const plain = this.plainKey(run, row.text ?? undefined);
     if (plain) {
-      const words = this.shown(plain);
+      const words = this.shown(run, plain);
       return { ...row, summary: words, text: words };
     }
-    return { ...row, ...(row.summary ? { summary: this.shown(row.summary) } : {}), ...(row.text ? { text: this.shown(row.text) } : {}) };
+    return { ...row, ...(row.summary ? { summary: this.shown(run, row.summary) } : {}), ...(row.text ? { text: this.shown(run, row.text) } : {}) };
   }
 
-  /** What serve shows of a run's error text, for every run kind: no held secret's value (redacted, key-refusal.ts' one
-   *  rule) and no loopback address. */
-  private shown(text: string): string {
-    return withoutLoopback(redacted(text, this.heldSecrets()));
+  /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
+   *  no loopback address. */
+  private shown(run: Run, text: string): string {
+    return withoutLoopback(redacted(text, this.refusedValues(run)));
   }
 
-  /** The values of every secret this server holds: its environment's and its saved keys. */
-  private heldSecrets(): string[] {
-    const env = withSecrets(process.env, "all", this.options.storedKeys);
-    return SECRET_NAMES.map((name) => env[name]).filter((value): value is string => typeof value === "string");
+  /** The timeline's redaction of `run`'s error rows, applied before a row is cut (timelineOf's `redact`), so a cut never
+   *  leaves the head of a key. */
+  private redactor(run: Run): (text: string) => string {
+    return (text) => redacted(text, this.refusedValues(run));
+  }
+
+  /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): this
+   *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
+   *  server's own tokens. */
+  private refusedValues(run: Run): string[] {
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(run.handed ?? []), this.options.token, this.options.doorToken];
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
@@ -814,7 +824,7 @@ export class Runs {
     // default tier's key could name the wrong one, so its error keeps the provider's own words.
     if (!text || run.kind === "workflow") return undefined;
     const env = withSecrets(process.env, "all", this.options.storedKeys);
-    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), this.heldSecrets());
+    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), this.refusedValues(run));
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -1021,7 +1031,7 @@ export class Runs {
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
-    const reducer = timelineReducer({ path: rowPaths(run.dir) });
+    const reducer = timelineReducer({ path: rowPaths(run.dir), redact: this.redactor(run) });
     const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
@@ -1181,6 +1191,12 @@ export class Runs {
     const secrets = handover(this.secrets.get(run.revision) ?? NO_TOOL_KEYS, this.options.storedKeys);
     // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
     this.learning.onLaunch(run, this.secrets.get(run.revision) ?? NO_TOOL_KEYS);
+    // And for what its errors show (refusedValues): each value handed, kept past a key's rotation.
+    run.handed ??= new Set();
+    for (const name of this.secrets.get(run.revision) ?? NO_TOOL_KEYS) {
+      const value = secret(name, this.options.storedKeys);
+      if (value && value.length >= MIN_SECRET) run.handed.add(value);
+    }
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
