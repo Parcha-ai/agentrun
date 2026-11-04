@@ -31,11 +31,11 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
-import { openapiDocument, UNSUPPORTED } from "./openapi.js";
+import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
@@ -307,6 +307,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -369,9 +370,19 @@ export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored
  *  included (harnessOffers), and whether a revision that names no model runs here (`models.ready`, and what it `needs`
  *  when not), so what this returns is what the route serves and what the document's schema holds.
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
- *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show; `gradeModel`, its `--grade-model`. */
+ *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show;
+ *  `gradeModel`, its `--grade-model`. */
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
   return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes, gradeModel);
+}
+
+/** capabilities.learning: whether the caller may approve a note that waits, and what that needs when not. */
+type LearningCaps = { grade_model: string | null; pending: true; approve: boolean; approve_needs?: "password" };
+
+/** The capabilities document as `req`'s caller reads it: approving takes the owner's password session alone, so only
+ *  that caller reads `approve: true`; every other (a token, a run, accounts off) reads `approve_needs: "password"`. */
+export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSession: boolean): T {
+  return ownerSession ? { ...caps, learning: { grade_model: caps.learning.grade_model, pending: caps.learning.pending, approve: true } } : caps;
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
@@ -393,8 +404,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     models,
     /** What grades a run's proposed notes: the model this server names for it (learning.ts gradeModelOf), or null when
      *  each run is graded on its agent's own model; and `pending`: a risky rule, the user's or the run's own, is kept to
-     *  wait for its owner's OK, served to no run. */
-    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null, pending: true },
+     *  wait for its owner's OK, served to no run; `approve`: whether the caller can approve one, which takes the owner's
+     *  password session (forCaller), and `approve_needs` when not. */
+    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null, pending: true, approve: false, approve_needs: "password" } as LearningCaps,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
@@ -1232,11 +1244,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (found.name === "getCapabilities") return send(res, 200, caps);
-    if (found.name === "getOpenapi") return send(res, 200, openapi);
+    if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
+    if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
+    }
+    // Approving a note the grader held for its owner's OK (a risky rule a run's user asked for) takes the owner's
+    // signed-in page alone: never a token, which a run's process, an agent's MCP client or a script may hold, nor a
+    // page cookie a token can mint (accounts off). The page's cookie stands in for the token only on its own origin
+    // with a JSON body (page.ts), so this is CSRF-checked as every page write is. With no credential at all it is 401,
+    // as every route is.
+    if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "approve_without_session");
+      throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
@@ -1536,11 +1557,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         await needAgent(id);
         return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
       case "writeLearningFile":
-      case "retireLearningFile": {
+      case "retireLearningFile":
+      case "approveLearningFile": {
         await needAgent(id);
         const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets() });
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets(), approve: found.name === "approveLearningFile" });
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(learningSecrets());
         const located = written.status === 201 && shown.name(written.file) === written.file;
