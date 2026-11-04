@@ -2,9 +2,10 @@
 // the named box, while its loop, its log and every key stay on the server). A revision keeps the place it names, an
 // explicit runner included, since the default is this host's; one that names none keeps none, so a revision written
 // before this field keeps its id. Which boxes this server has is said in capabilities, and a revision whose box it does
-// not have saves with a warning and is refused at run time. A run request may narrow the place to `runner` (never widen
-// it), and the run keeps the place it resolved to. Runs execute in Docker and in Daytona, for now: every other box says
-// it does not run yet. A harness's own tools in the box, when they come, are an option of sandbox, never a third mode.
+// not have saves with a warning and is refused at run time. A run runs in its revision's place, else this host's
+// default, and keeps the place it resolved to: a run request names none. Runs execute in Docker and in Daytona, for
+// now: every other box says it does not run yet. A harness's own tools in the box, when they come, are an option of
+// sandbox, never a third mode.
 import { join } from "node:path";
 import { BOX_IDS, type BoxId, type BoxOffer } from "./boxes.js";
 import { type InputIssue, sentence } from "./errors.js";
@@ -57,8 +58,8 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
 /** `places` in capabilities: the modes a revision may name, this host's default, and each box. */
 export const placesOf = (registry: readonly BoxOffer[]) => ({ modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxAvailability(registry) });
 
-/** A run's place: its request's `runner`, which only narrows, else its revision's, else this host's default. */
-export const resolvePlace = (revision: Place | undefined, requested?: "runner"): Place => (requested === "runner" || !revision ? { mode: "runner" } : revision);
+/** A run's place: its revision's, else this host's default. */
+export const resolvePlace = (revision: Place | undefined): Place => revision ?? { mode: "runner" };
 
 /** The place a run kept (its serve.json), or runner for a run kept before runs had one. */
 export function storedPlace(value: unknown): Place {

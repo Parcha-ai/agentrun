@@ -19,7 +19,6 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-const NO_SHELL = "<harness>\n[error] Tool bash is not available\n</harness>";
 // Values planted in the server's environment, each one no box may hold: an unnamed key, OpenAI's, and the four keys a
 // tester runs everything with: OpenRouter's (which a harness may be handed under another name), Monid's, Parallel's and
 // Browserbase's. A box is searched for each value, so a key handed on under any name is found.
@@ -62,9 +61,9 @@ async function boxed(t, extra = {}) {
   return server;
 }
 
-/** Start a run of `agent` whose probe plan is `plan` (fixtures/faux-probe.mjs), with `extra` in the request. */
-async function probe(api, agent, plan, extra = {}) {
-  const run = await api("POST", `/agents/${agent}/runs`, { input: { content: JSON.stringify({ probe: plan }) }, ...extra });
+/** Start a run of `agent` whose probe plan is `plan` (fixtures/faux-probe.mjs). */
+async function probe(api, agent, plan) {
+  const run = await api("POST", `/agents/${agent}/runs`, { input: { content: JSON.stringify({ probe: plan }) } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body;
 }
@@ -189,33 +188,33 @@ test("demo (claude-agent, codex): the faux harness's bash, write and read run in
   await until(() => liveBoxes(data).length === 0, "the boxes' destroy at the runs' ends");
 });
 
-test("a run request's place \"runner\" narrows: the run is on the runner, has no bash and no box, and is never a 409; any other place is a 422", { timeout: 90_000 }, async (t) => {
+test("a run request names no place: a sandbox agent's run with place \"runner\" is refused as a field the body does not keep, as network is, and makes no run; without one, the sandbox agent's run is in its box and a runner agent's on the runner", { timeout: 90_000 }, async (t) => {
   const { api, data } = await boxed(t);
   assert.equal((await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "bash"] } })).status, 201);
-  const run = await probe(api, "boxed", [{ tool: "write", args: { path: "a.txt", content: "a" } }, { tool: "bash", args: { command: "printf hi > out.txt" } }], { place: "runner" });
-  assert.deepEqual(run.place, { mode: "runner" });
-  await follow(api, run.run_id, ["completed"]);
-  assert.deepEqual(answers(data, run.run_id).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"], ["bash", true, NO_SHELL]]);
-  assert.equal(existsSync(join(data, "runs", run.run_id, "work", "out.txt")), false);
-  assert.deepEqual(specs(data), [], "no box was made");
-  assert.deepEqual((await api("GET", `/runs/${run.run_id}`)).body.place, { mode: "runner" });
-  // The same agent's runs where the box is not available (a server with none) narrow just the same, and are not refused.
-  for (const place of ["sandbox", { mode: "sandbox", box: "docker" }, { mode: "runner" }, "docker"]) {
-    const refused = await api("POST", "/agents/boxed/runs", { input: { content: "hi" }, place });
-    assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [["place", "not_an_option"]]], JSON.stringify(place));
-  }
+  assert.equal((await api("POST", "/agents", { definition: { id: "plain", name: "plain", instructions: "Probe.", tools: ["read", "write"] } })).status, 201);
+  const before = (await api("GET", "/runs")).body.runs;
   const network = await api("POST", "/agents/boxed/runs", { input: { content: "hi" }, network: "open" });
-  assert.deepEqual([network.status, network.body.error.fields.map((f) => f.field)], [422, ["network"]], "a request names no network");
-});
-
-test("a narrowed run of a box this server does not have runs, without bash; unnarrowed it is 409 naming the box", { timeout: 60_000 }, async (t) => {
-  const { api, data } = await serve(t, { faux: PROBE });
-  assert.equal((await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "bash"] } })).status, 201);
-  const refused = await api("POST", "/agents/boxed/runs", { input: { content: "hi" } });
-  assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.details.box], [409, "agent_not_runnable", "docker"]);
-  const run = await probe(api, "boxed", [{ tool: "bash", args: { command: "true" } }], { place: "runner" });
-  await follow(api, run.run_id, ["completed"]);
-  assert.deepEqual(answers(data, run.run_id).map((a) => [a.tool, a.text]), [["bash", NO_SHELL]]);
+  assert.deepEqual([network.status, network.body.error?.code, network.body.error?.fields], [422, "input_invalid", [{ field: "network", reason: "not_allowed", message: "The body keeps no field network." }]]);
+  for (const place of ["runner", { mode: "runner" }, SANDBOX]) {
+    const refused = await api("POST", "/agents/boxed/runs", { input: { content: "hi" }, place });
+    assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.fields], [422, "input_invalid", [{ field: "place", reason: "not_allowed", message: "The body keeps no field place." }]], JSON.stringify(place));
+  }
+  assert.deepEqual((await api("GET", "/runs")).body.runs, before, "no run was made");
+  assert.deepEqual(specs(data), [], "and no box");
+  const inBox = await probe(api, "boxed", [{ tool: "bash", args: { command: "printf hi > out.txt" } }]);
+  assert.deepEqual(inBox.place, SANDBOX, "the revision's place");
+  await follow(api, inBox.run_id, ["completed"]);
+  assert.deepEqual(answers(data, inBox.run_id).map((a) => [a.tool, a.error]), [["bash", false]]);
+  assert.equal(await readFile(join(data, "runs", inBox.run_id, "work", "out.txt"), "utf8"), "hi");
+  assert.ok(specs(data).some((spec) => spec.labels["agentrun.run"] === inBox.run_id), "its box was made");
+  assert.deepEqual((await api("GET", `/runs/${inBox.run_id}`)).body.place, SANDBOX);
+  const onRunner = await probe(api, "plain", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
+  assert.deepEqual(onRunner.place, { mode: "runner" }, "no place: this host's default");
+  await follow(api, onRunner.run_id, ["completed"]);
+  assert.deepEqual(answers(data, onRunner.run_id).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to a.txt"]]);
+  assert.ok(!specs(data).some((spec) => spec.labels["agentrun.run"] === onRunner.run_id), "no box for a runner run");
+  assert.deepEqual((await api("GET", `/runs/${onRunner.run_id}`)).body.place, { mode: "runner" });
+  await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
 });
 
 test("bash is a 422 on an agent whose place is the runner (named or by default); a workflow whose place is a box, and the browser in one, are 422", async (t) => {
