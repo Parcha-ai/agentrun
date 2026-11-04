@@ -521,10 +521,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     [offers, offersFrom] = [next, from];
     recompose();
   };
-  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. */
+  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. Writes can overlap
+   *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
+   *  finishes after it is dropped. */
+  let needsAsked = 0;
   const keysChanged = async () => {
     env = withSecrets(base, "all", storedKeys);
-    needs = await needsOf(env);
+    const mine = ++needsAsked;
+    const next = await needsOf(env);
+    if (mine === needsAsked) needs = next;
     const inputs = offersInputs(env);
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
