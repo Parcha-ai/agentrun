@@ -271,9 +271,10 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
   `readPage(html, url, { deadlineMs?, signal? })`, with `isPrivateAddress` and `pinnedLookup`. `readPage` never holds
   the event loop: it drops a page's script, style, svg, noscript and template blocks, cuts what is left at
   `READ_MAX_CHARS` (`truncated`, with the page's length in `html_chars`), and converts it to markdown in a worker thread
-  within `READ_DEADLINE_MS`, falling back to the page's plain text (`converted: "text"`). Outside Node's builtins and
-  undici it loads only node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan
-  and for `readPage`.
+  within `READ_DEADLINE_MS`, falling back to the page's plain text (`converted: "text"`). `browser_read`'s markdown goes
+  the same way (of the page's first article, else main, else body, with the browser's own text as its fallback), and
+  its frame scan reads the page's first 2,000,000 characters in steps that yield the loop. Outside Node's builtins and
+  undici it loads only node-html-parser and node-html-markdown, on demand and in that worker thread.
 - `/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's own store (a create is
   committed before the provider is called, release is a durable task, reconcile runs at run open). `createWebExtension` is
   `web_fetch` and `web_search`.

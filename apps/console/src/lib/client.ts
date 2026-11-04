@@ -2,7 +2,7 @@ import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings } from "./v2";
+import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -48,7 +48,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. Absent on an older server. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
@@ -182,6 +182,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** The webhook, never its secret (a serve extension). */
+    webhook: () => call<Webhook>("GET", "/settings/webhook"),
+    /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
+    saveWebhook: (url: string) => call<WebhookSaved>("PUT", "/settings/webhook", { body: { url } }),
+    removeWebhook: () => call<unknown>("DELETE", "/settings/webhook"),
+    /** A `webhook.test` message, tried once now: its attempt. */
+    testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** The last attempts, newest first. */
+    webhookDeliveries: () => call<{ attempts: WebhookAttempt[] }>("GET", "/settings/webhook/deliveries"),
+    /** A message of the log sent again, once now, under its webhook-id: its attempt. */
+    redeliverWebhook: (id: string) => call<WebhookAttempt>("POST", `/settings/webhook/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
     /** The server's provider per capability that has a choice (its default where it sets none). */
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */

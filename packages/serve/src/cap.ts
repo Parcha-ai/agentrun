@@ -20,7 +20,9 @@
 // the run's cost and spentIn both count (an unknown one makes the spend unknown), and added to what the run's process
 // counts as spent (useSpend), so the next request's check sees it. Before each paid call, paidCall holds it as a request
 // is held: refused unless what the run has spent plus what the call is held at (its quote, else an allowance) fits the
-// cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before it.
+// cap, and whenever the spend is unknown; paid calls go one at a time, so each check sees the charge before it. A call
+// sent holds its figure until its charge joins the spend (paidHolds), so a model request judged meanwhile, on pi or on
+// another harness, counts it beside the spend, as a paid call's check counts the model requests in flight.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
@@ -266,23 +268,41 @@ let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
 export const useSpend = (spend: RunSpend | undefined): void => void (runSpend = spend);
 
+/** Each paid call sent under the cap and not settled, at what it is held at. */
+const paidOpen = new Set<{ usd: number }>();
+/** What the paid calls under way are held at, together (0 when none is): the one figure every check of the run's cap
+ *  adds to what the run has spent, a model request's (capModels, capBefore) and a paid call's (paidCall). */
+export const paidHolds = (): number => [...paidOpen].reduce((sum, { usd }) => sum + usd, 0);
+
 /** `call`, a paid tool's (`name`), under the run's cap, by the rule a model request keeps: refused, in words that name
  *  its price and the cap and never calling it, unless what the run has spent plus what the call is held at (`hold`: its
  *  quote, else an allowance, `basis` saying which) fits the cap, and whenever the spend is unknown; else run, one paid
- *  call at a time, so each check sees the charge before it, and the charge it reports (`charge` of its result,
- *  undefined for none) joins the spend. With no cap it just runs. */
+ *  call at a time, so each check sees the charge before it, and held at that figure (paidHolds) until the charge it
+ *  reports (`charge` of its result, undefined for none) joins the spend. A call that fails counts at its held figure,
+ *  as its mark does once its process is gone (spentIn), since it may have charged. With no cap it just runs. */
 export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
   const turn = paying.then(async () => {
-    const spent = await spend.spent();
-    if (spent === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of $${spend.cap} cannot be kept: the run is out of budget.` };
+    const read = await spend.spent();
+    if (read === null) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. What the run has spent is unknown, so its cap of $${spend.cap} cannot be kept: the run is out of budget.` };
+    const spent = read + paidHolds();
     // Written so that a figure that is not a number refuses.
     if (!(spent + hold.usd <= spend.cap)) return { refused: `${SPEND_CAP_REACHED}: ${name} was not sent. It could cost up to $${hold.usd} (${hold.basis}), and with $${spent.toFixed(6)} spent the run would pass its cap of $${spend.cap}: the run is out of budget.` };
-    const result = await call();
-    const usd = charge(result);
-    if (usd !== undefined) spend.add(usd);
-    return { result };
+    // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
+    const open = { usd: hold.usd };
+    paidOpen.add(open);
+    try {
+      const result = await call();
+      const usd = charge(result);
+      if (usd !== undefined) spend.add(usd);
+      return { result };
+    } catch (error) {
+      spend.add(hold.usd);
+      throw error;
+    } finally {
+      paidOpen.delete(open);
+    }
   });
   paying = turn.catch(() => undefined);
   return turn;
@@ -359,7 +379,8 @@ export async function capBefore(cap: number | undefined, model: Model<Api> | und
       const inputs = [inputTokensMax, ...inFlight.map((request) => request.inputTokensMax)];
       if (inputs.some((input) => typeof input !== "number" || !Number.isFinite(input))) return { refuse: unmeasured(cap) };
       const worst = price(inputTokensMax!, output);
-      const held = inFlight.reduce((sum, request) => sum + price(request.inputTokensMax!, output), 0);
+      // Its requests in flight at their worst case, and its paid calls under way at what they are held at.
+      const held = inFlight.reduce((sum, request) => sum + price(request.inputTokensMax!, output), paidHolds());
       // Written so that a worst case that is not a number refuses.
       if (!(spentUsd + held + worst <= cap)) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
       return undefined;
@@ -399,8 +420,11 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     if (spent === null) return { why: unknownSpend(cap) };
     const worst = worstCase(model, context, ceiling, options);
     if (worst === undefined) return { why: unmeasured(cap) };
+    // What the run has committed, as a paid call's check counts it: spent, each request in flight at its worst case, and
+    // each paid call under way at what it is held at.
+    const committed = spent + held + paidHolds();
     // Written so that a worst case that is not a number refuses.
-    if (!(spent + held + worst <= cap)) return { why: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spent + held).toFixed(6)} spent the run would pass its cap of $${cap}: the run is out of budget.` };
+    if (!(committed + worst <= cap)) return { why: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${committed.toFixed(6)} spent the run would pass its cap of $${cap}: the run is out of budget.` };
     return { worst };
   };
   const refusal = (model: Model<Api>, why: string): AssistantMessage => ({
@@ -429,7 +453,8 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     void count(answered, worst).finally(() => void (held -= worst));
     return answered;
   };
-  // A paid tool's check reads the spend with the requests in flight held at their worst case, and its charge joins it.
+  // A paid tool's check reads the spend with the requests in flight held at their worst case (and adds the paid holds
+  // itself), and its charge joins it.
   useSpend({ cap, spent: () => (spent === null ? null : spent + held), add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
   /** `options` with the request's worst case for its marks. */
   const carrying = <O>(options: O, worst: number): O => ({ ...options, [HELD_USD]: worst }) as O;

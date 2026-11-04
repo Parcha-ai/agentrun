@@ -2,7 +2,7 @@
 // hashed assets under /assets/, public, under one strict CSP. The console signs a person in itself. With accounts it
 // takes the owner's session cookie (owner.ts); without, the server's token as a cookie that the printed link (`/?token=`)
 // sets once. Either stands in for the Bearer header on /v2, and for a write only from this origin with a JSON body, or
-// with any body on a route that takes bytes (a PUT marked `raw` in server.ts). The
+// with any body on a route that takes bytes (a PUT or POST marked `raw` in server.ts). The
 // store's read-only JSON (/api/*, pi-durable-agent's store page's data) answers the Bearer token or either cookie.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
@@ -107,14 +107,14 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
  * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/") and the store's /api/*, and
  * returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
  * becomes the Bearer header for a GET or HEAD, and for any other method only when the request's Origin is this server's
- * own origin and its body is application/json, or the request is a PUT to a route that takes bytes, with any content
- * type.
+ * own origin and its body is application/json, or the request is a PUT or POST to a route that takes bytes, with any
+ * content type.
  */
 export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
   const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
-    const bytes = req.method === "PUT" && server.takesBytes?.(req.method, raw.slice(3)) === true;
+    const bytes = (req.method === "PUT" || req.method === "POST") && server.takesBytes?.(req.method, raw.slice(3)) === true;
     if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) req.headers.authorization = `Bearer ${server.token}`;
     return false;
   }

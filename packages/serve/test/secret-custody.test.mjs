@@ -309,7 +309,7 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${started.run_id}`)).body.error));
   const sent = readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => call.authorized), [true], "Parallel answered on the saved key, handed on the decision descriptor");
+  assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/monitors", true], ["/v1/decisions", true]], "checked as it was saved (a list of monitors, which costs nothing), then Parallel answered the run on the saved key, handed on the decision descriptor");
   for (const p of processes().filter((p) => treeOf(root).has(p.pid))) {
     assert.ok(!p.environ.includes(PARALLEL_CANARY), `pid ${p.pid}'s environment holds the key`);
     assert.ok(!p.cmdline.includes(PARALLEL_CANARY), `pid ${p.pid}'s command line holds the key`);
