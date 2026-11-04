@@ -242,18 +242,18 @@ export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef, harness: 
   const named = `${model.provider}/${model.modelId}`;
   if (model.provider === "openrouter" && model.modelId.startsWith("openai/")) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, harness, named), modelId: model.modelId };
   if (model.provider !== "openai") throw new HarnessUnavailable(`${harness} runs OpenAI models; the run's model is ${named}.`);
-  if (openRouterOnly("codex", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, harness, named), modelId: named };
+  if (openRouterOnly(harness, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, harness, named), modelId: named };
   if (!env.OPENAI_API_KEY) throw new HarnessUnavailable(`${harness} needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.`);
   return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "", modelId: model.modelId };
 }
 
-/** codex's model for `ref` (a revision's; none, the host's default for codex): as model.ts chooses it, except where
- *  codex reaches OpenAI only through OpenRouter (openRouterOnly), where an OpenAI model needs no OpenAI key, only a
+/** codex's model for `ref` (a revision's; none, the host's default for codex), or opencode's (`harness`), which takes
+ *  codex's route: as model.ts chooses it, except where it reaches OpenAI only through OpenRouter (openRouterOnly), where an OpenAI model needs no OpenAI key, only a
  *  model pi-ai's catalog lists (it prices the run): OpenRouter's key is the one codexProvider sends. A save, a run and
  *  capabilities all ask this. */
-export async function codexModel(env: NodeJS.ProcessEnv, ref: string | undefined): ReturnType<typeof chooseModel> {
-  const named = ref ?? hostModel(env, "default", "codex");
-  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV] || !openRouterOnly("codex", env) || !named?.startsWith("openai/")) return chooseModel(env, ref, "default", "codex");
+export async function codexModel(env: NodeJS.ProcessEnv, ref: string | undefined, harness: "codex" | "opencode" = "codex"): ReturnType<typeof chooseModel> {
+  const named = ref ?? hostModel(env, "default", harness);
+  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env) || !named?.startsWith("openai/")) return chooseModel(env, ref, "default", harness);
   const modelId = named.slice("openai/".length);
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   if (!builtinModels().getModel("openai", modelId)) return { why: `pi-ai knows no model ${modelId} of openai. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
@@ -451,7 +451,9 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   }
   // The shared date line (environment.ts) reaches OpenCode in the session's system prompt (app.ts), as it reaches every
   // harness.
-  return opencode.openCodeAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model, "opencode"), price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  // The id as the provider's endpoint names it (codexProvider, as codexOf takes it): OpenRouter's is the whole slug.
+  const provider = codexProvider(env, needs.model, "opencode");
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf(needs), log: harnessLog("opencode", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
