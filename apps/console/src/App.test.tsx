@@ -553,14 +553,15 @@ describe("App, the no-model bar", () => {
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
-  it("names the server's default model and asks for its provider's key, with no OpenRouter promise, where AGENT_MODEL is set without its key", async () => {
-    serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }));
-    const host = await mount("#/runs");
-    await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. This server's default model is anthropic/claude-sonnet-5-5: add its provider's key in Settings → Model keys, and it takes effect at once. Or set it where AgentRun starts, and restart.");
-    expect(bar(host)?.querySelector("a")?.textContent).toBe("add its provider's key in Settings → Model keys");
-    expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
-  });
+  // Settings → Model keys holds only some providers' keys, so for a named default the bar names no Settings path at all.
+  for (const model of ["anthropic/claude-sonnet-5-5", "deepseek/deepseek-v4-pro"])
+    it(`names the server's default model ${model} and says to set its provider's key and restart, with no Settings link or OpenRouter promise, where the server keeps keys`, async () => {
+      serve(() => ({ source: "providers", default: model, ready: false, needs: "key" }));
+      const host = await mount("#/runs");
+      await until(() => !!bar(host));
+      expect(bar(host)?.textContent).toBe(`No model yet. This server's default model is ${model}: set its provider's key where AgentRun starts, and restart.`);
+      expect(bar(host)?.querySelector("a")).toBeNull();
+    });
 
   it("names the server's default model and says to set its provider's key and restart where the server can't keep a key", async () => {
     serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }), true, "unavailable");
