@@ -78,6 +78,23 @@ test("on a gateway that takes bare ids, a key's default goes as the same model n
   assert.deepEqual((await chooseModel({ ...gateway, AGENT_MODEL: "openai/gpt-6.1-sol" }, undefined)).model.modelId, "openai/gpt-6.1-sol", "an operator's AGENT_MODEL goes as configured");
 });
 
+test("behind a gateway, a run that holds the gateway's key alone takes the model the server's keys give, as the server chooses it: pi's and codex's, at each tier, bare ids too; a tier the host names keeps its own", async () => {
+  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: "not-a-secret-gateway" };
+  // The server's view at a run's launch: every key it holds. The run's: the gateway's key, and the model the server's
+  // keys give, from the server (AGENTRUN_SERVE_KEY_MODEL), never the key that gives it.
+  for (const extra of [{}, { AGENT_MODEL_GATEWAY_IDS: "bare" }, { AGENT_MODEL_FAST: "fast-1" }]) {
+    const served = { ...gateway, ...extra, OPENAI_API_KEY: "not-a-secret-openai" };
+    const run = { ...gateway, ...extra, AGENTRUN_SERVE_KEY_MODEL: "openai/gpt-6.1-sol" };
+    for (const harness of ["pi", "codex"]) {
+      for (const tier of ["default", "fast", "strong"]) {
+        const chosen = await chooseModel(served, undefined, tier, harness);
+        assert.ok("model" in chosen, JSON.stringify(chosen));
+        assert.deepEqual(await chooseModel(run, undefined, tier, harness), chosen, `${harness} at ${tier} with ${JSON.stringify(extra)}`);
+      }
+    }
+  }
+});
+
 test("each default is a model pi-ai's catalog lists and prices, of the key's own provider, and not that provider's dearest", () => {
   const models = builtinModels();
   for (const row of MODEL_KEYS) {

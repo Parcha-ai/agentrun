@@ -18,7 +18,7 @@ import { BOX_KEYS } from "../dist/boxes.js";
 import { ToolKeys } from "../dist/tool-keys.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, responsesEndpoint, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
@@ -443,6 +443,35 @@ test("under its launcher, a claude-agent or codex run on OpenRouter's route is h
   assert.equal((await both.api("POST", "/agents", agent("named", { harness: "claude-agent", model: "openrouter/anthropic/claude-sonnet-5.5" }))).status, 201);
   const named = await custodyReport(both.api, "named");
   assert.deepEqual(heldBy(named.handed), ["OPENROUTER_API_KEY"], "a model named on OpenRouter goes there on OpenRouter's key; Anthropic's stays with the server");
+});
+
+test("under its launcher behind a gateway, with OpenAI's key saved in Settings and no AGENT_MODEL, a pi run that names no model runs on the key's default through the gateway, on the gateway's key alone: OpenAI's reaches no request", { timeout: 120_000 }, async (t) => {
+  const canary = `not-a-secret-gateway-${process.pid}-${Date.now()}`;
+  const endpoint = await responsesEndpoint(t, "42", 10);
+  const env = { ...Object.fromEntries([...SECRET_NAMES, ...MODEL_SETTINGS].map((name) => [name, undefined])), AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL_API_KEY: `${canary}-gateway` };
+  // No faux: the run's process chooses its own model, as a real run does.
+  const { api } = await launched(t, env, []);
+  // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: `${canary}-openai` } })).status, 204);
+  assert.equal((await api("POST", "/agents", agent("on-default"))).status, 201);
+  const { body: started } = await api("POST", "/agents/on-default/runs", { input: { content: "What is six times seven?" } });
+  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${started.run_id}`)).body.error));
+  assert.ok(endpoint.models.length > 0 && endpoint.models.every((model) => model === "openai/gpt-6.1-sol"), `the gateway is asked for the key's default: ${endpoint.models}`);
+  assert.ok(endpoint.authorizations.every((sent) => sent === `Bearer ${canary}-gateway`), "on the gateway's key");
+  assert.ok(!JSON.stringify(endpoint.bodies).includes(`${canary}-openai`), "OpenAI's key is in no request");
+});
+
+test("under its launcher, a key saved with no restart reaches the next run of a revision that already ran without it", { timeout: 120_000 }, async (t) => {
+  const canary = `not-a-secret-later-${process.pid}-${Date.now()}`;
+  const { api } = await launchedWith(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN` });
+  assert.equal((await api("POST", "/agents", agent("on-default"))).status, 201);
+  const before = await custodyReport(api, "on-default");
+  assert.deepEqual(heldBy(before.handed), [], "no model key to hand yet");
+  assert.equal((await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: `${canary}-saved` } })).status, 204);
+  const after = await custodyReport(api, "on-default");
+  assert.deepEqual(heldBy(after.handed), ["OPENROUTER_API_KEY"], "the same revision's next run holds the key saved since its last");
+  assert.equal(after.handed.OPENROUTER_API_KEY, digest(`${canary}-saved`));
 });
 
 test("secretsFor: a tool key's fields only for a revision naming a tool its row unlocks, the tools read as the run's process binds them; every other secret for each", async () => {

@@ -177,14 +177,17 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.
- *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for.
+ *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for,
+ *  `authorizations` each POST's authorization header.
  *  `incomplete`: each answer stops at its length instead (response.incomplete, max_output_tokens: pi's stopReason "length"). */
 export async function responsesEndpoint(t, text, tokens, { incomplete = false } = {}) {
   const asked = [];
   const bodies = [];
   const models = [];
+  const authorizations = [];
   const server = createServer((req, res) => {
     asked.push(`${req.method} ${req.url}`);
+    if (req.method === "POST") authorizations.push(req.headers.authorization ?? null);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
@@ -208,7 +211,7 @@ export async function responsesEndpoint(t, text, tokens, { incomplete = false } 
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models };
+  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models, authorizations };
 }
 
 /** Sets `vars` in this process's environment, which a server's runs inherit, for test `t`; the rest of `names` unset. */
