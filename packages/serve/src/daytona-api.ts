@@ -40,18 +40,19 @@ export async function keepWhenIdle(api: DaytonaApi, id: string, minutes = KEPT_A
   if (!stops.ok) throw new Error(`Daytona answered ${stops.status} to the auto-stop of a kept box`);
 }
 
-/** The states a run's box is woken from: stopped (a kept box after its idle stop) and paused (a class that pauses when
- *  idle, while its run waits for a person). `/start` takes either. */
-const ASLEEP: ReadonlySet<unknown> = new Set(["stopped", "paused"]);
+/** The states a run's box is woken from: stopped (a kept box after its idle stop), paused (a class that pauses when
+ *  idle, while its run waits for a person) and archived (a stopped box Daytona moved to its archive). `/start` takes
+ *  each, an archived one restored. */
+const ASLEEP: ReadonlySet<unknown> = new Set(["stopped", "paused", "archived"]);
 /** On its way to one of those: waited for (SETTLE_MS at most), then started. */
-const SETTLING: ReadonlySet<unknown> = new Set(["stopping", "pausing"]);
+const SETTLING: ReadonlySet<unknown> = new Set(["stopping", "pausing", "archiving"]);
 const SETTLE_MS = 60_000;
 
 type Listed = { id?: unknown; state?: unknown; labels?: Record<string, unknown> };
 
-/** Starts every stopped or paused run box whose run `pick` names, and waits until each runs: a box kept at a run's end
+/** Starts every stopped, paused or archived run box whose run `pick` names, and waits until each runs: a box kept at a run's end
  *  that Daytona stopped, which the start's sweep then pulls like any other, or a run's box that paused while it waited.
- *  One still stopping or pausing is waited for first; one that has not settled in SETTLE_MS throws, so its caller keeps
+ *  One still stopping, pausing or archiving is waited for first; one that has not settled in SETTLE_MS throws, so its caller keeps
  *  it and never makes another in its place. How many run now. */
 export async function wakeBoxes(api: DaytonaApi, pick: (runId: string) => boolean): Promise<number> {
   const stopped: string[] = [];
