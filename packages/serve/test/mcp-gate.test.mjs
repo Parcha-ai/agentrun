@@ -12,7 +12,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fakeAnthropic, lastUserText } from "@parcha/agentrun-harness-claude/testing";
+import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -210,8 +210,9 @@ test("pi: a tool with no price runs, shown not metered on the timeline and in /u
 test("claude-agent: with no setting the CLI's MCP call parks: the session is interrupted after its parked result with no model request between, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
     reply: (request) => {
-      const asked = lastUserText(request);
-      if (asked.startsWith("[tool approval]")) return { text: `Resumed: ${asked.slice(asked.indexOf("\n") + 1)}` };
+      // The gate's resume of the answered call (the CLI may wrap it, so it is found in the conversation's text).
+      const at = request.text.lastIndexOf("[tool approval]");
+      if (at >= 0) return { text: `Resumed: ${request.text.slice(at).split("\n")[1] ?? ""}` };
       if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
       return request.tools.includes("mcp__fake__add") ? { tool: { name: "mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." };
     },
