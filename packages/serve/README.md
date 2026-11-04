@@ -1356,13 +1356,17 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   `README.md`, are the run's as one tool, `learned_workflow {name, input}`, on every harness (pi, claude-agent, codex),
   with no edit of the agent's definition. Only an active one is, by a skill's rule: its `README.md` sets no status, or
   `active`. Its description names each workflow with the line its README gives, 8 KiB of lines in all: by name, each
-  while its line fits, and one that does not is left out. The pin names the ones the run gets (`workflows`), each kept
-  whole in the run's directory (`learned-workflows.json`), outside its work, and the ones left out
-  (`workflows_left_out`). A call checks the workflow again against the agent's own tools, as the merge did: one that
-  names a tool the agent was not granted, or holds a code node or a shell or executor call, is refused at the call and
-  never run. It runs with the workflow DSL: each model node on the run's own model (the one the run was made with and
-  handed the key of; a tier the run has no model of runs there too), in a session of its own with no tool of its own (a
-  node that names one is refused), each call node `via: "tool"` on a tool the agent has, its paid requests booked under
+  while its line fits, and one that does not, or holds one of the server's secrets, is left out. A README whose front
+  matter does not read one way (not closed, or a line that is no key at its left edge) is not read. The pin names the
+  ones the run gets (`workflows`), each kept whole in the run's directory (`learned-workflows.json`), outside its work,
+  and the ones left out (`workflows_left_out`). The list is fixed when the run starts: a workflow approved or retired
+  while it runs is the next run's to get or not, as a note or a skill is. A call checks the workflow again against the
+  agent's own tools as its run resolves them, as the merge did: one whose call node names a tool the agent was not
+  granted (or one its run resolves unavailable), whose model node names any tool (a learned model node runs without
+  tools, so the merge refuses one too), or that holds a code node or a shell or executor call, is refused before any of
+  its nodes runs. It runs with the workflow DSL: each model node on the run's own model (the one the run was made with
+  and handed the key of; a tier the run has no model of runs there too), in a session of its own with no tool of its
+  own, each call node `via: "tool"` on a tool the agent has, its paid requests booked under
   the `learned_workflow` call, and web_search on the provider's own search where it resolves native, through the run's
   models. Its model requests are the run's, under its cap and on its timeline as side requests labelled
   `learned_workflow`: on claude-agent and codex, the harness's requests and the workflow's count against one total, and

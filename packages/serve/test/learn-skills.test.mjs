@@ -58,13 +58,15 @@ test("a draft whose call or model node names Bash, exec_command or apply_patch i
 });
 
 test("a draft whose model node names any tool is refused as workflow, though the agent was granted it: a learned model node runs without tools, so it is refused at learn time, never at a call after earlier nodes spent", () => {
-  for (const named of [["web_fetch"], ["web_search"], ["read"]]) {
+  for (const named of [["web_fetch"], ["web_search"]]) {
     for (const node of ["agent", "extract"]) {
       const result = check(draft(workflow({ tools: named, node })));
       assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], `${node} ${named}`);
       assert.match(result.problems[0].detail, /model node at \/root names a tool \(.+\): a learned workflow's model node runs without tools/, `${node} ${named}`);
     }
   }
+  // A model node's own tool (read) is on no learned list: the DSL refuses it first.
+  assert.match(check(draft(workflow({ tools: ["read"] }))).problems[0].detail, /tool "read" is not one of the host's tools/);
   // Inside a chain, after a node that would have run first.
   const doc = JSON.parse(richWorkflow());
   doc.root.steps[2] = { node: "extract", label: "late", instructions: "Read the page.", out: "Verdict", as: "verdict", tools: ["web_fetch"] };

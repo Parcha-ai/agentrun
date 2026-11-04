@@ -20,8 +20,8 @@ const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
- *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft may
- *  name (tools.ts learnedWorkflowTools): none when not given. */
+ *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft's
+ *  call nodes may run (tools.ts learnedWorkflowTools): none when not given. Its model nodes name none. */
 export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[] }): string {
   const { dir, active, tools = [] } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
@@ -90,7 +90,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "",
     "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
     "when to use it, then the JSON. It uses model, judge and tool-call nodes, and never a code node or a shell or",
-    `executor call. ${tools.length ? `Its nodes may name only these tools: ${tools.join(", ")}.` : "Its nodes name no tool."} At most ${CAPS.file} bytes of JSON.`,
+    `executor call. Its model nodes name no tool. ${tools.length ? `Its call nodes may run only these tools: ${tools.join(", ")}.` : "It has no call node on a tool."} At most ${CAPS.file} bytes of JSON.`,
     "To change a draft you were given, give it again whole under its name.",
     "",
     `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,

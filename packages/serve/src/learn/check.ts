@@ -71,7 +71,7 @@ export type CheckInput = {
   /** How the run's job ended, its status (`completed`, `failed`, ...). Only a completed run adds or changes a skill:
    *  without it, none does. */
   readonly outcome?: string;
-  /** The tools a workflow draft may name: the agent's granted tools a workflow node runs here (tools.ts
+  /** The tools a workflow draft may name: the agent's granted tools a workflow's call node runs here (tools.ts
    *  learnedWorkflowTools). Without it, a draft that names a tool is refused. */
   readonly tools?: readonly string[];
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */

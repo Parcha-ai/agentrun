@@ -189,7 +189,8 @@ export type Turn = { answer: string; asked: string[] };
  *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret.
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
  *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work; `workflows_left_out`: the learned workflows it does
- *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). */
+ *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET), or holding a
+ *  secret. */
 export type Pin = { seed: string; section?: string; learned?: string; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
  *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
@@ -569,20 +570,48 @@ export async function readWorkflows(cwd: string, repo: string, sha: string): Pro
       skipped.push(`${WORKFLOWS_DIR}/${name} (not UTF-8)`);
       continue;
     }
-    const status = statusOf(texts[1]);
+    // Its README read one way only, or not at all: one whose front matter is not closed, or holds a line that is no key
+    // at its left edge, could hold a status a reader other than this one sees, so it is never read as active.
+    const front = readmeFront(texts[1]);
+    if (!front) {
+      skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
+      continue;
+    }
+    const status = front.get("status");
     if (status !== undefined && status !== "active") continue;
-    workflows.push({ name, description: frontValue(texts[1], "description") ?? "", workflow: texts[0] });
+    workflows.push({ name, description: front.get("description") ?? "", workflow: texts[0] });
   }
   return { workflows, skipped };
 }
 
-/** The value a front matter line `key:` sets, quotes dropped, or undefined. */
-const frontValue = (text: string, key: string): string | undefined => {
+/** A learned workflow README's front matter, each key to its value (quotes dropped; a `>` or `|` value's indented lines
+ *  joined by spaces), or undefined when it does not read one way: no front matter, none closed (`---` on a line of its
+ *  own, the last line or not), a line that is neither a key at its left edge, a comment, blank, nor a line of a `>` or
+ *  `|` value, or a key set twice. */
+export function readmeFront(text: string): Map<string, string> | undefined {
   const lf = text.replace(/\r\n/g, "\n");
-  const end = lf.startsWith("---\n") ? lf.indexOf("\n---", 3) : -1;
-  const line = end < 0 ? undefined : lf.slice(4, end).split("\n").find((entry) => entry.startsWith(`${key}:`));
-  return line?.slice(key.length + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
-};
+  if (!lf.startsWith("---\n")) return undefined;
+  const close = /\n---(?:\n|$)/.exec(lf.slice(3));
+  if (!close) return undefined;
+  const front = new Map<string, string>();
+  let block: string | undefined;
+  for (const line of lf.slice(4, 3 + close.index).split("\n")) {
+    if (block !== undefined && (/^\s+\S/.test(line) || line.trim() === "")) {
+      if (line.trim()) front.set(block, `${front.get(block)} ${line.trim()}`.trim());
+      continue;
+    }
+    block = undefined;
+    if (line.trim() === "" || line.startsWith("#")) continue;
+    const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
+    if (!pair || front.has(pair[1]!)) return undefined;
+    const value = (pair[2] ?? "").trim();
+    if (/^[>|][-+]?$/.test(value)) {
+      block = pair[1]!;
+      front.set(block, "");
+    } else front.set(pair[1]!, value.replace(/^(["'])(.*)\1$/, "$2"));
+  }
+  return front;
+}
 
 /** Each file's place in main's first-parent log from `sha`, by the newest commit that changed it: 0 for those the newest
  *  commit changed, and so on, so two changes in one second keep their order. A run's notes (seedOf) and a person's view
@@ -838,12 +867,17 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);
     const skills = taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`));
     // The learned workflows the run may run, whole, in its directory before the pin names them (a reopen keeps them):
-    // by name, each while its line fits what is left of the tool's description budget; one that does not is left out.
+    // by name, each while its line fits what is left of the tool's description budget; one that does not, or holds a
+    // secret, is left out, and the pin names it.
     const flows: LearnedWorkflow[] = [];
     const flowsLeft: string[] = [];
     let room = LEARNED_WORKFLOWS_BUDGET;
     for (const flow of seed.workflows ?? []) {
-      if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description)) continue;
+      if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description) || options.shown.holds(flow.name)) {
+        // Named, but for a name that is itself a secret.
+        if (!options.shown.holds(flow.name)) flowsLeft.push(flow.name);
+        continue;
+      }
       const bytes = Buffer.byteLength(`${workflowLine(flow)}\n`, "utf8");
       if (bytes > room) flowsLeft.push(flow.name);
       else (room -= bytes), flows.push(flow);

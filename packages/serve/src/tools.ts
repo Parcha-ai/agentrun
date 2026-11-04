@@ -21,7 +21,7 @@ import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
@@ -243,11 +243,13 @@ export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) =>
  *  still saves and runs, though the table lists it no more. */
 export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(capabilityOf(name));
 
-/** The tools a run's learned workflow draft may name (learn/check.ts): those of the agent's `granted` tools a workflow's
- *  model or call node runs here (NODE_TOOLS, CALL_TOOLS), each as granted and by its capability's name. A harness's own
- *  tool (Bash, exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
-export const learnedWorkflowTools = (granted: readonly string[]): string[] =>
-  [...new Set(granted.filter((name) => allows(NODE_TOOLS, name) || allows(CALL_TOOLS, name)).flatMap((name) => [name, capabilityOf(name)]))];
+/** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
+ *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS), each as granted and by its capability's name,
+ *  and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
+ *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
+export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane): string[] =>
+  [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[capabilityOf(name) as Pickable])).flatMap((name) => [name, capabilityOf(name)]))];
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
  *  `via: "tool"` (`tool`). */

@@ -35,6 +35,7 @@ import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, t
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
+import { planeOf } from "./tool-plane.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
@@ -144,11 +145,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // The workflows the agent learned that its run may run, as one tool (learned-workflow.ts), when its pin names any: on
   // the run's models, as side requests under its cap, each model node and `llm` call on the run's model of its tier,
   // else the run's own (the only one the run was made with, and handed the key of); the `llm` tool's completion for a
-  // call node that names it.
+  // call node that names it; its call nodes on the agent's tools its run's plane resolves (the plane its harness and
+  // its tools read).
   const flows = revision.kind === "agentic" ? await pinnedWorkflows(where.root, await readPin(where.root)) : [];
   const learnedModel = (tier: unknown) => byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default");
   const learnedTool = flows.length && revision.kind === "agentic"
-    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
+    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
     : undefined;
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.

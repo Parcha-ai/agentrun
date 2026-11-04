@@ -66,8 +66,9 @@ to 64 lowercase letters, digits, dashes and underscores, starting with a letter 
 from the one-line description the draft's block gives (`draftFiles`): front matter with the folder's `name` and that
 `description`, and `status: pending` when the grader holds the draft. A run adds or changes at most one draft. The workflow DSL's own
 `validateWorkflow` judges the draft, with no code run (`executeCode: false`) and the agent's tools as the list a node may
-name: the tools its definition grants that a workflow's model or call node runs on this server, so a harness's own tool
-(`Bash`, `exec_command`, `apply_patch`) is never on it. With no list, a draft that names any tool is refused. A draft
+name: the tools its definition grants that a workflow's call node runs on this server, so a harness's own tool
+(`Bash`, `exec_command`, `apply_patch`) is never on it. A model node that names any tool is refused: a learned
+workflow's model node runs without tools. With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
 ## The index

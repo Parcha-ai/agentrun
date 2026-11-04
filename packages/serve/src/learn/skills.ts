@@ -180,6 +180,19 @@ const executableNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
     return via === "shell" || via === "executor" ? [{ rule: "executable_node" as const, detail: `the call node at ${node.path} runs via ${via}; a learned draft never runs a command` }] : [];
   });
 
+/** What a learned workflow's model node is refused with when it names a tool: it runs in a session of its own, with no
+ *  tool (learned-workflow.ts). Refused at learn time and before a call runs any node, never after earlier nodes spent. */
+export const MODEL_NODE_TOOLS = "a learned workflow's model node runs without tools";
+
+/** A draft's model nodes that name a tool: only a call node runs one. The DSL's inspection lists each node and its
+ *  pointer; a call node's `tool` is the DSL's to check against the list. */
+const toolingNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
+  dsl.inspectWorkflow(doc).nodes.flatMap((node) => {
+    if (node.kind === "call") return [];
+    const tools = (at(doc, node.path) as { tools?: unknown } | undefined)?.tools;
+    return Array.isArray(tools) && tools.length ? [{ rule: "workflow" as const, detail: `the model node at ${node.path} names a tool (${tools.map(String).join(", ").slice(0, 200)}): ${MODEL_NODE_TOOLS}` }] : [];
+  });
+
 const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => {
   const valid = dsl.validateWorkflow(doc as Workflow, { executeCode: false, ...(tools ? { tools } : {}) });
   return valid.ok ? [] : valid.issues;
@@ -188,8 +201,8 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
 /** Why `workflows/<name>/workflow.json` is not a draft the host can run; empty when it is. The DSL's own
  *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked),
  *  and with `tools`, so a node that names a tool outside them is its error: a harness's own tool (Bash, exec_command,
- *  apply_patch) is never on the list. With no list it fails closed: a draft the DSL refuses only once given an empty
- *  list names a tool. */
+ *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS). With no list it
+ *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
 export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[]): DraftProblem[] {
   let doc: unknown;
   try {
@@ -201,7 +214,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = executableNodes(dsl, doc);
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc)];
   } catch (error) {
     // The inspection reads the whole document, as validation need not: what it cannot read is refused, never passed.
     return [{ rule: "workflow", detail: `the workflow DSL cannot inspect it: ${(error as Error).message.slice(0, 200)}` }];

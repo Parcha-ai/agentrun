@@ -1,14 +1,17 @@
 // learned_workflow: a run of an agent that learned a workflow runs it as one tool call, on any harness. The tool is the
 // run's when its pin names a learned workflow (learning.ts: one whose README sets no status, or `active`; a pending or
 // retired one is never named), with no edit of the agent's definition; its description names each one and what it does,
-// so the model needs no hint. A call checks the workflow again against the agent's own tools (S1's checker,
-// draftProblems: a node or a call that names a tool the agent was not granted, a code node or a shell or executor call
-// is refused at the call, never run), then runs it with the workflow DSL's runWorkflow:
+// so the model needs no hint. A call checks the workflow again against the agent's own tools as its run has them (S1's
+// checker, draftProblems, as at learn time: a call node on a tool the agent was not granted or its run resolves
+// unavailable, a model node that names any tool, a code node or a shell or executor call is refused before any node
+// runs, never after earlier ones spent), then runs it with the workflow DSL's runWorkflow:
 //   - a model node (agent, decide, extract, report) on the run's model of its tier, else the run's own model (the one
 //     model the run was made with and handed the key of: app.ts), in a fresh session of its own (agentrun-pi's host
-//     runner), with no tool of its own: one that names a tool is refused at the call;
+//     runner), with no tool of its own;
 //   - a call node `via: "tool"` on the tool table's effect, as a workflow revision's (app.ts), for a tool the agent has,
-//     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own.
+//     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own; web_search
+//     where it resolves native on the provider's hosted search through the run's models (hosted-search.ts), on a harness
+//     whose own search it is too (harness-app.ts gives that harness no host tool of the name).
 // Each model request goes through the run's models as a side request (request-start.ts, cap.ts: under the run's cap,
 // marked, and costed on the run's timeline as `learned_workflow`), so what the workflow spends is the run's cost. A call
 // a crash cut off is never run again (`replay: "never"`): it is answered interrupted.
@@ -20,6 +23,7 @@ import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
+import type { Plane } from "./tool-plane.js";
 import { allows, CALL_TOOLS, learnedWorkflowTools, toolOf } from "./tools.js";
 import type { Complete } from "./llm.js";
 
@@ -35,8 +39,11 @@ type RunModels = {
 export type LearnedWorkflowRun = {
   /** The learned workflows the run's pin names (pinnedWorkflows). */
   workflows: readonly LearnedWorkflow[];
-  /** The tools the agent's revision grants: a workflow may name only those a model or call node runs here. */
+  /** The tools the agent's revision grants: a workflow's call node may name only those a call node runs here
+   *  (tools.ts learnedWorkflowTools), and of those, none `plane` resolves unavailable. */
   granted: readonly string[];
+  /** The run's plane (tool-plane.ts planeOf), as its harness and its tools read it. */
+  plane?: Plane;
   env: NodeJS.ProcessEnv;
   work: string;
   models: RunModels;
@@ -58,7 +65,8 @@ export function learnedText(text: string): string {
   return `${text.slice(0, end)}\n[the workflow's output is cut at ${end} of ${text.length} characters]`;
 }
 
-/** What a learned workflow's model node is refused with when it names a tool: it runs in a session of its own here. */
+/** What a learned workflow's model node is refused with when it names a tool: it runs in a session of its own here.
+ *  The check before the run refuses such a workflow first (draftProblems); this one holds should it not. */
 export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without tools here";
 
 /** The tool's description: what it does, and each workflow by name with the line its README says what it does with. */
@@ -123,8 +131,9 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true });
   if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
   const dsl = await import("@parcha/agentrun-dsl");
-  // Checked again at the call, against the agent's own tools: what merged under another revision may name one it has no more.
-  const tools = learnedWorkflowTools(run.granted);
+  // Checked again at the call, against the agent's own tools as its run has them, before any node runs: what merged under
+  // another revision may name one it has no more.
+  const tools = learnedWorkflowTools(run.granted, run.plane);
   const problems = draftProblems(dsl, flow.workflow, tools);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);

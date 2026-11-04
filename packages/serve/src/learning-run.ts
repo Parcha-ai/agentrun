@@ -299,7 +299,7 @@ export class LearningRuns {
           const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
-          for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget`);
+          for (const name of pin.workflows_left_out ?? []) warn(started.runId, `starts without the workflow ${name} its agent learned: its line is over what is left of the learned_workflow tool's description budget, or it holds a secret`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
           failed = said.stopped(STOPPED.notCopied);
@@ -679,7 +679,7 @@ export class LearningRuns {
     return once(this.proposing, run.id, () => this.propose(run));
   }
 
-  /** The tools a run's workflow draft may name: its revision's granted tools a workflow node runs here (tools.ts
+  /** The tools a run's workflow draft may name: its revision's granted tools a workflow's call node runs here (tools.ts
    *  learnedWorkflowTools); none for a revision not found, so a draft that names one is refused. */
   private async draftTools(run: Run): Promise<string[]> {
     const known = await this.options.agents.revision(run.agentId, run.revision);
