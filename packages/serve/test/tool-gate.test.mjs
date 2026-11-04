@@ -294,3 +294,40 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   assert.equal(started.status, 202, "ask does not apply to a call node: the author's own step runs");
   await follow(api, started.body.run_id, ["completed"], { deadlineMs: 30_000 });
 });
+
+const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
+
+test("with accounts off no one can approve: an ask, a catalog tool's default or a setting, is refused with words saying so, never parked, and capabilities say an ask needs the password sign-in; with accounts on it parks", { timeout: 120_000 }, async (t) => {
+  // The run's gate, told no one can approve here: a catalog tool at its default ask is refused, and nothing is recorded.
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  const written = [];
+  const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => written.push(entry) }), parked: (id) => written.push({ parked: id }) };
+  const lone = new RunGate({ root, work, data, runId: "r1" }, {}, true, false);
+  assert.deepEqual(await lone.enter("monid.run", { path: "/person/enrich" }, "c1", park), { text: NO_APPROVER("monid.run"), isError: true }, "a catalog tool's default ask");
+  assert.deepEqual(written, [], "no request kept, no park");
+  assert.equal((await new RunGate({ root, work, data, runId: "r2" }, {}, true, true).enter("monid.run", { path: "/person/enrich" }, "c2", park)).parked, true, "where someone can approve, it parks");
+
+  // A server with accounts off: web_fetch set to ask is refused on every harness, and the run goes on.
+  const dialled = await network(t);
+  const off = await serve(t, { ...GATE, accounts: false, openSetup: false });
+  assert.equal((await off.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const caps = (await off.api("GET", "/capabilities")).body;
+  const doc = (await off.api("GET", "/openapi.json")).body;
+  assert.deepEqual(Object.fromEntries(caps.tools.filter((tool) => ["web_fetch", "monid.run", "browser"].includes(tool.name)).map((tool) => [tool.name, tool.ask_needs])), { web_fetch: "password", "monid.run": "password", browser: undefined }, "every tool ask is offered for, none other");
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Capabilities, caps), [], "capabilities as documented");
+  const runs = await Promise.all(HARNESSES.map(async (harness) => ({ harness, runId: await fetching(off.api, `lone-${harness}`, harness) })));
+  for (const { harness, runId } of runs) {
+    const { answer, rows, view } = await resumed(off.api, runId);
+    const result = rows.find((row) => row.kind === "tool_result");
+    assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", NO_APPROVER("web_fetch")], harness);
+    assert.equal(rows.some((row) => row.kind === "tool_approval_requested"), false, `${harness}: no approval row`);
+    assert.equal(view.pending, null, harness);
+    assert.equal(answer, harness === "pi" ? `Saw: ${NO_APPROVER("web_fetch")}` : "Fetched once.", `${harness}: the run went on`);
+  }
+  assert.deepEqual(await dialled(), [], "nothing ran");
+
+  // Accounts on: the same setting shows no ask_needs.
+  const on = await serve(t, GATE);
+  assert.equal((await on.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  assert.equal((await on.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_fetch").ask_needs, undefined);
+});
