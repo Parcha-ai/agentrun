@@ -43,13 +43,14 @@ Save it in the console (Settings → Tool keys → Model keys), which takes effe
    With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
    limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
    run. For a provider's own key, pass `-e ANTHROPIC_API_KEY` or `-e OPENAI_API_KEY` instead; any
-   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
+   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`, with its model named in
+   `AGENT_MODEL`.
 
 2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. A Starter's 512 MB runs 3 pi agents or 2 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. A 2 GB instance holds 10 Codex runs. The image leaves Claude Code out for now, so run Claude Code agents with `npx @parcha/agentrun`. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
 
    [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
    then set `OPENROUTER_API_KEY` in the service's Environment (or another provider's key, or a gateway's
-   `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`). Render generates the token,
+   `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY` with its model in `AGENT_MODEL`). Render generates the token,
    `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
 
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
