@@ -205,3 +205,22 @@ test("a notice that throws never stops a close: the listener, the runs' processe
   await follow(api, runId, ["cancelled"], { deadlineMs: 60_000 });
   await closeNext();
 });
+
+test("a second close of a stopped server changes nothing: the next server's record stays, and a start beside it is refused at once", { timeout: 120_000 }, async (t) => {
+  // Greptile P2: a close called again after the replacement started rewrote the replacement's record as stopping, so a
+  // later start waited out that record (its pid, this process, alive) before it was refused.
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX });
+  await first.close();
+  const next = await startServe({ data, port: 0, faux: FAUX });
+  let nextClosed;
+  const closeNext = () => (nextClosed ??= next.close());
+  t.after(closeNext);
+  const record = readFileSync(join(data, STATE), "utf8");
+  await first.close();
+  assert.equal(readFileSync(join(data, STATE), "utf8"), record, "the next server's record is left as it was");
+  const said = [];
+  await assert.rejects(startServe({ data, port: 0, faux: FAUX, notice: (line) => said.push(line) }), (error) => error instanceof ServerLockHeldError && error.message === refusal(data));
+  assert.deepEqual(said, [], "refused at once, not waited on");
+  await closeNext();
+});
