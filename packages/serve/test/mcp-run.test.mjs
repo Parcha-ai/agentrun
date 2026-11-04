@@ -124,7 +124,11 @@ test("pi: a server whose address changed after the run started answers the run's
   assert.equal(last.status, "completed");
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.match(view.result?.final_answer ?? "", /address changed since this run started/);
-  assert.deepEqual([fake.log.length - before, moved.log.length - movedBefore], [0, 0], "neither address was sent anything");
+  // A save's own preview may still be closing its exchange as it answers: what the run sent is any call, or any
+  // request after the run's turn began.
+  const sent = (log, from) => log.slice(from).filter((entry) => entry.method !== "notifications/cancelled" && entry.http !== "DELETE");
+  assert.deepEqual([calls(fake).length, calls(moved).length], [0, 0], "no call reached either address");
+  assert.deepEqual([sent(fake.log, before), sent(moved.log, movedBefore)].map((log) => log.filter((entry) => entry.method === "initialize" || entry.method === "server/discover").length), [0, 0], `the run connected to neither: ${JSON.stringify([fake.log.slice(before), moved.log.slice(movedBefore)])}`);
 });
 
 test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
