@@ -17,7 +17,7 @@ describe("demo: each harness's default model, as the server names it", () => {
     const codex = renderToStaticMarkup(createElement(AgentEditor, { agent: agentOn("codex"), caps: named, step: "settings" }));
     expect(codex).toContain(`Empty uses the server&#x27;s default (<span title="agent-model/gpt-6-luna">gpt-6-luna</span>).`);
     const claude = renderToStaticMarkup(createElement(AgentEditor, { agent: agentOn("claude-agent"), caps: named, step: "settings" }));
-    expect(claude).toContain("No default for this harness: choose a model.");
+    expect(claude).toContain("No default for this harness yet: add a model key in Settings → Model keys, or choose a model here.");
     expect(claude).not.toContain("gpt-6-luna");
   });
 });
@@ -31,7 +31,7 @@ describe("AgentEditor, the Model field", () => {
   it("from a server that does not name each harness's default, offers none to claude-agent or codex", () => {
     for (const harness of ["claude-agent", "codex"]) {
       const html = settings(agentOn(harness));
-      expect(html, harness).toContain("No default for this harness: choose a model.");
+      expect(html, harness).toContain("No default for this harness yet: add a model key in Settings → Model keys, or choose a model here.");
       expect(html, harness).not.toContain("gpt-6-luna");
       expect(html, harness).toContain('placeholder="provider/model"');
     }

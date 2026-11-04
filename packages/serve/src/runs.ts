@@ -29,7 +29,7 @@ import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
@@ -45,6 +45,7 @@ import { type Place, storedPlace } from "./place.js";
 import { destroyRunBoxes, sweepRunBoxes } from "./run-box.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { Emitted } from "./webhooks.js";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -229,10 +230,6 @@ export type Run = {
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
-  /** Where its status stood for its notices (`notify`): input_required, an end once carried back, or `other`. Unset
-   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood; UNREAD for
-   *  an agentic run adopted live, whose rows come with its first snapshot. */
-  moment?: string;
 };
 
 const ASKED = "Asked you: ";
@@ -371,19 +368,8 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
   return (id) => !live.has(id) && !isLive(id);
 }
 
-/** A live run adopted with no rows yet: where it stands is read from its first snapshot, notifying nothing. */
-const UNREAD = "unread";
-/** What a run's `moment` becomes (`keep`) as its status is recorded, and whether that is a notice. A run not yet read
- *  (undefined) keeps none. A live run adopted with no rows (UNREAD) takes where its first snapshot stands, silently; an
- *  end it comes to is always new, and noticed. */
-export function nextMoment(seen: string | undefined, moment: string, rows: number): { keep: string | undefined; notify: boolean } {
-  if (seen === undefined) return { keep: undefined, notify: false };
-  if (seen === UNREAD && (moment === "other" || moment === "input_required")) return { keep: rows ? moment : UNREAD, notify: false };
-  return { keep: moment, notify: moment !== seen && moment !== "other" };
-}
-
-/** Where a run's status stands for its notices: input_required, an end once carried back, else other. */
-const momentOf = (status: Status, settled: boolean | undefined): string => (status === "input_required" || (TERMINAL.has(status) && settled) ? status : "other");
+/** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
+const waitMark = (run: Run): string => (stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "";
 
 /** Waits for `work`, or until `deadline` (ms since the epoch), whichever comes first. */
 async function untilDeadline(work: Promise<unknown> | undefined, deadline: number): Promise<void> {
@@ -421,9 +407,10 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
 export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
-/** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
- *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
-export type RunNotify = (event: (typeof WEBHOOK_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => void;
+/** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
+ *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
+ *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
+export type RunNotify = (event: (typeof WEBHOOK_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -630,10 +617,11 @@ export class Runs {
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
+    // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
+    if (row.state !== "running") run.outcome = STATUS_OF[row.state];
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
     if (row.state !== "running") {
-      run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
@@ -654,7 +642,6 @@ export class Runs {
       this.learning.onAdopt(run, adopted !== null);
     }
     this.refresh(run);
-    run.moment = run.kind === "agentic" && run.orphan !== undefined && !run.rows.length ? UNREAD : momentOf(statusOf(run).status, run.settled);
     return run;
   }
 
@@ -773,7 +760,10 @@ export class Runs {
     if (run.waiting?.size) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
-    if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
+    // Its code is `spend_cap_reached: `, or with a note after it (`spend_cap_reached (out of budget): `, cap.ts); the message is
+    // the words after it.
+    const capped = last?.kind === "error" ? CAP_REFUSAL_PREFIX.exec(last.text ?? "") : null;
+    if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last!.text!.slice(capped[0].length), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
     if (stopped(run)) return undefined;
     // Its newest row is the answer; or the person's message, which an answer that ended its request follows in the entries
@@ -928,23 +918,24 @@ export class Runs {
     await recoverLearning(rows);
   }
 
-  /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. */
+  /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. A wait
+   *  is told each time it is seen: webhooks.ts queues each wait once, whichever server sees it first. */
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
-    const moment = momentOf(status, run.settled);
-    const { keep, notify } = nextMoment(run.moment, moment, run.rows.length);
-    run.moment = keep;
-    if (!notify || !this.options.notify) return;
-    const waits = moment === "input_required";
+    // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state === "waiting" ? "question" : "stopped" });
+  }
+
+  /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
+   *  has (settle, persistLater, reopen). What it already queued it queues no more. */
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "stopped" }): Emitted | undefined {
+    if (!this.options.notify || !marker) return undefined;
     try {
-      // A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on).
-      const at = waits ? ((stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "") : (run.endedAt ?? "");
-      // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-      const pending = waits ? { pending: { kind: state === "waiting" ? ("question" as const) : ("stopped" as const) } } : {};
-      this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title, ...pending }, at);
+      return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
     } catch (error) {
       warn(run.id, `its notice was not queued: ${(error as Error).message}`);
+      return undefined;
     }
   }
 
@@ -1361,7 +1352,10 @@ export class Runs {
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
-    const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
+    // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
+    // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.
+    const endedAt = (run.endedAt ??= new Date().toISOString());
+    const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}), endedAt } as const;
     const counted = run.metrics;
     const end = (metrics?: StoredMetrics) => {
       try {
@@ -1389,11 +1383,11 @@ export class Runs {
     } catch (error) {
       // A store that refuses the write (a full disk, a store fenced by it) must not leave the run unended: it ends here
       // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
-      // run as it was in the store.
+      // run as it was in the store. Its run.ended waits for the store (persistLater), so a receiver that reads the run
+      // back on its notice reads it ended there too.
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
       // An unknown cost stays unknown: never stored as 0.
       if (cost !== null) run.costUsd = cost;
-      run.endedAt ??= new Date().toISOString();
       run.outcome = outcome;
       run.finishing = undefined;
       run.settled = true;
@@ -1403,7 +1397,9 @@ export class Runs {
       return;
     }
     const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
-    run.endedAt = row?.endedAt ?? run.endedAt ?? new Date().toISOString();
+    // The store's time is the one it was given, unless an earlier end of the run's own landed first (a refused write that
+    // went through after all): the row's then. A read that fails keeps the chosen time, never a new one.
+    if (row?.endedAt) run.endedAt = row.endedAt;
     if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
     this.options.log?.("run_ended", { run: run.id, agent: run.agentId, status: outcome, cost_usd: row?.costUsd ?? cost ?? "unknown" });
     run.outcome = outcome;
@@ -1411,6 +1407,7 @@ export class Runs {
     run.settled = true;
     run.updatedAt = new Date().toISOString();
     this.refresh(run);
+    this.notice(run, "run.ended", run.endedAt);
     // Only once the run has ended as it would without learning: a slow or failing check never holds the job.
     void this.learning.afterSettle(run);
   }
@@ -1442,6 +1439,8 @@ export class Runs {
         const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
         if (row?.endedAt) run.endedAt = row.endedAt;
         if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
+        // In the store at last: its run.ended goes now.
+        this.notice(run, "run.ended", run.endedAt);
         await this.learning.afterSettle(run);
       }, () => this.persistLater(run, persist));
     }, this.options.settleRetryMs ?? SETTLE_RETRY_MS);
@@ -1558,7 +1557,6 @@ export class Runs {
       await this.setUp(started.runId, started.dir, meta);
     }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
-    run.moment = "other";
     // Before the run is known here, so nothing launches it first.
     await this.pinSecrets(run, revision);
     this.runs.set(run.id, run);
@@ -1681,6 +1679,9 @@ export class Runs {
       const now = this.store.readRun(run.id);
       if (now?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
       if (now?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+      // Its end's run.ended in the outbox on disk before the run opens again, or not opened: once the row runs, no start finds
+      // the end to queue it.
+      if (now?.endedAt && this.notice(run, "run.ended", now.endedAt) === "unsaved") throw new ApiError("unavailable", "The run's end is still being announced to its webhook; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
       try {
         this.store.reopenRun(run.id);
       } catch (error) {

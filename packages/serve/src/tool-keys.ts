@@ -20,6 +20,7 @@ import { writeDurableSync } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { checkKey, type KeyCheck } from "./key-check.js";
 import { toolsView } from "./tools.js";
+import { MODEL_KEYS } from "./model.js";
 import { isObject, unknownFields } from "./validate.js";
 
 export const TOOL_KEYS_FILE = "tool-keys.json";
@@ -39,6 +40,9 @@ export const TOOL_KEYS = [
   { id: "browserbase", kind: "tool", label: "Browserbase", fields: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], unlocks: ["browser"] },
   // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
   { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
+  // A model provider's key (model.ts' MODEL_KEYS, which give each its default model): every run gets it, as the
+  // launcher's model keys reach every run. Its harnesses are pi and the harness that is the provider's own.
+  ...MODEL_KEYS.map(({ id, label, field, harnesses }) => ({ id, kind: "model" as const, label, fields: [field] as const, unlocks: [] as const, harnesses })),
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
 /** The fields of the `tool` rows: keys a tool or a decision provider reads, and no harness (the harnesses read their
@@ -56,10 +60,11 @@ export function unlockedBy(candidates: readonly string[], tools: readonly { name
 }
 
 /** What a row unlocks here: a `tool` row's, its tools and providers as capabilities bind them (unlockedBy); any other
- *  kind's (a model's), no tool, on the harnesses this server offers (`offers`, capabilities' `harnesses`). */
-export function rowUnlocks(row: { kind: string; unlocks: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean }[]) {
+ *  kind's (a model's), no tool, on the harnesses this server offers (`offers`, capabilities' `harnesses`) of those that
+ *  run on it (its `harnesses`, when it names them). */
+export function rowUnlocks(row: { kind: string; unlocks: readonly string[]; harnesses?: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean }[]) {
   if (row.kind === "tool") return unlockedBy(row.unlocks, tools, providers);
-  return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => offers.some((offer) => offer.id === harness && offer.available)) };
+  return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && offers.some((offer) => offer.id === harness && offer.available)) };
 }
 
 /** The key that unlocks the tool `name` (capabilities' `tools[].key`, so a page links "needs the X key" to it), if any. */
@@ -166,7 +171,7 @@ export class ToolKeys {
         return { name, set: false, source: null, ...(opened ? { stored_unreadable: true as const } : {}) };
       });
       const check = fields[0].source === "stored" && kept !== "unreadable" ? (kept.checks[row.id] ?? UNCHECKED) : null;
-      return { id: row.id, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, check };
+      return { id: row.id, kind: row.kind, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, check };
     });
     // A file that does not read as a whole names no field: which it held is unknown.
     const reason = kept === "unreadable" ? "file_unreadable" : UNREADABLE.find((why) => again.some((field) => field.why === why));
