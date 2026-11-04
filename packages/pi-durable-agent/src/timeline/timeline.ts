@@ -343,8 +343,9 @@ function createProjector(options: TimelineOptions) {
   const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
-  // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
-  // `conversation:id`: the call, when it comes, takes its result and is done.
+  // Results stored before their call (a harness bridge writes a result before the answer holding its call), by
+  // `conversation:id`: held, not shown, until the call comes and takes it, right after its own row, so a host that serves
+  // each row where it first sees it never shows a result above its call. One whose call never comes is shown at the end.
   const early = new Map<string, { row: TimelineEvent; view: ToolResultView }>();
   const previous = new Map<number, string>();
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
@@ -475,9 +476,7 @@ function createProjector(options: TimelineOptions) {
             use.summary = clean(named, caps.summary);
             const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view);
             Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
-            rows.splice(rows.indexOf(before.row), 1);
-            rows.splice(rows.indexOf(use) + 1, 0, before.row);
-            touch(before.row);
+            add(before.row);
           }
         });
       }
@@ -501,7 +500,7 @@ function createProjector(options: TimelineOptions) {
       }
       const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view);
       if (!call && id) early.set(`${conv}:${id}`, { row, view });
-      add(row);
+      else add(row);
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
@@ -600,8 +599,16 @@ function createProjector(options: TimelineOptions) {
     });
   }
 
+  /** Each result still waiting for a call that never came, shown now as it is (at the end of a read, or of a run). */
+  function releaseEarly(): TimelineEvent[] {
+    const held = [...early.values()].map((h) => h.row);
+    early.clear();
+    rows.push(...held);
+    return held;
+  }
+
   return {
-    push, nested, nestedEnd, interrupt, open, usage,
+    push, nested, nestedEnd, interrupt, open, usage, releaseEarly,
     call: (conv: number, id: string) => calls.get(`${conv}:${id}`),
     adoptLive: (conv: number, id: string, child: number) => {
       const call = calls.get(`${conv}:${id}`);
@@ -617,6 +624,7 @@ function createProjector(options: TimelineOptions) {
 export function timelineOf(entries: readonly EntryLike[], options: TimelineOptions = {}): TimelineEvent[] {
   const projector = createProjector(options);
   for (const entry of entries) projector.push(entry);
+  projector.releaseEarly();
   if (options.settled) for (const [id, call] of projector.open()) projector.interrupt(call, id);
   const usage = projector.usage();
   return usage ? [...projector.rows(), usage] : [...projector.rows()];
@@ -833,6 +841,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
           live("phase", `${conv()}:run:start`, "Run started");
           break;
         case "run_end":
+          for (const row of projector.releaseEarly()) put(row);
           for (const [id, call] of projector.open(conv())) put(projector.interrupt(call, id));
           wait("poll", undefined);
           wait("retry", undefined);
