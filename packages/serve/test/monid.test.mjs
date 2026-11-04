@@ -288,7 +288,7 @@ test("a pi run's model finds, reads and runs a monid endpoint through monid_disc
   assert.deepEqual(paid.map((entry) => [entry.kind, entry.data.heldUsd ?? entry.data.usd]), [["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 0.003]]);
 });
 
-test("a pi run cancelled while its monid.run is under way still settles the call: its charge is booked, so the run's cost stays known", { timeout: 90_000 }, async (t) => {
+test("a pi run cancelled while its monid.run is under way still settles the call, at monid's unknown charge for a stopped run", { timeout: 90_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { fauxMonid: FAUX_MONID });
@@ -308,6 +308,7 @@ test("a pi run cancelled while its monid.run is under way still settles the call
     if (settled.length) break;
   }
   assert.equal(entriesOf(data, id, "agentrun.tool_started").length, 1, "marked before it was sent");
-  assert.deepEqual(settled.map((entry) => entry.data.tool), ["monid.run"], "settled though its turn was stopped");
-  assert.notEqual((await api("GET", `/runs/${id}`)).body.cost.usd, null, "the run's cost is known");
+  // Settled at monid's rule for a run its caller stopped: it may have used some, so its charge is unknown (null), never $0.
+  // The run's cost then reads unknown by that rule (#1377), not for a mark left open.
+  assert.deepEqual(settled.map((entry) => [entry.data.tool, entry.data.usd]), [["monid.run", null]], "settled though its turn was stopped");
 });
