@@ -172,24 +172,48 @@ const deepSchema = (levels) => {
   return schema;
 };
 
-test("the header check visits each part of a schema once, within its bounds: deep, wide and shared schemas finish at once", () => {
-  const timed = (schema) => {
-    const start = performance.now();
-    const said = mcpHeaderProblem(schema);
-    return { said, ms: performance.now() - start };
+test("the header check visits each part of a schema once, within its bounds: deep, wide and shared schemas", () => {
+  /** `schema` with each of its objects behind a proxy that counts how often its keys are listed, the one step the check
+   *  takes on every object it visits; and how many distinct objects it holds. */
+  const counted = (schema) => {
+    const proxies = new Map();
+    const listed = new Map();
+    const wrap = (node) => {
+      if (!node || typeof node !== "object") return node;
+      if (proxies.has(node)) return proxies.get(node);
+      const proxy = new Proxy(node, {
+        ownKeys: (target) => (listed.set(target, (listed.get(target) ?? 0) + 1), Reflect.ownKeys(target)),
+        get: (target, key) => wrap(Reflect.get(target, key)),
+      });
+      proxies.set(node, proxy);
+      return proxy;
+    };
+    const objects = new Set();
+    const walk = (node) => {
+      if (!node || typeof node !== "object" || objects.has(node)) return;
+      objects.add(node);
+      for (const value of Array.isArray(node) ? node : Object.values(node)) walk(value);
+    };
+    walk(schema);
+    return { schema: wrap(schema), objects: objects.size, visits: () => [...listed.values()] };
   };
-  const deep = timed(deepSchema(60));
-  assert.equal(deep.said, undefined);
-  assert.ok(deep.ms < 50, `60 levels of additionalProperties: ${deep.ms} ms`);
-  const wide = timed({ type: "object", properties: Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`p${i}`, { type: "string", ...(i === 4999 ? { "x-mcp-header": "Last" } : {}) }])) });
-  assert.equal(wide.said, undefined);
-  assert.ok(wide.ms < 50, `5,000 properties: ${wide.ms} ms`);
-  // One object reached from many places, and a cycle, as a parsed schema never holds but an object can: each visited once.
+  const once = (schema, label) => {
+    const { schema: watched, objects, visits } = counted(schema);
+    const start = performance.now();
+    const said = mcpHeaderProblem(watched);
+    const ms = performance.now() - start;
+    assert.equal(said, undefined, label);
+    assert.deepEqual([visits().length, visits().every((n) => n === 1)], [objects, true], `${label}: every object listed exactly once`);
+    assert.ok(ms < 2_000, `${label}: ${ms} ms`);
+  };
+  once(deepSchema(60), "60 levels of additionalProperties");
+  once({ type: "object", properties: Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`p${i}`, { type: "string", ...(i === 4999 ? { "x-mcp-header": "Last" } : {}) }])) }, "5,000 properties");
+  // One object reached from many places, and a cycle, as a parsed schema never holds but an object can.
   const shared = { type: "string" };
-  const fan = { type: "object", properties: Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`p${i}`, shared])) };
+  once({ type: "object", properties: Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`p${i}`, shared])) }, "one object under 2,000 names");
   const cyclic = { type: "object", properties: {} };
   cyclic.additionalProperties = cyclic;
-  for (const schema of [fan, cyclic]) assert.ok(timed(schema).ms < 50);
+  once(cyclic, "a cycle");
   assert.match(mcpHeaderProblem(deepSchema(HEADER_SCAN_DEPTH + 10)) ?? "", /nests deeper than 64 levels/);
   assert.match(mcpHeaderProblem({ type: "object", properties: Object.fromEntries(Array.from({ length: 20_000 }, (_, i) => [`p${i}`, { type: "string" }])) }) ?? "", /larger than 10000 parts/);
 });
