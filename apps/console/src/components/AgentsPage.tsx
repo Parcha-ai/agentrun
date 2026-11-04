@@ -67,7 +67,8 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
     if (!caps.mcp) return;
     const n = ++mcpAsked.current;
     setMcpServers(null);
-    v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
+    // A list that says its file can't be read is a failed read, never an empty one: its grants are not "deleted".
+    v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.file_unreadable ? "failed" : r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
   };
   useEffect(loadMcp, [v2, caps.mcp]); // eslint-disable-line react-hooks/exhaustive-deps
   // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never

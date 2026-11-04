@@ -25,6 +25,18 @@ export function grantOf(name: string): { server: string; tool: string } | null {
   return m ? { server: m[1]!, tool: m[2]! } : null;
 }
 
+/** The wire name budget a grant's `mcp__<server>__<tool>` must fit (packages/serve/src/catalog.ts, WIRE_NAME). */
+const WIRE_NAME = /^[A-Za-z0-9_-]{1,52}$/;
+/** Why the server's save refuses a grant by its name alone (packages/serve/src/runnable.ts): the server is named like
+ *  the harnesses' own tools, or its wire name `mcp__<server>__<tool>` is not its own (a character a tool name can't
+ *  carry) or is past the budget. Undefined when the name can be granted. */
+export function grantNameProblem(server: string, tool: string): string | undefined {
+  if (server === "hands") return "hands is the harnesses' own name: save this server under another to grant its tools";
+  const wire = `mcp__${server}__${tool}`;
+  if (WIRE_NAME.test(wire)) return undefined;
+  return /^[A-Za-z0-9_-]+$/.test(tool) ? `name too long to grant (${wire.length}/52)` : "its name has a character a tool name can't carry";
+}
+
 /** Each `mcp:` grant in `tools` that no saved server answers for: its server is gone, or no longer lists the tool. */
 export function staleGrants(tools: readonly string[], servers: readonly McpServer[]): { grant: string; why: string }[] {
   return tools.flatMap((grant) => {

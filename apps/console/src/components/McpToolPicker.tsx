@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { grantOf, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
+import { grantNameProblem, grantOf, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
 
 /** The Tools step's MCP servers: a group per saved server with a box per tool it lists, ticked when `tools` grants
  *  `mcp:<server>/<tool>`; then each grant that no saved server answers for (its server deleted, or the tool no longer
@@ -11,10 +11,11 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
   const toggle = (grant: string) => onChange(tools.includes(grant) ? tools.filter((t) => t !== grant) : [...tools, grant]);
   const granted = tools.filter((t) => grantOf(t));
   const runs = !harnesses || harnesses.includes(harness);
-  const box = (grant: string, label: string, note?: string, warn?: string) => {
+  // A grant the server's save refuses (by harness, or by name) can't be ticked; one already granted stays, to untick.
+  const box = (grant: string, label: string, note?: string, warn?: string, refused?: string) => {
     const on = tools.includes(grant);
-    const off = !runs && !on;
-    const said = warn ?? (on && !runs ? `Won't run on ${harness}.` : undefined);
+    const off = (!runs || !!refused) && !on;
+    const said = warn ?? refused ?? (on && !runs ? `Won't run on ${harness}.` : undefined);
     return (
       <li key={grant}><label className={cn("flex items-start gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", warn && "border-warning/60", off ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
         <input type="checkbox" value={grant} checked={on} disabled={off} onChange={() => toggle(grant)} className="mt-0.5 accent-[hsl(var(--primary))]" />
@@ -42,7 +43,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
       {servers.map((s) => (
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
           <p className="caps mb-2 text-[11px] font-semibold text-muted-foreground">{s.name} · MCP server</p>
-          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined)))}
+          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantNameProblem(s.name, t.name))))}
         </section>
       ))}
       {stale.length > 0 && (

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { AgentEditPage } from "./AgentsPage";
+import { McpToolPicker } from "./McpToolPicker";
 import { Timeline } from "./Timeline";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { createClient } from "@/lib/client";
@@ -127,6 +128,45 @@ describe("the Tools step's MCP servers", () => {
     await settle();
     expect(host.querySelector('[aria-label="MCP server fake"]')).not.toBeNull();
     expect(host.textContent).not.toContain("could not be read");
+  });
+
+  it("disables a tool whose grant the server refuses by name, and an existing grant of it can be removed", async () => {
+    const long = "a".repeat(42); // mcp__fake__ and 42 characters: 53, past the 52 a wire name has
+    const server = { ...FAKE, tools: [...FAKE.tools, tool(long, "A tool with a long name.")] };
+    const html = renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} }));
+    expect(html).toMatch(new RegExp(`value="mcp:fake/${long}"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake/${long}"`));
+    expect(html).toContain("name too long to grant (53/52)");
+    expect(html).not.toMatch(/value="mcp:fake\/add"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake\/add"/);
+    let now: string[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: ["read", `mcp:fake/${long}`], harness: "pi", onChange: (t: string[]) => { now = t; } })));
+    const box = host.querySelector(`input[value="mcp:fake/${long}"]`) as HTMLInputElement;
+    expect([box.checked, box.disabled]).toEqual([true, false]);
+    await act(async () => { box.click(); });
+    expect(now).toEqual(["read"]);
+  });
+
+  it("takes a list whose file can't be read as a failed read: the grants can't be checked, never deleted", async () => {
+    const fetch = (async (url: string) => {
+      const path = String(url);
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", etag: '"r1"' } });
+      if (path === "/v2/agents/calc") return json(200, agent(["read", "mcp:fake/add"]));
+      if (path.startsWith("/v2/agents/calc/revisions")) return json(200, { revisions: [], next_cursor: null });
+      if (path === "/v2/settings/mcp-servers") return json(200, { servers: [], file_unreadable: true });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    }) as typeof globalThis.fetch;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await settle();
+    expect(host.textContent).toContain("The MCP servers could not be read.");
+    expect(host.textContent).toContain("Can't check right now");
+    expect(host.textContent).not.toContain("not saved here any more");
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Retry")).toBe(true);
   });
 
   it("says nothing of MCP on a server without MCP servers", () => {
