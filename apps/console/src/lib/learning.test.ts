@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
 import { recorded } from "@/fixtures";
 import type { TimelineRow } from "./v2";
 
@@ -59,8 +59,12 @@ describe("a run's learning, read tolerantly", () => {
     expect(dropWords({ state: "dropped", reason: "a_new_reason" })).toBe("Not kept: learning stopped.");
     expect(["grader", "checker", "empty", "no_budget", "crashed", null].map(dropKind)).toEqual(["refused", "refused", "nothing", "skipped", "stopped", "stopped"]);
   });
+  it("notes given out of format were turned away, in plain words", () => {
+    expect(dropWords({ state: "dropped", reason: "unparsed" })).toBe("Not kept: its notes weren't in the expected format.");
+    expect(dropKind("unparsed")).toBe("refused");
+  });
   it("no reason's words use git's or the loop's own names", () => {
-    const words = ["empty", "grader", "checker", "screen", "screen_down", "no_write_tool", "tool_denied", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "propose_failed", "grade_failed"].map((reason) => dropWords({ state: "dropped", reason })).join(" ");
+    const words = ["empty", "unparsed", "grader", "checker", "screen", "screen_down", "no_write_tool", "tool_denied", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "propose_failed", "grade_failed"].map((reason) => dropWords({ state: "dropped", reason })).join(" ");
     expect(words).not.toMatch(/\b(main|merge|merged|commit|grader|verdict|proposal|end-of-run|reflect|seed|checker)\b/i);
   });
 });
@@ -131,6 +135,12 @@ describe("notes that wait for the owner's OK", () => {
     expect(waitsForOk({ state: "merged", reason: null })).toBe(false);
     expect(waitsForOk(null)).toBe(false);
     expect([waitWords(1), waitWords(2), waitWords(0)]).toEqual(["1 note waits for your OK", "2 notes wait for your OK", "A note waits for your OK"]);
+  });
+  it("a run that kept a note and holds one for the OK looks back on both; one that only holds one says it waits", () => {
+    const both = { state: "merged" as const, reason: null, detail: "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.", learned: [{ file: "answer-in-tables.md", name: "Answer in tables", supersedes: [] }], pending: [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }] };
+    expect(waitsForOk(both)).toBe(true);
+    expect(lookedBack(both)).toBe("Looked back: kept 1 note (Answer in tables); 1 note waits for your OK (Buy from PaperDepot24 first)");
+    expect(lookedBack({ ...both, learned: undefined, detail: "Waiting for your OK: Buy from PaperDepot24 first." })).toBe("Looked back: 1 note waits for your OK (Buy from PaperDepot24 first)");
   });
   it("the console approves only on a server whose capabilities say it does; one that says what approving needs says so", () => {
     expect(approval({ learning: { approve: true } })).toBe("yes");

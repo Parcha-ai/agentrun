@@ -4,17 +4,29 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { mergedNote } from "../dist/learn/notes.js";
 import { homeOf } from "../dist/files.js";
 import { agent, follow } from "./support.mjs";
 
+/** A run's new note as main keeps it once merged: with the host's `origin: you` line when it keeps the user's own words
+ *  (the run's, the default, adds none). */
+export const onMain = (text, origin = "run") => mergedNote(text, { origin });
+
 /** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;
+/** What every run that learns is told first under `# Learned`, notes or none: that it learns, and how. */
+export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them you will keep it for later runs. A secret (a password, key or token) is never kept, so say so instead.";
+/** What `# Learned` says after KEEPS when the run starts with no note. */
+export const NOTHING_YET = "Nothing learned yet.";
+/** The index under `# Learned` in a prompt, after the intro to what was learned, or undefined (no section, or nothing
+ *  learned yet). pi's system prompt closes the instructions with `</instructions>`. */
+export const learnedIn = (prompt) => /\n# Learned\n\n(?:[^\n]*\n\n)?What you learned in earlier runs[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** An agent with learning on and the write tool its end-of-run turn adds notes with, planning `plan` ([file, text]
- *  pairs) after its instructions. */
+/** An agent with learning on and no tool: its end-of-run turn answers with the notes `plan` ([file, text] pairs) holds,
+ *  planned after its instructions. */
 export const learner = (id, { plan, once = false, instructions = "Answer the question.", ...extra } = {}) =>
-  agent(id, { tools: ["write"], learning: true, instructions: [instructions, ...(plan ? [`Learn${once ? " once" : ""}: ${JSON.stringify(plan)}`] : [])].join("\n"), ...extra });
+  agent(id, { learning: true, instructions: [instructions, ...(plan ? [`Learn${once ? " once" : ""}: ${JSON.stringify(plan)}`] : [])].join("\n"), ...extra });
 
 export async function made(api, definition) {
   const res = await api("POST", "/agents", definition);
@@ -68,8 +80,8 @@ export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-obje
 /** The agent's learning folder: `learning/` in its home, as files.ts homeOf names the home. */
 export const repoOf = (data, agentId) => join(homeOf(data, agentId), "learning");
 export const copyOf = (data, runId) => join(data, "runs", runId, "work", ".learning");
-/** That copy once the run ended after its end-of-run turn: set aside in the run's directory, outside its work. */
-export const turnCopyOf = (data, runId) => join(data, "runs", runId, "learning-turn");
+/** What the run's end-of-run turn answered, and what the user said, as its directory kept them when the run settled. */
+export const turnOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning-turn.json"), "utf8"));
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
 

@@ -32,8 +32,9 @@ function places(text: string, form: string): Span[] {
   return out;
 }
 
-/** The longest field `redactSecrets` reads, in UTF-8 bytes. A longer one is printed whole as "[redacted]", never scanned:
- *  no field the checker prints is that long in good faith, and a crafted one (a long path) costs no scan. */
+/** The longest field `redactSecrets` reads, in UTF-8 bytes, unless its caller names another bound. A longer one is printed
+ *  whole as "[redacted]", never scanned: no field the checker prints is that long in good faith, and a crafted one (a
+ *  long path) costs no scan. */
 export const PRINT_MAX = 4096;
 
 /** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
@@ -41,9 +42,9 @@ export const PRINT_MAX = 4096;
  *  wherever it was found, a file's name included. Every form is found in `text` as given, and overlapping finds are
  *  redacted as one, so one value never hides part of another from the search. A text that still holds a value or a
  *  shape after that (a form not found as it stands: percent encoded, split by whitespace, an NFKC variant), or that is
- *  over PRINT_MAX, is redacted whole, never in part. */
-export function redactSecrets(text: string, values: readonly string[]): string {
-  if (Buffer.byteLength(text) > PRINT_MAX) return "[redacted]";
+ *  over `max` bytes (PRINT_MAX unless the caller names more), is redacted whole, never in part. */
+export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
+  if (Buffer.byteLength(text) > max) return "[redacted]";
   const given = values.filter((v) => v.length > 0);
   const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? needlesOf(v).plain : [])]).filter((form) => form.length > 0));
   const found = [
