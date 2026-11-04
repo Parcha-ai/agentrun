@@ -5,7 +5,7 @@ import { ArtifactViewer } from "./RunFiles";
 import type { RunFile } from "@/lib/v2";
 
 // The file viewer closes as the console's other overlays do: its X, a click on the dimmed backdrop around it, or Escape
-// (the browser's cancel of a modal dialog). A click inside it, or a drag that starts inside and ends outside, keeps it.
+// (the browser's cancel of the dialog). A click inside it, or a drag that starts inside and ends outside, keeps it.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const file = { path: "notes/a.md", size_bytes: 2, modified_at: "2026-11-04T20:57:00Z", content_type: "text/markdown; charset=utf-8" } as RunFile;
