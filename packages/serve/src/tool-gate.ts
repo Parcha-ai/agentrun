@@ -36,7 +36,7 @@ import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
-import { ToolSettings } from "./tool-plane.js";
+import { TABLE_TOOLS, ToolSettings } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -56,6 +56,35 @@ export const defaultPermission = (name: string): Permission => (isCatalogTool(na
 export function permissionKeys(name: string): string[] {
   if (!isMcpTool(name)) return [name];
   return [name, `${name.slice(0, name.indexOf("/"))}/*`];
+}
+
+/** The browser's registrations on pi (pi-browser's BROWSER_TOOL_NAMES, which a test holds this list to): each is a call
+ *  of the table's `browser`. */
+const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
+/** A CLI's own tools, by harness, and the table's tool each one is. */
+const NATIVE_TOOLS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "claude-agent": { WebSearch: "web_search", WebFetch: "web_fetch", Bash: "bash", Read: "read", Write: "write", Edit: "edit" },
+  codex: { web_search: "web_search", shell: "bash" },
+};
+/** The MCP server through which claude-agent calls the kernel's host tools (`mcp__hands__<wire name>`). */
+const HOST_TOOLS_SERVER = "hands";
+
+/** The settings key a call named `name` on `harness` is held to: the one mapping from every name a call reaches the gate
+ *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
+ *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
+ *  wire name) and on OpenCode `<server>_<tool>`, is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
+ *  catalog name; the browser's registrations are `browser`. Undefined: nothing maps it, and the gate asks. */
+export function settingsKeyOf(harness: string, name: string): string | undefined {
+  if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  const native = NATIVE_TOOLS[harness]?.[name];
+  if (native) return native;
+  const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
+  if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!) : mcpToolName(mcp[1]!, mcp[2]!);
+  const monid = /^monid_([a-z]+)$/.exec(name);
+  if (monid) return `monid.${monid[1]}`;
+  if (BROWSER_REGISTRATIONS.includes(name)) return "browser";
+  const alias = harness === "opencode" ? /^([a-z][a-z0-9-]*)_(.+)$/.exec(name) : null;
+  return alias ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
@@ -226,8 +255,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id" | "
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -245,11 +274,15 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
-  readonly policy = (tool: string): Permission => permissionOf(tool, new ToolSettings(this.where.data, () => undefined).get() as PermissionSettings, this.overrides);
+  readonly policy = (tool: string): Permission => {
+    const key = settingsKeyOf(this.where.harness ?? "pi", tool);
+    // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
+    return key === undefined ? "ask" : permissionOf(key, new ToolSettings(this.where.data, () => undefined).get() as PermissionSettings, this.overrides);
+  };
 
   /** The origin of the turn running now: what the server's internal path wrote for it; none for a person's turn. */
   turnOrigin(): TurnOrigin | undefined {
@@ -262,8 +295,10 @@ export class RunGate {
 
   /** One model-initiated call at the gate: undefined when it may run; else its answer, refused at once (deny) or parked
    *  (ask). One call waits at a time: another asked meanwhile is answered so, not run. */
-  async enter(tool: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
-    const permission = this.policy(tool);
+  async enter(name: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
+    // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give.
+    const tool = settingsKeyOf(this.where.harness ?? "pi", name) ?? name;
+    const permission = this.policy(name);
     const turnOrigin = permission === "ask" ? this.turnOrigin() : undefined;
     const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
     if (verdict === "allow") return undefined;
