@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Analytics, cachedShare, compact, costLine, costParts, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
+import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
 
@@ -10,12 +10,28 @@ const run = (id: string, status: Run["status"], state: Run["state"], title: stri
   run_id: id, agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status, state, title, created_at: "2026-10-30T03:00:00Z",
   ended_at: null, result: null, error: null, cost: null, archived_at: null,
 });
+// GET /v2/stats's `analytics`: tokens, time, success, cost, by harness and effort, per day and by tool, over the range
+// picked. A partial figure says what it holds; an unknown cost never reads $0.
+const g = (runs: number, completed: number, failed: number, withMetrics: number, tokens: number, cost: number | null, unknown = 0, review = 0) =>
+  ({ runs, completed, failed, needs_review: review, runs_with_metrics: withMetrics, tokens, cost_usd: cost, unknown_cost_runs: unknown });
+const NOW = Date.UTC(2026, 10, 1, 15);
+const analytics = (over: Partial<Analytics> = {}): Analytics => ({
+  filter: { from: "2026-10-03T00:00:00.000Z", to: null, agent: null },
+  totals: { ...g(12, 9, 2, 12, 1_284_000, 1.234), input: 200_000, cache_read: 600_000, cache_write: 200_000, output: 284_000, requests: 40, unmetered: 0 },
+  time: { ended_runs: 11, wall_ms: 5_400_000, active_runs: 0, active_ms: 0 },
+  by_harness_effort: [{ harness: "codex", effort: "high", ...g(4, 3, 1, 4, 800_000, 0.9) }, { harness: "pi", effort: null, ...g(8, 6, 1, 8, 484_000, 0.334) }],
+  by_day: [{ day: "2026-10-30", ...g(5, 4, 1, 5, 500_000, 0.5) }, { day: "2026-11-01", ...g(7, 5, 1, 7, 784_000, 0.734) }],
+  by_source: [{ source: "live", ...g(12, 9, 2, 12, 1_284_000, 1.234) }],
+  tools: [{ tool: "fetch_page", label: "Fetch web pages", calls: 40, errors: 4 }, { tool: "bash", label: "Run commands", calls: 12, errors: 0 }],
+  ...over,
+});
 const view: MissionView = {
   agents: 2,
-  runs: { total: 7, active: 1, needsInput: 2, failed: 1, statusUnknown: 0 },
+  runs: { total: 7, active: 1, needsInput: 2, failed: 1, statusUnknown: 0, needsReview: 0 },
   perAgent: [{ agentId: "calc", name: "Calc", runs: 5 }, { agentId: "notes", name: "Meeting notes", runs: 2 }],
   cost: { usd: 0.0043, basis: "estimate", unknownRuns: 2 },
   recent: [run("run-1", "completed", "idle", "What is six times seven?"), run("run-2", "working", "working", "Summarize the standup")],
+  analytics: analytics(),
 };
 
 // Mission Control: the console's first page. Counts, cost said honestly, runs per agent and the latest runs, linked.
@@ -31,7 +47,8 @@ describe("MissionControl", () => {
     expect(html).toContain('href="#/agents/calc/runs"');
   });
   it("renders a store with nothing in it, without error", () => {
-    const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [] };
+    const none = analytics({ totals: { ...g(0, 0, 0, 0, 0, null), input: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0, unmetered: 0 }, time: { ended_runs: 0, wall_ms: 0, active_runs: 0, active_ms: 0 }, by_harness_effort: [], by_day: [], by_source: [], tools: [] });
+    const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0, needsReview: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [], analytics: none };
     const html = renderToStaticMarkup(createElement(MissionControl, { view: empty }));
     expect(html).toContain("No agents yet");
     expect(html).toContain("No runs yet");
@@ -58,15 +75,15 @@ describe("costLine: a total said honestly, never $0 for a cost not known", () =>
 
 describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them", () => {
   const stats = {
-    agents: 2, runs: { total: 7, active: 1, needs_input: 2, failed: 1, status_unknown: 0 },
+    agents: 2, runs: { total: 7, active: 1, needs_input: 2, failed: 1, status_unknown: 0, needs_review: 0 },
     per_agent: [{ agent_id: "calc", name: "Calc", runs: 5 }],
-    cost: { usd: null, basis: null, unknown_runs: 7 }, archived: { agents: 1, runs: 3 },
+    cost: { usd: null, basis: null, unknown_runs: 7 }, archived: { agents: 1, runs: 3 }, analytics: analytics(),
   } satisfies Stats;
   it("maps the server's fields, keeps an all-unknown cost null, and leaves archived out of the counts", () => {
     const v = missionFrom(stats, view.recent);
     expect(v).toEqual({
-      agents: 2, runs: { total: 7, active: 1, needsInput: 2, failed: 1, statusUnknown: 0 }, perAgent: [{ agentId: "calc", name: "Calc", runs: 5 }],
-      cost: { usd: null, basis: null, unknownRuns: 7 }, recent: view.recent,
+      agents: 2, runs: { total: 7, active: 1, needsInput: 2, failed: 1, statusUnknown: 0, needsReview: 0 }, perAgent: [{ agentId: "calc", name: "Calc", runs: 5 }],
+      cost: { usd: null, basis: null, unknownRuns: 7 }, recent: view.recent, analytics: stats.analytics,
     });
     expect(costLine(v.cost)).toBe("Unknown");
   });
@@ -83,23 +100,7 @@ describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// GET /v2/stats's `analytics` from a newer server: tokens, time, success, cost, by harness and effort, per day and by
-// tool, over the range picked. A partial figure says what it holds; an unknown cost never reads $0; an older server's
-// answer (no `analytics`) leaves the page as it was.
-const g = (runs: number, completed: number, failed: number, withMetrics: number, tokens: number, cost: number | null, unknown = 0) =>
-  ({ runs, completed, failed, runs_with_metrics: withMetrics, tokens, cost_usd: cost, unknown_cost_runs: unknown });
-const NOW = Date.UTC(2026, 10, 1, 15);
-const analytics = (over: Partial<Analytics> = {}): Analytics => ({
-  filter: { from: "2026-10-03T00:00:00.000Z", to: null, agent: null },
-  totals: { ...g(12, 9, 2, 12, 1_284_000, 1.234), input: 200_000, cache_read: 600_000, cache_write: 200_000, output: 284_000, requests: 40, unmetered: 0 },
-  time: { ended_runs: 11, wall_ms: 5_400_000, active_runs: 0, active_ms: 0 },
-  by_harness_effort: [{ harness: "codex", effort: "high", ...g(4, 3, 1, 4, 800_000, 0.9) }, { harness: "pi", effort: null, ...g(8, 6, 1, 8, 484_000, 0.334) }],
-  by_day: [{ day: "2026-10-30", ...g(5, 4, 1, 5, 500_000, 0.5) }, { day: "2026-11-01", ...g(7, 5, 1, 7, 784_000, 0.734) }],
-  by_source: [{ source: "live", ...g(12, 9, 2, 12, 1_284_000, 1.234) }],
-  tools: [{ tool: "fetch_page", label: "Fetch web pages", calls: 40, errors: 4 }, { tool: "bash", label: "Run commands", calls: 12, errors: 0 }],
-  ...over,
-});
-const withA = (a: Analytics | undefined): MissionView => ({ ...view, analytics: a ?? null });
+const withA = (a: Analytics): MissionView => ({ ...view, analytics: a });
 const render = (v: MissionView, scope?: Parameters<typeof MissionControl>[0]["scope"]) => renderToStaticMarkup(createElement(MissionControl, { view: v, scope }));
 const scope = { range: "30d" as const, onRange: () => {}, agent: null, onAgent: () => {} };
 
@@ -114,24 +115,16 @@ describe("MissionControl's analytics", () => {
     expect(render(withA(analytics({ filter: { from: null, to: null, agent: null } })), scope)).toContain("All runs");
   });
 
-  it("an answer without analytics (an older server) leaves the page as it was: no range picker, no analytics", () => {
-    expect(render(withA(undefined), scope)).toBe(renderToStaticMarkup(createElement(MissionControl, { view })));
-    expect(render(withA(undefined), scope)).not.toContain('aria-label="Analytics"');
-    expect(missionFrom({ agents: 0, runs: { total: 0, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 0 } }, [])).not.toHaveProperty("analytics");
-  });
-
   it("shows tokens with the cached share and output, run time, success rate and cost, by harness and effort, per day and by tool", () => {
     const html = render(withA(analytics()), scope);
     expect(html).toContain("Runs started in the last 30 days");
-    for (const s of ["1.3M", "60% of input cached · 284K output", "1.5 h", "wall time of 11 ended runs", "82%", "9 completed · 2 failed or escalated", "$1.23 est."]) expect(html).toContain(s);
+    for (const s of ["1.3M", "60% of input cached · 284K output", "1.5 h", "wall time of 11 ended runs", "82%", "9 completed · 2 failed", "$1.23 est."]) expect(html).toContain(s);
     expect(html).not.toContain("active, over");
     expect(html).not.toContain("tokens from");
     // By harness and effort: an unset effort says so; success and tokens per row.
     for (const s of [">codex<", ">high<", ">75%<", ">800K<", ">pi<", ">unset<", ">86%<"]) expect(html).toContain(s);
     // Top tools with their error rate, each by what a person calls it, the name it was called by its title.
     for (const s of ['title="fetch_page">Fetch web pages<', ">40<", ">4<", ">10%<", 'title="bash">Run commands<', ">0%<"]) expect(html).toContain(s);
-    // An older server sends no label: the name it was called by stands.
-    expect(render(withA(analytics({ tools: [{ tool: "fetch_page", calls: 1, errors: 0 }] })), scope)).toContain('title="fetch_page">fetch_page<');
     // The trend: a bar per day for 30 days, a readout for each, and the table view.
     expect(html).toContain('aria-label="Runs per day"');
     expect(html).toContain('aria-label="Tokens per day"');
@@ -146,7 +139,7 @@ describe("MissionControl's analytics", () => {
     const a = analytics({ totals: { ...analytics().totals, runs_with_metrics: 9, unmetered: 2 }, time: { ended_runs: 11, wall_ms: 5_400_000, active_runs: 3, active_ms: 1_800_000 } });
     const html = render(withA(a), scope);
     expect(html).toContain("tokens from 9 of 12 runs");
-    expect(html).toContain("2 requests unmetered: in no token sum");
+    expect(html).toContain("2 requests with no token count");
     expect(html).toContain("30 min active, over 3 runs");
     const row = render(withA(analytics({ by_harness_effort: [{ harness: "pi", effort: null, ...g(5, 4, 1, 3, 1000, 0.1) }] })), scope);
     expect(row).toContain("tokens from 3 of 5 runs");
@@ -208,12 +201,12 @@ describe("the analytics helpers", () => {
   });
   it("compacts numbers, says shares and durations", () => {
     expect([compact(1284), compact(12_900), compact(4_200_000), compact(100_000)]).toEqual(["1,284", "12.9K", "4.2M", "100K"]);
-    expect([successRate({ completed: 0, failed: 0 }), cachedShare({ ...analytics().totals, input: 0, cache_read: 0, cache_write: 0 })]).toEqual([null, null]);
+    expect([successRate({ completed: 0, failed: 0, needs_review: 0 }), cachedShare({ ...analytics().totals, input: 0, cache_read: 0, cache_write: 0 })]).toEqual([null, null]);
     expect([duration(5_400_000), duration(90_000), duration(4_000)]).toEqual(["1.5 h", "2 min", "4 s"]);
   });
 });
 
-// Escalated runs that wait for a person: a newer server counts them apart (needs_review), an older one in failed.
+// Escalated runs that wait for a person, counted apart (needs_review).
 describe("runs that need review (needs_review)", () => {
   atNow();
   it("with the field: the outcomes say completed, failed and need review apart, and a run waiting for review is no success", () => {
@@ -223,13 +216,8 @@ describe("runs that need review (needs_review)", () => {
     expect(outcomes({ ...g, needs_review: 0 })).toBe("9 completed · 2 failed");
     expect(successRate(g)).toBeCloseTo(6 / 11);
   });
-  it("without it, as an older server counts them: failed or escalated, and the rate as before", () => {
-    const g = { completed: 6, failed: 5 };
-    expect(outcomes(g)).toBe("6 completed · 5 failed or escalated");
-    expect(successRate(g)).toBeCloseTo(6 / 11);
-  });
   it("Mission Control says the runs that need review under Failed, never in it, and the analytics' outcomes apart", () => {
-    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 3 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 } };
+    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 2, status_unknown: 0, needs_review: 3 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 }, analytics: analytics() };
     const v = missionFrom(stats, []);
     expect(v.runs.needsReview).toBe(3);
     const a = analytics({ totals: { ...analytics().totals, completed: 9, failed: 2, needs_review: 3 } });
@@ -238,46 +226,51 @@ describe("runs that need review (needs_review)", () => {
     expect(html).toContain("6 completed · 2 failed · 3 need review");
     expect(html).not.toContain("failed or escalated");
   });
-  it("a server without the field reads exactly as before", () => {
-    const stats: Stats = { agents: 1, runs: { total: 8, active: 0, needs_input: 0, failed: 5, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 8 } };
-    const v = missionFrom(stats, []);
-    expect("needsReview" in v.runs).toBe(false);
-    const html = render({ ...v, analytics: analytics() }, scope);
-    expect(html).toContain("failed or escalated");
-    expect(html).not.toContain("need review");
-  });
 });
 
-// Runs whose cost is unknown because requests were cut: the total stays the known sum, and "up to $y more" says the rest.
-describe("the cost of cut runs (bounded_unknown)", () => {
-  atNow();
-  it("costParts says the known total as before and, apart, up to how much more the cut runs can add", () => {
-    expect(costParts({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toEqual({ total: "$0.50 est.", note: "3 runs unknown", bound: "up to $0.06 more for 2 cut runs" });
-    expect(costParts({ usd: null, basis: null, unknownRuns: 1, bounded: { runs: 1, atMostUsd: 0.004 } })).toEqual({ total: "Unknown", bound: "up to $0.0040 for 1 cut run" });
-    expect(costLine({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toBe("$0.50 est. · 3 runs unknown · up to $0.06 more for 2 cut runs");
+// Mission Control routes a person to what needs them: every count is a link to its list, and the latest runs say whose
+// they are, how long they took and what they cost.
+describe("MissionControl, the counts as links and the latest runs in full", () => {
+  it("links each count to its list, filtered to it", () => {
+    const html = render(view);
+    for (const [label, href] of [["Agents", "#/agents"], ["Runs", "#/runs"], ["Needs input", "#/runs?status=input_required"], ["Failed", "#/runs?status=failed"]]) {
+      expect(html, label).toMatch(new RegExp(`<a[^>]*href="${href.replace(/[?]/g, "\\?")}"[^>]*>(?:(?!</a>).)*${label}`));
+    }
   });
-  it("without the field, or with no bound known, says what it always did", () => {
-    const before = { usd: 0.5, basis: "estimate" as const, unknownRuns: 3 };
-    expect(costParts(before)).toEqual({ total: "$0.50 est.", note: "3 runs unknown" });
-    expect(costParts({ ...before, bounded: { runs: 0, atMostUsd: null } })).toEqual(costParts(before));
-    expect(costParts({ ...before, bounded: { runs: 2, atMostUsd: null } })).toEqual(costParts(before));
+  it("says the cost once, in the range's analytics, never again among the counts", () => {
+    const html = render(view, scope);
+    expect(html).not.toContain("Total cost");
+    // One cost tile: the range's (the per-harness table's Cost column is a column, not a total).
+    expect(html.match(/>Cost<\/p>/g)).toHaveLength(1);
   });
-  it("missionFrom reads /v2/stats' bounded_unknown, and the page shows it under the total and under the analytics' cost", () => {
-    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2, bounded_unknown: { runs: 2, at_most_usd: 0.0311 } } };
-    const v = missionFrom(stats, []);
-    expect(v.cost.bounded).toEqual({ runs: 2, atMostUsd: 0.0311 });
-    const a = analytics({ totals: { ...analytics().totals, bounded_unknown: { runs: 1, at_most_usd: 0.25 } } });
-    const html = render({ ...v, analytics: a }, scope);
-    expect(html).toContain("up to $0.04 more for 2 cut runs");
-    expect(html).toContain("up to $0.25 more for 1 cut run");
-    // The known total stays the known sum.
-    expect(html).toContain("$0.01 est.");
+  it("leaves Active unlinked: it counts queued, working and paused runs, which no one list holds", () => {
+    expect(render(view)).not.toContain('href="#/runs?status=working"');
   });
-  it("a server without the field reads exactly as before", () => {
-    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2 } };
-    const v = missionFrom(stats, []);
-    expect(v.cost).toEqual({ usd: 0.012, basis: "estimate", unknownRuns: 2 });
-    expect(render({ ...v, analytics: analytics() }, scope)).not.toContain("cut run");
+  it("shows each latest run's agent, how long it took, and its cost when known", () => {
+    const done: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), ended_at: "2026-10-30T03:00:42Z", cost: { usd: 0.0086, basis: "estimate", charge_state: null, cap_usd: null } };
+    const html = render({ ...view, recent: [done, run("run-2", "working", "working", "Summarize the standup")] });
+    expect(html).toContain("Check invoice INV-2291");
+    expect(html).toContain("Calc");
+    expect(html).toContain("42s");
+    expect(html).toContain("$0.0086 est.");
+    // A run still working has no duration yet, and an unknown cost is left out, never $0.
+    expect(html).not.toContain("$0.0000");
+  });
+  it("shows a latest run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", () => {
+    const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
+    const stopped: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), cost: { ...unknown, so_far_usd: 0.0123, unpriced: 1 } };
+    const html = render({ ...view, recent: [stopped, { ...run("run-2", "completed", "idle", "Summarize the standup"), cost: unknown }] });
+    expect(html).toContain("so far $0.0123 est. · 1 not priced");
+    expect(html).not.toContain("Unknown");
+  });
+  it("puts what needs you first, and before a first run of your own, the start-here panel in place of the counts", () => {
+    const needs = createElement("section", { "aria-label": "Needs you" }, "the strip");
+    const first = createElement("section", { "aria-label": "Start here" }, "the panel");
+    const withNeeds = renderToStaticMarkup(createElement(MissionControl, { view, needsYou: needs }));
+    expect(withNeeds.indexOf("the strip")).toBeLessThan(withNeeds.indexOf("Needs input"));
+    const fresh = renderToStaticMarkup(createElement(MissionControl, { view, startHere: first }));
+    expect(fresh).toContain("the panel");
+    expect(fresh).not.toContain("Needs input");
+    expect(fresh).not.toContain("Recent runs");
   });
 });
-

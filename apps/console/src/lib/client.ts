@@ -1,8 +1,9 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
+import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature } from "./v2";
+import type { ApiError, Run, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -14,6 +15,8 @@ export class ClientError extends Error {
   retryAfterMs?: number;
   /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
   details?: Record<string, unknown>;
+  /** A note the server's checks refused (400): each check it fails, printable. */
+  problems?: NoteProblem[];
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
@@ -21,9 +24,18 @@ export class ClientError extends Error {
   toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
 }
 
+/** A failed request as a page says it: a refusal as the server's `code: message`, any other failure by its message. */
+export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
+
 /** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
+
+/** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
+ *  (null for each when the count failed). After: the import's state. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+export type SetupImport = ImportOffer | ImportState;
 
 /** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
  *  the others. */
@@ -37,7 +49,10 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
+/** `limits`: this server's own (the largest upload, the most files a run names); absent on an older server. */
+/** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
+ *  provider's key, or another default model. Absent on an older server. */
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature }; limits?: { max_upload_bytes?: number; max_files_per_run?: number }; models?: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
@@ -59,11 +74,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number } } | null)?.error;
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
       if (e?.details && typeof e.details === "object" && !Array.isArray(e.details)) err.details = e.details;
+      if (Array.isArray(e?.problems)) err.problems = e.problems;
       throw err;
     }
     const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
@@ -75,6 +91,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
   // after which they may be stale (the host can be set up since), so they go.
   const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
+  const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
+  // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
+  const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });
+  const noteAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The owner's session; its status too, since a server without accounts answers 404. */
@@ -83,7 +103,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       throw e;
     }),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    setup: (password: string, code?: string) => call<{ signed_in: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}) } }),
+    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
+     *  sessions once the password is set; never sent otherwise. */
+    setup: (password: string, code?: string, importSessions = false) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
+     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+     *  where the server offers none (404) or refuses the read. */
+    setupImport: () => call<SetupImport>("GET", "/setup/import").catch((e) => {
+      if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
+      throw e;
+    }),
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
@@ -118,12 +148,29 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
+    /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
+    agentLearning: (id: string) => call<AgentLearning>("GET", `${agent(id)}/learning`),
+    learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
+    learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
+    /** A note's whole text and its version, for the If-Match of an edit or a retire. */
+    readNote: async (id: string, file: string) => asNote(await callTagged<string>("GET", note(id, file), { headers: noteAccept, text: true })),
+    /** Edits a note (`etag`: the version the edit was made on; 412 when it changed since) or creates one (`create`: 412
+     *  when the name is taken). The text goes as JSON, the one write the server takes under the page's session. The
+     *  answer is the note as it now is, and its new version. */
+    writeNote: async (id: string, file: string, text: string, on: { etag: string } | { create: true }) =>
+      asNote(await callTagged<string>("PUT", note(id, file), { body: { text }, headers: { ...noteAccept, ...("etag" in on ? { "if-match": on.etag } : { "if-none-match": "*" }) }, text: true })),
+    /** Retires a note: out of every later run's instructions, its record kept. 412 when it changed since `etag`. */
+    retireNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/retire`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
+    approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
+    runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
     /** Hides a run from the runs list (or shows it again), its history kept. The answer is the run. */
     archiveRun: (id: string) => call<Run>("POST", `${run(id)}/archive`, { body: {} }),
     unarchiveRun: (id: string) => call<Run>("POST", `${run(id)}/unarchive`, { body: {} }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
-    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number }, idempotencyKey: string) => {
+    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
       return { run: r.body, status: r.status };
     },
@@ -134,6 +181,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return call<TimelinePage>("GET", `${run(id)}/timeline${q.size ? `?${q}` : ""}`, { signal });
     },
     listFiles: (id: string) => call<RunFiles>("GET", `${run(id)}/files`),
+    /** Deletes an upload (`DELETE /v2/files/{id}`): one the person removed before a run named it. */
+    deleteUpload: (fileId: string) => call<string>("DELETE", `/files/${encodeURIComponent(fileId)}`),
     readFile: (id: string, path: string) => call<string>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { text: true }),
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
@@ -146,7 +195,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
     /** GET /v2/stats with its `analytics` bounded: runs started at or after `from`, of `agent`. Every other number is the
-     *  whole store's, and an older server, which has no analytics, leaves both unread. */
+     *  whole store's. */
     statsOver: ({ from, agent: of }: { from?: string; agent?: string }) => {
       const q = new URLSearchParams();
       if (from) q.set("from", from);
@@ -161,6 +210,21 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** The webhook, never its secret (a serve extension). */
+    webhook: () => call<Webhook>("GET", "/settings/webhook"),
+    /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
+    saveWebhook: (url: string) => call<WebhookSaved>("PUT", "/settings/webhook", { body: { url } }),
+    removeWebhook: () => call<unknown>("DELETE", "/settings/webhook"),
+    /** A `webhook.test` message, tried once now: its attempt. */
+    testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** The last attempts, newest first. */
+    webhookDeliveries: () => call<{ attempts: WebhookAttempt[] }>("GET", "/settings/webhook/deliveries"),
+    /** A message of the log sent again, once now, under its webhook-id: its attempt. */
+    redeliverWebhook: (id: string) => call<WebhookAttempt>("POST", `/settings/webhook/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
+    /** The server's provider per capability that has a choice (its default where it sets none). */
+    toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),
+    /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
+    saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };

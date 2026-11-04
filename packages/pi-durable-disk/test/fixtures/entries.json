@@ -271,16 +271,19 @@
       "findDelegations",
       "isLeaseFresh",
       "mintMountToken",
+      "newestSettledInput",
       "parseRunRecord",
       "pathlessResolver",
       "removeMountToken",
       "runPath",
       "sandboxName",
       "sandboxStatus",
+      "snapshotInputs",
       "sweepSandboxes",
       "unmountClaim"
     ],
     "types": [
+      "InputRecord",
       "Pin",
       "PinSpec",
       "RootName"

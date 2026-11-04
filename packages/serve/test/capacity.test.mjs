@@ -14,12 +14,29 @@ const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const busy = (dir, name = "never") => `Answer once ${join(dir, name)} exists.`;
 
-test("the default cap on concurrent runs: the host's memory less the server's 128 MiB, at 72 MiB a run, never under 1", async () => {
+/** POST `body` to `path` under Idempotency-Key `key`, and return once the server holds it, still unanswered: a probe under
+ *  the same key, with a body the route refuses before it does anything, is idempotency_mismatch only once the server has
+ *  the request. `answer` is its answer; `at()` is when it came. */
+async function held(api, path, body, key) {
+  let at;
+  const answer = api("POST", path, body, { "idempotency-key": key }).then((reply) => ((at = Date.now()), reply));
+  for (let i = 0; ; i++) {
+    const probe = await api("POST", path, {}, { "idempotency-key": key });
+    if (probe.body?.error?.code === "idempotency_mismatch") break;
+    assert.equal(probe.body?.error?.code, "input_invalid", JSON.stringify(probe.body));
+    assert.ok(i < 400 && at === undefined, `the server holds the request: ${JSON.stringify(at && (await answer).body)}`);
+    await sleep(25);
+  }
+  assert.equal(at, undefined, `it waits: ${JSON.stringify(at && (await answer).body)}`);
+  return { answer, at: () => at };
+}
+
+test("the default cap on how many runs at once is pi's: the host's memory less the server's own, at a pi run's size, never under 1", async () => {
   const { defaultMaxRuns } = await import("../dist/index.js");
+  const { RUN_MIB } = await import("../dist/harness.js");
+  const { SERVER_MIB } = await import("../dist/host.js");
   assert.equal(typeof defaultMaxRuns, "function");
-  assert.equal(defaultMaxRuns(512 * MiB), 5, "a 512 MB instance, which ran out of memory at about 6");
-  assert.equal(defaultMaxRuns(1024 * MiB), 12);
-  assert.equal(defaultMaxRuns(8 * 1024 * MiB), 112);
+  for (const mib of [512, 1024, 8 * 1024]) assert.equal(defaultMaxRuns(mib * MiB), Math.floor((mib - SERVER_MIB) / RUN_MIB?.pi), `${mib} MB`);
   assert.equal(defaultMaxRuns(100 * MiB), 1, "never under 1");
 });
 
@@ -92,30 +109,16 @@ test("a run that has failed gives its place back once its process exits: a start
     assert.ok(i < 400, "the run reads failed");
     await sleep(50);
   }
-  let answeredAt;
-  const next = api("POST", "/agents/fails/runs", { input: { content: "hi" } }).then((answer) => ((answeredAt = Date.now()), answer));
-  await sleep(300);
+  const next = await held(api, "/agents/fails/runs", { input: { content: "hi" } }, "next-start");
   const openedAt = Date.now();
   await writeFile(gate, "");
-  const started = await next;
+  const started = await next.answer;
   assert.equal(started.status, 202, `the next start waited for the place the failed run gave back: ${JSON.stringify(started.body)}`);
-  assert.ok(answeredAt >= openedAt, "admitted only once the failed run's process could exit, never two at once");
+  assert.ok(next.at() >= openedAt, "admitted only once the failed run's process could exit, never two at once");
   await follow(api, started.body.run_id, ["failed"]);
 });
 
-test("a completed run's follow-up gives its place back when it ends again: the next new start still gets one", { timeout: 90_000 }, async (t) => {
-  const { api } = await serve(t, { maxRuns: 1 });
-  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
-  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
-  await follow(api, run.run_id, ["completed"]);
-  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "And again?" })).status, 202);
-  await follow(api, run.run_id, ["completed"]);
-  const next = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
-  assert.equal(next.status, 202, `the follow-up kept a place: ${JSON.stringify(next.body)}`);
-  await follow(api, next.body.run_id, ["completed"]);
-});
-
-test("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that", { timeout: 90_000 }, async (t) => {
+test("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
   const gate = join(await scratch(t), "gate");
   await writeFile(gate, "");
   withEnv(t, { EXIT_GATE: gate });
@@ -130,10 +133,11 @@ test("two follow-ups to a completed run that both wait for a place reach it: one
     assert.ok(i < 400, "the holding run answers");
     await sleep(50);
   }
-  const answers = Promise.all(["And again?", "And once more?"].map((content) => api("POST", `/runs/${first.run_id}/messages`, { content })));
-  await sleep(300);
+  const waiting = [];
+  for (const [i, content] of ["And again?", "And once more?"].entries()) waiting.push(await held(api, `/runs/${first.run_id}/messages`, { content }, `follow-up-${i}`));
+  assert.ok(waiting.every((one) => one.at() === undefined), "both wait for the place");
   await writeFile(gate, "");
-  const statuses = await answers;
+  const statuses = await Promise.all(waiting.map((one) => one.answer));
   assert.deepEqual(statuses.map((a) => a.status), [202, 202], JSON.stringify(statuses.map((a) => a.body)));
   const { rows } = await follow(api, first.run_id, ["completed"]);
   const sent = rows.filter((r) => r.kind === "user_message").map((r) => r.text);
@@ -143,6 +147,10 @@ test("two follow-ups to a completed run that both wait for a place reach it: one
   assert.equal(third.status, 202, JSON.stringify(third.body));
   const after = await follow(api, first.run_id, ["completed"]);
   assert.ok(after.rows.some((r) => r.kind === "user_message" && r.text === "And a third time?"), "the third message reached the run");
+  // Ended again, the reopen gave its one place back: a new start gets it.
+  const next = await api("POST", "/agents/calc/runs", { input: { content: "Next." } });
+  assert.equal(next.status, 202, `the follow-up kept a place: ${JSON.stringify(next.body)}`);
+  await follow(api, next.body.run_id, ["completed"]);
 });
 
 test("a server full of runs that still work answers 429 at once: only a place being given back is waited for", { timeout: 90_000 }, async (t) => {
@@ -229,24 +237,7 @@ test("a run's first message waits for a process slower to come up than a request
   assert.equal(last.status, "completed", JSON.stringify(last));
 });
 
-test("once the server has stopped, no run of it settles: a first message still on its way writes nothing after close", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const one = await startServe({ data, port: 0, faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname, drainTimeout: "5s" });
-  const api = client(one.baseUrl, one.token);
-  assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
-  const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  await one.close();
-  // The server runs in this process: what it says about the run after its close is written here.
-  const said = [];
-  const write = process.stderr.write;
-  process.stderr.write = (chunk, ...rest) => (String(chunk).includes(run.body.run_id) && said.push(String(chunk)), write.call(process.stderr, chunk, ...rest));
-  t.after(() => void (process.stderr.write = write));
-  await sleep(1_500);
-  assert.deepEqual(said, [], "nothing of the run after the server stopped");
-});
-
-test("a run whose first message never landed before the server stopped gets it from the next server, however slow its process", async (t) => {
+test("a run whose first message never landed before the server stopped: nothing of it is written after the close, and the next server gives it the message, however slow its process", async (t) => {
   const SLOW = new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname;
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s" });
@@ -256,6 +247,14 @@ test("a run whose first message never landed before the server stopped gets it f
   assert.equal(run.status, 202, JSON.stringify(run.body));
   // Stopped while the run's process is still loading: its first message has not reached it.
   await one.close();
+  // The server runs in this process: what it says about the run after its close is written here.
+  const said = [];
+  const write = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => (String(chunk).includes(run.body.run_id) && said.push(String(chunk)), write.call(process.stderr, chunk, ...rest));
+  t.after(() => void (process.stderr.write = write));
+  await sleep(1_500);
+  assert.deepEqual(said, [], "nothing of the run after the server stopped");
+  process.stderr.write = write;
   const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s", readyTimeoutMs: 1_000 });
   t.after(() => two.close());
   const { last } = await follow(client(two.baseUrl, two.token), run.body.run_id, ["completed", "failed"]);
@@ -266,7 +265,7 @@ test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positi
   const { data } = await serve(t);
   const zero = await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 }).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
   assert.match(zero, /max runs/i, "0 is refused");
-  const caps = (await import("../dist/index.js")).capabilities({ AGENTRUN_MAX_RUNS: "7" });
+  const caps = await (await import("../dist/index.js")).capabilities({ AGENTRUN_MAX_RUNS: "7" });
   assert.equal(caps.limits.max_concurrent_runs, 7);
 });
 

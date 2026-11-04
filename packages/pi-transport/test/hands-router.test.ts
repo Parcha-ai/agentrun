@@ -451,8 +451,13 @@ describe("transport(): where tools run", () => {
 			const env = await session.hands.env({ conversationId: conversation.id, read: session.harness }, context);
 			if (env === undefined) throw new Error("an environment was expected");
 			// A command still runs when the release starts, so the release has a command to stop.
-			const long = env.exec("sleep 30", undefined, context);
-			await sleep(500);
+			const tag = `pi-transport-during-release-${process.pid}-${Date.now()}`;
+			const running = () => spawnSync("pgrep", ["-f", tag]).stdout.toString().trim() !== "";
+			const long = env.exec(`sleep 30 # ${tag}\nwait`, undefined, context);
+			for (let tries = 0; !running(); tries++) {
+				if (tries > 400) throw new Error("the command did not start");
+				await sleep(50);
+			}
 			const releasing = session.hands.release(context);
 			let releasedAt = 0;
 			void releasing.then(() => {

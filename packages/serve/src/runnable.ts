@@ -5,22 +5,49 @@
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.js";
 import { REPLAY } from "./host-tools.js";
-import type { InputIssue } from "./errors.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
-import { chooseModel, llmTiers, nodeTiers, workflowNodes } from "./model.js";
-import { boxAvailability } from "./place.js";
-import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
+import { type InputIssue, sentence } from "./errors.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
+import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "./model.js";
+import type { BoxOffer } from "./boxes.js";
+import { boxAvailability, placeFix, RUN_BOXES } from "./place.js";
+import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
+import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
+import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string } }
-  | { kind: "workflow"; workflow: unknown; harness?: string; place?: { mode: string; box?: string } };
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; toolSettings?: ToolSettingsMap }
+  | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; toolSettings?: ToolSettingsMap };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
  *  not bind), `missing` (a bound tool's unset variables), `adapter`, `decision` (a decision provider's unset key), `codeNodes`
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness` and `box` (the place's,
  *  which this server does not have) name it for a run's 409 details. */
 export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string };
+
+/**
+ * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
+ * default for that harness. `why`: the model itself is the problem (`host`, a setting of this host could fix it);
+ * `refused`: the harness runs here but refuses that model. Undefined when claude-agent does not run here: its model is
+ * its own, and the harness says why. A save, a run and capabilities' `harnesses[].default_model` all ask this, so they
+ * cannot drift.
+ */
+export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean } | { refused: string } | undefined> {
+  // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
+  // harness every harness takes the run's usual model.
+  const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
+  if (own && !available) return undefined;
+  // codex's is the run's usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (codexRef).
+  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" ? await (await import("./adapters.js")).codexModel(env, ref) : await chooseModel(env, ref, "default", harness);
+  if ("why" in chosen) return chosen;
+  // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
+  if (harness !== DEFAULT_HARNESS && available) {
+    const { harnessReason } = await import("./adapters.js");
+    const refused = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
+    if (refused !== undefined) return { refused };
+  }
+  return { model: chosen.model };
+}
 
 /** The reason a warning gives: the revision runs once this host has what it names. */
 export const NOT_SET_UP = "not_set_up_here";
@@ -29,42 +56,55 @@ export const NOT_SET_UP = "not_set_up_here";
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape): Promise<Blocker[]> {
+/** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
+ *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
+ *  the server already holds (its reading); none given, they are probed here. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[] } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
+  /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
+   *  provider in its place. */
+  const unavailable = (field: string, tools: readonly string[], tool: string) => {
+    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings, { capped })[capabilityOf(tool) as Pickable];
+    if (isUnavailable(resolved)) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} does not run here on ${harness}: ${whyUnavailable(resolved)}.`, host: true, ...(resolved === NO_PARALLEL_KEY ? { missing: { tool, vars: [PARALLEL_KEY_ENV] } } : {}) });
+  };
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
   const unset = (field: string, tool: string) => {
-    const vars = missingEnv(TOOLS[tool]!, env);
+    const vars = missingEnv(toolOf(tool)!, env);
     if (vars.length) out.push({ field, reason: NOT_SET_UP, message: `This server's environment does not set what the tool needs: the tool ${tool} needs ${vars.join(" and ")}.`, host: true, missing: { tool, vars } });
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
-  const offer = (await harnessOffers(env)).find((h) => h.id === harness);
+  const offer = (offers ?? (await harnessOffers(env))).find((h) => h.id === harness);
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   const { place } = revision;
-  if (place && place.mode !== "runner") {
-    const box = boxAvailability(env).find((b) => b.id === place.box);
-    if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: `This agent's place is ${place.mode} on ${place.box ?? "no box"}, and ${box?.reason ?? "that is not a box this server has."}`, host: true, ...(place.box ? { box: place.box } : {}) });
+  // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
+  // edit that leaves the place out keeps the agent's (agents.ts), so removing the field would change nothing.
+  if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: placeFix({ mode: "runner" }), host: false });
+  else if (place && place.mode !== "runner") {
+    const box = boxAvailability(boxes).find((b) => b.id === place.box);
+    // A box's reason says what to do, with no full stop of its own: the sentence ends in one, whatever the reason ends in.
+    if (!box?.available) out.push({ field: "definition.place", reason: NOT_SET_UP, message: sentence(`This agent's place is ${place.mode} on ${place.box ?? "no box"}, and this server cannot run it there: ${box?.reason ?? "that is not a box this server has"}`), host: true, ...(place.box ? { box: place.box } : {}) });
   }
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
-      if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page and web_fetch): any other
-      // tool this host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
+      if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
+      // A shell runs only in a box: no place, or the runner, has none.
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box, and ${place ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner"}, which has no shell: give it a sandbox place.`, fix: placeFix({ mode: "sandbox", box: RUN_BOXES[0]! }), host: false, tool });
+      // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
+      else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
+      // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch, web_search and
+      // monid's): any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs
+      // without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
-      else unset(`definition.tools[${index}]`, tool);
+      else {
+        unset(`definition.tools[${index}]`, tool);
+        unavailable(`definition.tools[${index}]`, revision.tools ?? [], tool);
+      }
     });
-    // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
-    // harness every harness takes the run's usual model. A harness that does not run here has said why already.
-    const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
-    if (own && !offer?.available) return out;
-    const chosen = own ? (await import("./adapters.js")).claudeModel(env, revision.model) : await chooseModel(env, revision.model);
-    if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
-    // The harness runs here; whether it runs this revision's model (its own, or the server's default) is checked on it.
-    else if (harness !== DEFAULT_HARNESS && offer?.available) {
-      const { harnessReason } = await import("./adapters.js");
-      const why = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
-      if (why !== undefined) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: why, host: true, harness });
-    }
+    const resolved = await harnessModel(env, harness, revision.model, offer?.available === true);
+    if (!resolved) return out;
+    if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host });
+    else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
     return out;
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
@@ -95,12 +135,16 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   else if (requires.executableCode && env[CODE_NODES_ENV] !== "1") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This server runs no code nodes: start it with --allow-code-nodes (or ${CODE_NODES_ENV}=1) to run this workflow's.`, host: true, codeNodes: true });
   const named = workflowTools(nodes);
   for (const tool of named.nodes) {
-    if (!NODE_TOOLS.includes(tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${tool}.`, host: false, tool });
+    if (!allows(NODE_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${tool}.`, host: false, tool });
   }
   for (const tool of named.calls) {
-    if (!CALL_TOOLS.includes(tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
+    if (!allows(CALL_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
   }
-  for (const tool of new Set([...named.nodes.filter((name) => NODE_TOOLS.includes(name)), ...named.calls.filter((name) => CALL_TOOLS.includes(name))])) unset("definition.workflow", tool);
+  const granted = await grantedTools(revision);
+  for (const tool of new Set([...named.nodes.filter((name) => allows(NODE_TOOLS, name)), ...named.calls.filter((name) => allows(CALL_TOOLS, name))])) {
+    unset("definition.workflow", tool);
+    unavailable("definition.workflow", granted, tool);
+  }
   for (const tier of llmTiers(nodes, nodeTiers(nodes))) {
     const chosen = await chooseModel(env, undefined, tier);
     if ("why" in chosen) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: chosen.why, host: true, tier });
@@ -109,4 +153,4 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
 }
 
 /** A blocker as a field issue, for a 422 or a warning. */
-export const issueOf = ({ field, reason, message }: Blocker): InputIssue => ({ field, reason, message });
+export const issueOf = ({ field, reason, message, fix }: Blocker): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });

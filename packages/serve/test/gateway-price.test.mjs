@@ -137,9 +137,10 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
   const free = await run("free", "agent-model/not-a-catalog-model", {});
   assert.ok(endpoint.models.length > asked, "the uncapped run asked the gateway");
   assert.deepEqual([free.status, free.error ?? null, free.cost.usd], ["completed", null, null], JSON.stringify(free));
-  // The sent runs' turns went to the gateway (other processes on the machine may probe a loopback port with a GET).
+  // The sent runs' turns went to the gateway at <base>/v1/responses, the one base rule every harness takes (other
+  // processes on the machine may probe a loopback port with a GET).
   const posts = endpoint.asked.filter((line) => line.startsWith("POST "));
-  assert.ok(posts.length >= 2 && posts.every((line) => line === "POST /responses"), endpoint.asked.join(", "));
+  assert.ok(posts.length >= 2 && posts.every((line) => line === "POST /v1/responses"), endpoint.asked.join(", "));
 });
 
 test("the run's models say which ids serve has no price for: one the catalog does not list and no price names; never one it lists, or one priced by AGENT_MODEL_PRICE", async () => {

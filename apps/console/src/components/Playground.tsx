@@ -1,9 +1,11 @@
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -14,7 +16,7 @@ export const startFailure = (e: unknown, ms: number): StartResult =>
   e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
 export type PlaygroundProps = {
   agents: Agent[];
-  revisions?: { revision: string; version: number; current: boolean; note: string | null }[];
+  revisions?: { revision: string; version: number; current: boolean; note: string | null; definition?: Record<string, unknown> }[];
   efforts: string[];
   origin: string;
   agentId?: string;
@@ -25,11 +27,16 @@ export type PlaygroundProps = {
   result?: StartResult | null;
   /** The run the request started, followed live as the run page follows it (its rows, its answer, a follow-up). */
   live?: (runId: string) => React.ReactNode;
+  /** The server's upload limits (capabilities' `limits`); `upload` sends a picked file, `removeUpload` deletes one the
+   *  person removed. */
+  limits?: UploadLimits;
+  upload?: Upload;
+  removeUpload?: (fileId: string) => Promise<unknown>;
 };
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live }: PlaygroundProps) {
+export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
   useEffect(() => {
@@ -63,16 +70,20 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap });
-  const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text };
+  // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
+  const attachments = useAttachments({ upload, remove: removeUpload, limits, frozen: sending });
+  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds });
+  const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
-    if (!built.ok || !onSend) return;
+    if (!built.ok || !onSend || attachments.busy) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
     setSending(false); setResult(r); setPane("response");
+    // The run has its own copies: the next request starts with none picked.
+    if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (
@@ -97,7 +108,13 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
             <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
             {view === "json" ? (
-              <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
+              <>
+                <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
+                {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
+                <Label name="file_ids" note="Empty names none.">
+                  <FilePicker attachments={attachments} limits={limits} />
+                </Label>
+              </>
             ) : (
               <>
                 <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
@@ -109,13 +126,16 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                     </p>
                   )}
                 </Label>
+                <Label name="file_ids" note="Empty names none.">
+                  <FilePicker attachments={attachments} limits={limits} />
+                </Label>
                 <Label name="revision" note="Empty runs the current revision.">
                   <select value={revision} onChange={(e) => setRevision(e.target.value)} className={field}>
                     <option value="">The current revision</option>
                     {revisions.map((r) => <option key={r.revision} value={r.revision}>rev {r.version}{r.current ? " (current)" : ""}{r.note ? `: ${r.note}` : ""}</option>)}
                   </select>
                 </Label>
-                <Label name="effort" note="Empty uses the agent's own.">
+                <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
                   <div className="flex gap-2">{["", ...efforts].map((e) => <button key={e || "default"} type="button" onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
                 </Label>
                 {kind === "agentic" && (
@@ -128,7 +148,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           </div>
           <footer className="flex items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
             <span className="text-[12px] text-muted-foreground">Sends a real request to this server.</span>
-            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
           </footer>
         </section>
         <section className="flex min-h-0 flex-col">

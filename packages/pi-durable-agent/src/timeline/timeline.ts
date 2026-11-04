@@ -6,7 +6,9 @@ export type TimelineKind =
   | "subagent_started" | "subagent_progress" | "subagent_completed" | "final_answer" | "error"
   | "user_message" | "waiting" | "usage"
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
-  | "decision";
+  | "decision"
+  /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
+  | "learning";
 
 /** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
 export type TimelineEvent = {
@@ -34,7 +36,10 @@ export type TimelineEvent = {
   session?: string;
   /** The file a "Saved" phase row is about. */
   path?: string;
-  usage?: { usd: number | null; requests: number };
+  /** `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
+   *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
+   *  charged an unknown amount or cut). Absent when `usd` is known. */
+  usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number };
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -52,9 +57,10 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
 export const REQUEST_STARTED = "agentrun.request_started";
 /** An end with `unsent: true` withdraws its start: the request was refused after its mark, and never left. */
 export const REQUEST_ENDED = "agentrun.request_ended";
-/** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
- *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. `failed`: the
- *  request failed, and its counts are taken as they are, as a failed answer's are. */
+/** What a request with no `pi.assistant` entry of its own cost (a side request, marked with a `request` label: pi's
+ *  compaction summary, `"compaction"`, or a tool's own model request, such as a web search's): `usd`, or null when
+ *  unknown. It closes that request, as an entry closes a generation's. `failed`: the request failed, and its counts are
+ *  taken as they are, as a failed answer's are. */
 export const REQUEST_COST = "agentrun.request_cost";
 /** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
@@ -65,12 +71,23 @@ export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
 /** The cost (`usd`, or null when unknown) of an answer written earlier with its cost pending: it closes one pending cost
  *  and adds to the run's cost. It is not a request of its own: the answer already counted that. */
 export const REQUEST_COST_LATE = "agentrun.request_cost_late";
+/** What a paid tool's call charged, written apart from any request as the tool reports it: `tool` and `charged_by` name
+ *  it, `usd` is the charge, or null when the call may have charged and did not say how much. It adds to the run's cost,
+ *  which is then unknown on a null, and shows as a row of its own; it is no model request. */
+export const TOOL_COST = "agentrun.tool_cost";
+/** A paid tool's call marked before it is sent (`call`, and `heldUsd`, the most it is held to charge): the TOOL_COST of
+ *  the same `call` settles it. Unsettled, it is in flight while the run is; once the run is settled it was cut (a crash),
+ *  and the cost is unknown, as for a cut model request: what it charged no one knows, and its held figure is the cap's
+ *  bound (serve's cap.ts), never a charge. */
+export const TOOL_STARTED = "agentrun.tool_started";
 /** Written right before a `pi.assistant` that continues the answer before it: a call that answer asked for, written once
  *  the answer's own entry was already in (a harness reports each call as it runs it, and its host writes an answer at its
  *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
 export const REQUEST_CONTINUED = "agentrun.request_continued";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
+/** A side request's mark: its `request` is a label (a generation's, a harness's request number, is not). */
+const isSide = (entry: EntryLike) => typeof obj(entry.data)?.request === "string";
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
 /** A tool result an abort wrote (pi-durable's `aborted` diagnostic): the call was cut by a stop or a cancel, which ended
  *  its turn, not failed on its own. */
@@ -78,6 +95,11 @@ const abortedCall = (entry: EntryLike) => {
   const diagnostics = obj(entry.data)?.diagnostics;
   return Array.isArray(diagnostics) && diagnostics.some((diagnostic) => obj(diagnostic)?.code === "aborted");
 };
+
+/** Written on the root as a run's process opens to go on with a run its last process left unfinished: `after` is `crash`
+ *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
+ *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
+export const RUN_RESUMED = "agentrun.run_resumed";
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -90,6 +112,13 @@ export type TimelineOptions = {
   settled?: boolean;
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
+  /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
+   *  to its workspace. The entries, the call's arguments and its input preview, are not changed. Default: as given. */
+  path?: (path: string) => string;
+  /** What an error row says, and what a tool's result row shows of its output, made safe by the host before the row is
+   *  cut (its secrets taken out): applied to an error row's summary and text, and to a tool's whole output before its
+   *  summary and preview are taken from it, so a cut never falls inside what it takes out. Default: as given. */
+  redact?: (text: string) => string;
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -151,20 +180,33 @@ function createMeter() {
   // whether its answer's tokens were unknown: its late cost's usage then stands in for them).
   let known = 0;
   let unknown = 0;
+  // Paid tool calls whose charge is in the cost (TOOL_COST).
+  let charges = 0;
+  // Paid tool calls marked and not yet settled, by call.
+  const held = new Map<string, unknown>();
   const pending: boolean[] = [];
   const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
   let marked = 0;
   let inFlight = false;
   let refused = 0;
+  // Requests a host's spend cap refused (a start mark of their own, `capRefused`), still to be answered by pi's error
+  // entry: never sent, so no request, no cost and no figure. A request started after one means its entry never came.
+  let capRefusals = 0;
+  // Whether the cap refused one: a run with no request but that refusal says so on its usage line.
+  let refusedAny = false;
+  // What the cap limited the latest generation request's output to, when it did (its start mark's `clamp`).
+  let lastClamp: Clamp | undefined;
   // Continuations of an answer still to come (REQUEST_CONTINUED): each next pi.assistant shows and is not counted.
   let continued = 0;
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
   // answer). Earlier answers are a run's from before requests were marked.
   let answered = 0;
-  // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
+  // Side requests (compactions, a tool's own requests), apart: one may run beside a generation. Each closes with its
+  // cost, or with an end when aborted.
   let compactions = 0;
   let compacting = 0;
-  let compactionOpen = false;
+  // How many are in flight: two side requests (a turn's parallel searches) may be.
+  let sidesOpen = 0;
   const tokens: Tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
   // Requests whose tokens are unknown, and whether the latest answer's were.
   let unmetered = 0;
@@ -175,7 +217,7 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "continued" | "mark" | undefined {
+  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     if (entry.kind === REQUEST_REFUSED) {
@@ -189,17 +231,24 @@ function createMeter() {
       // The answer before it, continued: shown, never counted again.
       continued -= 1;
       return "continued";
-    } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
+    } else if (entry.kind === REQUEST_STARTED && isSide(entry)) {
       compacting += 1;
-      compactionOpen = true;
-    } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
+      sidesOpen += 1;
+    } else if (entry.kind === REQUEST_ENDED && isSide(entry)) {
       if (unsent(entry)) compacting -= 1;
-      compactionOpen = false;
+      sidesOpen = Math.max(0, sidesOpen - 1);
     } else if (entry.kind === REQUEST_COST) {
       compactions += 1;
-      compactionOpen = false;
+      sidesOpen = Math.max(0, sidesOpen - 1);
       addCost(data?.usd);
       addTokens(tokensOf(data?.usage, data?.failed === true));
+    } else if (entry.kind === TOOL_STARTED) {
+      held.set(str(data?.call) ?? `#${held.size}`, data?.heldUsd);
+    } else if (entry.kind === TOOL_COST) {
+      held.delete(str(data?.call) ?? "");
+      charges += 1;
+      addCost(data?.usd);
+      return "charge";
     } else if (entry.kind === REQUEST_COST_PENDING) {
       // The answer just before it was counted as a cost unknown: it is one still to come.
       if (unknown > 0) (unknown -= 1), pending.push(lastUnmetered);
@@ -208,9 +257,19 @@ function createMeter() {
       const late = tokensOf(data?.usage);
       if (pending.shift() && late) (unmetered -= 1), addTokens(late);
       addCost(data?.usd);
+    } else if (entry.kind === REQUEST_STARTED && data?.capRefused === true) {
+      // Its own mark, written before pi's entry for it: a request that never left marks nothing and holds nothing.
+      capRefusals += 1;
+    } else if (entry.kind === "pi.assistant" && capRefusals > 0 && message?.stopReason === "error") {
+      // pi's entry for a request the cap refused: shown as the refusal, never counted.
+      capRefusals -= 1;
+      refusedAny = true;
+      return "refusal";
     } else if (entry.kind === REQUEST_STARTED) {
+      capRefusals = 0;
       marked += 1;
       inFlight = true;
+      lastClamp = clampOf(data?.clamp);
     } else if (entry.kind === REQUEST_ENDED) {
       if (unsent(entry)) marked -= 1;
       inFlight = false;
@@ -234,17 +293,24 @@ function createMeter() {
     return "mark";
   }
 
-  /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. */
-  function usage(settled: boolean): { usd: number | null; requests: number } | undefined {
+  /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. While the
+   *  cost is unknown, `so_far_usd` is the sum of the charges whose cost is known and `unpriced` how many have none: each
+   *  cost no one knows (an answer or summary with none, a stopped request's, a paid tool charge), each still pending, each
+   *  request cut before any answer, and each paid tool call a settled run never settled. No ceiling is claimed. */
+  function usage(settled: boolean): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
-    const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
-    if (!requests && !compactions && !cut) return undefined;
+    const cut = marked - open(inFlight) > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
+    // A paid tool call cut by a crash: its charge is unknown, so the cost is.
+    const cutCalls = settled ? held.size : 0;
+    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny ? { usd: 0, requests: 0, charges: 0 } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    return { usd: unknown > 0 || pending.length > 0 || cut ? null : Math.round(known * 1e6) / 1e6, requests: count };
+    const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
+    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
+    return { usd, requests: count, charges: charges + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}) };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
@@ -272,7 +338,7 @@ function createMeter() {
     return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: kept, ...(model !== undefined ? { model } : {}) };
   }
 
-  return { push, decide, usage, settled };
+  return { push, decide, usage, clamp: () => lastClamp, settled };
 }
 
 type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
@@ -286,14 +352,56 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
+ *  neither keeps part of what the whole text's redaction takes out. */
+const redactOf = (options: TimelineOptions) => (text: string): string => (options.redact ? options.redact(text) : text);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
+
+/** What a host's spend cap limited a request's output to (its start mark's `clamp`): the tokens, what was left of the
+ *  cap for it, and the cap. */
+type Clamp = { tokens: number; leftUsd: number; capUsd: number };
+function clampOf(value: unknown): Clamp | undefined {
+  const clamp = obj(value);
+  const [tokens, leftUsd, capUsd] = [clamp?.tokens, clamp?.leftUsd, clamp?.capUsd];
+  const amount = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  return Number.isSafeInteger(tokens) && (tokens as number) > 0 && amount(leftUsd) && amount(capUsd) ? { tokens: tokens as number, leftUsd, capUsd } : undefined;
+}
+/** An amount in words: two decimals, or as many as it takes (up to six) to show it. */
+function amount(usd: number): string {
+  for (let digits = 2; digits < 6; digits++) if (Number(usd.toFixed(digits)) === Number(usd.toFixed(6))) return `$${usd.toFixed(digits)}`;
+  return `$${usd.toFixed(6)}`;
+}
+/** What a reply the cap's clamp cut short says. */
+const clampSaid = (clamp: Clamp) => `The reply stopped at ${clamp.tokens.toLocaleString("en-US")} tokens: all that the ${amount(clamp.leftUsd)} left of the run's ${amount(clamp.capUsd)} cap could buy.`;
+/** The message of a result that is only the harness's diagnostics block (`<harness>`, then `[error] …` lines), as a
+ *  call that threw or named a tool its run does not offer answers: its first error's, else its first line's, without
+ *  the severity. Undefined for any other text, whose own first line says what happened. */
+function diagnosticOf(text: string): string | undefined {
+  const lines = text.trim().split("\n").map((line) => line.trim());
+  if (lines[0] !== "<harness>") return undefined;
+  const end = lines.indexOf("</harness>");
+  const inner = lines.slice(1, end < 0 ? undefined : end).filter(Boolean);
+  const said = inner.map((line) => /^\[(\w+)\]\s*(.*)$/.exec(line)).filter((match): match is RegExpExecArray => match !== null);
+  const first = said.find((match) => match[1] === "error") ?? said[0];
+  return first ? (first[2] ?? "") : (inner[0] ?? "");
+}
 
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
+  const redactedWhy = redactOf(options);
   const caps = { ...CAPS, ...options.caps };
-  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, args, result, options.labels);
+  /** A call's arguments as its rows name them: its file path as the host names it (`options.path`). */
+  const shown = (args: Obj): Obj => {
+    if (!options.path) return args;
+    const named = (value: unknown) => (typeof value === "string" && value ? options.path!(value) : value);
+    return "path" in args || "file_path" in args ? { ...args, ...("path" in args ? { path: named(args.path) } : {}), ...("file_path" in args ? { file_path: named(args.file_path) } : {}) } : args;
+  };
+  const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
+  // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
+  // `conversation:id`: the call, when it comes, takes its result and is done.
+  const early = new Map<string, { row: TimelineEvent; view: ToolResultView; shown: ToolResultView }>();
   const previous = new Map<number, string>();
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
@@ -312,6 +420,11 @@ function createProjector(options: TimelineOptions) {
   const meter = createMeter();
   // Each conversation's latest answer, by entry id: a continuation's calls show under it.
   const answers = new Map<number, number | undefined>();
+  // Per conversation, the text answer that ended its request, until its turn shows whether it was the last thing said: a
+  // later answer, or a continuation, with text or a call makes it a text_block (a harness's commentary before a tool of
+  // its own, which its host never sees as a call); a person's message settles it. A later answer of the same turn, an
+  // empty one too, takes its place, so the earlier one is a text_block then.
+  const provisional = new Map<number, TimelineEvent>();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -323,6 +436,10 @@ function createProjector(options: TimelineOptions) {
     };
     const parent = fields.parent_tool_use_id ?? children.get(conv);
     if (parent !== undefined) row.parent_tool_use_id = parent;
+    if (kind === "error" && options.redact) {
+      if (row.summary !== null) row.summary = options.redact(row.summary);
+      if (row.text !== null) row.text = options.redact(row.text);
+    }
     if (row.summary !== null) row.summary = clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
@@ -332,18 +449,33 @@ function createProjector(options: TimelineOptions) {
   }
 
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
-  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? text)) || "no detail";
+  /** Text as the host's `redact` makes it (as given without one). */
+  const redactText = (text: string): string => (options.redact && text ? options.redact(text) : text);
+  /** An outcome's words as the summary shows them: its verdict (`failed:`, `refused:`) as read, and only what follows it
+   *  redacted, so a redaction that takes the whole detail still leaves the verdict, as the row's status says. */
+  const saidOf = (text: string): string => {
+    const verdict = /^(\w+): /.exec(text);
+    return verdict ? `${verdict[1]}: ${scrubUrls(firstLine(redactText(text.slice(verdict[0].length))))}` : scrubUrls(firstLine(redactText(text)));
+  };
+  /** A result as its rows show it: its whole output redacted once, which its label, summary and preview are all taken
+   *  from (resultRow); its details and error flag as they came. */
+  const shownOf = (view: ToolResultView): ToolResultView => (options.redact && view.text ? { ...view, text: options.redact(view.text) } : view);
+  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
   /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
    *  outcome is read once, for the summary and the status both. */
-  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) => {
+  /** A tool's output, like an error, can carry a key its provider echoed. What its rows show of it (the call's label, the
+   *  result's summary and preview) comes from `shown`, its whole text as the host's `redact` makes it (shownOf, once per
+   *  result), before any of it is taken or cut, so none keeps a piece of a key. Whether it failed, and why, is read from
+   *  the output as it came (`view`), as its status is; only the words the summary shows of that are redacted. */
+  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, shown: { text: string }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
     return make("tool_result", conv, rowId, {
-      summary: view.isError ? `${named} failed: ${failure(view.text)}` : outcome ? `${named}: ${scrubUrls(firstLine(outcome.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
+      summary: view.isError ? `${named} failed: ${failure(shown.text)}` : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
   };
@@ -380,20 +512,57 @@ function createProjector(options: TimelineOptions) {
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
+    } else if (metered === "refusal" && message) {
+      // A request the run's cap refused, never sent: no request. Its text is the error as written (a host reads its code
+      // from it), its summary the cap's own words, after the code ("Not sent: ...").
+      const why = redactedWhy(str(message.errorMessage) ?? "spend_cap_reached: Not sent: the run's spend cap refused the request.");
+      const words = why.replace(/^spend_cap_reached(?: \([^)]*\))?: /, "");
+      add(make("error", conv, base, { summary: firstLine(words.startsWith("Not sent:") ? words : `Not sent: ${words}`), text: why }));
+    } else if (metered === "charge") {
+      // A paid tool's charge: counted in the cost, and shown on a line of its own.
+      const data = obj(entry.data);
+      const [tool, by, usd] = [str(data?.tool) ?? "a tool", str(data?.charged_by) ?? "its provider", data?.usd];
+      const amount = typeof usd === "number" && Number.isFinite(usd) ? dollars(usd) : "an unknown amount";
+      // Its `usage` is the charge alone (no request): a host sums a run's paid tools from the same rows as its cost.
+      const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
+      add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
     } else if ((metered === "answer" || metered === "continued") && message) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered === "answer") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
-        const why = str(message.errorMessage) ?? "unknown error";
+        const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
+        const settled = provisional.get(conv);
+        if (settled && (textOf(message) || blocks.some((block) => block.type === "toolCall"))) {
+          settled.kind = "text_block";
+          touch(settled);
+          provisional.delete(conv);
+        }
         const first = (type: string) => blocks.findIndex((block) => block.type === type);
         const thinking = scrubUrls(textOf(message, "thinking", "thinking"));
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
         const text = textOf(message);
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
-        if (text) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
+        // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
+        // say. A message with no text block (a request the adapter bridge writes without content) shows none.
+        // An answer its turn goes on from is a text_block (provisional, below), an empty one too.
+        if (text || (final && first("text") >= 0)) {
+          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text });
+          add(row);
+          if (final) {
+            const earlier = provisional.get(conv);
+            if (earlier) {
+              earlier.kind = "text_block";
+              touch(earlier);
+            }
+            provisional.set(conv, row);
+          }
+        }
+        // A reply that stopped at the output its request's cap limited it to says so, with the numbers.
+        const clamp = metered === "answer" && message.stopReason === "length" ? meter.clamp() : undefined;
+        if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp) }));
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
@@ -403,8 +572,20 @@ function createProjector(options: TimelineOptions) {
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
           }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
-          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
+          const before = early.get(`${conv}:${id}`);
+          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: before !== undefined });
           add(use);
+          // Its result came first: it is this call's, so it reads with the call's label and sits right after it.
+          if (before) {
+            early.delete(`${conv}:${id}`);
+            const named = label(name, args, before.shown);
+            use.summary = clean(named, caps.summary);
+            const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view, before.shown);
+            Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
+            rows.splice(rows.indexOf(before.row), 1);
+            rows.splice(rows.indexOf(use) + 1, 0, before.row);
+            touch(before.row);
+          }
         });
       }
     } else if (entry.kind === "pi.tool-result" && message) {
@@ -412,6 +593,7 @@ function createProjector(options: TimelineOptions) {
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
       const view = viewOf(message);
+      const shown = shownOf(view);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
       // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
@@ -419,13 +601,15 @@ function createProjector(options: TimelineOptions) {
       if (abortedCall(entry)) cutTurns.add(conv);
       else cutTurns.delete(conv);
       const args = call?.args ?? {};
-      const named = label(name, args, view);
+      const named = label(name, args, shown);
       if (call) {
         call.done = true;
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      add(resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view));
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
+      if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
+      add(row);
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
@@ -437,11 +621,11 @@ function createProjector(options: TimelineOptions) {
           browsers.delete(conv);
           add(make("phase", conv, `${base}:phase`, { summary: "Released the browser session" }));
         }
-        savedPaths(name, args, view).forEach((file, index) => add(make("phase", conv, `${base}:saved:${index}`, { summary: `Saved ${file}`, path: file })));
+        savedPaths(name, args, view).map((file) => (options.path ? options.path(file) : file)).forEach((file, index) => add(make("phase", conv, `${base}:saved:${index}`, { summary: `Saved ${file}`, path: file })));
         const child = obj(message.details)?.conversationId;
         if (typeof child === "number") {
           for (const row of adopt(conv, child, id, args, named)) touch(row);
-          add(make("subagent_completed", conv, `${conv}:done:${id}`, { summary: `Subagent done: ${scrubUrls(firstLine(view.text))}`, tool_use_id: id }));
+          add(make("subagent_completed", conv, `${conv}:done:${id}`, { summary: `Subagent done: ${scrubUrls(firstLine(shown.text))}`, tool_use_id: id }));
         }
       }
     } else if (entry.kind === "pi.system") {
@@ -451,6 +635,10 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+    } else if (entry.kind === RUN_RESUMED) {
+      const data = obj(entry.data);
+      if (typeof data?.at === "number" && Math.abs(data.at) <= 8.64e15) stamp = data.at;
+      add(make("phase", conv, base, { summary: data?.after === "crash" ? "Resumed after a crash" : "Resumed after the server stopped" }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
       const [state, reason, tag] = [str(data?.state), str(data?.reason), str(data?.session)];
@@ -463,6 +651,7 @@ function createProjector(options: TimelineOptions) {
       const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
+      provisional.delete(conv);
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
@@ -487,10 +676,12 @@ function createProjector(options: TimelineOptions) {
     const diagnostic = Array.isArray(result.diagnostics) ? str(obj(result.diagnostics[0])?.message) : undefined;
     const text = typeof output === "string" ? output : output !== undefined ? JSON.stringify(output) : (diagnostic ?? "");
     const failed = result.isError === true;
-    const named = label(call.name, call.args, { text, details: result.details, isError: failed });
+    const view: ToolResultView = { text, details: result.details, isError: failed };
+    const shown = shownOf(view);
+    const named = label(call.name, call.args, shown);
     call.done = true;
     call.use.summary = clean(named, caps.summary);
-    const row = resultRow(conv, `${conv}:n:${id}:result`, { name: call.name, callId: id, round: call.round }, named, { text, isError: failed }, parent);
+    const row = resultRow(conv, `${conv}:n:${id}:result`, { name: call.name, callId: id, round: call.round }, named, view, shown, parent);
     rows.push(row);
     return [call.use, row];
   }
@@ -513,13 +704,19 @@ function createProjector(options: TimelineOptions) {
     return [...calls].filter(([, call]) => (conv === undefined || call.conv === conv) && !call.done).map(([key, call]) => [key.slice(key.indexOf(":") + 1), call]);
   }
 
-  function usage(): TimelineEvent | undefined {
-    const counted = meter.usage(options.settled === true);
+  /** The usage row. `nothingInFlight`: read as a settled run is, a request marked with no answer being cut, for a host that
+   *  knows its turn is over while its process lives on (a stopped turn). */
+  function usage(nothingInFlight = false): TimelineEvent | undefined {
+    const counted = meter.usage(options.settled === true || nothingInFlight);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests } = counted;
+    const { usd, requests, charges, so_far_usd, unpriced } = counted;
+    const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
+    const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}`,
-      usage: { usd, requests },
+      // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
+      summary: requests === 0 && !charges ? "no model request sent" : `Cost so far: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+      // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
+      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}) },
     });
   }
 
@@ -564,10 +761,14 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
   // pairs them.
   const calls = new Map<string, { name: string; called: string; done: boolean }>();
+  // Results stored before their call, by `conversation:id`: each counts once its call comes, under its name and rule.
+  const early = new Map<string, { named: string | undefined; result: { text: string; isError: boolean }; place: number }>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
-  const order = new Map<string, number>();
-  const see = (name: string) => void (order.has(name) || order.set(name, order.size));
+  const order = new Map<string, [number, number]>();
+  // Each record's place: a tool's place is the record that first named it, though it counts later.
+  let at = 0;
+  const see = (name: string, place = at) => void (order.has(name) || order.set(name, [place, order.size]));
   const tally = (name: string, failed: boolean) => {
     see(name);
     const tool = tools.get(name) ?? { calls: 0, errors: 0 };
@@ -576,6 +777,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     tools.set(name, tool);
   };
   for (const entry of records) {
+    at += 1;
     const conv = entry.conversationId ?? 0;
     if (entry.id !== undefined) {
       if (seen.has(`${conv}:${entry.id}`)) continue;
@@ -588,21 +790,39 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, called: name, done: false });
+        // Its result came first: it counts now, once, under this call's name and by this call's tool's rule.
+        const before = early.get(`${conv}:${id}`);
+        early.delete(`${conv}:${id}`);
+        calls.set(`${conv}:${id}`, { name: key, called: name, done: before !== undefined });
         see(key);
+        if (before) tally(key, callFailed(name, before.result));
       }
     } else if (entry.kind === "pi.tool-result" && message) {
-      const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
-      if (call) call.done = true;
+      const id = str(message.toolCallId);
+      const call = calls.get(`${conv}:${id ?? ""}`);
       const named = str(message.toolName);
+      // The text is read only by a tool that tells its outcome (most tell none; a fetch's is its whole page).
+      const result = { get text() { return textOf(message); }, isError: message.isError === true };
+      // A result before its call waits for it, to count under its name and by its rule.
+      if (!call && id) {
+        early.set(`${conv}:${id}`, { named, result, place: at });
+        continue;
+      }
+      if (call) call.done = true;
       // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
       const called = call?.called ?? named ?? "";
-      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { text: textOf(message), isError: message.isError === true }));
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, result));
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
+  // A result whose call never came counts by its own name, as any result without a call does.
+  for (const { named, result, place } of early.values()) {
+    const name = named ? metricName(named) : METRIC_NAMES.unnamedTool;
+    see(name, place);
+    tally(name, callFailed(named ?? "", result));
+  }
   for (const row of decisions) meter.decide(row);
-  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
+  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)![0] - order.get(b)![0] || order.get(a)![1] - order.get(b)![1]));
   return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
 }
 
@@ -617,6 +837,7 @@ const modelName = (agent: unknown): string | undefined => {
 
 /** Live rows from `watchEvents` batches. Committed entries go through the same projector `timelineOf` uses. */
 export function timelineReducer(options: TimelineOptions = {}) {
+  const redactedWhy = redactOf(options);
   // Ids of live rows: events made them, and they go when they end (timelineReducer's isLive).
   const liveIds = new Set<string>();
   const now = options.now ?? Date.now;
@@ -769,7 +990,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
         }
         case "task_failed":
           wait("poll", undefined);
-          live("error", `${conv()}:task:${String(event.taskId)}`, `Task failed: ${firstLine(str(event.message) ?? "")}`, { text: str(event.message) ?? null });
+          { const why = str(event.message) === undefined ? undefined : redactedWhy(str(event.message)!); live("error", `${conv()}:task:${String(event.taskId)}`, `Task failed: ${firstLine(why ?? "")}`, { text: why ?? null }); }
           break;
         case "compaction_start":
           live("phase", `${conv()}:compaction:${String(event.taskId)}`, "Summarizing older context");
@@ -777,7 +998,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
         case "compaction_end": {
           del(`${conv()}:compaction:${String(event.taskId)}`);
           const failed = str(event.error);
-          if (failed) live("error", `${conv()}:compaction:${String(event.taskId)}:error`, `Compaction failed: ${firstLine(failed)}`, { text: failed });
+          if (failed) { const why = redactedWhy(failed); live("error", `${conv()}:compaction:${String(event.taskId)}:error`, `Compaction failed: ${firstLine(why)}`, { text: why }); }
           break;
         }
         case "tool_execution_update": {
@@ -799,6 +1020,13 @@ export function timelineReducer(options: TimelineOptions = {}) {
     apply,
     /** Every row now, in log order. */
     rows: () => [...store.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+    /** The usage row read with nothing in flight, put in place of the live one: for a host whose turn was stopped and is
+     *  over, so a request it cut counts as a charge with no price, as a settled read counts it. Undefined with no row. */
+    idle: () => {
+      const usage = projector.usage(true);
+      if (usage) store.set(usage.id, usage);
+      return usage;
+    },
     /** Whether `id` is a live row (one the events made: a stream, a wait, a phase), not one a committed entry made.
      *  A live row ends when it is gone; a committed one was shown and stays, though a snapshot of a compacted
      *  conversation no longer holds it. */

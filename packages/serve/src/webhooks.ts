@@ -7,14 +7,17 @@
 // DIR/webhook.json only sealed under the tool keys' seal key (tool-keys.ts). A message not answered 2xx is tried again
 // on the spec's schedule, cut at about a day; a 410 turns the webhook off. Messages and the last attempts live in
 // DIR/webhook-outbox.json, so a restart goes on with those pending. Never in store.sqlite, which runs open.
+// With them, in the same write, the ledger: the end and the wait each run's notices were queued for. A run's moment is
+// queued once, by whichever server sees it, and a start queues each end the agent store holds that the ledger does not
+// (catchUp): a kill between the store's end and the outbox write loses no run.ended, and sends none twice.
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
-import { ApiError, type InputIssue, invalid } from "./errors.js";
+import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
-import { isObject } from "./validate.js";
+import { isObject, unknownFields } from "./validate.js";
 
 export const WEBHOOK_EVENTS = ["run.needs_input", "run.ended"] as const;
 /** The message types: a run's two notices, and the test send's. */
@@ -27,15 +30,28 @@ export const RETRY_MS: readonly number[] = [5_000, 300_000, 1_800_000, 7_200_000
 const TIMEOUT_MS = 15_000;
 /** How soon an outbox write that failed is tried again. */
 const OUTBOX_RETRY_MS = 5_000;
+/** How far back an end's run.ended is still queued: past the outbox's own retries (RETRY_MS, about a day), a notice
+ *  would not be sent any more. */
+const END_NOTICE_WINDOW_MS = 24 * 3_600_000;
+/** In the data directory: when a server that keeps the ledger first started. An end before it was an older server's,
+ *  which kept no ledger, so it is never queued again. */
+export const END_NOTICES_SINCE = "end-notices-since";
 /** How many attempts the log keeps, and with them the messages they tried, for a redelivery. */
 export const ATTEMPTS_KEPT = 50;
 const FORMAT = "webhook/1";
 const MAX_URL = 2048;
 
 /** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API. */
+/** What `emit` did with a notice: `queued`, in the outbox on disk (or already there, or counted as sent); `unsaved`,
+ *  held here only, its outbox write failed; `off`, no webhook set, or one a 410 turned off, so nothing is to be sent;
+ *  `closed`, the server is stopping. */
+export type Emitted = "queued" | "unsaved" | "off" | "closed";
 export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "stopped" } };
 type Config = { url: string; secret: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
+/** What the outbox queued of one run: its end (its time), and the wait it stands at (its mark), kept until the run moves
+ *  past it: a new wait replaces it, and it goes with the end that came after it, once that end is no longer due. */
+type Noticed = { ended?: string; wait?: string };
 export type Attempt = { webhook_id: string; type: MessageType; at: string; status_code: number | null; latency_ms: number; error: string | null; retry_at: string | null; redelivery: boolean };
 /** Whether the secret signs here: sealed, or not, for no seal key now or one it does not open under. */
 type Signing = "sealed" | "seal_key_missing" | "unreadable";
@@ -52,6 +68,13 @@ export class Webhooks {
   private readonly key: Buffer | undefined;
   private messages: Message[];
   private attempts: Attempt[];
+  /** The ledger, by run: written with the messages, in the same write. */
+  private notices: Record<string, Noticed>;
+  /** When this data directory's ledger began (END_NOTICES_SINCE). */
+  private readonly since: number;
+  /** The runs told of since this server started: their ledger entries are this server's news, which a start's catch-up
+   *  never drops. */
+  private readonly told = new Set<string>();
   private base = "";
   private readonly timers = new Set<NodeJS.Timeout>();
   /** The tries in flight, which close() stops and waits for: nothing is written once it is closed. */
@@ -73,7 +96,9 @@ export class Webhooks {
     this.file = join(data, WEBHOOK_FILE);
     this.outbox = join(data, OUTBOX_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
-    ({ messages: this.messages, attempts: this.attempts } = this.readOutbox());
+    // Read, or written at this first start, before anything ends here: a run that ends later is after it.
+    this.since = this.noticesSince(join(data, END_NOTICES_SINCE));
+    ({ messages: this.messages, attempts: this.attempts, notices: this.notices } = this.readOutbox());
     // A restart goes on with the messages an earlier server left pending, each at its next try's time; a test send is
     // tried once, so one left in flight failed.
     const tests = this.messages.filter((m) => m.status === "pending" && m.type === "webhook.test");
@@ -97,7 +122,7 @@ export class Webhooks {
 
   /** PUT: the URL, and the webhook on again. The first makes the secret and answers it, once; a later one keeps it. */
   save(body: Record<string, unknown>): { created: boolean; view: ReturnType<Webhooks["view"]>; secret?: string } {
-    const issues: InputIssue[] = Object.keys(body).filter((key) => key !== "url").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+    const issues = unknownFields(body, ["url"]);
     const url = typeof body.url === "string" && body.url.length <= MAX_URL ? URL.parse(body.url) : null;
     if (body.url === undefined) issues.push({ field: "url", reason: "missing", message: "url is the http or https address to POST each message to" });
     else if (!url || !["http:", "https:"].includes(url.protocol)) issues.push({ field: "url", reason: "invalid", message: `url is an http or https address of at most ${MAX_URL} characters` });
@@ -123,15 +148,60 @@ export class Webhooks {
     return { attempts: [...this.attempts].reverse() };
   }
 
-  /** A run's notice, queued when a webhook is set and on. `marker` makes its webhook-id: the same notice of the same
-   *  moment, seen again after a restart, has the same id, which is a receiver's idempotency key. */
-  emit(type: (typeof WEBHOOK_EVENTS)[number], run: RunNotice, marker: string): void {
+  /** A run's moment, told by runs.ts each time it sees it (a wait reached, an end the agent store has): queued once, when
+   *  a webhook is set and on, and kept in the ledger in the same write. `marker` makes its webhook-id: the same moment,
+   *  seen again after a restart, has the same id, which is a receiver's idempotency key. An end before the ledger began,
+   *  before the webhook was set, or past the outbox's day counts as sent. */
+  emit(type: (typeof WEBHOOK_EVENTS)[number], run: RunNotice, marker: string): Emitted {
+    if (this.closed) return "closed";
+    this.told.add(run.run_id);
+    const ends = type === "run.ended";
+    const seen = this.notices[run.run_id];
+    if ((ends ? seen?.ended : seen?.wait) === marker) return this.unsaved ? "unsaved" : "queued";
+    const config = this.config();
+    if (!config || config.disabled) {
+      // A wait seen while nothing is to be sent is noted here, never written for it: told again, it reads no file.
+      if (!ends) this.notices[run.run_id] = { wait: marker };
+      return "off";
+    }
+    if (ends && !this.due(marker, config)) return "queued";
+    const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
+    // A new wait replaces the last; one after an end is a continued run's, past that end, which the store no longer holds.
+    this.notices[run.run_id] = ends ? { ...seen, ended: marker } : { wait: marker };
+    this.prune(config);
+    // One an earlier server queued before it kept a ledger: recorded now, and still sent once.
+    if (this.messages.some((m) => m.id === id)) this.writeOutbox();
+    else {
+      const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
+      this.schedule(this.enqueue(id, type, data), 0);
+    }
+    return this.unsaved ? "unsaved" : "queued";
+  }
+
+  /** A start's catch-up, once its runs are read (`rows`, the agent store's: a row with no state is an ended one). First,
+   *  before anything is awaited, the ledger as the store now stands: a run the store no longer has goes, and a wait of a
+   *  run it holds as ended goes (an end the webhook was off for never moved it past). Then each end the store holds that
+   *  the ledger does not, and that is still due, is queued under the store's end time, so under the same webhook-id: its
+   *  server was killed between the store's end and the outbox write, or that write never reached the disk. `describe`
+   *  gives its notice. */
+  async catchUp(rows: Iterable<{ id: string; state?: string; endedAt?: string }>, describe: (id: string) => Promise<RunNotice | null>): Promise<void> {
     const config = this.config();
     if (this.closed || !config || config.disabled) return;
-    const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
-    if (this.messages.some((m) => m.id === id)) return;
-    const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
-    this.schedule(this.enqueue(id, type, data), 0);
+    const store = new Map([...rows].map((row) => [row.id, row]));
+    let dropped = false;
+    for (const [id, noticed] of Object.entries(this.notices)) {
+      const row = store.get(id);
+      if (this.told.has(id) || (row && (row.state === "running" || noticed.wait === undefined))) continue;
+      if (row && noticed.ended) this.notices[id] = { ended: noticed.ended };
+      else delete this.notices[id];
+      dropped = true;
+    }
+    if (dropped) this.writeOutbox();
+    for (const { id, state, endedAt } of store.values()) {
+      if (state === "running" || !endedAt || this.notices[id]?.ended === endedAt || !this.due(endedAt, config)) continue;
+      const run = await describe(id).catch((error: Error) => (this.say({ condition: "notice_unread", run: id, error: error.message }), null));
+      if (run) this.emit("run.ended", run, endedAt);
+    }
   }
 
   /** POST .../test: a `webhook.test` message tried once now, never again; its attempt. */
@@ -177,14 +247,48 @@ export class Webhooks {
     this.held = undefined;
   }
 
-  private readOutbox(): { messages: Message[]; attempts: Attempt[] } {
+  /** The outbox as the last server left it; an older server's (v2) has no ledger. */
+  private readOutbox(): { messages: Message[]; attempts: Attempt[]; notices: Record<string, Noticed> } {
     try {
       const doc = JSON.parse(readFileSync(this.outbox, "utf8")) as unknown;
-      if (!isObject(doc) || doc.v !== 2 || !Array.isArray(doc.messages) || !Array.isArray(doc.attempts)) return { messages: [], attempts: [] };
-      return { messages: doc.messages.filter((m) => isObject(m) && typeof m.id === "string" && typeof m.body === "string") as Message[], attempts: doc.attempts.filter(isObject) as Attempt[] };
+      if (!isObject(doc) || (doc.v !== 2 && doc.v !== 3) || !Array.isArray(doc.messages) || !Array.isArray(doc.attempts)) return { messages: [], attempts: [], notices: {} };
+      const notices = isObject(doc.notices) ? (Object.fromEntries(Object.entries(doc.notices).filter(([, n]) => isObject(n))) as Record<string, Noticed>) : {};
+      return { messages: doc.messages.filter((m) => isObject(m) && typeof m.id === "string" && typeof m.body === "string") as Message[], attempts: doc.attempts.filter(isObject) as Attempt[], notices };
     } catch {
-      return { messages: [], attempts: [] };
+      return { messages: [], attempts: [], notices: {} };
     }
+  }
+
+  /** Whether an end's run.ended is still to be queued: at or after the ledger began, the webhook was set, and the
+   *  outbox's day began (a marker that names no time is not judged by one). The catch-up and the ledger's pruning read the
+   *  same line, so the ledger never forgets an end a start would look for. */
+  private due(endedAt: string, config: Config): boolean {
+    const at = Date.parse(endedAt);
+    return !Number.isFinite(at) || at >= Math.max(this.since, Date.parse(config.updated_at), Date.now() - END_NOTICE_WINDOW_MS);
+  }
+
+  /** The ledger without what no start looks for: a run whose end is no longer due goes, with the wait it ended past. A
+   *  wait with no end after it stays while the run stands at it, however long: never pruned by age, so the same question
+   *  is never asked again. */
+  private prune(config: Config): void {
+    for (const [id, noticed] of Object.entries(this.notices)) if (noticed.ended && !this.due(noticed.ended, config)) delete this.notices[id];
+  }
+
+  /** When this data directory's ledger began: read, or written now, once and durably, at the first start of a server
+   *  that keeps one. One that cannot be written is taken as now, and said, so a start never sends an older server's ends
+   *  again. */
+  private noticesSince(file: string): number {
+    try {
+      const at = Date.parse(readFileSync(file, "utf8").trim());
+      if (Number.isFinite(at)) return at;
+    } catch {}
+    const now = Date.now();
+    try {
+      writeDurableSync(file, `${new Date(now).toISOString()}\n`);
+    } catch (error) {
+      this.say({ condition: "notices_since_unwritable", file, error: (error as NodeJS.ErrnoException).code ?? "unknown" });
+    }
+    return now;
   }
 
   private writeOutbox(): void {
@@ -204,7 +308,7 @@ export class Webhooks {
     const tried = new Set(this.attempts.map((a) => a.webhook_id));
     this.messages = this.messages.filter((m) => m.status === "pending" || tried.has(m.id) || this.sending.has(m.id));
     try {
-      writeDurableSync(this.outbox, `${JSON.stringify({ v: 2, messages: this.messages, attempts: this.attempts })}\n`);
+      writeDurableSync(this.outbox, `${JSON.stringify({ v: 3, messages: this.messages, attempts: this.attempts, notices: this.notices })}\n`);
       this.unsaved = false;
       return true;
     } catch (error) {

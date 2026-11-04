@@ -43,3 +43,101 @@ describe("LiveRun's Archive", () => {
     expect(reads).toBeGreaterThan(2);
   });
 });
+
+// A run ends before its learning does: the page reads it again until its learning settles, so the header says what it
+// kept as soon as it has, with no reload.
+describe("LiveRun, a run whose learning is still deciding", () => {
+  it("reads the ended run again until its learning is kept, then shows Learned 1 note", async () => {
+    let reads = 0;
+    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, used: [], learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
+    const v2 = {
+      getRun: async () => ({ ...at("completed", false), learning: learning(++reads) }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: async () => final("completed"),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    for (let i = 0; i < 40 && !header().includes("Looking back"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(header()).toContain("Looking back");
+    for (let i = 0; i < 300 && !header().includes("Learned 1 note"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(header()).toContain("Learned 1 note");
+    expect(header()).not.toContain("Looking back");
+    const settled = reads;
+    await act(async () => { await new Promise((r) => setTimeout(r, 2300)); });
+    expect(reads).toBe(settled);
+  }, 15_000);
+});
+
+// The header and the timeline say the same: once the run's learning moves, its timeline is read again, so the look-back's
+// step says what it kept as the header does, and what it did behind it is the server's newest.
+describe("LiveRun, its header and its timeline", () => {
+  it("reads the timeline again when the run's learning moves: the look-back's step and the header agree", async () => {
+    let reads = 0, timelines = 0;
+    const learning = (n: number): Run["learning"] => (n < 3 ? { state: n < 2 ? "reflecting" : "proposed", reason: null } : { state: "merged", reason: null, used: [], learned: [{ file: "b.md", name: "Try it first", supersedes: [] }] });
+    // The run's learning row, as the server has it at each read of the timeline: it moves in place.
+    const ending = (): TimelinePage["rows"] => {
+      const merged = reads >= 3;
+      const detail = merged ? "Learned: Try it first" : "Checking 1 new note…";
+      return [
+        { id: "l1", seq: 1, kind: "user_message", agent_label: "learning", summary: "Looking back on this run.", text: "Looking back on this run.", timestamp: "2026-10-30T06:00:04Z", tool_name: null },
+        { id: "learning", seq: 2, kind: "learning", agent_label: "learning", summary: detail, text: detail, timestamp: "2026-10-30T06:00:05Z", tool_name: null, learning: { state: merged ? "merged" : "proposed", reason: null, detail } } as TimelinePage["rows"][number],
+      ];
+    };
+    const v2 = {
+      getRun: async () => ({ ...at("completed", false), learning: learning(++reads) }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: async () => { timelines++; return { ...final("completed"), rows: ending() }; },
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const header = () => host.querySelector("header")?.textContent ?? "";
+    for (let i = 0; i < 40 && !header().includes("Looking back"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    const tab = [...host.querySelectorAll('[role="tab"]')].find((b) => b.textContent === "Timeline") as HTMLButtonElement;
+    await act(async () => { tab.click(); });
+    for (let i = 0; i < 300 && !header().includes("Learned 1 note"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    for (let i = 0; i < 40 && !(host.querySelector("ol")?.textContent ?? "").includes("kept 1 note"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(header()).toContain("Learned 1 note");
+    const step = [...host.querySelectorAll("ol > li")].find((li) => li.textContent?.includes("Looked back"))!;
+    expect(step.textContent).toContain("Looked back: kept 1 note (Try it first)");
+    await act(async () => { step.querySelector("button")!.click(); });
+    expect(step.querySelector("pre")!.textContent).toContain("Learned: Try it first");
+    expect(step.querySelector("pre")!.textContent).not.toContain("Checking 1 new note");
+    expect(timelines).toBeGreaterThan(1);
+  }, 15_000);
+});
+
+// With one row per action, a call's row changes in place, and no result row follows it: the files are read again when a
+// call's row stops running, as they are when an older server's result row lands.
+describe("LiveRun, one row per action", () => {
+  it("reads the files again when an action's row stops running, and not while it runs", async () => {
+    const call = (status: "running" | "success") => ({ id: "c1", seq: 1, kind: "tool_use", summary: status === "running" ? "Wrote one.md" : "Wrote one.md: ok", text: null, timestamp: "2026-10-30T06:00:01Z", tool_name: "write", tool_use_id: "t1", tool_status: status, path: "one.md" });
+    const page = (rows: unknown[], reset: boolean): TimelinePage => ({ run_id: "r1", status: "working", state: "working", rows: rows as TimelinePage["rows"], drop: [], reset, unchanged: false, final: false, has_more: false, next_after: 2 });
+    const reads: Record<string, number> = {};
+    for (const ends of [true, false]) {
+      let files = 0, pages = 0;
+      const v2 = {
+        getRun: async () => at("working", false),
+        listFiles: async () => { files++; return { run_id: "r1", files: [], complete: true, truncated: false }; },
+        // The call runs, then (or not) ends under the same id; after that, the follow waits.
+        getTimeline: () => (++pages === 1 ? Promise.resolve(page([call("running")], true)) : pages === 2 ? Promise.resolve(page([call(ends ? "success" : "running")], false)) : new Promise<TimelinePage>(() => {})),
+        listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      };
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+      // Until the follow has asked past the call's end (its third read), then a moment for the files read to land.
+      for (let i = 0; i < 150 && pages < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(pages, `ends ${ends}`).toBeGreaterThanOrEqual(3);
+      reads[String(ends)] = files;
+      act(() => root?.unmount()); root = undefined;
+    }
+    // The same reads either way, and one more when the action ended.
+    expect(reads.true).toBe(reads.false! + 1);
+  });
+});

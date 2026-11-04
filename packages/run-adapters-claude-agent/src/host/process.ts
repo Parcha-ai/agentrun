@@ -106,6 +106,9 @@ export interface GatewayHandlerOptions {
   target: string;
   track?: unknown;
   onCap?: (cap: GatewayCap) => void;
+  /** The provider refused the session's key: a paid request answered 401, with the provider's own words. No retry can
+   *  pass, so the harness ends the turn at the first rather than let the CLI retry it for minutes. */
+  onKeyRefused?: (detail: string) => void;
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
 export interface GatewayHandler {

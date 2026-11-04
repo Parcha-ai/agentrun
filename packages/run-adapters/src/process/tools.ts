@@ -1,8 +1,8 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-message-prefix, 003-comments-name-this-host, 008-tool-images
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-message-prefix, 003-comments-name-this-host, 008-tool-images, 011-result-bound
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
-import type { ToolImage } from '../types.js';
+import { HOST_RESULT_MAX_CHARS, type ToolImage } from '../types.js';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
@@ -16,6 +16,10 @@ import type { ToolImage } from '../types.js';
  * as an interrupted result, never a second run. With the harness's built-in
  * tools turned off, these are its only tools, so every side effect it can
  * cause has an intent in the log before it runs.
+ *
+ * Every result a harness gets passes here, so here it is held to the host's
+ * bound: a text past HOST_RESULT_MAX_CHARS keeps its start and says where it
+ * was cut (`boundResult`), the call's record keeping it whole.
  */
 
 /** What a call returns to the harness. */
@@ -27,6 +31,8 @@ export interface ToolResult {
   interrupted?: boolean;
   /** Images the tool answered with, as it gave them (recorded with its outcome). */
   images?: readonly ToolImage[];
+  /** The text was cut at HOST_RESULT_MAX_CHARS (`boundResult`); it says so in its last line. */
+  truncated?: true;
 }
 
 /** One tool, harness-neutral. */
@@ -113,14 +119,15 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
           (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
         );
         // A tool answers in text, or in text with images (a screenshot): the images come back as recorded.
-        const { text, images } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined };
-        if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text });
-        return { text: String(text), isError: false, ...(images?.length ? { images } : {}) };
+        const { text: whole, images } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined };
+        const { text, truncated } = boundResult(String(whole));
+        if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
+        return { text, isError: false, ...(images?.length ? { images } : {}), ...(truncated ? { truncated } : {}) };
       } catch (err) {
         if (err instanceof EffectFailure) {
-          const text = failureText(err.error, options.partialChars);
-          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text });
-          return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
+          const { text, truncated } = boundResult(failureText(err.error, options.partialChars));
+          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
+          return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}), ...(truncated ? { truncated } : {}) };
         }
         ctx.halt?.(err);
         throw err;
@@ -158,6 +165,21 @@ export function failureText(error: EffectError, partialChars = 2000): string {
   if (last === undefined) return message;
   const text = typeof last === 'string' ? last : JSON.stringify(last);
   return `${message}\nPartial output before the interruption:\n${clip(text, partialChars)}`;
+}
+
+/**
+ * `text` within HOST_RESULT_MAX_CHARS characters, as a harness gets a call's
+ * result: a longer one keeps its start, cut before a character written as a
+ * surrogate pair rather than between its halves, and ends with a line saying
+ * so, `[cut at N of M characters]`, counted in the bound. `truncated` when cut.
+ */
+export function boundResult(text: string): { text: string; truncated?: true } {
+  if (text.length <= HOST_RESULT_MAX_CHARS) return { text };
+  const note = (kept: number) => `\n[cut at ${kept} of ${text.length} characters]`;
+  // The note's own length counted at the bound: what is kept is never longer than that, so neither is its note.
+  let kept = HOST_RESULT_MAX_CHARS - note(HOST_RESULT_MAX_CHARS).length;
+  if ((text.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
+  return { text: `${text.slice(0, kept)}${note(kept)}`, truncated: true };
 }
 
 /** At most `max` characters, with a marker when cut. */

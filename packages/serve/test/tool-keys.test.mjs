@@ -10,12 +10,15 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { unseal } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
+import { secret } from "../dist/secrets.js";
+import { readingOf } from "../dist/server.js";
+import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, client, cookieOf, FAUX, follow, printed, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
-const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "AGENTRUN_SEAL_KEY"];
+const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
+const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_SEAL_KEY"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
@@ -24,6 +27,26 @@ const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) 
 /** A seal key's forms: its base64 text, its bytes, and those as hex and base64url. */
 const keyForms = (key) => [key, Buffer.from(key, "base64"), ...["hex", "base64url"].map((code) => Buffer.from(key, "base64").toString(code))];
 const holdsNone = (bytes, forms, where) => { for (const form of forms) assert.ok(!Buffer.from(bytes).includes(form), `${where} holds a key (${String(form).length} long)`); };
+const MiB = 2 ** 20;
+/** The settings a harness's offer is made from, cleared where a test sets its own. */
+const HARNESS_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE"];
+/** This process's container limit read as `mib` until the test ends (host.ts' hostMemory reads it), as admission.test.mjs
+ *  stands one in: whether a harness's one run fits is the host's memory, so each test here names it. */
+function withMemory(t, mib) {
+  const was = process.constrainedMemory;
+  process.constrainedMemory = () => mib * MiB;
+  t.after(() => void (process.constrainedMemory = was));
+}
+/** Room for one run of every harness (claude-agent's, the largest, needs 416 MiB with the server's own). */
+const ROOMY_MIB = 4096;
+/** A codex stand-in (no binary check, nothing is run), as AGENTRUN_SERVE_CODEX_STANDIN takes it. */
+async function codexStandIn(t) {
+  const file = join(await scratch(t), "codex");
+  writeFileSync(file, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  return JSON.stringify({ command: file });
+}
+/** A model row's harnesses with every harness installed, room for each, and no model key: its own (model.ts' MODEL_KEYS). */
+const OWN = Object.fromEntries(TOOL_KEYS.filter((row) => row.kind === "model").map((row) => [row.id, [...row.harnesses]]));
 const fieldsOf = (view) => Object.fromEntries(view.keys.flatMap((key) => key.fields.map(({ name, ...field }) => [name, field])));
 const STORED = { set: true, source: "stored" };
 const UNSET = { set: false, source: null };
@@ -35,8 +58,12 @@ async function meetsDocument(api, view) {
 }
 
 test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
+  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
   const key = sealKey();
-  withEnv(t, { AGENTRUN_SEAL_KEY: key }, KEYS);
+  withEnv(t, { AGENTRUN_SEAL_KEY: key, AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
+  withMemory(t, ROOMY_MIB);
   const { api, data } = await serve(t);
   const values = { PARALLEL_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204);
@@ -44,12 +71,17 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: values.BROWSERBASE_PROJECT_ID } })).status, 204, "one field of two, the other kept");
   const listed = await api("GET", "/settings/tool-keys");
   assert.equal(listed.status, 200);
-  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED });
-  assert.deepEqual(listed.body.keys.map((k) => [k.id, k.unlocks, k.harnesses]), [
-    ["parallel", ["web_fetch", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
-    ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi"]],
-    ["browserbase", ["browser"], ["pi"]],
-  ], "only what this server binds: never web_search (keyless); the monid tools, on pi");
+  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
+  // A model key's harnesses: pi and its provider's own, every one installed and with room here, none saved yet.
+  assert.deepEqual(listed.body.keys.map((k) => [k.id, k.kind, k.unlocks, k.harnesses]), [
+    ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
+    ["monid", "tool", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
+    ["browserbase", "tool", ["browser"], ["pi"]],
+    ["typesafe", "tool", ["decisions.jev"], []],
+    ["anthropic", "model", [], ["pi", "claude-agent"]],
+    ["openai", "model", [], ["pi", "codex"]],
+    ["openrouter", "model", [], ["pi", "claude-agent", "codex"]],
+  ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
   const file = join(data, "tool-keys.json");
@@ -66,14 +98,15 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.throws(() => unseal(Buffer.from(key, "base64"), sealed, "tool-keys/1|MONID_API_KEY"));
   holdsNone(readFileSync(file), keyForms(key), "tool-keys.json");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
-  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET });
+  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).fields), ["PARALLEL_API_KEY"]);
 });
 
 test("each key unlocks only what capabilities bind, a tool or a decision provider, and runs on the union of those tools' harnesses; a name bound later shows with no edit to the key table", async (t) => {
   for (const [label, env] of [["no key set", {}], ["every key set", { PARALLEL_API_KEY: made(), MONID_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() }]]) {
     await t.test(label, async (st) => {
-      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...env }, KEYS);
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(st), ...env }, [...KEYS, ...HARNESS_VARS]);
+      withMemory(st, ROOMY_MIB);
       const { api } = await serve(st);
       const caps = (await api("GET", "/capabilities")).body;
       const view = (await api("GET", "/settings/tool-keys")).body;
@@ -82,16 +115,60 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
       assert.deepEqual(view.keys.map((key) => key.id), TOOL_KEYS.map((row) => row.id), "every key lists, one that unlocks nothing too");
       for (const [i, key] of view.keys.entries()) {
         assert.deepEqual(key.unlocks, TOOL_KEYS[i].unlocks.filter((name) => bound.has(name)), `${key.id}: its names capabilities bind, and only those`);
-        const run = new Set(key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []));
-        assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks`);
+        // A model key unlocks no tool: its harnesses are pi and its provider's own, each installed and with room here.
+        const run = new Set(TOOL_KEYS[i].kind === "tool" ? key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []) : OWN[key.id]);
+        assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks, or that run on its model key`);
       }
       for (const tool of caps.tools) if (tool.key !== undefined) assert.ok(view.keys.find((key) => key.id === tool.key)?.unlocks.includes(tool.name), `${tool.name} names the key ${tool.key}, which unlocks it`);
       await meetsDocument(api, view);
     });
   }
-  // web_search is keyless (Exa): bound or not, Parallel's key never claims it.
+  // Bound later: once capabilities list web_search, the key table's own name shows it.
   const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }];
-  assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel, never web_search");
+  assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel");
+  // A key of another kind (a model's; none yet) unlocks no tool, and is for the harnesses this server offers.
+  const offers = [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: false }];
+  assert.deepEqual(rowUnlocks({ kind: "model", unlocks: [] }, later, [], offers), { unlocks: [], harnesses: ["pi", "claude-agent"] });
+  assert.deepEqual(rowUnlocks(TOOL_KEYS[0], later, [{ id: "jev" }], offers), unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), "a tool row, as before");
+  // A harness unavailable only for want of a model key (its offer's `keys`) is the row's when its key is among them.
+  const keyless = [{ id: "pi", available: true }, { id: "claude-agent", available: false, keys: ["ANTHROPIC_API_KEY"] }, { id: "codex", available: false, keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"] }];
+  const model = (id) => TOOL_KEYS.find((row) => row.id === id);
+  assert.deepEqual(rowUnlocks(model("openrouter"), later, [], keyless).harnesses, ["pi", "codex"], "claude-agent needs Anthropic's own key here: OpenRouter's does not reach it");
+  assert.deepEqual(rowUnlocks(model("anthropic"), later, [], keyless).harnesses, ["pi", "claude-agent"]);
+  assert.deepEqual(rowUnlocks(model("openai"), later, [], keyless).harnesses, ["pi", "codex"]);
+  assert.deepEqual(rowUnlocks(model("openrouter"), later, [], [{ id: "pi", available: true }, { id: "claude-agent", available: false }, { id: "codex", available: false }]).harnesses, ["pi"], "unavailable for another reason (not installed): left out");
+});
+
+test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all three, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
+  const standIn = await codexStandIn(t);
+  // A path where nothing is installed.
+  const nothing = join(await scratch(t), "nothing");
+  const cases = [
+    ["claude-agent installed, codex stood in", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN],
+    ["claude-agent not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: nothing }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi"], openrouter: ["pi", "claude-agent"] }],
+    // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288): no key would run it.
+    ["a host too small for a claude-agent run", 384, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    // An endpoint the host names for claude-agent takes Anthropic's key alone, never OpenRouter's.
+    ["claude-agent on the host's endpoint", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "https://gateway.invalid" }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    // An endpoint claude-agent refuses (plain http to another machine): its key alone would not run it.
+    ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+  ];
+  for (const [label, mib, vars, rows] of cases) {
+    await t.test(label, async (st) => {
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...vars }, [...KEYS, ...HARNESS_VARS]);
+      withMemory(st, mib);
+      const { api } = await serve(st);
+      const caps = (await api("GET", "/capabilities")).body;
+      const offers = Object.fromEntries(caps.harnesses.map((offer) => [offer.id, offer]));
+      // No model key here: claude-agent and codex do not run now, whatever is installed.
+      assert.deepEqual([offers["claude-agent"].available, offers.codex.available], [false, false], JSON.stringify(caps.harnesses));
+      for (const offer of caps.harnesses) assert.equal("keys" in offer, false, "what a key would unlock is the key rows', never served in capabilities");
+      const view = (await api("GET", "/settings/tool-keys")).body;
+      assert.deepEqual(Object.fromEntries(view.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses])), rows, JSON.stringify(caps.harnesses.map((offer) => [offer.id, offer.reason ?? null])));
+      await meetsDocument(api, view);
+    });
+  }
 });
 
 test("a sealed value moved to another field's name does not open there: it is asked for again as a damaged entry", async (t) => {
@@ -142,7 +219,7 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: made() } })).status, 409);
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: made() } })).status, 204);
   const view = (await api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED });
+  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
   for (const value of Object.values(server)) holdsNone(JSON.stringify(view) + JSON.stringify(refused.body), formsOf(value), "an answer");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204, "its stored field goes; the server's stays");
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);
@@ -179,17 +256,21 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   await server.close();
 
   server = await started(second);
+  const parallel = async () => (await server.api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
+  assert.equal(await parallel(), false, "a value that does not open is absent: no key, never a crash or the ciphertext");
   assert.deepEqual(server.said().map((line) => line.replace(/^at=\S+ /, "")), [`event=tool_keys condition=seal_key_changed file=${file} fields=PARALLEL_API_KEY,MONID_API_KEY`], "said once, at the start");
   const changed = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(changed).PARALLEL_API_KEY, fieldsOf(changed).MONID_API_KEY, changed.reenter], [AGAIN, AGAIN, { reason: "seal_key_changed", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] }]);
   assert.equal(server.said().length, 1, "not again for the same condition");
   await meetsDocument(server.api, changed);
   assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204);
+  assert.equal(await parallel(), true, "sealed anew, it is read at once");
   const resealed = (await server.api("GET", "/settings/tool-keys")).body;
   assert.deepEqual([fieldsOf(resealed).PARALLEL_API_KEY, resealed.reenter], [STORED, { reason: "seal_key_changed", fields: ["MONID_API_KEY"] }], "sealed anew under the current key");
   await server.close();
 
   server = await started(undefined);
+  assert.equal(await parallel(), false, "with no seal key, nothing opens");
   const missing = await server.api("GET", "/settings/tool-keys");
   assert.deepEqual(missing.body.reenter, { reason: "seal_key_missing", fields: ["PARALLEL_API_KEY", "MONID_API_KEY"] });
   assert.equal((await server.api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).body.error.code, "no_sealing_key");
@@ -204,6 +285,40 @@ test("values sealed under another key, with no key, or in a damaged file do not 
   await server.close();
   assert.deepEqual(server.said().map((line) => /condition=(\S+)/.exec(line)[1]), ["seal_key_changed", "seal_key_changed", "seal_key_missing", "file_unreadable"]);
   for (const forms of [...Object.values(values).map(formsOf), keyForms(first), keyForms(second)]) holdsNone(lines.join("\n"), forms, "the log");
+});
+
+test("a key saved is read by name with no restart: capabilities lose the tool's missing names and name its key, a run of it starts and its process gets the key; deleted, it is missing again", { timeout: 60_000 }, async (t) => {
+  const log = join(await scratch(t), "browser.jsonl");
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER });
+  const values = { BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
+  const browser = async () => {
+    const caps = (await api("GET", "/capabilities")).body;
+    for (const value of Object.values(values)) holdsNone(JSON.stringify(caps), formsOf(value), "capabilities");
+    const { summary: _, ...tool } = caps.tools.find((entry) => entry.name === "browser");
+    return tool;
+  };
+  const refused = async () => {
+    const res = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
+    return [res.status, res.body.error?.code, res.body.error?.details?.missing];
+  };
+  const unset = { name: "browser", nodes: true, calls: false, available: false, reason: `Needs ${Object.keys(values).join(", ")}`, missing: Object.keys(values), harnesses: ["pi"], key: "browserbase" };
+  assert.deepEqual(await browser(), unset);
+  assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"], ["monid.discover", "monid"], ["monid.inspect", "monid"], ["monid.run", "monid"]], "only a tool a key unlocks names one");
+  assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
+  assert.deepEqual(await refused(), [409, "agent_not_runnable", { browser: Object.keys(values) }]);
+
+  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
+  assert.deepEqual(await browser(), { name: "browser", nodes: true, calls: false, available: true, harnesses: ["pi"], key: "browserbase" }, "no restart");
+  const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"]);
+  const [seen] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(seen, { op: "env", BROWSERBASE_API_KEY: "set", BROWSERBASE_PROJECT_ID: "set" }, "the run's process got both, saved");
+
+  assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
+  assert.deepEqual(await browser(), unset, "deleted, missing again");
+  assert.deepEqual(await refused(), [409, "agent_not_runnable", { browser: Object.keys(values) }]);
 });
 
 test("the page's owner saves and forgets a key with the session cookie from the page's own origin; from another origin the cookie is no credential", async (t) => {
@@ -227,10 +342,12 @@ test("the page's owner saves and forgets a key with the session cookie from the 
 async function launched(t, data, config, token) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !KEYS.includes(name)));
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--faux", FAUX], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...env, XDG_CONFIG_HOME: config, AGENTRUN_TOKEN: token } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Signalled only while it lives: once it has exited, its group id may be another process's (PIDs wrap in minutes).
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", (code) => ((alive = false), resolve(code))));
   const stop = async () => {
     try {
-      process.kill(-child.pid, "SIGTERM");
+      if (alive) process.kill(-child.pid, "SIGTERM");
     } catch {}
     await exited;
   };
@@ -238,10 +355,7 @@ async function launched(t, data, config, token) {
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_BASE_URL=(\S+)/.test(out); i++) {
-    assert.ok(i < 300, `the server started: ${out}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
   return { api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], token), stop: async () => (await stop(), out) };
 }
 
@@ -287,4 +401,68 @@ test("under its launcher the seal key is made once, outside the data directory, 
   assert.throws(() => holdsNone(`x${Buffer.from(values.BROWSERBASE_PROJECT_ID).toString("hex")}x`, forms, "a hex value"));
   for (const file of files) holdsNone(readFileSync(file), forms, file);
   holdsNone(said.join("\n"), forms, "the server's log and answers");
+});
+
+test("a key a harness reads, saved later, makes the harness available with no restart: the server's reading probes the harnesses' offers with it", async (t) => {
+  if (secret("ANTHROPIC_API_KEY")) return t.skip("this process holds an Anthropic key of its own");
+  let saved;
+  const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
+  const base = { PATH: process.env.PATH, HOME: process.env.HOME };
+  const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
+  assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
+  saved = ["not-a-secret", "anthropic"].join("-");
+  // How many fit at once is this host's memory (admission.test.mjs).
+  const { max_concurrent_runs, ...offer } = await claude();
+  assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5-5", run_memory_mib: 288 }, "saved: offered, on the key's default model");
+  saved = undefined;
+  assert.equal((await claude()).available, false, "deleted: not offered");
+});
+
+test("TypeSafe's key unlocks Jev's decisions: saved, the jev provider is available with no restart and the key reads as stored; deleted, it is missing again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, [...KEYS, "OPENROUTER_API_KEY"]);
+  const { api } = await serve(t);
+  const jev = async () => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((provider) => provider.id === "jev").available;
+  const row = async () => (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "typesafe");
+  assert.deepEqual(await row(), { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }], check: null });
+  assert.equal(await jev(), false);
+  assert.equal((await api("PUT", "/settings/tool-keys/typesafe", { values: { TYPESAFE_API_KEY: made() } })).status, 204);
+  assert.deepEqual([await jev(), (await row()).fields], [true, [{ name: "TYPESAFE_API_KEY", ...STORED }]], "no restart");
+  assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
+  assert.equal(await jev(), false);
+  await meetsDocument(api, (await api("GET", "/settings/tool-keys")).body);
+});
+
+test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing the harnesses again, and capabilities read right after show each change", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
+  const lines = [];
+  const { api } = await serve(t, { log: (line) => void lines.push(line) });
+  const caps = async () => (await api("GET", "/capabilities")).body;
+  const tool = async (name) => (await caps()).tools.find((entry) => entry.name === name);
+  const parallel = async () => (await caps()).workflows.decisions.providers.find((provider) => provider.id === "parallel").available;
+  const harnesses = (await caps()).harnesses;
+
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "off" } })).status, 200);
+  const off = await tool("web_search");
+  assert.deepEqual([off.available, [...new Set(Object.values(off.resolves))]], [false, ["unavailable: web_search is turned off in settings"]], "off at once");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);
+  assert.deepEqual([(await tool("web_search")).available, (await tool("web_search")).missing, await parallel()], [false, ["PARALLEL_API_KEY"], false], "Parallel picked, no key");
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: made() } })).status, 204);
+  const picked = await tool("web_search");
+  assert.deepEqual([picked.available, picked.missing, [...new Set(Object.values(picked.resolves))], await parallel()], [true, undefined, ["parallel"], true], "the key saved: Parallel resolves, and its decisions run, at once");
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
+  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [true, undefined], "monid at once");
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [false, ["MONID_API_KEY"]], "deleted: missing at once");
+  assert.equal((await api("DELETE", "/settings/tool-keys/parallel")).status, 204);
+  assert.deepEqual([(await tool("web_search")).missing, await parallel()], [["PARALLEL_API_KEY"], false], "deleted: Parallel missing at once");
+  assert.deepEqual((await caps()).harnesses, harnesses, "no tool key and no tool setting changes what the harnesses offer");
+
+  // Probes counted, not timed: the server logs each probe of the harnesses (event=harness_offers), and it made one, at its
+  // start, around the six writes it logged; none of them probed again.
+  const events = lines.flatMap((line) => {
+    const probe = / event=harness_offers why=(\S+)/.exec(line);
+    const write = / event=request method=(PUT|DELETE) path=(\/v2\/settings\/tool\S*)/.exec(line);
+    return probe ? [`probe:${probe[1]}`] : write ? [`${write[1]} ${write[2]}`] : [];
+  });
+  assert.deepEqual(events, ["probe:start", "PUT /v2/settings/tools", "PUT /v2/settings/tools", "PUT /v2/settings/tool-keys/parallel", "PUT /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/parallel"]);
 });

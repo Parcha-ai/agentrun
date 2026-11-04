@@ -3,19 +3,19 @@
 // A session is the copied Codex harness (harness.ts) driven over the session's own records (the kernel's openDrive on
 // the writer the runner lends, `io.writer`), on a local machine (host/machine.ts): Codex's app-server with its built-in tools off, its
 // model behind the session's loopback proxy (@parcha/agentrun-kernel/host), and the host's tools, exactly those `spec.tools` names,
-// as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
-// `afterRequest`.
+// as its only tools (beside the provider's own web search, when `webSearch` turns it on). Every paid request passes the
+// runner's `beforeRequest` first, and its usage comes back through `afterRequest`.
 //
 // The host's skills (`skills`) are the only skills Codex lists to the model: written into the session's CODEX_HOME at the
 // start of every drive, where Codex finds a user's skills even in a turn with no environment, and Codex's own bundled
 // skills turned off. With no shell, the model reads a skill's files with `read_skill_file`.
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
+import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
@@ -27,12 +27,24 @@ import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/ho
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * Codex's `tool_output_token_limit`: the host's result bound (HOST_RESULT_MAX_CHARS), as Codex counts it. Codex keeps a
+ * tool's output in the model's history within its truncation policy (10,000 tokens for each model its catalog holds, less
+ * for one it does not) and cuts the middle of a longer one; this sets the policy. Codex counts a token as four bytes of
+ * UTF-8, and a character (a UTF-16 unit) takes at most three, so a result within the bound in any script takes at most
+ * three quarters of a token a character: not a quarter, which holds for ASCII alone.
+ */
+export const CODEX_TOOL_OUTPUT_TOKENS = Math.ceil((HOST_RESULT_MAX_CHARS * 3) / 4);
+
 export interface CodexProvider {
   /** The provider's origin (`https://api.openai.com`): the proxy forwards to its `/v1/responses` only. */
   origin: string;
   /** The provider key, read per request in this process. It never reaches Codex's process. */
   credential: () => Promise<string> | string;
 }
+
+/** Codex's own web search, as a session may turn it on: `live` (it searches the web as it runs). */
+export type CodexWebSearch = "live";
 
 export interface CodexAdapterOptions {
   /** The provider's model id, or one per tier (`default` when a node names none). */
@@ -43,6 +55,10 @@ export interface CodexAdapterOptions {
   confine?: ConfineChild;
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
+  /** Codex's own web search, on the provider (OpenAI's hosted `web_search` tool): `"live"` sets `web_search = "live"` in
+   *  Codex's config, the model proxy admits exactly the tool Codex then sends, and each search a response ran is added to
+   *  its price at the model's per-call price (unknown for a model with no known search price). Default off. */
+  webSearch?: CodexWebSearch;
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
   /** The model's context window. Default 272 000. */
@@ -85,10 +101,10 @@ function kernelTool(tool: HostTool): KernelTool {
 
 /** The adapter's event for a harness live event, if it has one. */
 function adapterEvent(event: unknown): AdapterEvent | undefined {
-  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown };
+  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
   if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
-  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true };
+  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
   return undefined;
 }
 
@@ -104,6 +120,7 @@ function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
 }
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
+  if (options.webSearch !== undefined && options.webSearch !== "live") throw new TypeError("agentrun-harness-codex: webSearch is \"live\" or absent");
   // The skills first: a skill Codex would skip or list under another name is the host's to fix, binary or not.
   const skills = options.skills ?? [];
   const skillsWrong = skillProblems(skills);
@@ -165,7 +182,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         // Codex's `<permissions instructions>` message is off too. It describes Codex's own sandbox ("`sandbox_mode` is
         // `read-only`: The sandbox only permits reading files"), which binds only Codex's built-in tools, and those are off
         // here. The host's tools write, and a model that believed the message refused to write at all (autoqa F13).
-        config: { skills: { bundled: { enabled: false } }, include_permissions_instructions: false },
+        // A host tool's result within the host's bound reaches the model whole (CODEX_TOOL_OUTPUT_TOKENS).
+        config: { skills: { bundled: { enabled: false } }, include_permissions_instructions: false, tool_output_token_limit: CODEX_TOOL_OUTPUT_TOKENS },
         model: modelFor(spec),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(effort ? { effort } : {}),
@@ -182,6 +200,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(io.cwd ? { cwd: io.cwd } : {}),
             ...(options.confine ? { confine: options.confine } : {}),
             ...(seed ? { seed } : {}),
+            ...(options.webSearch ? { webSearch: options.webSearch } : {}),
             proxy: {
               hooks: io.models,
               tools: tools.map((t) => t.name),
@@ -205,7 +224,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const open = () => openDrive({ writer, signal: io.signal, live });
       let drive = await open();
       const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+      // A turn is open while the session holds input no turn placed, or a turn with no end (its recovery note).
+      const holdsTurn = (folded: typeof initial) => Boolean(recoveryNote(folded)) || pendingSubmissions(folded).length > 0;
+      let state: AdapterSession["state"] = holdsTurn(initial)
         ? "open_turn"
         : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
 
@@ -226,6 +247,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             outcome = current.signal.aborted
               ? abortedOutcome(current.signal, io.signal)
               : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
+            // A stop that landed before this turn ran (while send() was still recording its prompt) found no turn to stop,
+            // and reads the session as it was: the turn is open now, its prompt pending, so it reads open_turn.
+            if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
           io.onEvent({ type: "turn_end", status: outcome.status });
           return outcome;
@@ -252,6 +276,14 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to settle");
+          await ready();
+          // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
+          // and the next turn carries no recovery of this one. Nothing is sent.
+          await settleTurn(drive);
+          state = "idle";
+        },
         async turnEnd() {
           if (!running) throw new Error("agentrun-harness-codex: no turn is in flight");
           return running;
@@ -259,6 +291,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         async interrupt() {
           drive.halt?.(new SessionHalt("interrupted"));
           await running?.catch(() => {});
+          // The turn it stopped is still open in the session (an interrupt writes no end, and a prompt it stopped before
+          // the harness placed it is still pending): open_turn, so a host that is done with it settles it here.
+          if (holdsTurn(drive.state())) state = "open_turn";
         },
         async close() {
           if (closed) return;
