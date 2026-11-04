@@ -420,6 +420,8 @@ test("a server stopped while setup still lists a home's session files exits at o
   // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
   let alive = true;
   const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
+  // stderr is whole only at "close" (after "exit", once its stdio has drained).
+  const closed = new Promise((resolve) => child.once("close", resolve));
   t.after(async () => {
     if (alive) process.kill(-child.pid, "SIGKILL");
     await exited;
@@ -440,6 +442,7 @@ test("a server stopped while setup still lists a home's session files exits at o
   // Unreferenced: the bound holds no exited test's process open.
   const outcome = await Promise.race([exited.then(() => "exited"), sleep(5_000, "still running", { ref: false })]);
   assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM, the count still listing`);
+  await closed;
   assert.doesNotMatch(err, /the count of this machine's sessions failed/, "an ended count is no failed one");
 });
 
