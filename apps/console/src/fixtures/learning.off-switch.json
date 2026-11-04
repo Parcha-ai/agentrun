@@ -1,0 +1,62 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/agents/release-notes/definition",
+    "headers": {
+      "if-match": "\"80fda6cf098fe70b03966953933ecf8bc9605ac071d992d222af30cbdc3e0db0\""
+    },
+    "body": {
+      "definition": {
+        "id": "release-notes",
+        "version": 2,
+        "name": "Release notes writer",
+        "description": "Turns merged pull requests into release notes.",
+        "instructions": "Write release notes from the pull requests given.",
+        "harness": "pi",
+        "skills": [],
+        "tools": [
+          "read"
+        ],
+        "learning": true
+      },
+      "note": "Learning on"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"d591fbb5ce4250ebfab607fcd8dee8c332a1e0bc592a405b3739316856f507d7\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "release-notes",
+    "definition": {
+      "id": "release-notes",
+      "version": 2,
+      "name": "Release notes writer",
+      "description": "Turns merged pull requests into release notes.",
+      "instructions": "Write release notes from the pull requests given.",
+      "learning": true,
+      "harness": "pi",
+      "skills": [],
+      "tools": [
+        "read"
+      ]
+    },
+    "kind": "agentic",
+    "revision": "d591fbb5ce4250ebfab607fcd8dee8c332a1e0bc592a405b3739316856f507d7",
+    "revisions": 2,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 0,
+      "live": 0
+    },
+    "region": "local",
+    "home_etag": "\"d591fbb5ce4250ebfab607fcd8dee8c332a1e0bc592a405b3739316856f507d7\"",
+    "archived_at": null,
+    "created_at": "2026-11-03T18:50:13.096Z",
+    "updated_at": "2026-11-03T18:51:07.043Z",
+    "warnings": []
+  }
+}

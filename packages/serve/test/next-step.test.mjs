@@ -118,6 +118,10 @@ test("a box this server does not enable names the setting that enables it: in ca
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
   assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.");
   assert.deepEqual(tools.filter((tool) => tool.reason?.startsWith("no box")).map((tool) => tool.name), ["bash"], "only a sandbox-only tool is unavailable for want of a box");
+  // The web tools keep how they resolve, and why, on a server with no box.
+  const web = tools.filter((tool) => tool.resolves);
+  assert.deepEqual(web.map((tool) => [tool.name, tool.available, Object.keys(tool.why ?? {}).sort()]), [["web_fetch", true, ["claude-agent", "codex", "pi"]], ["web_search", true, ["claude-agent", "codex", "pi"]]], JSON.stringify(web));
+  assert.ok(web.every((tool) => Object.values(tool.why).every((why) => typeof why === "string" && why.length > 0)), "each harness's why is words");
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
