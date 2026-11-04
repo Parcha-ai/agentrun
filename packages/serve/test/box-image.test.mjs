@@ -474,8 +474,15 @@ async function goneWriter() {
   return writer;
 }
 
-/** `promise`, or a rejection saying it still waited after `ms`. */
-const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`still waiting after ${ms} ms: ${what}`)), ms))]);
+/** `promise`, or a rejection saying it still waited after `ms`; its timer cleared either way. */
+async function within(promise, ms, what) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`still waiting after ${ms} ms: ${what}`)), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 test("a build or pull that fails is tried once more, docker preparing meanwhile with the failure in words: ready when the second try works; unavailable with the reason when it fails too; not tried again when the time ran out", async (t) => {
   const docker = await fakeDocker(t, { "build-fail-once": OFFLINE });
@@ -503,6 +510,26 @@ test("a build or pull that fails is tried once more, docker preparing meanwhile 
   assert.equal(docker.builds().length, 5);
 });
 
+test("a retry's record that cannot be written leaves none, so no run trusts the first try's deadline, and says so", async (t) => {
+  const docker = await fakeDocker(t, { "build-hold": "", "build-fail-once": OFFLINE });
+  const data = await scratch(t);
+  const warned = [];
+  const image = await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { retryAfterMs: 2_000, warn: (message) => void warned.push(message) });
+  assert.equal(recordOf(data).state, "preparing");
+  // The record is written whole or not at all, through a file beside it: with a directory there, the next write fails.
+  const partial = join(data, `${IMAGE_STATE_FILE}.partial`);
+  await mkdir(partial);
+  await docker.release();
+  // The first try fails; the record of the retry cannot be written, so the first try's is removed, before the retry.
+  await until(() => !existsSync(join(data, IMAGE_STATE_FILE)), "the record removed");
+  assert.equal(docker.builds().length, 1, "before the retry");
+  assert.equal(warned.length, 1, JSON.stringify(warned));
+  assert.match(warned[0], /^the record of the box image's state could not be written \(EISDIR\), so it was removed: runs make their boxes without waiting on it$/);
+  await rm(partial, { recursive: true });
+  assert.deepEqual(await image.settled, { state: "ready" }, "the retry goes on");
+  assert.deepEqual(recordOf(data), { image: DEFAULT_DOCKER_IMAGE, state: "ready" });
+});
+
 test("a record whose server is gone is no wait: a run's first box fails at once, in words that say to restart the server, never waits out the record's deadline", { skip: process.platform !== "linux" && "tells a gone writer by /proc, which only Linux has" }, async (t) => {
   const data = await scratch(t);
   const notes = [];
@@ -514,8 +541,9 @@ test("a record whose server is gone is no wait: a run's first box fails at once,
     new RegExp(`its image ${DEFAULT_DOCKER_IMAGE} is not ready: the server stopped while building it: restart the server to build it again$`),
   );
   assert.deepEqual(notes, [], "no row: there is nothing to wait for");
-  // The same record from a server that runs (this process) is still waited on.
-  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, rg)", until: Date.now() + 10 * 60_000, row: BUILDING, writer: { pid: process.pid, startTime: startTimeOf(process.pid) } });
+  // The same record from a server that runs (this process) is still waited on, even past its deadline: a named writer
+  // decides, not the clock.
+  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, rg)", until: Date.now() - STALE_AFTER_MS - 1, row: BUILDING, writer: { pid: process.pid, startTime: startTimeOf(process.pid) } });
   let done = false;
   const waiting = awaitImage(data, DEFAULT_DOCKER_IMAGE, BACKGROUND_CONTEXT, (summary) => void notes.push(summary)).finally(() => (done = true));
   await until(() => notes.length === 1, "the row");
@@ -541,15 +569,16 @@ test("demo, a server killed mid-build: the run it left fails its call at once, i
   const first = client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim());
   const runId = await boxedRun(first, [{ tool: "bash", args: { command: "printf boxed > out.txt" } }]);
   await until(async () => (await rowsOf(first, runId)).some((row) => row.summary === BUILDING), "the preparing row");
-  child.kill("SIGKILL");
-  await new Promise((resolve) => child.once("exit", resolve));
-  // The run's process, left behind, holds its store to itself; that the call ended shows as a write to it. It ends
-  // with the server gone, before any server is back.
+  // The run's process, left behind, holds its store to itself; that the call ended shows as a write to it after the
+  // kill (the run waits until then, so nothing writes between the mark and the kill). It ends with the server gone,
+  // before any server is back: the next is started only once the run has had time to read the record again.
   const store = join(data, "runs", runId, "store");
   const touched = () => Math.max(...readdirSync(store).map((name) => statSync(join(store, name)).mtimeMs));
-  const killed = touched();
+  const before = touched();
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
   const at = Date.now();
-  await within(until(() => touched() > killed && Date.now() - at > 1_000, "a write to the run's store", 60_000), 20_000, "the run's call, with its server gone");
+  await within(until(() => touched() > before && Date.now() - at > 2_000, "a write to the run's store", 60_000), 20_000, "the run's call, with its server gone");
   // The next server on the same data directory takes the run up; its call said, in words, what to do.
   const next = await serve(t, { data, faux: PROBE });
   await follow(next.api, runId, ["completed"], { deadlineMs: 60_000 });

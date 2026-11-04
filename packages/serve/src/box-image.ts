@@ -213,25 +213,26 @@ export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: s
     ? buildContext(env, image, timeoutMs, controller.signal).catch((error: Error) => ({ code: (error as NodeJS.ErrnoException).code ?? error.name, stdout: "", stderr: "" }))
     : docker(env, ["pull", "--quiet", image], timeoutMs, { signal: controller.signal });
   const failure = (answer: Answer) => (built ? buildFailure(answer, timeoutMs) : pullFailure(image, answer, timeoutMs));
+  // A record that cannot be written once the build or pull is under way leaves none: a run then makes its box as it
+  // would with none, never trusting a `preparing` (and its deadline) the record said before.
+  const saveOrClear = (value: ImageRecord) => record(data, value).catch(async (error: NodeJS.ErrnoException) => {
+    await clearImage(data).catch(() => undefined);
+    options.warn?.(`the record of the box image's state could not be written (${error.code ?? error.name}), so it was removed: runs make their boxes without waiting on it`);
+  });
   const settled = attempt().then(async (first) => {
     let answer = first;
     // One try more, after a pause, for a failure that may pass (the network, the registry); not for one that already
     // took the whole bound.
     if (answer.code !== 0 && answer.code !== "timeout" && !controller.signal.aborted) {
       state = { state: "preparing", reason: `trying once more: ${failure(answer).cause}` };
-      await write({ until: Date.now() + retryAfterMs + timeoutMs, row });
+      await saveOrClear({ image, state: state.state, reason: state.reason, until: Date.now() + retryAfterMs + timeoutMs, row });
       options.onChange?.(state, Date.now() - started);
       await sleep(retryAfterMs, controller.signal).catch(() => undefined);
       if (!controller.signal.aborted) answer = await attempt();
     }
     if (controller.signal.aborted) return state;
     state = answer.code === 0 ? { state: "ready" } : { state: "unavailable", reason: reasonOf(failure(answer)) };
-    // A final state that cannot be written leaves no record: a run then makes its box as it would with none, never
-    // waiting on the `preparing` the record last said.
-    await record(data, { image, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }).catch(async (error: NodeJS.ErrnoException) => {
-      await clearImage(data).catch(() => undefined);
-      options.warn?.(`the record of the box image's state could not be written (${error.code ?? error.name}), so it was removed: runs make their boxes without waiting on it`);
-    });
+    await saveOrClear({ image, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) });
     options.onChange?.(state, Date.now() - started);
     return state;
   });
@@ -284,7 +285,9 @@ export async function awaitImage(data: string, image: string, context: Context, 
     if (!at || at.image !== image || at.state === "ready") return;
     if (at.state === "unavailable") throw new Error(`its image ${image} is not ready: ${at.reason ?? "the server could not make it ready"}`);
     if (typeof at.until !== "number") return;
-    if ((at.writer && writerGone(at.writer)) || Date.now() > at.until + STALE_AFTER_MS) {
+    // Its writer named, that decides: a server that runs is still making the image. Only where it cannot be told does
+    // the deadline.
+    if (at.writer ? writerGone(at.writer) : Date.now() > at.until + STALE_AFTER_MS) {
       const making = image === DEFAULT_DOCKER_IMAGE ? ["building", "build"] : ["pulling", "pull"];
       throw new Error(`its image ${image} is not ready: the server stopped while ${making[0]} it: restart the server to ${making[1]} it again`);
     }
