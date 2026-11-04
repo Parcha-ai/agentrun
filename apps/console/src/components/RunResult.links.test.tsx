@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const f = runFixture("run.with-files");
 const file = (path: string, content_type: string | null = "text/markdown; charset=utf-8"): RunFile => ({ path, size_bytes: 12, modified_at: "2026-11-04T12:00:00.000Z", content_type });
-const files = [file("hello.md"), file("notes/plan.md")];
+const files = [file("hello.md"), file("notes/plan.md"), file("notes#1/plan.md"), file("notes#1/other.md")];
 const answer = "I wrote [hello.md](hello.md). See also [x](other/missing.md), [top](#top) and [site](https://example.com).";
 
 async function open(final_answer: string, readFile = vi.fn(async (r: RunFile) => `# ${r.path}\n\nSee [hello.md](../hello.md).`)) {
@@ -92,6 +92,29 @@ describe("a link in a run's answer", () => {
     await page.click(inside!);
     expect(page.readFile).toHaveBeenLastCalledWith(files[0]);
     expect(page.host.querySelector("dialog")?.getAttribute("aria-label")).toBe("hello.md");
+  });
+});
+
+describe("a link no URL parser takes", () => {
+  it("reads as its text, and the answer still renders, with the run's files given", async () => {
+    const page = await open('Before <a href="\\\\[">broken</a> after, and [hello.md](hello.md).');
+    expect(page.report().textContent).toContain("Before broken after");
+    expect(page.report().querySelector("a")).toBeNull();
+    expect(page.named("hello.md")?.tagName).toBe("BUTTON");
+  });
+});
+
+describe("a folder name a URL would read as syntax", () => {
+  it("a Markdown file in notes#1/ opens its sibling other.md as notes#1/other.md", async () => {
+    const readFile = vi.fn(async (r: RunFile) => (r.path === "notes#1/plan.md" ? "See [other](other.md)." : `# ${r.path}`));
+    const page = await open("Read [the plan](notes%231/plan.md).", readFile);
+    await page.click(page.named("the plan")!);
+    expect(readFile).toHaveBeenLastCalledWith(files[2]);
+    const inside = [...(page.host.querySelector("dialog") as HTMLElement).querySelectorAll("article button")].find((e) => e.textContent === "other");
+    expect(inside, "the sibling is a run file's button").toBeTruthy();
+    await page.click(inside!);
+    expect(readFile).toHaveBeenLastCalledWith(files[3]);
+    expect(page.host.querySelector("dialog")?.getAttribute("aria-label")).toBe("notes#1/other.md");
   });
 });
 
