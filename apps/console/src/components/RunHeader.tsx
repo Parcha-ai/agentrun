@@ -1,5 +1,6 @@
 import { Archive, ArchiveRestore, ArrowLeft, Ban, Square } from "lucide-react";
 import { useState } from "react";
+import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -39,6 +40,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
             {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
               : <span className="font-mono" title={run.cost && run.cost.usd !== null && isEstimate(run.cost) ? "A local estimate, not a bill" : undefined}>{cost(run.cost)}{bounded(run.cost) && <span className="text-muted-foreground"> · {CUT_NOTE}</span>}</span>}
+            <LearningChips run={run} link />
           </div>
           {run.status === "completed" && run.review && <p className="mt-2 text-[13px] text-warning-text">Needs review: {run.review.reason}</p>}
         </div>

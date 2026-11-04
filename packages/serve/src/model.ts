@@ -196,6 +196,8 @@ export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThin
 export type FauxHelpers = {
   /** Aborted when the turn is stopped: a slow reply resolves with `message("", { stopReason: "aborted" })`. */
   signal?: AbortSignal;
+  /** The model the request names (`faux-1`, or the id a tier's variable names). */
+  model?: string;
   message: typeof import("@earendil-works/pi-ai").fauxAssistantMessage;
   text: typeof import("@earendil-works/pi-ai").fauxText;
   thinking: typeof import("@earendil-works/pi-ai").fauxThinking;
@@ -236,7 +238,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact.
     const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}) })) as [{ id: string }, ...{ id: string }[]] });
-    const step = (async (context: unknown, options?: { signal?: AbortSignal }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
+    const step = (async (context: unknown, options?: { signal?: AbortSignal }, _state?: unknown, model?: { id?: string }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}), ...(model?.id ? { model: model.id } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
     // `cost` (USD per million tokens) prices the faux model's usage, which the faux core leaves at $0, so a run's
     // estimate and its cap can be tested; "unknown" leaves its usage with no cost, as a provider that does not price it.

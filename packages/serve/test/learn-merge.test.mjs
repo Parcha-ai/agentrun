@@ -1,8 +1,9 @@
-// What an end-of-run turn adds is checked before anything is written to git, and merged as one host commit on main: new
-// notes added, the ones they supersede marked, MEMORY.md rebuilt by the host. A run edits nothing that was there, its
-// MEMORY.md is ignored, and a name another run took since is refused at the merge, as is a supersede of a note a person
-// changed after the grade read it. A link in the run's copy is never followed, and a secret the launcher holds never
-// reaches a git object.
+// What an end-of-run turn answers is checked before anything is written to git, and merged as one host commit on main:
+// new notes added, the ones they supersede marked, MEMORY.md rebuilt by the host. A run edits nothing that was there, a
+// MEMORY.md it gives is ignored, and a name another run took since is refused at the merge, as is a supersede of a note
+// a person changed after the grade read it (a note held for the OK supersedes nothing, so that is no supersede). Nothing
+// the run put in its copy of the folder is read, a link included, and a secret the launcher holds never reaches a git
+// object.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -10,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, reflectRows, repoOf, savedOf, settled, sleep, started, turnCopyOf } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -45,13 +46,13 @@ const MARKED = note("Refunds path", "Refunds live under /help/", "Refunds live u
 
 /** Agent `id` seeded, and its run that supersedes refunds.md (MOVED) started, its grade under way: main read and the
  *  grader asked, which answers only once `release` is called. */
-async function heldGrade(t, id) {
+async function heldGrade(t, id, rule = "") {
   const dir = await scratch(t);
   const calls = join(dir, "calls.jsonl");
   const gate = join(dir, "grade");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const server = await seeded(t, id, SEED);
-  await plans(server.api, id, [["refunds-v2.md", MOVED]], { instructions: `Answer the question.\nGrade once ${gate} exists.` });
+  await plans(server.api, id, [["refunds-v2.md", MOVED]], { instructions: `Answer the question.\nGrade once ${gate} exists.${rule ? `\n${rule}` : ""}` });
   const runId = await started(server.api, id);
   for (let i = 0; !(existsSync(calls) && readFileSync(calls, "utf8").includes('"grade"')); i++) {
     assert.ok(i < 1800, "the grader is asked");
@@ -75,7 +76,11 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   const runId = await started(api, "replacer");
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
-  assert.equal(git(repo, ["show", "main:refunds-v2.md"]), NEW.trimEnd());
+  // What it learned, and what that replaced, on its learning block and in the agent's list.
+  const learned = [{ file: "refunds-v2.md", name: "Refunds path", supersedes: ["refunds.md"] }];
+  assert.deepEqual(view.learning.learned, learned);
+  assert.deepEqual((await api("GET", "/agents/replacer/runs")).body.runs.find((run) => run.run_id === runId).learning.learned, learned);
+  assert.equal(git(repo, ["show", "main:refunds-v2.md"]), onMain(NEW).trimEnd());
   assert.equal(git(repo, ["show", "main:refunds.md"]), note("Refunds path", "Refunds live under /help/", "Refunds live under /help/.\n", "status: superseded\nsuperseded_by: refunds-v2.md\n").trimEnd());
   assert.equal(`${git(repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds-v2.md) — Refunds live under /policies/refunds\n");
   assert.deepEqual(git(repo, ["diff-tree", "-r", "--name-status", "--no-commit-id", "main"]).split("\n"), ["M\tMEMORY.md", "A\trefunds-v2.md", "M\trefunds.md"], "one commit: the note added, the old one marked, the index rebuilt");
@@ -83,8 +88,8 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   await plans(api, "replacer", undefined);
   const next = await started(api, "replacer");
   await ended(api, next);
-  assert.deepEqual(existsSync(join(turnCopyOf(data, next), "refunds.md")), false);
-  assert.ok(existsSync(join(turnCopyOf(data, next), "refunds-v2.md")));
+  assert.deepEqual(existsSync(join(copyOf(data, next), "refunds.md")), false);
+  assert.ok(existsSync(join(copyOf(data, next), "refunds-v2.md")));
 });
 
 test("a note a person corrects while a grade that supersedes it is under way is never superseded on that grade: the person's text stays active and in the index, and the run's learning is dropped as checker, naming the note", { timeout: 150_000 }, async (t) => {
@@ -95,6 +100,7 @@ test("a note a person corrects while a grade that supersedes it is under way is 
   held.release();
   const { view, rows } = await ended(held.api, held.runId);
   settled(view, rows, "dropped", "checker");
+  assert.equal(view.learning.detail, "Not kept: a note it would replace is gone or was changed since.", "said as a person reads it");
   const problems = [{ rule: "supersedes", path: "refunds-v2.md", detail: "refunds.md changed after the grade read it" }];
   assert.deepEqual((await savedOf(held.data, held.runId)).learning.problems, problems);
   assert.deepEqual((await held.api("GET", `/runs/${held.runId}/learning`)).body.problems, problems);
@@ -102,6 +108,20 @@ test("a note a person corrects while a grade that supersedes it is under way is 
   assert.equal(git(held.repo, ["show", "main:refunds.md"]), CORRECTED.trimEnd());
   assert.equal(`${git(held.repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds.md) — Refunds live under /help/refunds\n");
   assert.deepEqual(mergesOf(held.repo, held.runId), []);
+});
+
+test("a replacement held for the owner's OK supersedes nothing, so a person's edit of the note it names, made while it was graded, stands and the replacement merges to wait", { timeout: 150_000 }, async (t) => {
+  const held = await heldGrade(t, "waiting", "Grade: pending refunds-v2.md.");
+  const CORRECTED = note("Refunds path", "Refunds live under /help/refunds", "A person corrected the path.\n");
+  await personEdits(held, "waiting", "refunds.md", CORRECTED);
+  held.release();
+  const { view, rows } = await ended(held.api, held.runId);
+  settled(view, rows, "merged");
+  assert.deepEqual(view.learning.pending, [{ file: "refunds-v2.md", name: "Refunds path" }]);
+  assert.equal(git(held.repo, ["show", "main:refunds.md"]), CORRECTED.trimEnd(), "the person's text stands, active and unmarked");
+  assert.match(git(held.repo, ["show", "main:refunds-v2.md"]), /\nstatus: pending\n---\n/);
+  assert.equal(`${git(held.repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds.md) — Refunds live under /help/refunds\n");
+  assert.equal(mergesOf(held.repo, held.runId).length, 1);
 });
 
 test("a grade that supersedes a note merges as before when a person changed another note meanwhile: main moved, the note it read did not", { timeout: 150_000 }, async (t) => {
@@ -140,7 +160,7 @@ test("two runs at once that add different notes both merge, and the index has bo
   const states = ends.map(({ view }) => `${view.learning.state}/${view.learning.reason}`).sort();
   assert.deepEqual(states, ["dropped/checker", "merged/null"]);
   const lost = ends.find(({ view }) => view.learning.state === "dropped");
-  assert.match(lost.view.learning.detail, /exists/);
+  assert.equal(lost.view.learning.detail, "Not kept: the agent's notes changed while this run ran (a note under a name already taken).");
   assert.deepEqual((await savedOf(data, lost.view.run_id)).learning.problems, [{ rule: "exists", path: "gamma.md", detail: "the folder has a note by this name" }]);
   assert.equal(mergesOf(repo, lost.view.run_id).length, 0);
 });
@@ -212,11 +232,11 @@ test("a turn that adds nothing is dropped as empty, and the run's answer stands"
   const { view, rows } = await ended(api, runId);
   assert.equal(view.result.final_answer, "Job answer.");
   settled(view, rows, "dropped", "empty");
-  assert.equal(view.learning.detail, "The end-of-run turn added no note.");
+  assert.equal(view.learning.detail, "Nothing new to remember from this run.");
   assert.equal(git(repoOf(data, "idle"), ["rev-list", "--count", "main"]), "1");
 });
 
-test("a link in the run's copy, to a file or a folder, is refused and never followed: its target's text is nowhere", { timeout: 120_000 }, async (t) => {
+test("nothing the run put in its copy of the folder is read: links planted there, to a file or a folder, and a note written there, while the turn holds; only the turn's answer merges, and the links' target's text is nowhere", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const outside = await scratch(t);
   const secret = ["outside", process.pid, Date.now().toString(36)].join("-");
@@ -226,21 +246,21 @@ test("a link in the run's copy, to a file or a folder, is refused and never foll
   const go = join(outside, "go");
   await made(api, learner("linker", { instructions: `Reflect once ${go} exists.`, plan: [["fine.md", note("Fine", "A rule beside the links")]] }));
   const runId = await started(api, "linker");
-  // Planted while the turn holds, once it was asked (its copy laid), as an agent with a shell would.
+  // Planted while the turn holds, once it was asked, as an agent with a shell would.
   for (let i = 0; !reflectRows((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).some((row) => row.kind === "user_message"); i++) {
     assert.ok(i < 600, "the turn is asked");
     await sleep(50);
   }
   symlinkSync(join(outside, "note.md"), join(copyOf(data, runId), "leak.md"));
   symlinkSync(join(outside, "folder"), join(copyOf(data, runId), "folder.md"));
+  writeFileSync(join(copyOf(data, runId), "written.md"), note("Written", "A note the run wrote in its copy"));
   writeFileSync(go, "");
   const { view, rows } = await ended(api, runId);
-  settled(view, rows, "dropped", "checker");
-  const { learning } = await savedOf(data, runId);
-  assert.deepEqual(learning.problems.map(({ rule, path, detail }) => [rule, path, detail]).sort(), [["file_mode", "folder.md", "a link: never followed"], ["file_mode", "leak.md", "a link: never followed"]]);
+  settled(view, rows, "merged");
   const repo = repoOf(data, "linker");
+  assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "fine.md"], "the answer's note alone");
   assert.ok(!objects(repo).includes(secret), "no git object holds the target's text");
-  assert.ok(!JSON.stringify([view, rows, learning]).includes(secret));
+  assert.ok(!JSON.stringify([view, rows, await savedOf(data, runId)]).includes(secret));
 });
 
 /** The server, started by its launcher with `env`: the launcher hands its secrets over and the server holds them, none

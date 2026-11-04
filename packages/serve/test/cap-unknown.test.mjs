@@ -58,6 +58,16 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
 });
 
+test("a Parallel request whose settle record could not be written: the cap, and a restarted process, count it at its held price, never $0; the run's shown cost and the tools meter read it as unknown", async (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const marked = { kind: TOOL_STARTED, data: { tool: "web_search", charged_by: "parallel", call: "c1", heldUsd: 0.001 } };
+  const open = [started, answer({ total: 0.002 }), marked];
+  assert.equal(round(spentIn(storeOf(t, open))), 0.003, "a restarted process reads the held $0.001 as spent");
+  assert.equal(capToolSpend(open), 0.001, "and so does another harness's, read at its open");
+  assert.equal(timelineOf(open, { settled: true }).at(-1).usage.usd, null, "the run's shown cost: unknown, never the hold or $0");
+  assert.deepEqual(metersIn(storeOf(t, open)), { tools: null, tokens: 0.002 }, "the tools meter: unknown");
+});
+
 test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
   const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
   const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });
@@ -531,7 +541,9 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   let run = await finished(api, runId);
   assert.deepEqual([run.status, run.error?.code ?? null, run.result.final_answer], ["completed", null, "On go on: done."], "the same process admits the next request");
   assert.equal(run.cost.usd, null, "the stopped request's cost shows unknown, never $0");
-  assert.deepEqual((await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage, { usd: null, requests: 2 }, "the stopped request is booked: counted, at an unknown cost");
+  const stoppedUsage = (await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage;
+  assert.deepEqual([stoppedUsage?.usd, stoppedUsage?.requests, stoppedUsage?.unpriced], [null, 2, 1], "the stopped request is booked: counted, at an unknown cost, the one charge with no price");
+  assert.ok(stoppedUsage.so_far_usd > 0 && stoppedUsage.so_far_usd === run.cost.so_far_usd, `the follow-up's known cost so far, as the run says: ${JSON.stringify([stoppedUsage, run.cost])}`);
   const spent = spentIn(storeFileOf(data, runId));
   assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the store says what the cap counts: the held worst case and the answer since, $${spent}`);
   // Completed, the run's process is gone: the next message opens a new one, which reads its spend from the store.

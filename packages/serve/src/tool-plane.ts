@@ -2,9 +2,11 @@
 // the web, and what each resolves to on a run. A capability resolves in one order: (1) the provider the user picked, the
 // agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) the native tool:
 // the harness's own (claude-agent's WebSearch), or on pi one request to the run's own model provider with its hosted
-// search (hosted-search.ts); (3) the kernel's keyless fallback: web_fetch's guarded direct fetch, and web_search on Exa's
-// public keyless MCP endpoint (exa-keyless.ts). Codex's own search on codex, keyless Exa behind a gateway or under a spend cap; `off` turns web_search off
-// unless Parallel is picked. web_search's default, `auto`, is that order; a pick of `native` is native only,
+// search (hosted-search.ts); (3) for web_search, Parallel where the server holds its key (env or saved, which then bills
+// it); (4) the kernel's keyless fallback: web_fetch's guarded direct fetch, and web_search on Exa's public keyless MCP
+// endpoint (exa-keyless.ts). On claude-agent `auto` skips (2): Claude's own search is an explicit pick, `native`. Codex's
+// own search on codex, Parallel or keyless Exa behind a gateway or under a spend cap;
+// `off` turns web_search off. web_search's default, `auto`, is that order; a pick of `native` is native only,
 // unavailable where there is none, never Exa. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
 // launch, from its pinned revision and the settings then, keeps them for the run's life (runs.ts), and hands the run's
@@ -16,6 +18,7 @@ import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import type { InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
+import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 
 /**
@@ -28,7 +31,8 @@ import { hostModel } from "./model.js";
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
- *  where there is one, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
+ *  where there is one (never on claude-agent, where Claude's own search is picked as `native`), else Parallel where the
+ *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
  *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
  *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
  *  agent naming it is refused until it is turned on again. */
@@ -64,8 +68,9 @@ export type ResolveInput = {
   /** The agent's pick, then the server's; neither, the capability's default. */
   override?: string;
   pick?: string;
-  /** The server holds PARALLEL_API_KEY. */
+  /** The server holds PARALLEL_API_KEY; `parallelKeyFrom`, where from: its own environment, or saved on Tool keys. */
   parallelKey: boolean;
+  parallelKeyFrom?: "server" | "saved";
   /** The run has a spend cap: Codex's own search sends a request with no input bound, which a cap cannot admit. */
   capped?: boolean;
 };
@@ -73,42 +78,74 @@ export type ResolveInput = {
 /** Why claude-agent has no native search under a spend cap, and what works there instead. */
 const CLAUDE_CAPPED = "claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet, so web_search works under a cap through the default provider, auto";
 
-/** What `capability` resolves to on a run of `input`. */
-export function resolveCapability(capability: Pickable, input: ResolveInput): Resolution {
-  const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
-  if (chosen === "off") return SEARCH_OFF;
-  if (chosen === "parallel") return input.parallelKey ? "parallel" : NO_PARALLEL_KEY;
-  if (capability === "web_fetch") return "kernel";
-  if (chosen === "exa-keyless") return "exa-keyless";
+/** Why a run of `input` has no native search, where it has none: `id`, as the unavailable text names it, and `why`, the
+ *  same in a sentence (capabilities' `why`). */
+function noNative(input: ResolveInput): { id: string; why: string } | undefined {
   // Native, where there is one. Claude's model goes to Anthropic's Messages API (or its own ANTHROPIC_BASE_URL), never
   // through the other harnesses' gateway; Codex's own search goes to OpenAI with its request, except behind a gateway
   // (no known hosted search) or under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
   // Anthropic's or OpenAI's. Under a spend cap Claude's own search is not offered either: each search has a per-use fee
-  // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). OpenCode has none: its
-  // model requests carry no provider-hosted tool (its proxy policy refuses one). Where there is none, `auto` falls back
-  // to keyless Exa and `native` is unavailable.
+  // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). Where there is none,
+  // `native` is unavailable, and `auto` goes to Parallel on the server's key (its fee booked and held by a cap, paid-calls.ts),
+  // else to keyless Exa.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
-  const none = input.harness === "claude-agent" ? (input.capped ? CLAUDE_CAPPED : undefined) : input.harness === "codex" ? (input.gateway ? "codex behind a gateway" : input.capped ? "codex under a spend cap" : undefined) : input.harness === "opencode" ? "opencode, whose model requests carry no provider-hosted tool" : input.gateway ? `${input.harness} behind a gateway` : vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor) ? undefined : input.model ?? "a model with none named";
-  if (none === undefined) return "native";
-  return chosen === "native" ? `unavailable: no native search for ${none}` : "exa-keyless";
+  if (input.harness === "claude-agent") return input.capped ? { id: CLAUDE_CAPPED, why: "under a spend cap Claude's own search is not offered, since a cap cannot reserve its per-use fees yet" } : undefined;
+  if (input.harness === "codex") return input.gateway ? { id: "codex behind a gateway", why: "behind a gateway Codex has no own search" } : input.capped ? { id: "codex under a spend cap", why: "under a spend cap Codex's own search is not offered, since its request has no input bound" } : undefined;
+  // OpenCode has none: its model requests carry no provider-hosted tool (its proxy policy refuses one).
+  if (input.harness === "opencode") return { id: "opencode, whose model requests carry no provider-hosted tool", why: "OpenCode's model requests carry no provider-hosted tool" };
+  if (input.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${input.harness} has no hosted search` };
+  if (vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor)) return undefined;
+  return input.model ? { id: input.model, why: `${input.model} has no hosted search here` } : { id: "a model with none named", why: "no model is named, so there is no hosted search" };
 }
 
-export const isUnavailable = (resolution: Resolution | undefined): resolution is `unavailable: ${string}` => resolution?.startsWith("unavailable: ") === true;
+/** The native search of a run that has one, in a sentence. */
+const nativeWhy = (input: ResolveInput): string =>
+  input.harness === "claude-agent" ? "Claude's own search" : input.harness === "codex" ? "Codex's own search" : `${input.model?.startsWith("openai/") ? "OpenAI" : "Anthropic"}'s hosted search, for ${input.model}`;
 
-/** The server's environment's part of every resolution: its gateway and Parallel's key. */
-const served = (env: NodeJS.ProcessEnv) => ({ gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey: PARALLEL_KEY_ENV in decisionKeysOf(env) });
+/** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
+ *  the two never disagree. */
+export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
+  const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
+  const picked = input.override !== undefined ? "picked for this agent" : "picked in settings";
+  const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
+  if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
+  if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: "Parallel is picked, and no PARALLEL_API_KEY is set or saved" };
+  if (capability === "web_fetch") return { resolves: "kernel", why: "the guarded direct fetch" };
+  if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
+  const none = noNative(input);
+  if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
+  // On claude-agent `auto` skips Claude's own search, an explicit pick (`native`): Parallel on the server's key, else
+  // keyless Exa.
+  if (input.harness === "claude-agent") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "exa-keyless", why: "Exa's free keyless search, no key; Claude's own search is an explicit pick" };
+  if (none === undefined) return { resolves: "native", why: nativeWhy(input) };
+  return input.parallelKey ? { resolves: "parallel", why: `${none.why}; ${key}` } : { resolves: "exa-keyless", why: `${none.why}; Exa's free keyless search, no key` };
+}
+
+/** What `capability` resolves to on a run of `input`. */
+export const resolveCapability = (capability: Pickable, input: ResolveInput): Resolution => explainCapability(capability, input).resolves;
+
+export const isUnavailable = (resolution: Resolution | undefined): resolution is `unavailable: ${string}` => resolution?.startsWith("unavailable: ") === true;
+/** Why a resolution is unavailable: its words after "unavailable: " (any other resolution as it is). */
+export const whyUnavailable = (resolution: string): string => resolution.replace(/^unavailable: /, "");
+
+/** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
+const served = (env: NodeJS.ProcessEnv) => {
+  const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
+  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}) };
+};
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
- *  (default each harness's host model, the one a run that names none runs on: hostModel): what capabilities and the
- *  tool catalog show. */
-export function resolvesView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}, model?: string): Record<Pickable, Record<HarnessId, Resolution>> {
+ *  (default each harness's host model, the one a run that names none runs on: hostModel): what it resolves to and why, as
+ *  capabilities and the tool catalog show them. */
+export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}, model?: string): Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }> {
   return Object.fromEntries(PICKABLE.map((name) => {
     const input = { ...served(env), ...picked(name, settings, overrides) };
-    return [name, Object.fromEntries(HARNESSES.map((harness) => {
+    const each = HARNESSES.map((harness) => {
       const on = model ?? hostModel(env, "default", harness);
-      return [harness, resolveCapability(name, { ...input, ...(on ? { model: on } : {}), harness })];
-    }))];
-  })) as Record<Pickable, Record<HarnessId, Resolution>>;
+      return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness })] as const;
+    });
+    return [name, { resolves: Object.fromEntries(each.map(([harness, said]) => [harness, said.resolves])), why: Object.fromEntries(each.map(([harness, said]) => [harness, said.why])) }];
+  })) as Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }>;
 }
 
 const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}) => ({

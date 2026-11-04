@@ -19,11 +19,12 @@ export interface ToolImage {
 }
 
 /**
- * The most characters a host tool's result may hold: its text as the model reads it (`text.length`). Each harness tells
- * its CLI to pass a result this long to the model whole: the Claude Agent CLI otherwise saves one past 50,000 characters
- * to a file and tells the model to read it (which a confined session cannot), and Codex cuts the middle of one past its
- * truncation policy. It is a ceiling over the tools' own caps, with room: a host keeps each of its tools' results under
- * it, and pages what is longer; serve's host-bounds test holds every one of its host tools to it. The Claude Agent CLI
+ * The most characters a host tool's result reaches a harness with: its text as the model reads it (`text.length`). The
+ * kernel's tool bridge, which every host tool's result passes on its way to a harness, cuts every result past it: its
+ * start, cut where a character ends, then a line saying where it was cut (`[cut at N of M characters]`), the call's end
+ * flagged `truncated`; the call's record keeps it whole. Each harness tells its CLI to pass a result this long to the
+ * model whole: the Claude Agent CLI otherwise saves one past 50,000 characters to a file and tells the model to read it
+ * (which a confined session cannot), and Codex cuts the middle of one past its truncation policy. The Claude Agent CLI
  * takes at most 500,000 here.
  */
 export const HOST_RESULT_MAX_CHARS = 120_000;
@@ -35,10 +36,10 @@ export interface HostTool {
   inputSchema: Record<string, unknown>;
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
-  /** The tool's answer: its text (at most HOST_RESULT_MAX_CHARS characters), and any images it shows (a screenshot),
-   *  which a harness that can show them sends the model with the text. `sessionDir` is the runner's own, when it has
-   *  one: a tool that runs a node of its own (the delegate) gives its child a private directory the same way, by the
-   *  child's key. */
+  /** The tool's answer: its text (cut at HOST_RESULT_MAX_CHARS on its way to the harness), and any images it shows (a
+   *  screenshot), which a harness that can show them sends the model with the text. `sessionDir` is the runner's own,
+   *  when it has one: a tool that runs a node of its own (the delegate) gives its child a private directory the same
+   *  way, by the child's key. */
   call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
 }
 
@@ -159,7 +160,7 @@ export interface SessionIO {
 export type AdapterEvent =
   | { type: "text"; delta: string }
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
-  | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string }
+  | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   | { type: "turn_end"; status: TurnStatus };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
@@ -178,12 +179,19 @@ export interface AdapterSession {
   send(text: string): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
+  /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
+   *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
+   *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
+   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn). */
+  settleOpenTurn(): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
    *  calls in flight run on until their outcomes are recorded, for at most `drainMs`, before the turn stops; the host
    *  refuses new calls and paid requests meanwhile (the runner's `stop` does). An adapter that cannot drain stops at
-   *  once, as with no `drainMs`. */
+   *  once, as with no `drainMs`. It only stops the turn: the turn stays open in the session's records, and an adapter
+   *  whose session can tell reads `open_turn` after it while it does, so a host that is done with the turn (a person's
+   *  stop) settles it with `settleOpenTurn()`, and one that is not (a pause) leaves it for the next process. */
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;

@@ -1,17 +1,20 @@
 // web_search: the web searched by the provider the run's plane resolves it to (tool-plane.ts). On pi, natively, one
-// request to the run's own model provider with its hosted search (hosted-search.ts); on claude-agent, natively, Claude's
-// own search, and on codex Codex's own, so this tool is not offered there; with no native search (codex behind a gateway or under a spend cap, a gateway,
-// another model provider), or where it is picked, Exa's keyless MCP endpoint (exa-keyless.ts); where Parallel is picked, Parallel's
+// request to the run's own model provider with its hosted search (hosted-search.ts); on claude-agent, where it is picked
+// (`native`), Claude's own search, and on codex Codex's own, so this tool is not offered there; with no native search
+// (claude-agent on auto, codex behind a gateway or under a spend cap, a gateway, another model provider), Parallel where the server holds its key, else Exa's keyless
+// MCP endpoint (exa-keyless.ts), which a pick of exa-keyless names alone; where Parallel resolves (so, or picked), Parallel's
 // Search API (POST https://api.parallel.ai/v1/search, https://docs.parallel.ai/api-reference/search/search) in its fast
 // mode, the one Parallel recommends for an agent's tool calls (about 700 ms, $0.001 a search). Every provider answers
 // one shape, `{provider, query, results: [{url, title, snippet, published?}], text?}` (`text`, the provider's short
 // answer with its sources), followed for the model by one line asking it to cite the URLs it relies on; or `{error}`:
 // no provider here, no key, a refused key, a status other than 2xx, nothing within 60 s. Nothing else is searched
-// instead. The query is cut at 200 characters, 1 to 25 results (10 by default), and a result's snippet (its excerpts
-// joined, links reduced to their text) is cut at 3,000 characters. An answer is held to SEARCH_MAX_CHARS, under the host's
-// result bound: past it, its least relevant results are left out, and `omitted` counts them.
+// instead. Keyless Exa past its free limit is tried once more, and then answers our words (exa-keyless.ts). The query is
+// cut at 200 characters, 1 to 25 results (10 by default), and a result's snippet (its excerpts joined, links reduced to
+// their text) is cut at 3,000 characters. An answer is held to SEARCH_MAX_CHARS, under the host's result bound: past it,
+// its least relevant results are left out, and `omitted` counts them.
 // Parallel is asked through the run's one client (web-fetch.ts), on the key the server handed the run's process: a 401
-// or 403 to either web tool stops both for the rest of the run. No request is retried.
+// or 403 to either web tool stops both for the rest of the run. No request is retried. Each is a paid request, held by
+// the run's cap and booked as the call's cost at Parallel's price (paid-calls.ts): one the cap refuses answers its words.
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -21,7 +24,8 @@ import { fauxFetch } from "./decisions.js";
 import { FAUX_ENV } from "./model.js";
 import { exaSearch, FAUX_EXA_ENV } from "./exa-keyless.js";
 import { hostedSearch } from "./hosted-search.js";
-import { planeOf } from "./tool-plane.js";
+import { PaidRefused } from "./paid-calls.js";
+import { planeOf, whyUnavailable } from "./tool-plane.js";
 import { type Extract, parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
 
 export const WEB_SEARCH_TOOL = "web_search";
@@ -100,6 +104,7 @@ export async function webSearch(args: Record<string, unknown>, parallel: Extract
     });
     return { provider: "parallel", query, results: hits.slice(0, n) };
   } catch (error) {
+    if (error instanceof PaidRefused) return { error: error.message };
     return { error: (error as Error)?.name === "TimeoutError" ? "Parallel's search did not answer within 60 s" : `Parallel's search failed: ${(error as Error)?.message ?? String(error)}` };
   }
 }
@@ -108,14 +113,16 @@ export async function webSearch(args: Record<string, unknown>, parallel: Extract
 export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unknown>, signal?: AbortSignal): Promise<Search> {
   const plane = planeOf(env);
   if (plane.web_search === "parallel") return webSearch(args, parallelOf(env), signal);
-  if (plane.web_search !== "native" && plane.web_search !== "exa-keyless") return { error: `web_search does not run here: ${plane.web_search?.replace(/^unavailable: /, "") ?? "no provider was resolved for it"}` };
+  if (plane.web_search !== "native" && plane.web_search !== "exa-keyless") return { error: `web_search does not run here: ${plane.web_search === undefined ? "no provider was resolved for it" : whyUnavailable(plane.web_search)}` };
   const { query, n } = searchArgs(args);
   if (!query) return { error: "web_search needs a query" };
   if (plane.web_search === "native") return hostedSearch(query, n, plane.model, signal);
   // Under --faux, Exa is the faux module's or none: a test never reaches the network.
   const faux = await fauxFetch(env, FAUX_EXA_ENV);
   if (env[FAUX_ENV] && !faux) return { error: "web_search: under --faux, Exa's endpoint is a faux module's, and this server names none" };
-  return exaSearch(query, n, { send: faux ?? fetch, ...(signal ? { signal } : {}) });
+  const found = await exaSearch(query, n, { ...(faux ? { send: faux } : {}), ...(signal ? { signal } : {}) });
+  // Which limit Exa met is the server's to read, never the model's: it reads the error alone.
+  return "limit" in found ? { error: found.error } : found;
 }
 
 /** The agent's tool: the Search as JSON text. A run whose web_search resolves to Parallel reads its key as the tool is
