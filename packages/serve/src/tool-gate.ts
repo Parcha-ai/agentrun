@@ -402,3 +402,11 @@ export class RunGate {
     }
   }
 }
+
+// Stubs, today's rule, so the park test loads and fails on its own assertions; the next commit builds them.
+/** A parked call: by its id, or by its tool and arguments where the caller cannot name the id. */
+export type ParkedCall = { callId: string } | { tool: string; argsDigest: string };
+/** The digest a park by tool and arguments is matched on. */
+export const argsDigest = (_args: unknown): string => "";
+/** Whether `result` ends the turn `parked` waits in: today, the parked call's own result, by its id. */
+export const endsTurn = (parked: ParkedCall | undefined, result: { callId: string; tool: string; args: unknown }): boolean => parked !== undefined && "callId" in parked && parked.callId === result.callId;
