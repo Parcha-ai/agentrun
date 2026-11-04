@@ -64,11 +64,14 @@ describe("a link in a run's answer", () => {
     expect(page.host.querySelector("dialog")).toBeNull();
   });
 
-  it("a link to a site is as it was", async () => {
-    const page = await open(answer);
-    const site = page.report().querySelector('a[href="https://example.com"]');
-    expect(site?.outerHTML).toBe(new DOMParser().parseFromString(markdown("[site](https://example.com)"), "text/html").querySelector("a")!.outerHTML);
-    expect(site?.outerHTML).toBe('<a href="https://example.com">site</a>');
+  it("a link to a site opens in a new tab, with no opener and no referrer, and never in the console's", async () => {
+    const page = await open(answer + " And [plain](http://example.com/a).");
+    for (const href of ["https://example.com", "http://example.com/a"]) {
+      const site = page.report().querySelector(`a[href="${href}"]`);
+      expect(site, href).not.toBeNull();
+      expect(site!.getAttribute("target"), href).toBe("_blank");
+      expect(site!.getAttribute("rel"), href).toBe("noopener noreferrer");
+    }
   });
 
   it("a ./ path names the run file too, and a path in a folder names the file at that path", async () => {
@@ -96,7 +99,7 @@ describe("markdown with no run files (a note, an editor preview)", () => {
   it("keeps no relative link: each reads as its text", () => {
     const html = markdown("[a](hello.md) [b](/v2/x) [c](#top) [d](//example.com/x) [e](https://example.com) [f](mailto:a@example.com)");
     expect(html).not.toMatch(/href="(hello\.md|\/v2\/x|#top|\/\/example\.com\/x)"/);
-    expect(html).toContain('<a href="https://example.com">e</a>');
+    expect(html).toContain('<a href="https://example.com" target="_blank" rel="noopener noreferrer">e</a>');
     expect(html).toContain('<a href="mailto:a@example.com">f</a>');
     expect(html.replace(/<[^>]+>/g, "").trim()).toBe("a b c d e f");
   });
