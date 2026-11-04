@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ApprovalCard } from "@/components/ApprovalCard";
 import { Composer } from "@/components/Composer";
 import { NeedsYou } from "@/components/NeedsYou";
 import { type RunActions, RunHeader } from "@/components/RunHeader";
@@ -7,6 +8,7 @@ import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { Timeline, Working } from "@/components/Timeline";
+import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
@@ -28,6 +30,9 @@ export type RunDetailProps = {
   actions?: RunActions;
   /** Sends a message; resolves false when it failed, so the composer keeps the draft. */
   onMessage?: (text: string) => void | boolean | Promise<void | boolean>;
+  /** Answers the tool call the run waits on the owner's approval of (`pending.id`): resolves with the refusal to show,
+   *  in words, or null once the server took it. */
+  onApprove?: (approvalId: string, decision: "allow" | "deny", note?: string) => Promise<string | null>;
   tab?: Tab;
   /** A workflow run's live graph (RunGraphView): the first tab when given. */
   graphView?: React.ReactNode;
@@ -40,11 +45,24 @@ export type RunDetailProps = {
 type Tab = "graph" | "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
   const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
-  const waiting = pendingQuestion(run.status, run.state, rows);
+  // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
+  // the newest waiting row, and is no question now.
+  const approval = approvalOf(run);
+  const waiting = approval ? null : pendingQuestion(run.status, run.state, rows);
+  // The approval's timeline row, which follows the call's result: its step points to the card above.
+  const approvalRow = approval ? rows.findLast((r) => r.kind === APPROVAL_ROW && r.tool_use_id === approval.call_id) : undefined;
+  // A refused answer, in words. The run is read again after it, and when another answer, a stop or a cancel came first
+  // the call no longer waits, so its card goes: the words stay here.
+  const [refused, setRefused] = useState<string | null>(null);
+  const approve = async (id: string, decision: "allow" | "deny", note?: string) => {
+    const said = onApprove ? await onApprove(id, decision, note) : "This page can't answer an approval.";
+    setRefused(said);
+    return said;
+  };
   // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
   const reads = useRef(latest()).current;
   const show = async (file: RunFile) => {
@@ -84,18 +102,21 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-2 text-[14px]">{run.review.reason}</p>
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
-          {view.needsYou && <NeedsYou waiting={waiting} />}
+          {!approval && refused && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused}</p>}
+          {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
+            : view.needsYou && <NeedsYou waiting={waiting} />}
           {tab === "report" && <RunResult run={run} rows={rows} />}
           {tab === "report" && !run.result && !view.final && <Working title="Writing the answer" note="The answer appears here when the run finishes. Follow it on the timeline." spin={view.live} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
-          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={view.needsYou ? waiting?.id : undefined} />}
+          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou ? waiting?.id : undefined)} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
         </div>
       </div>}
-      {view.canMessage && (
+      {/* While a call waits on an approval, a message doesn't answer it: Allow or Deny does, and Stop or Cancel withdraws it. */}
+      {view.canMessage && !approval && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
       )}
       {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}

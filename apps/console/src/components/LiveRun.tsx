@@ -6,6 +6,7 @@ import { RunError } from "@/components/RunError";
 import { type GraphActions, GraphUnavailable, isPermanent, RunGraphView, useRunGraph } from "@/components/RunGraphView";
 import { RunSkeleton } from "@/components/Skeleton";
 import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
+import { approvalRefusal } from "@/lib/approval";
 import { keeper, sendOnce } from "@/lib/idempotency";
 import { problem, refusalTitle } from "@/lib/problem";
 import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
@@ -99,6 +100,15 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     return ok;
   };
 
+  // An answer to the call the run waits on the owner's approval of: what the run does next is the server's to say, so the
+  // run and its timeline are read again after it, a refused one too (a stop, a cancel or another tab answered first).
+  const approve = async (approvalId: string, decision: "allow" | "deny", note?: string) => {
+    let refused: string | null = null;
+    try { await v2.answerApproval(runId, approvalId, decision, note); } catch (e) { refused = approvalRefusal(e); }
+    await refresh(); setFollows((n) => n + 1);
+    return refused;
+  };
+
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
   // open. A server without the route gives the run's other views only.
   const graph = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId, enabled: run?.kind === "workflow" });
@@ -116,7 +126,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} onMessage={message}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} readLearningDiff={() => v2.runLearningDiff(runId)} onMessage={message} onApprove={approve}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), busy }} />
     </div>
   );

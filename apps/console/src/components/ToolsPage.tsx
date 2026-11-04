@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
-import { PerHarness, ToolTable } from "@/components/ToolSettings";
+import { PerHarness, ToolTable, toolRows } from "@/components/ToolSettings";
 import { type Client, ClientError } from "@/lib/client";
-import { issuesFor, ownSettings, type ToolChoice } from "@/lib/toolSettings";
+import { issuesFor, ownSettings, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import type { ApiError, ToolSettings } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
@@ -13,7 +13,7 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  the page opens, since the settings it reads may be newer than capabilities read earlier (another tab's change); until
  *  capabilities name the provider a row shows, its resolution reads "reading…", and a read that failed says so with
  *  Retry (`onOpen` answers whether its read landed). */
-export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
+export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; gates?: ToolGate[]; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
   const [answer, setAnswer] = useState<ToolSettings | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [problem, setProblem] = useState<{ fields: Record<string, string>; error: ApiError | null } | null>(null);
@@ -40,7 +40,8 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
     )
     : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
   const own = ownSettings(answer, choices);
-  const { byTool, rest } = issuesFor(problem?.fields ?? {}, "", choices.map((t) => t.name));
+  const rows = toolRows(choices, gates);
+  const { byTool, rest } = issuesFor(problem?.fields ?? {}, "", rows.map((t) => t.name));
   // Each change is the whole of the server's settings: a capability the body leaves out takes its default.
   const save = async (next: ToolSettings) => {
     setBusy(true); setProblem(null);
@@ -64,10 +65,11 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
           <p className="caps text-[11px] text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Tools</h1>
           <p className="mt-2 text-[14px] text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
+          {gates.length > 0 && <p className="mt-2 text-[14px] text-muted-foreground">Each tool's permission: <span className="font-mono text-[13px]">allow</span> runs it, <span className="font-mono text-[13px]">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-[13px]">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent with a permission of its own keeps it.</p>}
         </div>
         <section aria-label="This server's providers">
-          {choices.length ? (
-            <ToolTable label="This server's tool providers" rows={choices} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onChange={(next) => void save(next)}
+          {rows.length ? (
+            <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onChange={(next) => void save(next)}
               resolvesOf={(t, provider) => (provider === t.provider ? <PerHarness choice={t} />
                 : capsRead === "reading" ? <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>
                 : <span className="block text-[12px] text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <button type="button" onClick={retry} disabled={busy} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent disabled:opacity-45">Retry</button></span>)} />

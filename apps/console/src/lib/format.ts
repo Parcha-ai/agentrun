@@ -21,7 +21,7 @@ export const isEstimate = (c: Cost) => c.basis === "estimate";
 
 /** A run's cost in dollars: a figure above zero never reads as $0 (under a hundredth of a cent it reads "<$0.0001"),
  *  four places under a cent, two from a cent up. */
-const dollars = (usd: number) => (usd > 0 && usd < 0.0001 ? "<$0.0001" : usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
+export const dollars = (usd: number) => (usd > 0 && usd < 0.0001 ? "<$0.0001" : usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
 
 /** A cost known so far in dollars: up to four places under a dollar, as the run's own usage row says it ("Cost so far:
  *  $0.0123 known"), since a partial sum is often cents and two places would disagree with the row beside it. Zeros past

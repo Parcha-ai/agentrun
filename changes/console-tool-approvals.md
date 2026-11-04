@@ -1,0 +1,9 @@
+---
+packages: repo
+kind: feature
+---
+**The console answers a tool call that waits for your approval, and sets each tool's permission**
+- A run waiting on a tool call set to ask (`pending.kind` `approval`) shows an approval card on its page where a question would be. The card names the tool and shows its arguments in a monospace block that scrolls, and never runs wider than a phone. It says what a call costs ("Costs $0.02 per call", "Not metered", or nothing when the tool names no price) and takes an optional note, sent with Deny. Allow and Deny both disable on the first click, so a double click is one answer. The run is read again after the answer. A refused answer is said in words, and the words stay after the card goes: another answer came first, the run was stopped (the call withdrawn) or cancelled, the page has no owner sign-in, or the sign-in ended. While the call waits, the page offers no message box: Allow or Deny answers it, and Stop or Cancel withdraws it. An answered question that is still the newest on the timeline is no longer shown as the question.
+- Mission Control's Needs you strip answers the same call in place, with a compact card under the agent, the run and when it asked.
+- The timeline's `tool_approval_requested` row reads "Your approval", marked while the call waits, and points to the card above.
+- Settings → Tools lists every tool with its permission (`allow`, `ask`, `deny`) beside its provider, with the owner's default named. The agent editor does the same for each tool the agent grants, the server's permission its default. Where accounts are off (`ask_needs: "password"`), ask is offered disabled with why, and a tool already on ask says each call is refused. Saving a provider or a permission keeps every other setting the server holds, a catalog tool's or an MCP server's wildcard included: `PUT /v2/settings/tools` replaces the whole map.

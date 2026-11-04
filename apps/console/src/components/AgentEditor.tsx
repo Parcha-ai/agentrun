@@ -11,7 +11,7 @@ import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
 import type { Places } from "@/lib/place";
-import type { ToolChoice } from "@/lib/toolSettings";
+import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -42,6 +42,8 @@ export type EditorProps = {
   validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
   /** The capabilities with a provider choice (capabilities.tools): the Tools step's tool settings, for those the agent grants. */
   providerChoices?: ToolChoice[];
+  /** Each tool's permission on this server (approvals/1), from capabilities: an agent's own is set over it. */
+  permissionGates?: ToolGate[];
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
 
@@ -64,7 +66,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [] }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [] }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
@@ -245,7 +247,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 )}
               </Field>
               {!workflow && (
-                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices} gates={permissionGates}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
                   // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.

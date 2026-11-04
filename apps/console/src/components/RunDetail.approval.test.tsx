@@ -34,7 +34,8 @@ describe("RunDetail, a run waiting on a tool call's approval", () => {
     const html = page(run);
     expect(html).toContain("aria-label=\"Approval required\"");
     expect(html).not.toContain("aria-label=\"The agent asks\"");
-    expect(text(html)).not.toMatch(/Input required Which page/);
+    // The old question stays on the timeline as a past step; it is not shown above as the question.
+    expect(text(html).split("Which page, the old or the new?").length - 1).toBe(1);
   });
 
   it("offers no message box while the call waits: Allow or Deny answers it, Stop or Cancel withdraws it", () => {

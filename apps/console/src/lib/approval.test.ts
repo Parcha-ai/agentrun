@@ -27,7 +27,7 @@ describe("a pending approval", () => {
   it("says its price per call: dollars where the tool names one, not metered, or nothing when it names none", () => {
     expect(priceLine(0.02)).toBe("Costs $0.02 per call");
     expect(priceLine(0.005)).toBe("Costs $0.0050 per call");
-    expect(priceLine(0)).toBe("Costs $0.00 per call");
+    expect(priceLine(0)).toBe("Costs nothing per call");
     expect(priceLine("not metered")).toBe("Not metered");
     expect(priceLine(undefined)).toBeNull();
   });

@@ -9,13 +9,22 @@ export type RunState = "working" | "waiting" | "idle";
 /** `details`: what the server says beyond the message, by code (a 409 `agent_not_runnable` names the harness or box it lacks). */
 export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string; details?: Record<string, unknown> };
 
-/** A provider per capability that has a choice (web_search, web_fetch): the server's (GET and PUT /v2/settings/tools)
- *  and an agent's own (`definition.tool_settings`), over the server's. */
-export type ToolSettings = Record<string, { provider?: string }>;
-/** GET /v2/agents/{id}'s `tools`: each tool the agent grants; one with a provider choice with the provider in force, where
- *  it came from (the agent's own setting, the server's, or the built-in default), the one that applies when the agent sets
- *  none (the server's), and what it resolves to on the agent's harness and model. */
-export type AgentTool = { name: string; provider?: string; provider_from?: "agent" | "server" | "default"; default_provider?: string; resolved?: string };
+/** What the server's tool gate does with a tool's calls: allow runs it, ask waits for the owner's approval, deny refuses
+ *  it (approvals/1). */
+export type Permission = "allow" | "ask" | "deny";
+/** Tool settings by settings key: a provider per capability that has a choice (web_search, web_fetch), and any tool's
+ *  permission, a catalog tool's (`monid.<tool>`, `mcp:<server>/<tool>`) and an MCP server's wildcard (`mcp:<server>/*`)
+ *  among them. The server's (GET and PUT /v2/settings/tools, which replaces the whole map) and an agent's own
+ *  (`definition.tool_settings`), over the server's. */
+export type ToolSettings = Record<string, { provider?: string; permission?: Permission }>;
+/** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission in force, where it came from and the
+ *  one that applies when the agent sets none (the server's); one with a provider choice with the provider in force, where
+ *  it came from (the agent's own setting, the server's, or the built-in default), the one that applies when the agent
+ *  sets none (the server's), and what it resolves to on the agent's harness and model. */
+export type AgentTool = {
+  name: string; provider?: string; provider_from?: "agent" | "server" | "default"; default_provider?: string; resolved?: string;
+  permission?: Permission; permission_from?: "agent" | "server" | "default"; default_permission?: Permission; permissions?: Permission[];
+};
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null: the sum of every charge whose cost
  *  is known, and how many charges have none (a request cut, stopped or still pending, a model with no price, a paid call
@@ -45,16 +54,28 @@ export type Run = {
   poll_after_ms?: number;
   /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
    *  at, and why). Null or absent on every other run. */
-  review?: RunReview | null;  /** What a run waiting on a person waits for: its question and when it was asked. Null on every other run. */
-  pending?: { kind: "question"; question: string; asked_at: string } | null;
+  review?: RunReview | null;
+  /** What a run waiting on a person waits for (status input_required, state waiting): its question, or a tool call that
+   *  waits for the owner's approval. Null on every other run. */
+  pending?: PendingQuestion | PendingApproval | null;
   /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
   imported_from?: { source: string; session: string } | null;
 };
 
+/** A question the run asked a person (ask_person): a message answers it. */
+export type PendingQuestion = { kind: "question"; question: string; asked_at: string };
+/** A tool call set to ask, waiting for the owner's approval (approvals/1): POST /v2/runs/{id}/approvals/{id} answers it.
+ *  `tool`: its settings key (`web_fetch`, `monid.run`, `mcp:<server>/<tool>`); `call_id`: its tool_result row's
+ *  tool_use_id; `args_preview`: its arguments as JSON, redacted, cut at 2 KiB; `price`: USD per call where its tool names
+ *  one, "not metered" for an unpriced MCP call, absent otherwise. */
+export type PendingApproval = { kind: "approval"; id: string; tool: string; call_id: string; args_preview: string; requested_at: string; price?: number | "not metered" };
+
 export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
 
 export type TimelineKind =
-  | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | "decision" | string;
+  | "user_message" | "thinking" | "tool_use" | "tool_result" | "waiting" | "usage" | "final_answer" | "phase" | "decision"
+  /** A tool call that waited for the owner's approval, after its result's row and with its tool_use_id (approvals/1). */
+  | "tool_approval_requested" | string;
 
 export type TimelineRow = {
   id: string;

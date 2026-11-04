@@ -227,6 +227,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Replaces the server's providers: a capability the body leaves out takes its default. The answer is each one's now. */
     saveToolSettings: (settings: ToolSettings) => call<ToolSettings>("PUT", "/settings/tools", { body: settings }),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
+    /** Answers the tool call the run waits on the owner's approval of (`pending.id`, approvals/1): 204. The owner's
+     *  password session alone may (a token is 403); the first answer wins, so the same one again is 204 and another 409
+     *  `not_continuable` with `details: { reason: "already_answered", decision }`. `note`: with deny, the reason the model
+     *  is told; sent only when given. */
+    answerApproval: (id: string, approvalId: string, decision: "allow" | "deny", note?: string) =>
+      call<unknown>("POST", `${run(id)}/approvals/${encodeURIComponent(approvalId)}`, { body: { decision, ...(note ? { note } : {}) } }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
 }
