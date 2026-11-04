@@ -321,13 +321,13 @@ test("the decision providers' widening to parallel is its own addition, decision
 });
 
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
-const REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"];
+const REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"];
 
 test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schemas = doc.components.schemas;
-  for (const [schema, field] of [["DefinitionInput", "learning"], ["Run", "learning"], ["RunSummary", "learning"], ["Features", "learning"], ["TimelineRow", "learning"]]) {
+  for (const [schema, field] of [["DefinitionInput", "learning"], ["Run", "learning"], ["RunSummary", "learning"], ["Features", "learning"], ["TimelineRow", "learning"], ["Capabilities", "learning"]]) {
     assert.equal(schemas[schema].properties[field]?.["x-agentrun-serve"], "learning/1", `${schema}.${field} is marked`);
     assert.ok(doc.info["x-agentrun-serve"].fields.includes(`${schema}.${field}`), `info lists ${schema}.${field}`);
   }
@@ -346,19 +346,25 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.equal(schemas.DefinitionInput.properties.learning.default, false, "off unless an agent says so");
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.features.learning, "on", "the server's switch is on by default");
+  assert.deepEqual(caps.learning, { grade_model: null, pending: true }, "each run graded on its own model: this server names none; a risky rule the user asked for waits");
   assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "learning"]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
-  // A run whose agent has no write tool, one whose folder cannot be made (a file where it goes), and one of an agent that
-  // does not learn.
+  // A run whose end-of-run turn gives no note, one whose folder cannot be made (a file where it goes), and one of an agent
+  // that does not learn.
   assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   await mkdir(homeOf(data, "blocked"), { recursive: true });
   await writeFile(join(homeOf(data, "blocked"), "learning"), "not a folder");
-  const want = { learner: ["dropped", "no_write_tool"], blocked: ["dropped", "seed_failed"], plain: null };
+  const want = { learner: ["dropped", "empty"], blocked: ["dropped", "seed_failed"], plain: null };
   for (const id of Object.keys(want)) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
+    await follow(api, started.body.run_id, ["completed"]);
+    for (let i = 0; ["seeded", "reflecting", "proposed"].includes((await api("GET", `/runs/${started.body.run_id}`)).body.learning?.state); i++) {
+      assert.ok(i < 600, `${id}: its learning ends`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const { rows } = await follow(api, started.body.run_id, ["completed"]);
     const read = (await api("GET", `/runs/${started.body.run_id}`)).body;
     assert.deepEqual(read.learning && [read.learning.state, read.learning.reason], want[id], id);
@@ -371,7 +377,7 @@ test("learning is this server's own addition, learning/1: the definition's switc
     for (const r of rows) assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, r), [], `${id}: ${JSON.stringify(r)}`);
   }
   const counted = (await api("GET", "/stats")).body.learning;
-  assert.deepEqual(counted, { runs: 2, merged: 0, dropped: { no_write_tool: 1, seed_failed: 1 }, in_progress: 0 });
+  assert.deepEqual(counted, { runs: 2, merged: 0, dropped: { empty: 1, seed_failed: 1 }, in_progress: 0 });
   // The positive controls: the same checks see a reason, a kind of drop and a field the document does not hold.
   assert.notDeepEqual(schemaProblems(doc, schemas.Run.properties.learning, { state: "dropped", reason: "conflict", detail: null, at: new Date().toISOString() }), []);
   assert.notDeepEqual(schemaProblems(doc, schemas.Run.properties.learning, { state: "merged", reason: null, detail: null, at: new Date().toISOString(), verdict: null }), []);

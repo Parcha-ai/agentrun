@@ -84,3 +84,53 @@ for (const model of ["anthropic/claude-sonnet-5.5", "openrouter/anthropic/claude
     assert.deepEqual(refused, [], "nothing left loopback");
   });
 }
+
+// codex on OPENROUTER_API_KEY alone: the grade goes where the run's own requests go, OpenRouter with the same key, on the
+// model the run runs (codexModel, then codexProvider's id: openai/gpt-6-sol), through pi-ai's openrouter provider (Chat
+// Completions). Before, the grade asked runModels for the revision's own name, and openai/<model> needs OPENAI_API_KEY
+// there, so every codex learning proposal ended grade_failed. The model faux switch stays off here (it would grade on the
+// faux model), so the screen's Jev request, which goes to openrouter.ai too, is answered in the test, as quietly as the
+// faux Jev above answers it; the grade's request goes on to the gateway.
+const CODEX_WIRE = "openai/gpt-6-sol";
+const bodyOf = (init) => {
+  try {
+    return JSON.parse(typeof init?.body === "string" ? init.body : new TextDecoder().decode(init?.body));
+  } catch {
+    return undefined;
+  }
+};
+function quietJevAnswer(body) {
+  const answers = Object.fromEntries(Object.entries(body.questions ?? {}).map(([id, q]) => {
+    if (q.type === "choice") { const o = Object.keys(q.criteria); return [id, { type: "choice", choice: o[0], confidence: 0.8, probabilities: Object.fromEntries(o.map((x, i) => [x, i === 0 ? 1 : 0])) }]; }
+    if (q.type === "score") return [id, { type: "score", score: 0, confidence: 0.8, legend: Object.fromEntries(q.criteria.map((v, i) => [i, v])), probabilities: Object.fromEntries(q.criteria.map((_, i) => [i, i === 0 ? 1 : 0])) }];
+    return [id, { type: "noul", noul: 0.01 }];
+  }));
+  return new Response(JSON.stringify({ model: "jev-1.14.0", answers, usage: { input_tokens: 120, output_tokens: 0 } }), { status: 200, headers: { "content-type": "application/json" } });
+}
+/** toGateway, but a Jev request (a body with `questions`) is answered here, quietly. */
+function toGatewayJevQuiet(t, gateway) {
+  const refused = toGateway(t, gateway);
+  const routed = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    const body = url.origin === "https://openrouter.ai" && !(input instanceof Request) ? bodyOf(init) : undefined;
+    return body && typeof body === "object" && "questions" in body ? Promise.resolve(quietJevAnswer(body)) : routed(input, init);
+  };
+  return refused;
+}
+
+// The names a codex agent may give its model on OpenRouter alone: OpenAI's (the one the bug dropped), pi's
+// (openrouter/openai/...), and none (codex's default on this route).
+for (const model of ["openai/gpt-6-sol", "openrouter/openai/gpt-6-sol", undefined]) {
+  const named = model ?? "the host's default";
+  test(`on OPENROUTER_API_KEY alone, a codex grade (${named}) goes to OpenRouter with the run's key and model, and is graded`, { timeout: 60_000 }, async (t) => {
+    const gw = await startFauxGateway({ text: (r) => (isGrade(r) ? KEEP : "ok") });
+    t.after(() => gw.close());
+    const refused = toGatewayJevQuiet(t, gw.url);
+    const judged = await judgeProposal({ runId: "run_or_grade_codex", agent: { instructions: "Answer the question.", harness: "codex", ...(model ? { model } : {}) }, main: { active: [], superseded: [] }, proposed: [{ file: "check-units.md", text: UNITS }], env: { OPENROUTER_API_KEY: KEY }, signal: new AbortController().signal, gradeTimeoutMs: 30_000 });
+    assert.ok("verdict" in judged, `${named}: graded, not ${judged.reason}: ${judged.error?.message}`);
+    assert.equal(judged.verdict.merge, true, JSON.stringify(judged.verdict));
+    assert.deepEqual(graded(gw.requests), [["/api/v1/chat/completions", "", `Bearer ${KEY}`, null, CODEX_WIRE]]);
+    assert.deepEqual(refused, [], "nothing left loopback");
+  });
+}
