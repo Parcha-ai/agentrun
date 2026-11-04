@@ -19,6 +19,7 @@
 // FAKE_OPENCODE_EVENTS_GONE=<ms>: the first event stream says server.connected and ends at once, every later one is
 //   answered 503, and the first /sync/history waits <ms> first: a drive's stream runs out of tries while the drive
 //   mirrors a new session, before any turn.
+// FAKE_OPENCODE_IGNORE_ABORT=1: `POST /session/:id/abort` answers 200 and the turn goes on: OpenCode does not end it.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -278,7 +279,7 @@ const server = createServer(async (req, res) => {
     if (!s) return json(res, 404, { error: "no session" });
     if (action === "message" && req.method === "GET") return json(res, 200, s.messages);
     if (action === "abort" && req.method === "POST") {
-      running.get(sid)?.abort();
+      if (process.env.FAKE_OPENCODE_IGNORE_ABORT !== "1") running.get(sid)?.abort();
       return json(res, 200, true);
     }
     if (action === "prompt_async" && req.method === "POST" && process.env.FAKE_OPENCODE_REJECT_PROMPT === "1") {

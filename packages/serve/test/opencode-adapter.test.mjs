@@ -9,7 +9,8 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runWorkflow } from "@parcha/agentrun-dsl";
 import { createHarnessRunner } from "@parcha/agentrun-kernel";
-import { foldSession } from "@parcha/agentrun-kernel/kernel";
+import { foldSession, pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
+import { transcriptOf } from "@parcha/agentrun-kernel/process";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { OPENCODE_INSTALL, OPENCODE_VERSION, openCodeAdapter } from "../dist/harness-opencode/index.js";
 
@@ -319,4 +320,107 @@ test("a message OpenCode refuses ends the turn failed with OpenCode's own status
   assert.equal(ended.status, "failed");
   assert.match(ended.error, /OpenCode refused the message \(400\): .*agent hands is not configured/);
   assert.equal(p.seen.length, 0, "nothing reached the model");
+});
+
+/** What the model was asked in each request: the user messages' text, in order. */
+const userTexts = (p) => p.seen.flatMap((r) => r.body.input.filter((i) => i.role === "user").flatMap((i) => (Array.isArray(i.content) ? i.content.map((c) => c.text) : [String(i.content)])));
+const folded = async (store, key) => foldSession(key, await store.read(key));
+
+test("a turn its session interrupted (a stop OpenCode did not end) is open to the next process; settled, it ends interrupted, sends nothing and stays ended, and the next message is a turn of its own", { timeout: 60_000 }, async () => {
+  const started = Promise.withResolvers();
+  const slow = { name: "slow", description: "Waits.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: (_args, { signal }) => new Promise((_resolve, reject) => { started.resolve(); signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true }); }) };
+  const store = memorySessionStore();
+  const sp = spec([slow], { key: "s-stop-open" });
+  // OpenCode answers the abort and does not end the turn: the adapter halts the drive, and no end is written.
+  const { adapter: first } = adapter([{ call: "hands_slow" }], { standInEnv: { FAKE_OPENCODE_IGNORE_ABORT: "1" } });
+  const a = await session(first, store, sp);
+  await a.session.send("wait");
+  await started.promise;
+  const ending = a.session.turnEnd();
+  await a.session.interrupt();
+  assert.equal((await ending).status, "interrupted");
+  await a.session.close();
+
+  const { adapter: next, provider: nextModel } = adapter([{ text: "Here." }]);
+  const b = await session(next, store, sp);
+  assert.equal(b.session.state, "open_turn", "the stopped turn is open to the next process");
+  await b.session.settleOpenTurn();
+  assert.equal(b.session.state, "idle");
+  await b.session.send("and now?");
+  assert.equal((await b.session.turnEnd()).status, "completed");
+  await b.session.close();
+  assert.ok(!JSON.stringify(nextModel.seen.map((r) => r.body.input)).includes("[Recovery]"), "the stopped turn is not resumed: no recovery note");
+
+  const { adapter: later } = adapter([]);
+  const c = await session(later, store, sp);
+  assert.equal(c.session.state, "idle", "settled for good: no open turn for the process after");
+  await c.session.close();
+});
+
+test("an opencode turn stopped before its prompt was placed: settled, its prompt is withdrawn, a later open finds no open turn and writes no second end, and the next message runs alone", { timeout: 60_000 }, async () => {
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-stop-early" });
+  const { adapter: first } = adapter([]);
+  const a = await session(first, store, sp);
+  await a.session.send("go");
+  // The stop lands at once: before the drive has started OpenCode and placed the prompt.
+  const ending = a.session.turnEnd();
+  await a.session.interrupt();
+  assert.equal((await ending).status, "interrupted");
+  await a.session.close();
+  const stopped = await folded(store, sp.key);
+  const go = stopped.submissions.find((x) => x.text === "go");
+  assert.ok(go && !stopped.placed.has(go.id), "setup: the stop landed before the prompt was placed");
+
+  const { adapter: next, provider: nextModel } = adapter([{ text: "unused" }]);
+  const b = await session(next, store, sp);
+  assert.equal(b.session.state, "open_turn", "setup: the stopped turn is open to the next process");
+  await b.session.settleOpenTurn();
+  const pendingAfterSettle = pendingSubmissions(await folded(store, sp.key)).map((x) => x.text);
+  await b.session.close();
+
+  // The process after it: serve's open settles a stopped turn it finds open, as here.
+  const { adapter: later, provider: laterModel } = adapter([{ text: "Now." }]);
+  const c = await session(later, store, sp);
+  const laterOpen = c.session.state;
+  if (c.session.state === "open_turn") await c.session.settleOpenTurn();
+  const ends = transcriptOf(await folded(store, sp.key)).filter((r) => r.data?.type === "turn").map((r) => r.data.status);
+  await c.session.send("and now?");
+  assert.equal((await c.session.turnEnd()).status, "completed");
+  await c.session.close();
+  const ended = await folded(store, sp.key);
+  const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
+  assert.deepEqual(
+    { pendingAfterSettle, laterOpen, ends, placed, modelSaw: [...userTexts(nextModel), ...userTexts(laterModel)] },
+    { pendingAfterSettle: [], laterOpen: "idle", ends: ["interrupted"], placed: ["and now?"], modelSaw: ["and now?"] },
+    "the stopped turn's prompt is withdrawn at its settle: no later open finds it open or ends it again, and the next message is the only one sent",
+  );
+});
+
+test("an opencode turn stopped before its prompt was placed, then a message in the same process: the session reads open_turn after the stop, its settle withdraws the prompt, and the message runs alone", { timeout: 60_000 }, async () => {
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-stop-early-here" });
+  const { adapter: a, provider: p } = adapter([{ text: "Now." }]);
+  const s = await session(a, store, sp);
+  await s.session.send("go");
+  // The stop lands at once: before the drive has started OpenCode and placed the prompt.
+  const ending = s.session.turnEnd();
+  await s.session.interrupt();
+  assert.equal((await ending).status, "interrupted");
+  const stopped = await folded(store, sp.key);
+  const go = stopped.submissions.find((x) => x.text === "go");
+  assert.ok(go && !stopped.placed.has(go.id), "setup: the stop landed before the prompt was placed");
+  // As serve's stop does: a turn the session still holds open after the interrupt is settled there.
+  const afterStop = s.session.state;
+  if (s.session.state === "open_turn") await s.session.settleOpenTurn();
+  await s.session.send("and now?");
+  assert.equal((await s.session.turnEnd()).status, "completed");
+  await s.session.close();
+  const ended = await folded(store, sp.key);
+  const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
+  assert.deepEqual(
+    { afterStop, pending: pendingSubmissions(ended).map((x) => x.text), placed, modelSaw: userTexts(p) },
+    { afterStop: "open_turn", pending: [], placed: ["and now?"], modelSaw: ["and now?"] },
+    "the stopped prompt is never sent: the stop leaves the turn open to settle, and the next message is the only one sent",
+  );
 });
