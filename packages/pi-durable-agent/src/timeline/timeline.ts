@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, callFailed, endsTurn, openedSession, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 
 export type TimelineKind =
@@ -505,11 +505,12 @@ function createProjector(options: TimelineOptions) {
     });
   };
 
-  /** The conversation's browser session, once a browser call got one: its first opener that did not fail, read as the
-   *  session opened right before the round that call is in (`lead`, the round's first call row), at that row's time. A
-   *  call the provider refused (a key it does not take) opened none, so no row says one was. */
+  /** The conversation's browser session, once a browser call got one (openedSession: a call that failed after its
+   *  session opened, a blank page read as not content, got one too), read as the session opened right before the round
+   *  that call is in (`lead`, the round's first call row), at that row's time. A call the provider refused (a key it does
+   *  not take) opened none, so no row says one was. */
   function opened(conv: number, name: string, view: ToolResultView, lead: TimelineEvent, show: (row: TimelineEvent) => void) {
-    if (!BROWSER_OPENERS.has(name) || browsers.has(conv) || callFailed(name, view)) return;
+    if (!BROWSER_OPENERS.has(name) || browsers.has(conv) || !openedSession(view)) return;
     browsers.add(conv);
     const row = make("phase", conv, `${lead.id}:session`, { summary: "Opened a live browser session", timestamp: lead.timestamp, created_at: lead.created_at, seq: (lead.seq ?? 0) - 0.25 });
     rows.splice(Math.max(rows.indexOf(lead), 0), 0, row);

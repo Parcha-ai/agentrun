@@ -96,6 +96,17 @@ export function savedPaths(tool: string, args: Obj, result: ToolResultView): str
 
 /** Tools that use the browser session; the first of them opens one. */
 export const BROWSER_OPENERS: ReadonlySet<string> = new Set(["snapshot", "run", "screenshot", "browser_read", "browser_downloads"]);
+/** The failure codes of a browser call that never got a session (pi-browser's BrowserFailure `code`): the provider
+ *  refused the credential or the session, could not be reached, was rate limiting the start, or the call was cancelled. */
+const NO_SESSION = new Set(["auth", "browser_unavailable", "rate_limited", "aborted"]);
+/** Whether a browser opener's result shows it got a session, apart from whether the call did its work: a call that
+ *  returned did; one that failed did unless its failure says the browser never opened (NO_SESSION), or says nothing
+ *  readable. A read of a blank page fails as not_content with its session open. */
+export const openedSession = (result: { text: string; isError: boolean }): boolean => {
+  if (!result.isError) return true;
+  const code = str(obj(json(result.text))?.code);
+  return code !== undefined && !NO_SESSION.has(code);
+};
 
 const path = (args: Obj) => str(args.path) ?? str(args.file_path);
 const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;
