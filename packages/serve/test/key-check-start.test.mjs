@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { calls as bbCalls, KEY as BB_KEY, release as releaseBrowserbase } from "./fixtures/faux-browserbase-check.mjs";
-import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, serve, withEnv } from "./support.mjs";
 
@@ -54,18 +53,12 @@ test("a Browserbase key the server starts with and Browserbase accepts: accepted
   assert.equal((await client(baseUrl)("GET", "/capabilities")).body.tools.find((tool) => tool.name === "browser").available, true);
 });
 
-test("a monid key the server starts with is checked too, and one monid refuses leaves its tools unavailable; one it accepts leaves them available", async (t) => {
-  for (const [key, available] of [[["monid", "wrong", randomBytes(6).toString("hex")].join("_"), false], [MONID_KEY, true]]) {
-    await t.test(String(available), async (t) => {
-      withEnv(t, { MONID_API_KEY: key }, KEYS);
-      const { api, baseUrl } = await serve(t, { fauxMonid: FAUX_MONID });
-      const row = await checked(api, "monid");
-      assert.equal(row.check?.state, available ? "accepted" : "refused", JSON.stringify(row));
-      const tools = (await client(baseUrl)("GET", "/capabilities")).body.tools.filter((tool) => tool.name.startsWith("monid."));
-      assert.deepEqual(tools.map((tool) => tool.available), [available, available, available], JSON.stringify(tools));
-      if (!available) assert.match(tools[0].reason, /^Monid refused MONID_API_KEY \(401: Missing or invalid API key\) when this server started/);
-    });
-  }
+test("under faux, a key with no check fake of its own is not checked at the start: the fakes the runs use see the runs' calls alone", async (t) => {
+  withEnv(t, { MONID_API_KEY: ["monid", "wrong", randomBytes(6).toString("hex")].join("_") }, KEYS);
+  const { api, baseUrl } = await serve(t, { fauxMonid: FAUX_MONID });
+  await new Promise((go) => setTimeout(go, 300));
+  assert.equal(rowOf((await api("GET", "/settings/tool-keys")).body, "monid").check, null);
+  assert.ok((await client(baseUrl)("GET", "/capabilities")).body.tools.filter((tool) => tool.name.startsWith("monid.")).every((tool) => tool.available));
 });
 
 test("the start's check never holds up the start: with Browserbase not answering, the server answers, the row reads not yet checked (null) and the browser available until it answers", async (t) => {

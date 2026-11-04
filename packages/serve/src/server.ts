@@ -708,7 +708,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   await probe("start");
   // The tool keys the server is started with, each checked once against its provider, in the background: the start never
   // waits on one, and capabilities are made again as each answers (a refused one leaves its tools unavailable).
-  void toolKeys.checkServer(checkFetch, stopping.signal, () => recompose());
+  // Under faux, only a check's own fake (fauxBrowserbase) is asked: the fakes the runs use (monid, Parallel, Jev) see the
+  // runs' calls alone, and a key with no check fake is not checked.
+  const startFetch = async (id: string): Promise<typeof fetch | null> => (!options.faux ? fetch : id === "browserbase" && options.fauxBrowserbase ? (await checkFetch(id)) ?? null : null);
+  void toolKeys.checkServer(startFetch, stopping.signal, () => recompose());
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then, however

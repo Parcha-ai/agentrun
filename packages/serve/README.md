@@ -789,7 +789,9 @@ checked here: a run on a refused one fails at its first request, saying so. A sa
 check as it was. A save whose check is still waiting when the server begins to close keeps nothing (`503
 unavailable`, while its connection lasts): the check stops waiting, and the server's lock, released at close, may be
 another server's by then. Under `--faux` a key is checked only against the fake its runs are given (`fauxMonid`,
-`fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network.
+`fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network. A key the server starts
+with is checked under `--faux` only against a check's own fake (`fauxBrowserbase`), so the fakes the runs use see the
+runs' calls alone; with none, its `check` stays null.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
 name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal

@@ -193,13 +193,16 @@ export class ToolKeys {
   }
 
   /** Each tool key the server is started with (a `tool` row whose key, its first field, the server sets), checked against
-   *  its provider once, as a saved one is (key-check.ts), the fetch `fetchFor` gives for the row; all at once, none
-   *  holding up another or the start. `answered` is called as each answers, unless `stop` (the server closing) came
-   *  first. A model key is not checked here: a run on a refused one fails at its first request, saying so. */
-  async checkServer(fetchFor: (id: string) => Promise<typeof fetch | undefined>, stop: AbortSignal, answered: () => void): Promise<void> {
+   *  its provider once, as a saved one is (key-check.ts), through the fetch `fetchFor` gives for the row (null: not
+   *  checked, its check stays null); all at once, none holding up another or the start. `answered` is called as each
+   *  answers, unless `stop` (the server closing) came first. A model key is not checked here: a run on a refused one
+   *  fails at its first request, saying so. */
+  async checkServer(fetchFor: (id: string) => Promise<typeof fetch | null>, stop: AbortSignal, answered: () => void): Promise<void> {
     await Promise.all(TOOL_KEYS.filter((row) => row.kind === "tool" && this.env[row.fields[0]]).map(async (row) => {
       const name = row.fields[0];
-      const outcome = await checkKey(row, this.env[name] as string, this.env, await fetchFor(row.id), undefined, stop, name).catch(() => undefined);
+      const fetcher = await fetchFor(row.id);
+      if (!fetcher) return;
+      const outcome = await checkKey(row, this.env[name] as string, this.env, fetcher, undefined, stop, name).catch(() => undefined);
       if (!outcome || stop.aborted) return;
       this.started[row.id] = outcome.state === "refused" ? { state: "refused", reason: `${outcome.message} when this server started: set the right one where AgentRun starts, then restart it`, at: new Date().toISOString() } : outcome;
       answered();
