@@ -1540,13 +1540,21 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
   with no held figure (below). Every later request of the run is refused. `claude-agent` and `codex` runs also continue
   after a cut, at the worst case the cap held, as pi does.
 
-On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
-gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
-stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
-(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
-process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
-goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
-no one knows.
+A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
+word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
+calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
+(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
+usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
+output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
+went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
+response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
+request cut by a crash (its process gone mid-request).
+
+On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
+of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
+request's `runner.request` record (its worst case) and, for one stopped, on its `runner.turn`. A later process counts it
+the same: a capped run stopped and sent another message, or opened again after its process died, goes on while its cap
+allows. A cut request from a store written before serve kept the figure has none, and is a spend no one knows.
 
 A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
 cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
