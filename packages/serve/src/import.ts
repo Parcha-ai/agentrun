@@ -5,7 +5,7 @@
 // Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, type Stats } from "node:fs";
+import { existsSync, readFileSync, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -15,7 +15,7 @@ import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResu
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
-import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, runDoorToken, TOKEN_FILE } from "./files.js";
+import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, TOKEN_FILE } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
@@ -868,10 +868,11 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 }
 
 /** The secrets this server made and keeps in data directory `data`, by value: its API token (`ar_local_...`) and its
- *  door token (server.ts), its sign-in sessions' secret (owner.ts), its webhook's signing secret (`whsec_...`, opened with
- *  the seal key of `env`; webhooks.ts) and each run's door token (`ar_door_...`, runs.ts). One pasted into a session is
- *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. A key-shaped value this
- *  server did not make (a `whsec_` from elsewhere) is not among them. */
+ *  door token (server.ts), its sign-in sessions' secret (owner.ts) and its webhook's signing secret (`whsec_...`;
+ *  webhooks.ts), opened with the seal key of `env`, so left out when that key is not there. One pasted into a session is
+ *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a run's own
+ *  door token (one file a run; not read at each import), and a key-shaped value this server did not make (a `whsec_`
+ *  from elsewhere). */
 export function ownSecrets(data: string, env: NodeJS.ProcessEnv): string[] {
   const read = (name: string) => {
     try {
@@ -880,13 +881,7 @@ export function ownSecrets(data: string, env: NodeJS.ProcessEnv): string[] {
       return "";
     }
   };
-  let runs: string[] = [];
-  try {
-    runs = readdirSync(join(data, "runs"));
-  } catch {
-    // No run yet.
-  }
-  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhookSecretIn(data, env) ?? "", ...runs.map((id) => runDoorToken(join(data, "runs", id)) ?? "")];
+  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhookSecretIn(data, env) ?? ""];
   return [...new Set(values)].filter((value) => value.length >= 8 && !/\s/.test(value));
 }
 
