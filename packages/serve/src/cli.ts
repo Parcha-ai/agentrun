@@ -36,7 +36,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
                     Docker's 10 s grace); a run cut off resumes at the next start
   --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
-                    says learning: true starts from what that agent learned; off, no run reads what was learned
+                    says learning: true starts from what that agent learned and adds to it; off, no run does
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their

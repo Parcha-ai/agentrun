@@ -6,7 +6,9 @@ export type TimelineKind =
   | "subagent_started" | "subagent_progress" | "subagent_completed" | "final_answer" | "error"
   | "user_message" | "waiting" | "usage"
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
-  | "decision";
+  | "decision"
+  /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
+  | "learning";
 
 /** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
 export type TimelineEvent = {
@@ -180,6 +182,13 @@ function createMeter() {
   let marked = 0;
   let inFlight = false;
   let refused = 0;
+  // Requests a host's spend cap refused (a start mark of their own, `capRefused`), still to be answered by pi's error
+  // entry: never sent, so no request, no cost and no figure. A request started after one means its entry never came.
+  let capRefusals = 0;
+  // Whether the cap refused one: a run with no request but that refusal says so on its usage line.
+  let refusedAny = false;
+  // What the cap limited the latest generation request's output to, when it did (its start mark's `clamp`).
+  let lastClamp: Clamp | undefined;
   // Continuations of an answer still to come (REQUEST_CONTINUED): each next pi.assistant shows and is not counted.
   let continued = 0;
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
@@ -201,7 +210,7 @@ function createMeter() {
   };
   const models = new Map<string, number>();
 
-  function push(entry: EntryLike): "answer" | "continued" | "mark" | "charge" | undefined {
+  function push(entry: EntryLike): "answer" | "continued" | "refusal" | "mark" | "charge" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     if (entry.kind === REQUEST_REFUSED) {
@@ -241,9 +250,19 @@ function createMeter() {
       const late = tokensOf(data?.usage);
       if (pending.shift() && late) (unmetered -= 1), addTokens(late);
       addCost(data?.usd);
+    } else if (entry.kind === REQUEST_STARTED && data?.capRefused === true) {
+      // Its own mark, written before pi's entry for it: a request that never left marks nothing and holds nothing.
+      capRefusals += 1;
+    } else if (entry.kind === "pi.assistant" && capRefusals > 0 && message?.stopReason === "error") {
+      // pi's entry for a request the cap refused: shown as the refusal, never counted.
+      capRefusals -= 1;
+      refusedAny = true;
+      return "refusal";
     } else if (entry.kind === REQUEST_STARTED) {
+      capRefusals = 0;
       marked += 1;
       inFlight = true;
+      lastClamp = clampOf(data?.clamp);
     } else if (entry.kind === REQUEST_ENDED) {
       if (unsent(entry)) marked -= 1;
       inFlight = false;
@@ -277,7 +296,7 @@ function createMeter() {
     const cut = marked - open(inFlight) > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
-    if (!requests && !compactions && !cut && !charges && !cutCalls) return undefined;
+    if (!requests && !compactions && !cut && !charges && !cutCalls) return refusedAny ? { usd: 0, requests: 0, charges: 0 } : undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     return { usd: unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6, requests: count, charges: charges + cutCalls };
   }
@@ -307,7 +326,7 @@ function createMeter() {
     return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: kept, ...(model !== undefined ? { model } : {}) };
   }
 
-  return { push, decide, usage, settled };
+  return { push, decide, usage, clamp: () => lastClamp, settled };
 }
 
 type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
@@ -323,6 +342,22 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
 
+/** What a host's spend cap limited a request's output to (its start mark's `clamp`): the tokens, what was left of the
+ *  cap for it, and the cap. */
+type Clamp = { tokens: number; leftUsd: number; capUsd: number };
+function clampOf(value: unknown): Clamp | undefined {
+  const clamp = obj(value);
+  const [tokens, leftUsd, capUsd] = [clamp?.tokens, clamp?.leftUsd, clamp?.capUsd];
+  const amount = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  return Number.isSafeInteger(tokens) && (tokens as number) > 0 && amount(leftUsd) && amount(capUsd) ? { tokens: tokens as number, leftUsd, capUsd } : undefined;
+}
+/** An amount in words: two decimals, or as many as it takes (up to six) to show it. */
+function amount(usd: number): string {
+  for (let digits = 2; digits < 6; digits++) if (Number(usd.toFixed(digits)) === Number(usd.toFixed(6))) return `$${usd.toFixed(digits)}`;
+  return `$${usd.toFixed(6)}`;
+}
+/** What a reply the cap's clamp cut short says. */
+const clampSaid = (clamp: Clamp) => `The reply stopped at ${clamp.tokens.toLocaleString("en-US")} tokens: all that the ${amount(clamp.leftUsd)} left of the run's ${amount(clamp.capUsd)} cap could buy.`;
 /** The message of a result that is only the harness's diagnostics block (`<harness>`, then `[error] …` lines), as a
  *  call that threw or named a tool its run does not offer answers: its first error's, else its first line's, without
  *  the severity. Undefined for any other text, whose own first line says what happened. */
@@ -437,6 +472,12 @@ function createProjector(options: TimelineOptions) {
     const metered = meter.push(entry);
     if (metered === "mark") {
       // A request's mark or cost, or pi's answer to a request that never left: counted, nothing to show.
+    } else if (metered === "refusal" && message) {
+      // A request the run's cap refused, never sent: no request. Its text is the error as written (a host reads its code
+      // from it), its summary the cap's own words, after the code ("Not sent: ...").
+      const why = str(message.errorMessage) ?? "spend_cap_reached: Not sent: the run's spend cap refused the request.";
+      const words = why.replace(/^spend_cap_reached(?: \([^)]*\))?: /, "");
+      add(make("error", conv, base, { summary: firstLine(words.startsWith("Not sent:") ? words : `Not sent: ${words}`), text: why }));
     } else if (metered === "charge") {
       // A paid tool's charge: counted in the cost, and shown on a line of its own.
       const data = obj(entry.data);
@@ -461,6 +502,9 @@ function createProjector(options: TimelineOptions) {
         // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
         // say. A message with no text block (a request the adapter bridge writes without content) shows none.
         if (text || (final && first("text") >= 0)) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
+        // A reply that stopped at the output its request's cap limited it to says so, with the numbers.
+        const clamp = metered === "answer" && message.stopReason === "length" ? meter.clamp() : undefined;
+        if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp) }));
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
@@ -604,7 +648,8 @@ function createProjector(options: TimelineOptions) {
     const { usd, requests, charges } = counted;
     const paid = charges ? ` and ${charges} paid tool call${charges === 1 ? "" : "s"}` : "";
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+      // A run whose only request its cap refused sent none, and says so.
+      summary: requests === 0 && !charges ? "no model request sent" : `Cost so far: ${usd === null ? "unknown" : dollars(usd)} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       usage: { usd, requests },
     });
   }
