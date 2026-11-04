@@ -185,10 +185,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
           begin();
         },
         async recover() { state = "idle"; begin(); },
-        // The open turn ends interrupted in the session's records, as a turn's end is written (end()), and nothing runs.
+        // The open turn ends in the session's records, as a turn's end is written (end()), and nothing runs. Its end is the
+        // kernel's for the session's own stop (abortedOutcome of its SessionHalt), as an interrupted turn's is here.
         async settleOpenTurn() {
           if (state !== "open_turn") throw new Error("faux: there is no turn to settle");
-          await append(FAUX_RECORDS.turnEnd, { status: "interrupted" });
+          await append(FAUX_RECORDS.turnEnd, { status: abortedOutcome(AbortSignal.abort(new SessionHalt("interrupted"))).status });
           state = "idle";
         },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
