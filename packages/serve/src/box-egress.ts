@@ -1,0 +1,182 @@
+// A Docker box's way out to the network: the hosts on the server's list (AGENTRUN_BOX_ALLOW), and nothing else. The box
+// stays `--network none`, with its own loopback alone. The run's process starts the kernel's egress proxy with the list
+// (@parcha/agentrun-kernel/host), on a Unix socket in a directory of its own, which is bound into the box read-only at
+// EGRESS_MOUNT; a socat in the box relays 127.0.0.1:EGRESS_PORT to it, and the box's fixed environment names that port
+// as its HTTP(S) proxy. The proxy refuses, before any lookup, a host off the list, an IP literal and any port but 80 and
+// 443, and a listed name that resolves to a private or metadata address; it holds no key and adds none. A program in the
+// box that ignores the proxy variables has no route and no resolver: its connection is unreachable. The list is the
+// setting's one reading (run-box.ts boxAllowOf), as the server resolves it for this machine (boxNetworkOf); with `none`,
+// a box is as it was: no proxy, no mount, no proxy variables. The proxy is never started without an explicit list: one
+// with none would reach every public host.
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, rm } from "node:fs/promises";
+import { release } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { type EgressProxy, type EgressProxyOptions, parseAllow, startEgressProxy } from "@parcha/agentrun-kernel/host";
+import { FAUX_ENV } from "./model.js";
+import { withoutSecrets } from "./secrets.js";
+
+/** Where the proxy's directory is in the box, read-only. */
+export const EGRESS_MOUNT = "/run/agentrun/egress";
+/** The proxy's socket, in its directory. */
+export const EGRESS_SOCKET = "egress.sock";
+/** The box's loopback port socat relays to the socket. */
+export const EGRESS_PORT = 3128;
+const PROXY_URL = `http://127.0.0.1:${EGRESS_PORT}`;
+const NO_PROXY = "localhost,127.0.0.1,::1";
+/** What a box with a list adds to its fixed environment (run-box.ts BOX_ENV): constants, no user, no password. */
+export const PROXY_ENV: Readonly<Record<string, string>> = Object.freeze({ HTTP_PROXY: PROXY_URL, HTTPS_PROXY: PROXY_URL, http_proxy: PROXY_URL, https_proxy: PROXY_URL, NO_PROXY, no_proxy: NO_PROXY });
+/** The box's relay to the proxy's socket `socket` (in EGRESS_MOUNT), started once each time the run's box opens (made
+ *  or found): a second one finds the port taken and exits. Each connection opens the socket by its path, so a proxy
+ *  started again is reached with no new relay. */
+export const forwarder = (socket: string = EGRESS_SOCKET): string[] => ["socat", `TCP-LISTEN:${EGRESS_PORT},bind=127.0.0.1,reuseaddr,fork`, `UNIX-CONNECT:${EGRESS_MOUNT}/${socket}`];
+/** The relay's start, in the box: exit 127 when the image has no socat. */
+export const forwarderStart = (socket: string = EGRESS_SOCKET): string[] => ["sh", "-c", `command -v socat >/dev/null 2>&1 || exit 127; setsid ${forwarder(socket).join(" ")} </dev/null >/dev/null 2>&1 &`];
+/** The timeline row of a box whose image has no socat. */
+export const NO_SOCAT = `This box's image has no socat, so it has no network. Add socat to the image, or set AGENTRUN_BOX_ALLOW=none to silence this.`;
+/** What a refusal of a host off the list says to do, after its words. */
+export const ALLOW_HINT = `use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW`;
+/** Each run's proxy: connections open at once, and in all. */
+export const MAX_TUNNELS = 64;
+export const MAX_CONNECTIONS = 20_000;
+/** Under `--faux` only: a module whose default export gives the proxy's `lookup` and `dial` (the tests' fake network), so
+ *  a test's box reaches no host but its fake. */
+export const FAUX_EGRESS_ENV = "AGENTRUN_SERVE_FAUX_EGRESS";
+
+/** The proxy's directory for run `runId`: short, so its socket's path stays within a Unix socket's limit (107 bytes)
+ *  wherever the data root is, and the same each time the run's process starts, since the box keeps its bind. */
+export function egressDir(runId: string, uid: number = process.getuid?.() ?? 0): string {
+  return join("/tmp", `agentrun-egress-${uid}`, createHash("sha256").update(runId).digest("hex").slice(0, 16));
+}
+
+/** Removes a run's proxy directory once its box is gone. */
+export const removeEgressDir = (runId: string): Promise<void> => rm(egressDir(runId), { recursive: true, force: true });
+
+/** This user's parent directory in /tmp: made 0700, and refused unless it is a directory of this user's, not a link. */
+async function ownParent(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const at = await lstat(dir);
+  const uid = process.getuid?.();
+  if (!at.isDirectory() || at.isSymbolicLink() || (uid !== undefined && at.uid !== uid) || (at.mode & 0o077) !== 0) {
+    throw new Error(`the box's network directory ${dir} is not a directory of this user's alone (0700, not a link): remove it, or set AGENTRUN_BOX_ALLOW=none`);
+  }
+}
+
+/** Where a run's box finds its proxy: what is mounted read-only at EGRESS_MOUNT, and the socket's name there. The one
+ *  seam between the box's side, which is the same wherever the proxy runs (the mount, the relay, the proxy variables),
+ *  and where the proxy runs. Today that is hostEgress: the run's own process, its socket's directory on this machine
+ *  bound into the box. */
+export type BoxEgress = (runId: string) => Promise<{ mount: { source: string; target: typeof EGRESS_MOUNT; readOnly: true }; socket: string }>;
+
+/** The proxy in the run's process (hostEgress): for a Docker daemon on this Linux machine, which can reach a socket in a
+ *  directory of this machine bound into a container. */
+export const hostEgress = (allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): BoxEgress => async (runId) => ({
+  mount: { source: await runProxy(runId, allow, env, log), target: EGRESS_MOUNT, readOnly: true },
+  socket: EGRESS_SOCKET,
+});
+
+const started = new Map<string, Promise<EgressProxy>>();
+
+/** Run `runId`'s proxy in this process, with `allow`, started once: its directory, to bind into the box. Its decisions
+ *  go to `log`. */
+async function runProxy(runId: string, allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<string> {
+  const dir = egressDir(runId);
+  let proxy = started.get(runId);
+  if (!proxy) {
+    proxy = (async () => {
+      await ownParent(join(dir, ".."));
+      await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+      const proxy = await startEgressProxy({ socketPath: join(dir, EGRESS_SOCKET), maxTunnels: MAX_TUNNELS, maxConnections: MAX_CONNECTIONS, log, allow: [...allow], allowHint: ALLOW_HINT, ...(await fauxSeams(env)) });
+      log(`egress start allow=${allow.join(",")}`);
+      return proxy;
+    })();
+    started.set(runId, proxy);
+    proxy.catch(() => started.delete(runId));
+  }
+  await proxy;
+  return dir;
+}
+
+type Seams = Pick<EgressProxyOptions, "lookup" | "dial">;
+
+/** The tests' seams, under `--faux` with FAUX_EGRESS_ENV set: its module's. */
+async function fauxSeams(env: NodeJS.ProcessEnv): Promise<Seams> {
+  const module = env[FAUX_ENV] ? env[FAUX_EGRESS_ENV] : undefined;
+  if (!module) return {};
+  return ((await import(pathToFileURL(module).href)) as { default: () => Seams | Promise<Seams> }).default();
+}
+
+/** How long `docker info` may take to say where this Docker runs. */
+export const INFO_TIMEOUT_MS = 5_000;
+/** A platform by the name people use. */
+const PLATFORM_NAMES: Readonly<Record<string, string>> = { darwin: "macOS", win32: "Windows" };
+/** What `docker info` is asked: the daemon's OS type, its kernel, and the name it gives its OS. */
+export const INFO_FORMAT = "{{.OSType}}|{{.KernelVersion}}|{{.OperatingSystem}}";
+
+/** `docker info`'s answer to INFO_FORMAT, its stdout, or a throw that says why there is none. */
+export type DockerInfo = (env: NodeJS.ProcessEnv, timeoutMs: number) => Promise<string>;
+
+/** `docker info` in the server's environment through the cut a run's takes, nothing on its stdin, within `timeoutMs`. */
+export const dockerInfo: DockerInfo = (env, timeoutMs) =>
+  new Promise((resolve, reject) =>
+    execFile("docker", ["info", "--format", INFO_FORMAT], { env: withoutSecrets(env), timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout) => {
+      if (!error) return resolve(String(stdout));
+      const failed = error as NodeJS.ErrnoException & { killed?: boolean };
+      reject(new Error(failed.killed ? `it did not answer within ${Math.round(timeoutMs / 1000)} s` : typeof failed.code === "number" ? `it failed (exit ${failed.code})` : `it failed (${failed.code ?? failed.name})`));
+    }).stdin?.end(),
+  );
+
+/**
+ * Why a Docker box on this server cannot reach its proxy, or undefined when it can. The proxy's socket is a file of this
+ * machine bound into the box, which only a Docker daemon on this same Linux machine can connect to: a daemon in a VM
+ * (Docker Desktop, OrbStack and their kin) sees the socket and is refused. So the network goes on only with positive
+ * evidence that the daemon is this machine's: this machine is Linux; the docker CLI's endpoint is a local unix socket
+ * (no DOCKER_HOST or a unix:// one, and the default context or a unix one: pi-transport's dockerDaemon); and `docker
+ * info` answers within its bound with OS type linux and this machine's own kernel (os.release()): the same kernel, so no
+ * VM in between. Anything else is no network, and the reason says what was seen, naming the runtime docker info gives.
+ */
+export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: DockerInfo; platform?: string; kernel?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "linux") return `this server runs on ${PLATFORM_NAMES[platform] ?? platform}, where Docker runs in a VM that can't reach this server's egress proxy yet`;
+  const { dockerDaemon } = await import("@parcha/pi-transport/box/docker");
+  const daemon = dockerDaemon(env);
+  if (!daemon.local) return `this Docker (${daemon.named}) is not on this machine, so it can't reach this server's egress proxy`;
+  let answer: string;
+  try {
+    answer = await (options.info ?? dockerInfo)(env, options.timeoutMs ?? INFO_TIMEOUT_MS);
+  } catch (error) {
+    return `docker info did not say where this Docker runs (${(error as Error).message}), so this server can't tell it is on this machine`;
+  }
+  const fields = answer.trim().split("|");
+  const [osType, kernel, name] = fields.map((field) => field.trim());
+  const shown = (text: string) => JSON.stringify(text.slice(0, 80));
+  if (fields.length !== 3 || !osType || !kernel) return `docker info's answer could not be read (${shown(answer.trim())}), so this server can't tell this Docker is on this machine`;
+  const runtime = name ? `this Docker (${name.slice(0, 80)})` : "this Docker";
+  if (osType !== "linux") return `${runtime} runs ${shown(osType)} containers, not Linux ones on this machine, so it can't reach this server's egress proxy`;
+  const here = options.kernel ?? release();
+  if (kernel !== here) return `${runtime} runs in a VM (its kernel is ${shown(kernel)}, this machine's ${shown(here)}) that can't reach this server's egress proxy yet`;
+  return undefined;
+}
+
+/** What a server's Docker boxes reach, resolved once at its start (run-box.ts boxNetworkOf): the list, or none and why. */
+export type BoxNetwork = { allow: readonly string[] } | { allow: "none"; reason: string };
+
+/** What the server hands a run's process: the list its box reaches, resolved (boxNetworkOf), or `none`. The run's
+ *  process reads this, never AGENTRUN_BOX_ALLOW: unset, it is none. */
+export const RUN_BOX_ALLOW_ENV = "AGENTRUN_RUN_BOX_ALLOW";
+
+/** The run's process's reading of RUN_BOX_ALLOW_ENV: the list, or `none` when it says so, is unset or is not a list. */
+export function runBoxAllowOf(env: NodeJS.ProcessEnv): readonly string[] | "none" {
+  const value = env[RUN_BOX_ALLOW_ENV]?.trim();
+  if (!value || value === "none") return "none";
+  try {
+    const list = parseAllow(value);
+    return list.length ? list : "none";
+  } catch {
+    return "none";
+  }
+}

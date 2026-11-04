@@ -86,9 +86,11 @@ AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
 Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
-their tools there.` The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node and rg,
+their tools there. docker boxes reach pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
+github.com, and codeload.github.com through a proxy, and nothing else.` (on Linux; elsewhere it says why the box has no
+network: [Sandbox](#sandbox)). The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
 about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
-(building the box image (python, git, curl, node, rg)).`, and the log `event=box_image ... state=preparing`, then
+(building the box image (python, git, curl, node, npm, rg)).`, and the log `event=box_image ... state=preparing`, then
 `state=ready` with how long it took; a later start finds it built. A run that needs its box sooner waits for it, with a
 row on its timeline saying so. In a second shell, export the two `AGENTRUN_` lines it printed (a later start prints
 where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a sandbox agent,
@@ -114,8 +116,9 @@ JS
 AGENTRUN_BOXES=docker node packages/serve/dist/cli.js --faux box.mjs
 ```
 
-The box has python 3.12, git, curl, node and rg, and no network: [the box's image](#the-boxs-image) says how to give it
-more. The rest is under [Sandbox](#sandbox).
+The box has python 3.12, git, curl, node, npm and rg. On Linux it reaches Python's and npm's package registries and
+GitHub, and nothing else: `pip install` and `npm install` work in it. [The box's image](#the-boxs-image) says how to give
+it more. The rest is under [Sandbox](#sandbox).
 
 ## Logs
 
@@ -248,8 +251,9 @@ of a process that is gone is not trusted.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
-which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it; either has no network and
-no key. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it. Neither holds a key. A
+Docker box on Linux reaches the package registries and GitHub through a proxy, and nothing else; a Daytona box has no
+network. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
@@ -307,7 +311,35 @@ go through `work/` by path.
   one); any other (another path of this machine, `..` out of it, `~`) is refused as outside the workspace, and their
   errors name the box's paths, never this machine's. A mount source that is, or passes through, a link below the data directory is
   refused: the tool call fails, and no container is made. The data directory is resolved to its real path once, at start.
-- It has no network (`--network none`); no setting opens it. Docker still binds its copies of this machine's
+- It has no network of Docker's (`--network none`). On Linux, with a Docker daemon of this machine's own, it reaches a
+  list of hosts alone, on ports 80 and 443, through the run's egress proxy. The list, by default: `pypi.org`,
+  `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`.
+  `AGENTRUN_BOX_ALLOW` replaces it with a comma list of host names, such as
+  `pypi.org,files.pythonhosted.org,registry.npmjs.org,registry.yarnpkg.com,github.com,codeload.github.com,deb.debian.org`
+  to add one (`*.example.com` names the hosts below `example.com`); `AGENTRUN_BOX_ALLOW=none` is the box offline, as it
+  was: no proxy, no network at all. `*`, an address or a CIDR refuses the start.
+  - How: the run's process starts the proxy with the list on a Unix socket in a directory of its own under
+    `/tmp/agentrun-egress-<uid>/`, bound into the box read-only at `/run/agentrun/egress/`. A `socat` in the box relays
+    `127.0.0.1:3128` to it, and `HTTP_PROXY` and `HTTPS_PROXY` (and their lowercase twins) name that port, with
+    `NO_PROXY` for loopback. pip, npm, git and curl read them. A program that skips them has no route out.
+  - A host off the list, an address and any other port are refused before any lookup, in words: `403 example.com is
+    not on this box's network list: use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW`.
+    So is a listed name whose address is private, this machine's or a cloud's metadata. The proxy holds no key and adds
+    none. Its decisions are in the run's process log (`box_egress`: host, port, address, class).
+  - Only a Docker daemon on this same Linux machine can reach the proxy's socket. The server checks it once, at start,
+    and fails closed: the box has the list only when this machine is Linux, the docker CLI's endpoint is a local unix
+    socket, and `docker info` answers within 5 s with Linux containers on this machine's own kernel. A Docker that runs
+    in a VM (Docker Desktop, OrbStack, Colima and their kin, on a Mac or elsewhere) sees a socket bound in from the host
+    but cannot connect to it, so there the box has no network, and capabilities and the banner say why, naming what
+    was found: `docker boxes have no network: this Docker (OrbStack) runs in a VM (its kernel is "6.15.11-orbstack-…",
+    this machine's "6.1.0-…") that can't reach this server's egress proxy yet`.
+  - Capabilities give the list as `places.allow`, and each box's `network`: `allowlist` or `none`, with
+    `network_reason` when an available box has none. An image with no `socat` gets no network, and the run's timeline
+    says so once.
+  - What it allows, and what it does not: a box reaches no cloud metadata address, nothing of this machine or its
+    network, and no resolver, so no name leaves this machine but a listed one. It can send what its run has to a listed
+    host with the agent's own credentials (an `npm publish`, a `git push`), as `web_fetch` can send to any public host.
+  Docker still binds its copies of this machine's
   `/etc/resolv.conf`, `/etc/hostname` and `/etc/hosts` into it, read-only, so a box's command can read this machine's
   resolver settings (its nameservers and search domains), with no network to use them. Its environment is
   `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
@@ -376,19 +408,21 @@ since nothing binds `work/` there):
 ### The box's image
 
 A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
-its digest) with git, curl, node (Debian's `nodejs`, no npm), rg (`ripgrep`) and their certificates, about 300 MB. Its
+its digest) with git, curl, node and npm (Debian's `nodejs` and `npm`), rg (`ripgrep`), `socat` (the relay to the box's
+network proxy, when it has one) and their certificates, about 360 MB. Its
 recipe is `BOX_RECIPE` in `src/box-image.ts`, its base `BOX_BASE` there. The server builds it on first use
 (`docker build`, at most 10 minutes, its context a private directory under `TMPDIR` holding the recipe alone as its
 `Dockerfile`, removed after), tags it with the recipe's hash (`agentrun-box:<12 hex>`) and labels it with the whole hash
 (`agentrun.box-image`), and builds again only when the recipe changes: a start that finds the image with this recipe's
 hash uses it. To move the base, read the tag's index digest again from Docker Hub (the comment beside `BOX_BASE` says
 how) and put it there: the recipe's hash changes, and so does the image's tag, so the next start builds it. The build
-reaches the network, for the base image and apt; a box made from it never does (`--network none`). A build that fails
+reaches the network, for the base image and apt; a box made from it never does through Docker's (`--network none`). A build that fails
 leaves the box unavailable with the reason ([Boxes](#boxes)). Images of older recipes stay until you remove them:
 `docker image ls --filter label=agentrun.box-image` lists them all, and `docker image rm agentrun-box:<12 hex>` removes
 one.
 
-A box has no network, so a run cannot install anything; the image has to bring it. For other tools, name another image
+A box reaches its package registries (on Linux), so `pip install` and `npm install` work in it, but not `apt-get`: the
+box runs as this server's user, with no root. For other tools, name another image
 in `AGENTRUN_DOCKER_IMAGE`: the server then pulls it when Docker has none (at most 10 minutes) and builds nothing.
 This image, its build and the wait for it are the Docker box's alone: a Daytona box is made by the server from
 Daytona's own image, and a Daytona run never waits on this one.
@@ -433,9 +467,9 @@ provider's answer.
   Then the server asks Docker for [the box's image](#the-boxs-image) (`docker image inspect`). When Docker has it (the
   default with this recipe's hash), the box is `ready`. When not, the server builds the default, or pulls the image
   `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
-  `preparing` (`building the box image (python, git, curl, node, rg)`, or `pulling <image>`), and a sandbox run whose
+  `preparing` (`building the box image (python, git, curl, node, npm, rg)`, or `pulling <image>`), and a sandbox run whose
   first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
-  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
+  git, curl, node, npm, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails is tried once
   more, 5 seconds later, the box `preparing` meanwhile with what failed (`trying once more: the build of the box image
   could not reach the network (…)`). One that fails again, or takes longer, makes the box unavailable with the reason
   (the build could not reach the network, pull its base or install a package, ran out of disk; the registry refused the

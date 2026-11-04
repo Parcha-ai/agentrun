@@ -4,13 +4,16 @@
 // what Docker keeps of the container; no network, neither this host (on loopback, the bridge's gateway or its own
 // address) nor a public address, and no name resolves; and nothing of the host outside the run's work/ in the box.
 // With AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 too, the server also builds its default box image (python, git, curl, node,
-// rg) from its recipe, and a box from it runs each of them with no network.
+// npm, rg, and socat) from its recipe, and a box from it runs each of them with no network; and, with a network list, a
+// box from it reaches a listed host through its egress proxy (the tests' fake network) and nothing else.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { networkInterfaces } from "node:os";
+import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { follow, serve, withEnv } from "./support.mjs";
@@ -21,6 +24,8 @@ const LIVE = process.env.AGENTRUN_SERVE_LIVE_DOCKER === "1";
 const LIVE_BUILD = LIVE && process.env.AGENTRUN_SERVE_LIVE_DOCKER_BUILD === "1";
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const FAKE_EGRESS = new URL("./fixtures/fake-egress.mjs", import.meta.url).pathname;
+const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 /** The image CI pulls before this file runs; the default image, built here, has a test of its own (below). */
 const PULLED = "debian:bookworm-slim";
@@ -164,7 +169,7 @@ test("live Docker, the default image: the server builds it once from its recipe 
   assert.equal(docker("image", "inspect", "--format", `{{ index .Config.Labels "${RECIPE_LABEL}" }}`, DEFAULT_DOCKER_IMAGE).trim(), RECIPE_HASH);
   assert.equal((await api("POST", "/agents", { definition: { id: "built", name: "built", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } })).status, 201);
   const plan = [
-    { tool: "bash", args: { command: "python3 --version && git --version && curl --version | head -1 && node --version && rg --version | head -1" } },
+    { tool: "bash", args: { command: "python3 --version && git --version && curl --version | head -1 && node --version && npm --version && rg --version | head -1 && command -v socat" } },
     { tool: "bash", args: { command: "if timeout 5 curl -sS https://deb.debian.org >/dev/null 2>&1; then echo OPEN; else echo CLOSED; fi" } },
   ];
   const run = await api("POST", "/agents/built/runs", { input: { content: JSON.stringify({ probe: plan }) } });
@@ -177,5 +182,48 @@ test("live Docker, the default image: the server builds it once from its recipe 
   assert.match(said[0].text, /curl \d/);
   assert.match(said[0].text, /^v\d+\.\d+\.\d+$/m, "node");
   assert.match(said[0].text, /ripgrep \d/);
+  assert.match(said[0].text, /^\d+\.\d+\.\d+$/m, "npm");
+  assert.match(said[0].text, /\/socat$/m, "socat, the relay to a box's network proxy");
   assert.equal(said[1].text.trim(), "CLOSED", "the box has no network, whatever its image's build had");
+});
+
+// Last in this file: it loads the net guard into this process, which stays for the file's life.
+test("live Docker, a network list: the box stays --network none, reaches a listed host through its egress proxy (the tests' fake network), is refused another in words, and a program that skips the proxy is unreachable; no key in the box, and nothing here or in the run's process reaches past loopback", { skip: !LIVE_BUILD && "set AGENTRUN_SERVE_LIVE_DOCKER=1 and AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1: the box's relay is the default image's socat", timeout: 900_000 }, async (t) => {
+  const guardLog = join(await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "net-guard-")), "guard.jsonl");
+  withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker", AGENTRUN_BOX_ALLOW: "pypi.org", NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${pathToFileURL(GUARD).href}` }, ["AGENTRUN_DOCKER_IMAGE"]);
+  await import(pathToFileURL(GUARD).href);
+  const server = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+  const { api, data } = server;
+  const offer = async () => (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker");
+  await until(async () => (await offer()).state !== "preparing", "the box image's build", 840_000);
+  assert.equal((await offer()).state, "ready");
+  assert.equal((await api("POST", "/agents", { definition: { id: "netted", name: "netted", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } })).status, 201);
+  const plan = [
+    { tool: "bash", args: { command: "curl -sS http://pypi.org/simple/six/" } },
+    { tool: "bash", args: { command: "curl -sS -i http://example.com/ 2>&1; echo; curl -sS https://example.com/ 2>&1; echo \"exit=$?\"" } },
+    { tool: "bash", args: { command: "curl -sS --noproxy '*' --max-time 5 http://1.1.1.1/ 2>&1; echo \"curl exit=$?\"; python3 -c 'import socket; socket.create_connection((\"1.1.1.1\", 80), timeout=5)' 2>&1 | tail -1" } },
+    { tool: "bash", args: { command: ENV_PROBE } },
+  ];
+  const run = await api("POST", "/agents/netted/runs", { input: { content: JSON.stringify({ probe: plan }) } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
+  const said = answers(data, runId);
+  assert.deepEqual(said.map((a) => a.tool), ["bash", "bash", "bash", "bash"], JSON.stringify(said));
+  // Listed: the fake's page, through the proxy.
+  assert.match(said[0].text, /^fake origin: GET pypi\.org\/simple\/six\//m, said[0].text);
+  // Off the list: 403, in words, for plain HTTP and for a tunnel.
+  assert.match(said[1].text, /HTTP\/1\.1 403 example\.com is not on this box's network list: use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW/, said[1].text);
+  assert.match(said[1].text, /CONNECT tunnel failed, response 403/, said[1].text);
+  // Past the proxy: no route.
+  assert.match(said[2].text, /curl exit=7/, said[2].text);
+  assert.match(said[2].text, /Network is unreachable/, said[2].text);
+  // No key in the box: its environment is the fixed one and the proxy's.
+  const shown = envNames(said[3].text).filter((name) => !SHELL_OWN.includes(name)).sort();
+  assert.deepEqual(shown, ["HOME", "HTTPS_PROXY", "HTTP_PROXY", "LANG", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"], said[3].text);
+  await noSecretIn(said.map((a) => a.text).join("\n"), server);
+  // Nothing reached past loopback: not this process, not the run's (each loaded the guard).
+  const lines = readFileSync(guardLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(lines.filter((line) => line.kind === "refused"), [], "no outbound attempt");
+  assert.ok(new Set(lines.filter((line) => line.kind === "loaded").map((line) => line.pid)).size >= 2, "the guard was in this process and the run's");
 });

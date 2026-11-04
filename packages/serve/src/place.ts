@@ -52,14 +52,28 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
   ];
   const none = !said.length;
   const why = boxes.filter((box) => !box.available && (listed.has(box.id) || (none && RUN_BOXES.includes(box.id))));
-  return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`))].join(" ");
+  // What an available box's programs reach, as capabilities say (`network`, `places.allow`).
+  const reach = boxes.filter((box) => box.available && box.network).map((box) =>
+    box.network === "allowlist" ? sentence(`${box.id} boxes reach ${new Intl.ListFormat("en", { type: "conjunction" }).format(box.allow ?? [])} through a proxy, and nothing else`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
+  return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`))].join(" ");
 }
 
-/** `places` in capabilities: the modes a revision may name, this host's default, and each box. */
-export const placesOf = (registry: readonly BoxOffer[]) => ({ modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxAvailability(registry).map(stated) });
+/** `places` in capabilities: the modes a revision may name, this host's default, each box, and the hosts a box with a
+ *  network list reaches (`allow`, else the list the box offers carry; empty when none has one). */
+export const placesOf = (registry: readonly BoxOffer[], allow?: readonly string[] | "none") => {
+  const boxes = boxAvailability(registry);
+  const listed = allow ?? boxes.find((box) => box.available && box.network === "allowlist")?.allow ?? "none";
+  return { modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxes.map(stated), allow: listed === "none" ? [] : [...listed] };
+};
 /** A box with its state: what the server set (a Docker box whose image is coming is `preparing`), else `ready` when it
- *  is available and `unavailable` when not. */
-const stated = ({ state, ...offer }: BoxOffer): BoxOffer => ({ ...offer, state: offer.available ? (state ?? "ready") : "unavailable" });
+ *  is available and `unavailable` when not; and its network, `none` unless the server set it (an unavailable box has
+ *  none, and no reason for it but its own). */
+const stated = ({ state, allow: _allow, network, network_reason, ...offer }: BoxOffer): BoxOffer => ({
+  ...offer,
+  state: offer.available ? (state ?? "ready") : "unavailable",
+  network: offer.available ? (network ?? "none") : "none",
+  ...(offer.available && network !== "allowlist" && network_reason ? { network_reason } : {}),
+});
 
 /** A run's place: its revision's, else this host's default. */
 export const resolvePlace = (revision: Place | undefined): Place => revision ?? { mode: "runner" };

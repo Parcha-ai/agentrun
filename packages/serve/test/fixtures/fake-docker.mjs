@@ -14,10 +14,12 @@
 // file's text, and the mark goes. Each `run` is noted in `made.jsonl`, `pulledInRun` when Docker had no image then, as
 // Docker would pull it there, inside the call; for the server's own image (`agentrun-box:*`), which no registry has, that
 // pull fails, and `run` with it, in Docker's words.
+// `info` answers as a daemon on this Linux machine (its kernel), or as `docker-info` says.
+// An `exec` of the box's network relay (socat) is noted, never run here (`no-socat` in the state directory: the image has none).
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { constants } from "node:os";
+import { constants, release } from "node:os";
 import { join } from "node:path";
 
 const state = process.env.FAKE_DOCKER_STATE;
@@ -65,6 +67,15 @@ switch (args[0]) {
   case "version":
     done("27.0.0-fake\n");
     break;
+  case "info": {
+    // `docker info --format {{.OSType}}|{{.KernelVersion}}|{{.OperatingSystem}}`: a daemon of this Linux machine's own
+    // (its kernel), or what `docker-info` in the state directory says; it fails with `docker-info-fail`'s text, and with
+    // `docker-info-hold` it never answers.
+    if (existsSync(join(state, "docker-info-hold"))) setInterval(() => {}, 60_000);
+    else if (existsSync(join(state, "docker-info-fail"))) fail(readFileSync(join(state, "docker-info-fail"), "utf8").trim() || "Cannot connect to the Docker daemon");
+    else done(existsSync(join(state, "docker-info")) ? readFileSync(join(state, "docker-info"), "utf8") : `linux|${release()}|Debian GNU/Linux 13 (trixie)\n`);
+    break;
+  }
   case "image": {
     if (args[1] !== "inspect") fail(`fake docker: no image ${args[1]}`);
     const name = args.at(-1);
@@ -162,6 +173,12 @@ switch (args[0]) {
     const container = read(args[i]);
     if (!container) fail(`Error response from daemon: No such container: ${args[i]}`);
     const command = args.slice(i + 1);
+    // The box's network relay (box-egress.ts) is never started on this machine: noted in `relays.jsonl`, it answers as an
+    // image with socat would (exit 0), or, when the state directory holds `no-socat`, as one without (exit 127).
+    if (command.some((arg) => arg.includes("socat"))) {
+      appendFileSync(join(state, "relays.jsonl"), `${JSON.stringify({ id: container.Id, command })}\n`);
+      process.exit(existsSync(join(state, "no-socat")) ? 127 : 0);
+    }
     const map = (text) => container.mounts.reduce((mapped, mount) => mapped.split(mount.target).join(mount.source), text);
     const tmp = join(state, "tmp", container.Id.slice(0, 12));
     mkdirSync(tmp, { recursive: true });

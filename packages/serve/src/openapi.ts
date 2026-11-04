@@ -1119,13 +1119,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "learning/1",
     },
     places: {
-      type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
+      type: "object", additionalProperties: false, required: ["modes", "default", "allow", "boxes"],
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" } } } },
+        allow: { type: "array", items: { type: "string" }, description: "The hosts a box whose `network` is `allowlist` reaches, through its egress proxy, on ports 80 and 443 (AGENTRUN_BOX_ALLOW, or the package registries by default; `*.example.com` names the hosts below example.com). Empty when no box has the list." },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state", "network"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" }, network: { enum: ["allowlist", "none"], description: "What the box's programs reach: `allowlist`, the hosts in `places.allow` and nothing else (a program that skips the box's proxy has no route); `none`, nothing." }, network_reason: { type: "string", description: "Why an available box has no network: the setting is `none`, or the box cannot have the list here, naming what the server found (a Docker in a VM, a daemon on another machine, docker info that did not answer, or a Daytona box)." } } } },
       },
-      description: "The places a revision may name, this host's default, and each box: whether this server has it, its state (ready, preparing or unavailable), and when not, why.",
+      description: "The places a revision may name, this host's default, the hosts a box with a network list reaches, and each box: whether this server has it, its state (ready, preparing or unavailable), and when not, why; and its network (allowlist or none), and when an available box has none, why.",
       "x-agentrun-serve": "place/1",
     },
     harnesses: {
