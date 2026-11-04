@@ -122,12 +122,12 @@ test("a draft is its workflow.json and README.md together, as the folder will ho
   assert.deepEqual(check([added(DRAFT_PATH, workflow())]).problems, [{ rule: "workflow", path: README_PATH, detail: "the folder holds workflow.json without the other file" }]);
   assert.deepEqual(check([added(README_PATH, readme)]).problems, [{ rule: "workflow", path: DRAFT_PATH, detail: "the folder holds README.md without the other file" }]);
   assert.equal(check([{ ...added(DRAFT_PATH, workflow({ tools: ["web_search"] })), status: "modified" }], { base: baseOf({ ...SEED, [DRAFT_PATH]: workflow(), [README_PATH]: readme }) }).ok, true, "one file changed, the other on the seed");
-  assert.deepEqual(check([added(DRAFT_PATH, workflow()), added(README_PATH, " \n")]).problems, [{ rule: "workflow", path: README_PATH, detail: "the README is empty" }]);
+  assert.deepEqual(check([added(DRAFT_PATH, workflow()), added(README_PATH, " \n")]).problems, [{ rule: "workflow", path: README_PATH, detail: "it does not start with front matter" }]);
   assert.deepEqual(rules(check(draft("{ not json"))), ["workflow"]);
   assert.match(check(draft(workflow({ node: "shell" }))).problems[0].detail, /NODE_KIND_UNKNOWN at \/root/);
 });
 
-test("a skill's or a draft's folder name, any other file under them, a deletion, a link and the 32 KiB cap", () => {
+test("a skill's or a draft's folder name, any other file under them, a deletion, a link and the 16 KiB cap", () => {
   for (const path of ["skills/Find/SKILL.md", "skills/find--policies/SKILL.md", `skills/${"a".repeat(65)}/SKILL.md`, "workflows/Find/README.md", "workflows/-x/workflow.json"]) assert.deepEqual(rules(check([added(path, readme)])), ["file_name"], path);
   for (const path of ["skills/find-policies/run.sh", "skills/find-policies/scripts/SKILL.md", "skills/SKILL.md", "workflows/find-policies/other.json", "workflows/find-policies/package.json"]) {
     const result = check([added(path, readme)]);
@@ -137,7 +137,7 @@ test("a skill's or a draft's folder name, any other file under them, a deletion,
   const seeded = baseOf({ ...SEED, [SKILL_PATH]: skill(), [DRAFT_PATH]: workflow(), [README_PATH]: readme });
   for (const path of [SKILL_PATH, DRAFT_PATH, README_PATH]) assert.deepEqual(rules(check([{ path, status: "deleted" }], { base: seeded })), ["deleted"], path);
   assert.deepEqual(check([added(SKILL_PATH, skill(), { mode: "120000" })]).problems, [{ rule: "file_mode", path: SKILL_PATH, detail: "a link: never followed" }]);
-  assert.equal(CAPS.file, 32_768);
+  assert.equal(CAPS.file, 16_384);
   const at = skill();
   const full = `${at}${"x".repeat(CAPS.file - Buffer.byteLength(at))}`;
   assert.equal(check([added(SKILL_PATH, full)]).ok, true, "at the cap");

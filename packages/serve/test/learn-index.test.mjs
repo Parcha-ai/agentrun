@@ -14,15 +14,15 @@ import * as skills from "../dist/learn/skills.js";
 
 const VALUES = {
   check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy"],
-  grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradePrompt", "parseVerdict"],
+  grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradedFiles", "gradePrompt", "parseVerdict"],
   invisible: ["hiddenCharacter"],
-  reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt"],
+  reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt", "SKILL_BLOCK", "WORKFLOW_BLOCK"],
   notes: ["activeNotes", "approve", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "mergedNote", "NOTE_FILE", "NOTE_ORIGINS", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
   secrets: ["MIN_SECRET", "PRINT_MAX", "redactSecrets", "secretShapes", "valueMatcher"],
-  skills: ["draftProblems", "learnedPlace", "NO_TOOL_LIST", "SKILL_NAME", "SKILLS_DIR", "skillProblems", "WORKFLOW_NAME", "WORKFLOWS_DIR"],
+  skills: ["draftFiles", "draftProblems", "held", "isHeld", "learnedPlace", "NO_TOOL_LIST", "readmeOf", "setsStatus", "SKILL_NAME", "SKILLS_DIR", "skillProblems", "WORKFLOW_NAME", "WORKFLOWS_DIR"],
 };
 const MODULES = { check, grade, invisible, reflect, notes, secrets, skills };
-const TYPES = ["Base", "Change", "CheckInput", "DraftProblem", "DraftReader", "GradeInput", "IndexEntry", "LearnedNote", "LearnedPlace", "NoteOrigin", "NoteStatus", "NoteText", "NoteType", "Problem", "ProposalCheck", "ProposedNote", "Reflection", "Rule", "Verdict", "VerdictItem"];
+const TYPES = ["Base", "Change", "CheckInput", "DraftProblem", "DraftReader", "GradeInput", "IndexEntry", "LearnedBlock", "LearnedNote", "LearnedPlace", "NoteOrigin", "NoteStatus", "NoteText", "NoteType", "Problem", "ProposalCheck", "ProposedNote", "Reflection", "Rule", "Verdict", "VerdictItem"];
 
 test("the index exports every value of the learning modules, each the same binding as its module's, and nothing else", () => {
   assert.deepEqual(Object.keys(learn).sort(), Object.values(VALUES).flat().sort());

@@ -62,8 +62,8 @@ export const richWorkflow = ({ tool = "web_fetch", code } = {}) => JSON.stringif
   ] },
 }, null, 2);
 
-/** A workflow draft's README. */
-export const readme = "# find-policies\n\nFinds a store's refund policy. Use it when a case asks what a store's refunds are.\n";
+/** A workflow draft's README, as the host writes it from the description its block gives. */
+export const readme = "---\nname: find-policies\ndescription: Finds a store's refund policy; use it when a case asks what a store's refunds are\n---\n";
 
 /** Where a run proposes a skill and a workflow draft, in the folder. */
 export const SKILL_PATH = "skills/find-policies/SKILL.md";
