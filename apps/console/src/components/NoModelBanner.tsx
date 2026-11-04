@@ -3,8 +3,9 @@
  *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes, and a
  *  seal key: `at_rest` "sealed"), so one can be added in Settings, which the bar leads with: a saved key reaches the next
  *  run with no restart. `model`: the server's default model (`models.default`); when one is named, only its provider's key
- *  runs it, so the bar names it and makes no OpenRouter promise. */
-export function NoModelBanner({ needs, settings, model }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null }) {
+ *  runs it, so the bar names it and makes no OpenRouter promise. `source` `gateway` (`models.source`: the server sends its
+ *  models to AGENT_MODEL_BASE_URL): the gateway's model is named in AGENT_MODEL, so the bar says that and offers no key. */
+export function NoModelBanner({ needs, settings, model, source }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null; source?: "faux" | "gateway" | "providers" }) {
   return (
     <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-[13px] text-warning-text md:px-8">
       {needs === "model" ? (
@@ -12,7 +13,9 @@ export function NoModelBanner({ needs, settings, model }: { needs?: "key" | "mod
       ) : (
         <>
           No model yet.{" "}
-          {model ? (
+          {source === "gateway" ? (
+            "This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart."
+          ) : model ? (
             settings ? (
               <>
                 This server's default model is {model}: <a href="#/settings/keys" className="underline underline-offset-2">add its
