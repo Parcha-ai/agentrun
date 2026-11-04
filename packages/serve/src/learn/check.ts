@@ -149,10 +149,18 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   return { ok: problems.length === 0, problems, notes: problems.length ? [] : notes };
 }
 
+/** The notes the active ones of `notes` supersede, each by the note that supersedes it. A note that waits for its
+ *  owner's OK (`status: pending`) supersedes nothing until it is approved: what it names stays active. The one rule the
+ *  merge writes by (grade.ts mergeProposal) and its index is counted by (mergeProblems). */
+export function supersededBy(notes: readonly LearnedNote[]): Map<string, string> {
+  return new Map(notes.filter((note) => note.status === "active").flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
+}
+
 /** What stops `notes` from joining `base` as they are: a name `base` holds (`exists`), a `supersedes` that names no
  *  active note of `base` or one another new note supersedes too, or more than CAPS.supersedes notes superseded, and an
- *  index past INDEX_LINES. The checker asks it of the run's seed; the host asks it again of main at merge time, since
- *  other runs may have merged meanwhile. */
+ *  index past INDEX_LINES, counted as the merge makes it (supersededBy: a pending note adds no line and replaces none).
+ *  The checker asks it of the run's seed, where every new note is active; the host asks it again of main at merge time,
+ *  with each note as it merges it, since other runs may have merged meanwhile. */
 export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseValues: readonly string[] = []): Problem[] {
   const files = new Set(base.files);
   const active = new Set(base.active.map((note) => note.file));
@@ -168,7 +176,8 @@ export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseV
   }
   // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is.
   if (replaced.size > CAPS.supersedes) out.push({ rule: "supersedes", detail: `the new notes supersede ${replaced.size} notes; the cap is ${CAPS.supersedes} a run` });
-  const lines = active.size - [...replaced].filter((file) => active.has(file)).length + notes.length;
+  const gone = supersededBy(notes);
+  const lines = [...active].filter((file) => !gone.has(file)).length + notes.filter((note) => note.status === "active").length;
   if (lines > INDEX_LINES) out.push({ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
   return out.map((problem) => printable(problem, refuseValues));
 }

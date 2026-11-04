@@ -16,7 +16,7 @@
 // The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, type Verdict } from "./learn/index.js";
+import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
 import type { PageJudge } from "@parcha/pi-browser";
 import { claudeModel, claudeProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
@@ -273,7 +273,7 @@ export function mergeProposal(data: string, agentId: string, runId: string, prop
       // The new tree: main's, with the new notes, the ones the kept notes supersede marked, and the index rebuilt from
       // what is active then (a pending note is not).
       const files = new Map(texts.map(({ file, text }) => [file, text]));
-      const replaced = new Map(added.filter((note) => note.status === "active").flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
+      const replaced = supersededBy(added);
       for (const [old, by] of replaced) files.set(old, supersede(main.texts.get(old)!, by));
       const after = [...notes.filter((note) => !replaced.has(note.file)), ...added];
       files.set(INDEX_FILE, buildIndex(after));
