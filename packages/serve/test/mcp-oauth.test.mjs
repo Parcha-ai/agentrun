@@ -67,6 +67,7 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   assert.equal(read.body.auth.type, "oauth");
   assert.equal(read.body.credential, "sealed");
   assert.equal(read.body.oauth.client, "dynamic");
+  assert.equal(read.body.oauth.client_id, asked.searchParams.get("client_id"), "reads show the registered client id");
   assert.deepEqual(read.body.oauth.scopes, ["read"]);
   assert.ok(Date.parse(read.body.oauth.expires_at) > Date.now(), "it says when the access token expires");
   assert.deepEqual(read.body.tools.map((tool) => tool.name), TOOLS, "the tools are listed at sign-in, as a PUT lists them");
@@ -118,8 +119,20 @@ test("a pre-registered client: its id and secret are used, no registration is ma
   assert.equal(read.body.credential, "sealed");
   assert.equal(read.body.oauth.client, "pre-registered");
   holdsNone(readFileSync(join(data, "mcp-servers.json"), "utf8"), [secret, ...as.issued], "mcp-servers.json");
+  assert.equal(read.body.oauth.client_id, "owner-app", "reads show the client id");
+  holdsNone(JSON.stringify(read.body), [secret], "a read");
   const bad = await api("POST", "/settings/mcp-servers/crm/oauth/start", { url: mcp.url, client_secret: secret });
   assert.equal(bad.status, 422, "a secret names its client");
+
+  // Signing in again needs neither the id nor the secret: the client kept in the sealed token set is used.
+  const again = await api("POST", "/settings/mcp-servers/crm/oauth/start", { url: mcp.url, scopes: ["read"] });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(new URL(again.body.authorization_url).searchParams.get("client_id"), "owner-app");
+  assert.equal((await approve(again.body.authorization_url)).headers.get("location"), "/#/settings/mcp?server=crm&sign_in=ok", "the code exchange authenticated with the kept secret");
+  assert.ok(!as.log.some((entry) => entry.path === "/register"), "still no registration");
+  const after = await api("GET", "/settings/mcp-servers/crm");
+  assert.deepEqual([after.body.oauth.client, after.body.oauth.client_id, after.body.oauth.scopes], ["pre-registered", "owner-app", ["read"]]);
+  holdsNone(JSON.stringify(after.body), [secret], "a read");
 });
 
 test("CIMD only on a public https address: the client id is this server's metadata document, which it serves", async (t) => {

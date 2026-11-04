@@ -80,6 +80,19 @@ describe("KeysPage", () => {
     expect(page.row("Browserbase").textContent).toContain("pi only");
   });
 
+  // QA: a key that no harness reads (TypeSafe's, which only a decision provider uses) read "Unlocks decisions.jev ·
+  // Harnesses", a label with nothing after it. Its row says what it unlocks and nothing about harnesses.
+  it("says nothing about harnesses on a row whose key no harness reads", async () => {
+    const plain = view({});
+    const jev = { id: "typesafe", label: "TypeSafe (Jev)", fields: [field("TYPESAFE_API_KEY", null)], unlocks: ["decisions.jev"], harnesses: [] };
+    const { v2 } = server([{ ...plain, keys: [...plain.keys, jev] }]);
+    const page = await open(v2);
+    expect(page.row("TypeSafe (Jev)").textContent).toContain("Unlocks decisions.jev");
+    expect(page.row("TypeSafe (Jev)").textContent).not.toContain("Harnesses");
+    expect(page.row("TypeSafe (Jev)").textContent).not.toContain(" · ");
+    expect(page.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search · Harnesses pi, claude-agent, codex");
+  });
+
   it("Add key sends a PUT with only the values typed, then reads the keys again and says it changed", async () => {
     const { v2, calls } = server([view({}), view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "stored") })]);
     let changed = 0;

@@ -54,6 +54,51 @@ export const mcpNameOf = (name: string): { server: string; tool: string } | unde
   return match ? { server: match[1]!, tool: match[2]! } : undefined;
 };
 
+/** The most schema nodes, and the deepest nesting, a tool's declarations are checked through: past either the tool is
+ *  refused, never walked further. */
+export const HEADER_SCAN_NODES = 10_000;
+export const HEADER_SCAN_DEPTH = 64;
+
+/** Why a tool's `x-mcp-header` declarations (SEP-2243, the 2026-07-28 revision) cannot be mirrored into `Mcp-Param-*`
+ *  headers, by the rules the SDK client applies when it lists tools: only on a property reached through `properties`
+ *  alone, a non-empty RFC 9110 token, on a string, integer or boolean, unique without regard to case. Undefined when they
+ *  can, or there are none. The SDK does the mirroring itself (callTool's `toolDefinition`), but it exports no form of this
+ *  check, which it runs only inside its own `listTools()`. Each object is visited once, from an explicit stack, within
+ *  HEADER_SCAN_NODES and HEADER_SCAN_DEPTH. */
+export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
+  const seen = new Map<string, string>();
+  const visited = new WeakSet<object>();
+  const stack: { node: unknown; path: readonly string[]; reachable: boolean }[] = [{ node: inputSchema, path: [], reachable: true }];
+  for (let nodes = 0; stack.length; ) {
+    const { node, path, reachable } = stack.pop()!;
+    if (!node || typeof node !== "object" || visited.has(node)) continue;
+    visited.add(node);
+    if (++nodes > HEADER_SCAN_NODES) return `its input schema is larger than ${HEADER_SCAN_NODES} parts, more than its headers are checked through`;
+    if (path.length > HEADER_SCAN_DEPTH) return `its input schema nests deeper than ${HEADER_SCAN_DEPTH} levels, more than its headers are checked through`;
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push({ node: item, path, reachable: false });
+      continue;
+    }
+    const schema = node as Record<string, unknown>;
+    const where = path.length ? path.join(".") : "the schema's root";
+    if (Object.hasOwn(schema, "x-mcp-header")) {
+      const name = schema["x-mcp-header"];
+      if (!reachable || !path.length) return `${where}: x-mcp-header is only allowed on a property reached through properties alone`;
+      if (typeof name !== "string" || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) return `${where}: x-mcp-header must be a header name (an RFC 9110 token)`;
+      if (!["string", "integer", "boolean"].includes(schema.type as string)) return `${where}: x-mcp-header is only allowed on a string, integer or boolean`;
+      const prior = seen.get(name.toLowerCase());
+      if (prior !== undefined) return `x-mcp-header ${name} is declared twice (also as ${prior})`;
+      seen.set(name.toLowerCase(), name);
+    }
+    for (const [key, child] of Object.entries(schema)) {
+      if (!child || typeof child !== "object" || key === "x-mcp-header") continue;
+      if (key === "properties" && !Array.isArray(child)) for (const [name, property] of Object.entries(child)) stack.push({ node: property, path: [...path, name], reachable });
+      else stack.push({ node: child, path: [...path, `<${key}>`], reachable: false });
+    }
+  }
+  return undefined;
+}
+
 /** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. Keyed by server name
  *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. */
 export function mcpPinOf(names: readonly string[], source: McpServerSource): McpPin {
@@ -62,7 +107,7 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     const parsed = mcpNameOf(name);
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
-    if (!parsed || !saved || !tool) continue;
+    if (!parsed || !saved || !tool || mcpHeaderProblem(tool.inputSchema)) continue;
     if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };
     pin[parsed.server]!.tools.push(tool);
   }
@@ -144,7 +189,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       statuses.set(server, status);
       upstream = (async () => {
         const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
-        const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {} });
+        // The 2026-07-28 revision first, a 2025-era server through its initialize, as a preview connects.
+        const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
         await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(headers, status) as never }), { timeout: CONNECT_MS });
         return client as unknown as Upstream;
       })();
@@ -178,11 +224,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** The call itself, to a server whose address is the pinned one. A gate's decision or a paid call's hold goes around
    *  it, in `call` below: the one place every harness's call passes before anything is sent. */
-  const forward = async (server: string, url: string, headers: Record<string, string>, tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult> => {
+  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult> => {
     try {
       const upstream = await until(connect(server, url, headers), signal);
-      const result = (await upstream.callTool({ name: tool, arguments: args }, { signal, timeout: CALL_MS })) as Record<string, unknown>;
-      return said(await textOf(server, tool, result, headers), result.isError === true);
+      // The pinned definition, so the SDK mirrors its x-mcp-header parameters into Mcp-Param-* headers on a 2026-07-28
+      // server, as its own listing would have it do.
+      const result = (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
+      return said(await textOf(server, tool.name, result, headers), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
@@ -199,11 +247,12 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
     async call(server, tool, args, { signal }) {
       const pinned = pins.get(server);
-      if (!pinned?.tools.some((t) => t.name === tool)) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
+      const listed = pinned?.tools.find((t) => t.name === tool);
+      if (!listed) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
       const now = credentials.get(server);
       if (!now) return said(`The MCP server ${server} is no longer saved on this server; nothing was sent.`, true);
-      if (now.url !== pinned.url) return said(`The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`, true);
-      return forward(server, pinned.url, now.headers ?? {}, tool, args, signal);
+      if (now.url !== pinned!.url) return said(`The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`, true);
+      return forward(server, pinned!.url, now.headers ?? {}, listed, args, signal);
     },
   };
 }

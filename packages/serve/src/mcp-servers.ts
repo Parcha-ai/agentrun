@@ -30,6 +30,10 @@ const MAX_RESPONSE_BYTES = 4 * 2 ** 20;
 const MAX_URL = 2048;
 const MAX_VALUE_BYTES = 8192;
 const MAX_HEADERS = 8;
+/** What one server's snapshot may hold: every list and get reads it back whole. */
+const MAX_TOOLS = 500;
+const MAX_SNAPSHOT_BYTES = 2 ** 20;
+const MAX_PAGES = 64;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 /** Headers the transport sets itself, or that name the connection rather than the person. */
@@ -42,7 +46,7 @@ type AuthType = (typeof MCP_AUTH_TYPES)[number];
 export type McpTool = { name: string; title?: string; description?: string; input_schema: unknown; output_schema?: unknown; annotations?: unknown };
 type Listed = { protocol: string; server_info: unknown; instructions?: string; tools: McpTool[] };
 /** An OAuth sign-in, what may be shown of it: never a token. */
-type OAuthNote = { expires_at?: string; scopes: string[]; client: ClientKind; expired?: true };
+type OAuthNote = { expires_at?: string; scopes: string[]; client: ClientKind; client_id?: string; expired?: true };
 type Kept = Listed & { url: string; auth: { type: AuthType; sealed?: Record<string, string>; check?: string; oauth?: OAuthNote }; listed_at: string; updated_at: string };
 type HeaderMap = Record<string, string>;
 type Auth = { type: AuthType; headers?: HeaderMap };
@@ -104,7 +108,7 @@ export class McpServers {
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal) {
     nameOf(name);
     const { url, auth } = this.admit(body);
-    if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
+    if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = this.servers()[name];
     let headers = auth.headers;
     if (auth.type !== "none" && !headers) {
@@ -162,10 +166,14 @@ export class McpServers {
       if (text !== undefined && (typeof text !== "string" || text === "" || CONTROL.test(text) || Buffer.byteLength(text) > MAX_VALUE_BYTES)) issues.push({ field, reason: "invalid", message: `${field} is text, at most ${MAX_VALUE_BYTES} bytes.` });
     if (client_secret !== undefined && client_id === undefined) issues.push({ field: "client_id", reason: "missing", message: "A client_secret goes with the client_id it is the secret of." });
     if (issues.length) throw invalid(issues);
-    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
-    const client = typeof client_id === "string" ? { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) } : undefined;
+    if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear. ${SEAL_KEY_HOW}`);
     const was = this.servers()[name];
-    return { authorization_url: await this.signIns.start(name, url!, { was: was ? saving(was) : null,  ...(scopes ? { scope: (scopes as string[]).join(" ") } : {}), ...(client ? { client } : {}) }) };
+    // A body with no client_id signs in again with the client kept in the sealed token set (a pre-registered one with
+    // its secret, or the one registered or named last time), for the same origin only; one with a client_id replaces it.
+    const opened = typeof client_id !== "string" && was?.auth.type === "oauth" && new URL(was.url).origin === url!.origin ? this.open(name, was) : undefined;
+    const kept = opened && "set" in opened ? opened.set : undefined;
+    const client = typeof client_id === "string" ? { client: { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) }, kind: "pre-registered" as const } : kept ? { client: kept.client, kind: kept.kind } : {};
+    return { authorization_url: await this.signIns.start(name, url!, { was: was ? saving(was) : null, ...(scopes ? { scope: (scopes as string[]).join(" ") } : {}), ...client }) };
   }
 
   /** GET .../oauth/callback, the browser's way back: its state's sign-in finished (the code exchanged, the token set
@@ -244,7 +252,7 @@ export class McpServers {
 
   private sealedSet(name: string, set: TokenSet): Kept["auth"] {
     const oauth = seal(this.key!, Buffer.from(JSON.stringify(set), "utf8"), aad(name, "oauth")).toString("base64");
-    const note: OAuthNote = { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind };
+    const note: OAuthNote = { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind, client_id: set.client.client_id };
     return { type: "oauth", sealed: { oauth }, check: this.sealCheck, oauth: note };
   }
 
@@ -257,7 +265,7 @@ export class McpServers {
 
   private saved(name: string): Kept | undefined {
     const kept = this.kept();
-    return kept === "unreadable" ? undefined : kept[name];
+    return kept === "unreadable" || !Object.hasOwn(kept, name) ? undefined : kept[name];
   }
 
   private need(name: string): Kept {
@@ -274,7 +282,7 @@ export class McpServers {
       ...rest,
       auth: { type: auth.type, ...(auth.type === "headers" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
       credential: opened === null ? null : !("headers" in opened) ? opened.unreadable : auth.oauth?.expired ? ("expired" as const) : ("sealed" as const),
-      ...(auth.oauth ? { oauth: { ...(auth.oauth.expires_at ? { expires_at: auth.oauth.expires_at } : {}), scopes: auth.oauth.scopes, client: auth.oauth.client } } : {}),
+      ...(auth.oauth ? { oauth: { ...(auth.oauth.expires_at ? { expires_at: auth.oauth.expires_at } : {}), scopes: auth.oauth.scopes, client: auth.oauth.client, ...(auth.oauth.client_id ? { client_id: auth.oauth.client_id } : {}) } } : {}),
     };
   }
 
@@ -298,7 +306,7 @@ export class McpServers {
     if (kept.auth.oauth?.expired) throw invalid([{ field, reason: "expired", message: `The sign-in to ${name} expired or was revoked: ${SIGN_IN_AGAIN}.` }]);
     const opened = this.open(name, kept);
     if ("headers" in opened) return opened.headers;
-    if (opened.unreadable === "seal_key_missing") throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so the saved credential of ${name} does not open.`);
+    if (opened.unreadable === "seal_key_missing") throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so the saved credential of ${name} does not open. ${SEAL_KEY_HOW}`);
     throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
   }
 
@@ -317,8 +325,7 @@ export class McpServers {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
       return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? (Object.assign(Object.create(null), doc.servers) as Record<string, Kept>) : "unreadable";
     } catch (error) {
-      // No prototype either way: a server named `constructor` is a server, not Object's.
-      return (error as NodeJS.ErrnoException).code === "ENOENT" ? (Object.create(null) as Record<string, Kept>) : "unreadable";
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? Object.create(null) : "unreadable";
     }
   }
 
@@ -341,6 +348,8 @@ const scrub = (text: string, headers: HeaderMap): string =>
   Object.values(headers).flatMap((value) => [value, /^Bearer\s+(.+)$/i.exec(value)?.[1]]).filter((value): value is string => !!value).sort((a, b) => b.length - a.length).reduce((cut, value) => cut.split(value).join("[credential]"), text);
 /** Which save of a server this is: a PUT or a sign-in makes a new one, a refresh of its token or tools does not. */
 const saving = (kept: Kept) => `${kept.url} ${kept.updated_at}`;
+/** How a server gets a seal key: what its launcher does (launcher/agentrun-serve). */
+const SEAL_KEY_HOW = `Start it with its launcher, agentrun-serve, which keeps one in agentrun/seal.key under $XDG_CONFIG_HOME (~/.config by default), made at the first start, 0600 in a 0700 directory; or hand it ${SEAL_KEY_ENV} (32 random bytes in base64).`;
 const notFound = (name: string) => new ApiError("not_found", `No MCP server ${name}: GET /v2/settings/mcp-servers lists them.`);
 const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : type === "oauth" ? "auth.type" : "auth.headers", reason: "missing", message: type === "oauth" ? `${message} An OAuth server is signed in to first: POST /v2/settings/mcp-servers/{name}/oauth/start.` : message });
 const nameOf = (name: string) => {
@@ -363,7 +372,7 @@ function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   }
   if (value.length > MAX_URL) issues.push({ field: "url", reason: "too_long", message: `url is at most ${MAX_URL} characters.` });
   else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds a user or password: send a credential as auth instead." });
-  else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: "url is https, or http on this machine's loopback." });
+  else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: `url is http://${url.host}, which is not this machine's loopback: use https, or http only on loopback.` });
   else if (url.protocol !== "https:" && url.protocol !== "http:") issues.push({ field: "url", reason: "invalid", message: "url is https, or http on loopback." });
   url.hash = "";
   return url;
@@ -396,7 +405,7 @@ function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
     if (value.headers !== undefined) {
       const entries = isObject(value.headers) ? Object.entries(value.headers) : [];
       if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field: "auth.headers", reason: "invalid", message: `auth.headers names 1 to ${MAX_HEADERS} headers and their values.` });
-      headers = {};
+      headers = Object.create(null) as HeaderMap;
       for (const [name, text] of entries) {
         const lower = name.toLowerCase();
         if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: `auth.headers.${name}`, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
@@ -432,22 +441,41 @@ async function listServer(url: URL, headers: HeaderMap, version: string, stop?: 
   const client = new sdk.Client({ name: "agentrun-serve", version }, { versionNegotiation: { mode: "auto" } });
   try {
     await client.connect(transport, { timeout: REQUEST_MS, signal: deadline });
-    const { tools } = await client.listTools(undefined, { timeout: PREVIEW_MS, signal: deadline });
+    // Paged here rather than by listTools(), which reads every page before answering: a snapshot past its caps
+    // stops at the page that crosses them.
+    const tools: McpTool[] = [];
+    let bytes = 0;
+    if (client.getServerCapabilities()?.tools) {
+      for (let cursor: string | undefined, pages = 0; ; ) {
+        const page = await client.request({ method: "tools/list", ...(cursor !== undefined ? { params: { cursor } } : {}) }, { timeout: PREVIEW_MS, signal: deadline });
+        for (const tool of page.tools) {
+          const kept: McpTool = {
+            name: tool.name,
+            ...(tool.title ? { title: tool.title } : {}),
+            ...(tool.description !== undefined ? { description: tool.description } : {}),
+            input_schema: tool.inputSchema,
+            ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
+            ...(tool.annotations ? { annotations: tool.annotations } : {}),
+          };
+          tools.push(kept);
+          bytes += Buffer.byteLength(JSON.stringify(kept));
+          if (tools.length > MAX_TOOLS) throw invalid([{ field: "url", reason: "too_many_tools", message: `This server lists more than ${MAX_TOOLS} tools (${tools.length} so far, listing stopped): a server is kept with at most ${MAX_TOOLS}.` }]);
+          if (bytes > MAX_SNAPSHOT_BYTES) throw invalid([{ field: "url", reason: "tools_too_large", message: `This server's tools come to more than ${MAX_SNAPSHOT_BYTES / 2 ** 20} MiB of names, descriptions and schemas (${tools.length} tools so far, listing stopped): a server is kept with at most ${MAX_SNAPSHOT_BYTES / 2 ** 20} MiB.` }]);
+        }
+        if (page.nextCursor === undefined || page.nextCursor === cursor) break;
+        if (++pages >= MAX_PAGES) throw new ApiError("upstream_failed", `The MCP server's tool list did not end within ${MAX_PAGES} pages.`);
+        cursor = page.nextCursor;
+      }
+    }
     const instructions = client.getInstructions();
     return {
       protocol: client.getNegotiatedProtocolVersion() ?? "unknown",
       server_info: client.getServerVersion() ?? null,
       ...(instructions ? { instructions } : {}),
-      tools: tools.map((tool) => ({
-        name: tool.name,
-        ...(tool.title ? { title: tool.title } : {}),
-        ...(tool.description !== undefined ? { description: tool.description } : {}),
-        input_schema: tool.inputSchema,
-        ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
-        ...(tool.annotations ? { annotations: tool.annotations } : {}),
-      })),
+      tools,
     };
   } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw await refusal(error, seen, overflow, url, headers, deadline, sdk);
   } finally {
     await client.close().catch(() => {});
@@ -460,7 +488,11 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   const redirect = seen.find((one) => one.status >= 300 && one.status < 400);
   if (redirect) {
     const to = redirect.headers.get("location");
-    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${to ? `, pointing to ${new URL(to, url).href}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, headers) }]);
+    let where = to?.slice(0, 200);
+    try {
+      if (to) where = new URL(to, url).href;
+    } catch {}
+    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${where ? `, pointing to ${where}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, headers) }]);
   }
   const denied = seen.find((one) => one.status === 401 || one.status === 403);
   if (denied) {
@@ -476,7 +508,8 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
     return upstream(`Could not reach the MCP server at ${url.origin}${causeCode(error) ? ` (${causeCode(error)})` : ""}.`);
   }
   if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${url.href} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
-  if (deadline.aborted || timedOut(error)) return upstream(`The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.`);
+  // The listing's own limit when it was the one that ran out, else one request's.
+  if (deadline.aborted || timedOut(error)) return upstream(deadline.aborted ? `The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.` : `The MCP server did not answer a request within ${REQUEST_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
   const said = scrub(error instanceof Error ? error.message : String(error), headers);
   return upstream(`The MCP server failed to list its tools: ${said.slice(0, 300)}`);
