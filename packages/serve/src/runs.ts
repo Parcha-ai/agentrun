@@ -19,7 +19,7 @@ import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
+import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -214,6 +214,8 @@ export type Run = {
   finishStop?: boolean;
   /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
   reopening?: Promise<void>;
+  /** A follow-up to a run whose turn had ended is on its way: a launch it makes opens the run for it (FOLLOW_UP_OPEN_ENV). */
+  followUpOpen?: true;
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
@@ -651,6 +653,11 @@ export class Runs {
   /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
    *  stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
+   *  launch, so a test can hold a reopen there. */
+  beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
+  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
 
   private get store() {
     return this.options.agents.store;
@@ -1396,8 +1403,10 @@ export class Runs {
     this.needs.set(run.revision, await needsOf(revision));
   }
 
-  private launch(run: Run): void {
+  private launch(run: Run, followUp = run.followUpOpen === true): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
+    // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
+    run.followUpOpen = undefined;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
     // reads its revision's needs first (pinNeeds); one that did not hands no tool key. Which keys, from the keys this
     // server holds now (its launcher's and the saved ones, never its environment, which under the launcher holds none),
@@ -1438,6 +1447,9 @@ export class Runs {
     const harness = run.tooling?.harness ?? DEFAULT_HARNESS;
     const defaultModel = run.tooling && !run.tooling.model && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
     if (defaultModel) env[DEFAULT_MODEL_ENV] = defaultModel;
+    // Opened for a person's follow-up to a run whose turn had ended: nothing it resumes was cut (app.ts markResumed).
+    delete env[FOLLOW_UP_OPEN_ENV];
+    if (followUp) env[FOLLOW_UP_OPEN_ENV] = "1";
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
@@ -1920,6 +1932,7 @@ export class Runs {
   }
 
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
+    await this.beforeSubmit?.(run.id, content);
     const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
@@ -1957,6 +1970,10 @@ export class Runs {
     const working = status === "queued" || (status === "working" && state === "working");
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
+    // A follow-up to a run the person stopped, whose process has gone: its turn had ended, so the process this message
+    // starts resumes nothing. With its process live the message starts none, and a relaunch after that process dies
+    // under the message is a crash's, which keeps its row.
+    if (status === "input_required" && state === "idle" && !this.live(run)) run.followUpOpen = true;
     run.submitted++;
     this.refresh(run);
     try {
@@ -1965,6 +1982,8 @@ export class Runs {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);
       throw error;
+    } finally {
+      run.followUpOpen = undefined;
     }
     return { mode, messageId };
   }
@@ -2001,6 +2020,9 @@ export class Runs {
         storeError(error, "run");
       }
       run.outcome = undefined;
+      // With its outcome cleared the run reads open. Messages wait for this reopen (message()), so its launch below is
+      // the follow-up's; set here, with the outcome, whichever launch comes first carries the flag (launch() takes it).
+      run.followUpOpen = true;
       run.settled = false;
       run.endedAt = undefined;
       run.error = undefined;
@@ -2008,8 +2030,10 @@ export class Runs {
       run.relaunches = 0;
       // A run that learns finds its agent's notes in its work again (learning-run.ts).
       await this.learning.onReopen(run);
+      await this.beforeReopenLaunch?.(run.id);
       this.refresh(run);
-      this.launch(run);
+      // Opened for the follow-up: the run had answered, so its open resumes nothing.
+      this.launch(run, true);
     } finally {
       // Launched, it holds its place as a live run.
       release();

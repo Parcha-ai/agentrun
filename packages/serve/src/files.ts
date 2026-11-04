@@ -14,6 +14,9 @@ export const RUN_CANCELLED = "cancelled";
 /** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
  *  or exits: found at a start, the server went down while it launched the run. */
 export const RUN_LAUNCHING = "launching";
+/** Set in a run's process environment when the server opens the run for a person's follow-up to a run whose turn had
+ *  ended (it answered, or the person stopped it): that open resumes no cut work, so it writes no "resumed" row (app.ts). */
+export const FOLLOW_UP_OPEN_ENV = "AGENTRUN_FOLLOW_UP_OPEN";
 /** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
 export const DOOR_TOKEN_FILE = ".door-token";
 /** A run's own door token, in its directory, made at its first launch and handed to its process alone (its
