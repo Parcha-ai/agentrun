@@ -181,13 +181,14 @@ async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost
     const catalog = builtinModels({ authContext: graderAuth(sent) }) as unknown as PiModels;
     const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: sent.origin } : found);
     chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: { provider: "anthropic", modelId: sent.modelId } };
-  } else if (agent.harness === "codex" && !env[FAUX_HARNESS_ENV] && openRouterOnly("codex", env)) {
-    // codex on OpenRouter alone: the grade goes where the run's requests go, OpenRouter with its key, on the model the run
-    // runs (codexModel, then the id codexProvider sends), through pi-ai's openrouter provider. The revision's own name
-    // (openai/<model>) would ask for an OpenAI key, which this route never needs.
-    const choice = await codexModel(env, agent.model);
+  } else if ((agent.harness === "codex" || agent.harness === "opencode") && !env[FAUX_HARNESS_ENV] && openRouterOnly(agent.harness, env)) {
+    // codex on OpenRouter alone, and opencode, which takes codex's route: the grade goes where the run's requests go,
+    // OpenRouter with its key, on the model the run runs (codexModel, then the id codexProvider sends), through pi-ai's
+    // openrouter provider. The revision's own name (openai/<model>) would ask for an OpenAI key, which this route never
+    // needs.
+    const choice = await codexModel(env, agent.model, agent.harness);
     if ("why" in choice) throw new Error(choice.why);
-    chosen = await runModels(env, `openrouter/${codexProvider(env, choice.model as ModelRef).modelId}`);
+    chosen = await runModels(env, `openrouter/${codexProvider(env, choice.model as ModelRef, agent.harness).modelId}`);
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
   const { model } = chosen;
