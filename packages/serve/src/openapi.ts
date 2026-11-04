@@ -28,7 +28,7 @@ export const UNSUPPORTED: Readonly<Record<string, string>> = {
 
 const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
-  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported" }[code]}`)]));
+  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported", 503: "Unavailable" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
 /** GET /health's answer (host.ts Health). */
 const HEALTH = {
@@ -164,6 +164,21 @@ const TOOL_KEYS_VIEW = closed({
             stored_unreadable: { type: "boolean", const: true, description: "A value is stored for it that does not open here: `reenter` says why." },
           },
         },
+      },
+      check: {
+        oneOf: [
+          closed({ state: { const: "accepted" }, at: { type: "string", format: "date-time", description: "When it was saved and checked." } }),
+          {
+            type: "object", additionalProperties: false, required: ["state", "reason"],
+            properties: {
+              state: { const: "not_checked" },
+              reason: { type: "string", description: "Why, in plain words: the provider would not answer the check (403: the key may still work for its tools), did not answer in 5 s, could not be reached, answered a redirect (never followed, so the key goes nowhere else), or answered neither yes nor no (its status and first sentence); it has no call that costs nothing to check a key with; or the key was saved before this server checked keys." },
+              at: { type: "string", format: "date-time", description: "When it was saved. Absent for a key saved before this server checked keys." },
+            },
+          },
+          { type: "null" },
+        ],
+        description: "Whether the key (its first field) was checked against its provider when it was saved here, with one call that costs nothing: `accepted`, or `not_checked` and why; a key the provider refuses is never saved (PUT's 422). Null when the key is not stored here: not set, or set by the server, whose own key is not checked here.",
       },
     }),
   },
@@ -444,10 +459,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tool-keys/{key_id}": {
     put: {
       operationId: "saveToolKey", tags: ["local"], summary: "Save a tool key's fields, sealed",
-      description: "Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. 422 for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.",
+      description: "Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.",
       parameters: [KEY_ID],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["values"], properties: { values: { type: "object", minProperties: 1, additionalProperties: { type: "string", minLength: 1 } } } } } } },
-      responses: { "204": { description: "Saved." }, ...errors(400, 401, 409, 415, 422, 429, 500) },
+      responses: { "204": { description: "Saved." }, ...errors(400, 401, 409, 415, 422, 429, 500, 503) },
       "x-agentrun-serve": "toolkeys/1",
     },
     delete: {
@@ -628,7 +643,7 @@ const RUN_PLACE: Json = {
     { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
     { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
   ],
-  description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's read, write, edit and bash run in the box, which binds only the run's work/ and has no network and no key; its loop, its log and every key stay on the server.",
+  description: "Where the run executes, as its start resolved it: the request's `runner`, else its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server.",
   "x-agentrun-serve": "place/1",
 };
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {

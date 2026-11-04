@@ -36,6 +36,10 @@ const RUN_ID_ROOM = "x".repeat(36);
 /** The room a run's copy may add to each segment: a suffix, at most one past the most files a run names. */
 const SUFFIX_ROOM = `-${MAX_FILES_PER_RUN + 1}`.length;
 const SHA256 = /^[0-9a-f]{64}$/;
+/** The temp files this module writes, by their exact names (files.ts tempOf: `<name>.<pid>.<12 hex digits>.tmp`): a file
+ *  sent in one call, as its bytes arrive, under the root; a PUT's bytes, in its file's folder. */
+const INCOMING_TEMP = /^\.incoming\.\d+\.[0-9a-f]{12}\.tmp$/;
+const BYTES_TEMP = /^bytes\.\d+\.[0-9a-f]{12}\.tmp$/;
 const FIELDS = ["path", "size_bytes", "content_type", "sha256"];
 /** What a file sent in one call takes in the query: its path, and when given its type and the hash its bytes must have. */
 const QUERY = ["path", "content_type", "sha256"];
@@ -147,6 +151,29 @@ export class Uploads {
   async ids(): Promise<string[]> {
     const names = await readdir(this.root).catch(() => [] as string[]);
     return names.filter((name) => ID.test(name)).sort().reverse();
+  }
+
+  /** At a start, under the data directory's lock (one server per data directory, so no PUT of this server is in flight):
+   *  removes the temp files a crash left, by the exact names this module writes them under. That is `.incoming.*.tmp`
+   *  under the root, and `bytes.*.tmp` in a folder named as a file's id. Each goes only when lstat says it is a regular
+   *  file: a link or anything else named like one stays, nothing is followed, and only those folders are entered, one
+   *  level. A file's bytes and its record are never touched: a folder left with only its temp keeps the rest, as after a
+   *  failed PUT. A root that is not a real directory (a link to storage another server may share) is not swept at all: the
+   *  lock covers this data directory, not where a link goes. Answers how many it removed. */
+  async sweep(): Promise<number> {
+    if (!(await lstat(this.root).catch(() => null))?.isDirectory()) return 0;
+    let removed = 0;
+    const drop = async (path: string) => {
+      if (!(await lstat(path).catch(() => null))?.isFile()) return;
+      await unlink(path).then(() => void removed++, () => undefined);
+    };
+    for (const name of await readdir(this.root).catch(() => [] as string[])) {
+      if (INCOMING_TEMP.test(name)) await drop(join(this.root, name));
+      else if (ID.test(name) && (await lstat(join(this.root, name)).catch(() => null))?.isDirectory()) {
+        for (const inner of await readdir(join(this.root, name)).catch(() => [] as string[])) if (BYTES_TEMP.test(inner)) await drop(join(this.root, name, inner));
+      }
+    }
+    return removed;
   }
 
   /** Deletes the file `id`, pending or ready, or 404. A run that copied it keeps its copy. In turn with a PUT's commit, so
