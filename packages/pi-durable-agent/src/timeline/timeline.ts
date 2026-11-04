@@ -135,6 +135,10 @@ export type RunMetrics = {
  *  `unnamedTool`. Those three start with one "…", and no entry's name does: one that starts with "…" gets another. */
 export const METRIC_NAMES = Object.freeze({ max: 256, kept: 100, otherTools: "…other tools", otherModels: "…other models", unnamedTool: "…unnamed tool" });
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+/** The apis of assistant entries a host writes for a model it did not run: the adapter bridge's requests (a request
+ *  without content is a cost, a cut, an interruption or a compaction) and an import's turns. Neither writes an empty
+ *  text block, so one of theirs with no text is no answer. */
+const HOST_APIS = new Set(["agentrun-adapter", "imported"]);
 /** A name from an entry, non-empty, as runMetricsOf keeps it (METRIC_NAMES). */
 function metricName(name: string): string {
   const whole = (name.startsWith("…") ? `…${name}` : name).replace(LONE_SURROGATE, "\uFFFD");
@@ -455,9 +459,11 @@ function createProjector(options: TimelineOptions) {
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
         const text = textOf(message);
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
-        // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
-        // say. A message with no text block (a request the adapter bridge writes without content) shows none.
-        if (text || (final && first("text") >= 0)) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
+        // A final stop of the model's own is its answer even with no text (an empty text block, only thinking, no
+        // content): the model ended its turn on purpose, with nothing to say. An entry a host wrote with no text says
+        // nothing (HOST_APIS).
+        const textAt = first("text");
+        if (text || (final && !HOST_APIS.has(str(message.api) ?? ""))) add(make(final ? "final_answer" : "text_block", conv, textAt >= 0 ? `${base}:${textAt}` : `${base}:answer`, { summary: firstLine(text), text }));
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;

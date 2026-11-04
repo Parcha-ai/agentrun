@@ -51,9 +51,13 @@ test("thinking collapses to its first sentence and keeps the full text", () => {
   assert.equal(row.text, "The portal needs a sign-in. I have a saved connection for it.");
 });
 
-test("a stop answer of one empty text block is an empty final_answer; a stop with no text block at all shows nothing", () => {
-  const rows = timelineOf([assistant([{ type: "thinking", thinking: "" }, { type: "text", text: "" }]), assistant([])]);
-  assert.deepEqual(rows.filter((r) => r.kind !== "usage").map((r) => [r.kind, r.summary, r.text]), [["final_answer", "", ""]]);
+test("a final stop of the model's own is its answer even with no text: an empty text block, only thinking or no content make an empty final_answer; a host's entry with no text (the adapter bridge's, an import's) makes none", () => {
+  for (const blocks of [[{ type: "thinking", thinking: "" }, { type: "text", text: "" }], [{ type: "thinking", thinking: "Nothing to add." }], []]) {
+    const rows = timelineOf([assistant(blocks)]);
+    assert.deepEqual(rows.filter((r) => r.kind === "final_answer").map((r) => [r.summary, r.text]), [["", ""]], JSON.stringify(blocks));
+    assert.equal(new Set(rows.map((r) => r.id)).size, rows.length, "one id per row");
+  }
+  for (const api of ["agentrun-adapter", "imported"]) assert.deepEqual(timelineOf([assistant([], 0, { api })]).filter((r) => r.kind !== "usage"), [], api);
 });
 
 test("prose before calls is a text_block; a final stop answer is the final_answer", () => {

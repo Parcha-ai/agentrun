@@ -151,6 +151,8 @@ export default function reply(context, faux) {
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   // An answer of nothing: one empty thinking block and one empty text block, a stop with no tool call.
   if (first.includes("Answer with nothing")) return faux.message([faux.thinking(""), faux.text("")]);
+  // An answer of only thinking: no text block at all, a stop with no tool call.
+  if (first.includes("Answer with only thinking")) return faux.message([faux.thinking("Nothing to add.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });
