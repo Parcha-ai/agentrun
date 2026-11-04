@@ -121,6 +121,12 @@ export default function reply(context, faux) {
   }
   // Quotes a key read from a file the test names (so the prompt never holds it): in its thinking, in its text (base64),
   // in a tool call's arguments, then in its answer (timeline-redact-all.test.mjs holds that value as a key).
+  // Records the first message it was given, exactly as the model received it, then answers (user-row-redact.test.mjs).
+  const record = /Record what you got in (\S+) now\.$/.exec(first);
+  if (record) {
+    process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
+    return faux.message("Recorded.");
+  }
   const quote = /^Quote the key in (\S+)$/.exec(first);
   if (quote) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
