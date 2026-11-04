@@ -881,7 +881,11 @@ server's client metadata document, `GET /v2/settings/mcp-servers/oauth/client.js
 
 The authorization server sends the browser back to `GET /v2/settings/mcp-servers/oauth/callback`, which takes no token:
 its `state` is random, bound to the server's name, used once and good for 10 minutes (else `400`), and the PKCE verifier
-never left this server. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+never left this server. It finishes only in the browser that started the sign-in: the start's answer sets a cookie
+(`HttpOnly; SameSite=Lax`, path the callback, 10 minutes) holding the state, and a callback without it is `403` with
+nothing exchanged. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
+every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
+refresh is refused with words and nothing is sent; a loopback MCP server may name loopback endpoints. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the

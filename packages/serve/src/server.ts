@@ -35,7 +35,7 @@ import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { boxLimitsOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
+import { answerPage, byOwnerSession, isJson, overHttps, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
@@ -50,6 +50,7 @@ import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
+import { signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -1314,7 +1315,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
-    if (found.name === "mcpOAuthCallback") return void res.writeHead(302, { location: await mcpServers.oauthCallback(url.searchParams, stopping.signal), "cache-control": "no-store" }).end();
+    if (found.name === "mcpOAuthCallback") {
+      // Its state's start set a cookie in the browser that started it: no other browser finishes that sign-in.
+      if (!startedHere(req.headers.cookie, req.socket.localPort, url.searchParams.get("state"))) throw new ApiError("forbidden", "This sign-in was started in another browser, or its 10 minutes are over: start it again in Settings → MCP servers, in this browser.");
+      return void res.writeHead(302, { location: await mcpServers.oauthCallback(url.searchParams, stopping.signal), "cache-control": "no-store" }).end();
+    }
     if (found.name === "mcpOAuthClient") return send(res, 200, mcpServers.clientDocument(), { "cache-control": "public, max-age=3600" });
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
@@ -1608,8 +1613,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
       case "refreshMcpServer":
         return send(res, 200, await mcpServers.refresh(id, stopping.signal));
-      case "startMcpOAuth":
-        return send(res, 200, await mcpServers.oauthStart(id, await bodyOf(req)));
+      case "startMcpOAuth": {
+        const started = await mcpServers.oauthStart(id, await bodyOf(req));
+        const state = new URL(started.authorization_url).searchParams.get("state") ?? "";
+        return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });
+      }
       case "deleteMcpServer":
         mcpServers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();

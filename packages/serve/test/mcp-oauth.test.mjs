@@ -381,6 +381,7 @@ test("a public MCP server's authorization server may not steer this server to a 
   const now = new Date().toISOString();
   writeFileSync(join(data, "mcp-servers.json"), JSON.stringify({ format: "mcp-servers/1", servers: { pub: { url: "https://mcp.example.test/mcp", auth: { type: "oauth", sealed: { oauth: seal(sealKeyBytes, Buffer.from(JSON.stringify(set)), "mcp:pub:oauth").toString("base64") }, check, oauth: { scopes: [], client: "dynamic" } }, protocol: "2026-07-28", server_info: null, tools: [], listed_at: now, updated_at: now } } }));
   const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
+  assert.equal(store.get("pub").credential, "sealed", "the token set opens, so its refresh is tried");
   await store.headersForRun("pub");
   assert.deepEqual(inside.hits, [], "the refresh did not reach the private target");
 });

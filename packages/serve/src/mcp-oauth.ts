@@ -4,7 +4,9 @@
 // code exchange and the refresh. What is here is only what the SDK's provider keeps: a sign-in in progress, in memory by
 // its state (random, used once, ten minutes), and the token set the callback hands mcp-servers.ts to seal. No token is
 // ever answered, logged or handed to the browser.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import dns from "node:dns/promises";
+import net from "node:net";
 import type { OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens, StoredOAuthClientInformation } from "@modelcontextprotocol/client";
 import { ApiError } from "./errors.js";
 
@@ -27,10 +29,60 @@ type Pending = { name: string; url: string; was: string | null; scope?: string; 
 
 const sdk = () => import("@modelcontextprotocol/client");
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
- *  held to REQUEST_MS, and stopped with `stop` (the server's own stop). */
-const guarded = (stop?: AbortSignal) => (input: string | URL | Request, init?: RequestInit) => fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]) });
+ *  held to REQUEST_MS, and stopped with `stop` (the server's own stop). For an MCP server off loopback (`mcpUrl`), none
+ *  goes to a private address or over plain http (endpointRefusal): its authorization server cannot steer this server's
+ *  code, verifier, secret or refresh token to a service on this machine or its network. */
+const guarded = (stop?: AbortSignal, mcpUrl?: string) => async (input: string | URL | Request, init?: RequestInit) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  const why = mcpUrl && !onLoopback(mcpUrl) ? await endpointRefusal(`endpoint ${url.origin}${url.pathname}`, url.href) : undefined;
+  if (why) throw new Error(why);
+  return fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]) });
+};
+const onLoopback = (url: string) => LOOPBACK.test(new URL(url).hostname);
+
+/** Why `url`, which the authorization server named as its `what`, is refused for an MCP server off loopback: it is on
+ *  this machine or a private network, by name or by any address its name resolves to (pi-browser's isPrivateAddress,
+ *  the check the agent's own web fetch uses), or it is not https. Undefined when it may be used. */
+async function endpointRefusal(what: string, url: string): Promise<string | undefined> {
+  let at: URL;
+  try {
+    at = new URL(url);
+  } catch {
+    return `the authorization server's ${what} is not a URL; refused`;
+  }
+  const { isPrivateAddress } = await import("@parcha/pi-browser");
+  const host = at.hostname.replace(/^\[|\]$/g, "");
+  const local = host === "localhost" || host.endsWith(".localhost") || (net.isIP(host) ? isPrivateAddress(host) : (await dns.lookup(host, { all: true }).catch(() => [])).some((one) => isPrivateAddress(one.address)));
+  if (local) return `the authorization server's ${what} is a private address; refused`;
+  if (at.protocol !== "https:") return `the authorization server's ${what} is not https; refused`;
+  return undefined;
+}
+
+/** Every endpoint discovery found, checked as endpointRefusal does, before any is used. */
+async function discoveryRefusal(state: OAuthDiscoveryState): Promise<string | undefined> {
+  const metadata = state.authorizationServerMetadata;
+  const named: Array<[string, string | undefined]> = [["address", state.authorizationServerUrl], ["metadata address", state.resourceMetadataUrl], ["authorization endpoint", metadata?.authorization_endpoint], ["token endpoint", metadata?.token_endpoint], ["registration endpoint", metadata?.registration_endpoint]];
+  for (const [what, url] of named) {
+    const why = url ? await endpointRefusal(what, url) : undefined;
+    if (why) return why;
+  }
+  return undefined;
+}
+
+const SIGN_IN_COOKIE = "agentrun-oauth";
+/** The cookie a start sets in the starting browser, and its callback asks for: the callback runs only in the browser
+ *  that started the sign-in. SameSite=Lax, so the authorization server's redirect back (a top-level GET from another
+ *  site) carries it, which the console's Strict cookies are not; its path is the callback's alone. */
+export const signInCookie = (port: number | undefined, state: string, https: boolean) =>
+  `${SIGN_IN_COOKIE}-${port}=${state}; HttpOnly; SameSite=Lax; Path=${OAUTH_CALLBACK}; Max-Age=${STATE_MS / 1000}${https ? "; Secure" : ""}`;
+/** Whether the callback's request carries the cookie its state's start set. */
+export const startedHere = (cookies: string | undefined, port: number | undefined, state: string | null): boolean => {
+  const name = `${SIGN_IN_COOKIE}-${port}=`;
+  const digest = (text: string) => createHash("sha256").update(text).digest();
+  return !!state && String(cookies ?? "").split(";").map((part) => part.trim()).some((part) => part.startsWith(name) && timingSafeEqual(digest(part.slice(name.length)), digest(state)));
+};
 const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : undefined);
-const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from a loopback address
+const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
   private readonly pending = new Map<string, Pending>();
@@ -62,7 +114,7 @@ export class McpSignIns {
     let opened: URL | undefined;
     const provider = this.provider(entry, { state, redirect: (to) => void (opened = to) });
     try {
-      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded() });
+      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href) });
     } catch (error) {
       throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: ${(error as Error).message.slice(0, 300)}`);
     }
@@ -85,7 +137,7 @@ export class McpSignIns {
   async finish(entry: Pending, code: string, iss: string | undefined, stop?: AbortSignal): Promise<TokenSet> {
     let tokens: OAuthTokens | undefined;
     const provider = this.provider(entry, { saved: (got) => void (tokens = got) });
-    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop) });
+    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url) });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
     const scope = tokens.scope ?? entry.scope;
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
@@ -105,7 +157,12 @@ export class McpSignIns {
       redirectToAuthorization: (url) => hooks.redirect?.(url),
       saveCodeVerifier: (verifier) => void (entry.verifier = verifier),
       codeVerifier: () => entry.verifier ?? "",
-      saveDiscoveryState: (state) => void (entry.discovery = state),
+      // Checked before anything discovery found is used: registration, the page the owner opens, the code exchange.
+      saveDiscoveryState: async (state) => {
+        const why = onLoopback(entry.url) ? undefined : await discoveryRefusal(state);
+        if (why) throw new Error(why);
+        entry.discovery = state;
+      },
       discoveryState: () => entry.discovery,
       saveResourceUrl: (resource) => void (entry.resource = resource),
     };
@@ -113,13 +170,13 @@ export class McpSignIns {
 }
 
 /** `set` refreshed at its authorization server, the refresh token kept when none new is given. */
-export async function refreshed(set: TokenSet, stop?: AbortSignal): Promise<TokenSet> {
+export async function refreshed(set: TokenSet, mcpUrl: string, stop?: AbortSignal): Promise<TokenSet> {
   const tokens = await (await sdk()).refreshAuthorization(set.discovery.authorizationServerUrl, {
     ...(set.discovery.authorizationServerMetadata ? { metadata: set.discovery.authorizationServerMetadata } : {}),
     clientInformation: set.client,
     refreshToken: set.tokens.refresh_token!,
     ...(set.resource ? { resource: set.resource } : {}),
-    fetchFn: guarded(stop),
+    fetchFn: guarded(stop, mcpUrl),
   });
   const scope = tokens.scope ?? set.tokens.scope;
   const { expires_at: _, ...rest } = set;
