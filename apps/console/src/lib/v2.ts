@@ -94,12 +94,26 @@ export type RunFiles = { run_id: string; files: RunFile[]; complete: boolean; tr
 /** Tool keys (GET /v2/settings/tool-keys, a serve extension): each key a person may save, what it unlocks and the
  *  harnesses that run that, and each field by name with where it is set. The server never sends a value. */
 export type ToolKeyField = { name: string; set: boolean; source: "server" | "stored" | null; stored_unreadable?: true };
-export type ToolKey = { id: string; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[] };
+/** A saved key's check with its provider: accepted, when; or not checked, why (in plain words) and when it last tried, if
+ *  it did. Null, or absent from a server that does not check, says nothing. */
+export type ToolKeyCheck = { state: "accepted"; at: string } | { state: "not_checked"; reason: string; at?: string };
+export type ToolKey = { id: string; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[]; check?: ToolKeyCheck | null };
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */
 export type ToolKeysReenter = { reason: "seal_key_missing" | "seal_key_changed" | "file_unreadable"; fields: string[] };
 export type ToolKeys = { keys: ToolKey[]; reenter: ToolKeysReenter | null };
 /** `capabilities.features.tool_keys`: the routes, and whether a saved key is kept (`sealed`) or cannot be (`unavailable`). */
 export type ToolKeysFeature = { routes: boolean; at_rest: "sealed" | "unavailable" };
+
+/** The webhook (GET /v2/settings/webhook, a serve extension): the URL run notices are POSTed to, signed by the Standard
+ *  Webhooks spec; whether its secret signs here; and why it is off, when a 410 turned it off. Never the secret. */
+export type Webhook = { configured: false } | { configured: true; url: string; signing: "sealed" | "seal_key_missing" | "unreadable"; disabled: { at: string; reason: string } | null; updated_at: string };
+/** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
+export type WebhookSaved = Extract<Webhook, { configured: true }> & { secret?: string };
+/** One try of a message (GET .../deliveries, newest first): its webhook-id, the receiver's answer or why it failed, and
+ *  when it is tried again. */
+export type WebhookAttempt = { webhook_id: string; type: "run.needs_input" | "run.ended" | "webhook.test"; at: string; status_code: number | null; latency_ms: number; error: string | null; retry_at: string | null; redelivery: boolean };
+/** `capabilities.features.webhooks`: the routes, the events, and whether a secret is kept (`sealed`) or cannot be. */
+export type WebhooksFeature = { routes: boolean; events: string[]; signing: string; at_rest: "sealed" | "unavailable" };
 
 /** A recorded response: what the server answered, exactly. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };

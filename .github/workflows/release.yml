@@ -94,7 +94,7 @@ jobs:
               # mismatched published bytes stop the release; they never publish.
               archive="$(node -p 'JSON.parse(require("node:fs").readFileSync(".release/release-plan.json", "utf8")).packages.find(entry => entry.directory === process.argv[1]).filename' "$package")"
               # Published as latest: npm's package page shows the README of the publish that carried the latest tag, and moving
-              # latest later with dist-tag carries no README. A maintainer moves beta to the same version afterwards.
+              # latest later with dist-tag carries no README.
               # A failed publish stops the layer, but the packages it already published are still verified below, so their
               # receipts say what the registry holds; the release then stops before the next layer.
               if ! npm publish ".release/packages/$archive" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/; then

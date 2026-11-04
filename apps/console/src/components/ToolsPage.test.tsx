@@ -107,3 +107,89 @@ describe("Settings → Tools", () => {
     expect(page.select("web_search").value).toBe("auto");
   });
 });
+
+// A provider changed in another tab: the settings, read when the page opens, name it, while the capabilities still say
+// what the old one resolved to. The row shows no resolution until capabilities read with that provider, and the page
+// asks for that read as it opens.
+describe("Settings → Tools, capabilities older than the settings", () => {
+  it("shows 'reading…' beside a provider the capabilities were not read for, and asks for a fresh read on open", async () => {
+    // The server's settings say off (changed in another tab); the capabilities, read earlier, say exa-keyless works.
+    const stale = toolChoices([{ name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+    const v2 = { toolSettings: async () => ({ web_search: { provider: "off" } }), saveToolSettings: async (b: ToolSettings) => b };
+    let opened = 0;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    // The fresh read is still under way.
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: () => { opened++; return new Promise<boolean>(() => {}); } } as never)));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const row = host.querySelector('tr[data-tool="web_search"]')!;
+    expect((row.querySelector("select") as HTMLSelectElement).value).toBe("off");
+    expect(row.textContent).not.toContain("pi: Exa keyless");
+    expect(row.textContent).toContain("reading…");
+    expect(opened).toBe(1);
+  });
+});
+
+describe("Settings → Tools, a capabilities read that fails", () => {
+  it("never looks busy for ever: a failed read says so with a retry, which reads again", async () => {
+    const stale = toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+    const v2 = { toolSettings: async () => ({ web_search: { provider: "off" } }), saveToolSettings: async (b: ToolSettings) => b };
+    let reads = 0;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: async () => { reads++; return false; } } as never)));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const row = () => host.querySelector('tr[data-tool="web_search"]')!;
+    expect(row().textContent).not.toContain("reading…");
+    expect(row().textContent).toContain("couldn't be read");
+    await act(async () => { [...row().querySelectorAll("button")].find((b) => /Retry/.test(b.textContent ?? ""))!.click(); });
+    expect(reads).toBe(2);
+  });
+});
+
+describe("Settings → Tools, reads that land but still disagree", () => {
+  it("offers Retry, which reads the settings and the capabilities again, once a finished read still leaves a mismatch", async () => {
+    const stale = toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+    let settingsReads = 0, capsReads = 0;
+    const v2 = { toolSettings: async () => { settingsReads++; return { web_search: { provider: "off" } }; }, saveToolSettings: async (b: ToolSettings) => b };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    // Both reads land, but the capabilities still name the old provider (another tab changed it between the two reads).
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: async () => { capsReads++; return true; } } as never)));
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const row = () => host.querySelector('tr[data-tool="web_search"]')!;
+    expect(row().textContent).not.toContain("reading…");
+    expect(row().textContent).not.toContain("pi: Exa keyless");
+    await act(async () => { [...row().querySelectorAll("button")].find((b) => /Retry/.test(b.textContent ?? ""))!.click(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect([settingsReads, capsReads]).toEqual([2, 2]);
+  });
+});
+
+describe("Settings → Tools, a Retry's read and a save", () => {
+  it("a settings read that was under way when a save landed never puts the older settings back", async () => {
+    const stale = toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "parallel", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+    let release!: () => void;
+    let reads = 0;
+    const v2 = {
+      // The first read answers at once; the Retry's read is held, and answers with what was saved before the change.
+      toolSettings: async () => { if (++reads === 2) await new Promise<void>((r) => { release = r; }); return { web_search: { provider: "off" } }; },
+      saveToolSettings: async (b: ToolSettings) => b,
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: async () => true } as never)));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const row = () => host.querySelector('tr[data-tool="web_search"]')!;
+    await act(async () => { [...row().querySelectorAll("button")].find((b) => /Retry/.test(b.textContent ?? ""))!.click(); });
+    // While that read is out, the person picks Parallel; the save lands.
+    await act(async () => { const s = row().querySelector("select")!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "parallel"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(row().querySelector("select")!.value).toBe("parallel");
+    // The older read answers last.
+    await act(async () => { release(); });
+    await settle();
+    expect(row().querySelector("select")!.value).toBe("parallel");
+  });
+});
