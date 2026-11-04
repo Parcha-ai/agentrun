@@ -406,8 +406,9 @@ test("an import cuts every key secretlint finds though no environment holds it, 
     assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
     return lines;
   };
-  const dry = await run("--dry-run");
-  const lines = await run();
+  // --verbose: the file by file lines, the skipped one among them, are printed.
+  const dry = await run("--dry-run", "--verbose");
+  const lines = await run("--verbose");
   const values = { ...k, pem: k.pem.lines };
   const kinds = Object.keys(values).length;
   // Every byte the import kept, and every name under the data directory.
@@ -670,7 +671,7 @@ test("what the CLI prints is cut with the saved tool keys too: a skipped file na
   mkdirSync(data, { recursive: true });
   new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
   const lines = [];
-  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => lines.push(line) }), 0);
+  assert.equal(await importCommand(["--data", data, "--all", "--verbose"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => lines.push(line) }), 0);
   assert.ok(!lines.some((line) => line.includes(saved)), lines.join("\n"));
   assert.ok(lines.some((line) => line.startsWith("skipped ") && line.includes("[redacted].jsonl")), lines.join("\n"));
 });
