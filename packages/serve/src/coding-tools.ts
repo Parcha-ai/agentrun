@@ -14,8 +14,9 @@
 // directories by path) does too.
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
+import { type Extension, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { FileError } from "@earendil-works/pi-durable/env";
+import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
 import { boundFiles } from "./bound-files.js";
 import { BOX_WORK, type Place } from "./place.js";
@@ -36,9 +37,10 @@ export const BOXED_TOOLS: readonly string[] = ["read", "write", "edit", "bash"];
 /** A run's coding tools and the extension a conversation selects for them. */
 export type CodingSource = { readonly extension: Extension; readonly tools: readonly ToolRegistration[] };
 
-/** The environment a boxed tool's call runs on: the run's box's (run-box.ts). `hostWork`: the run's own work/ on this
- *  machine, the source the box binds at BOX_WORK; `bound`, whether the box's provider binds it there (Docker does). */
-export type BoxedEnv = { env(context: Context): Promise<unknown>; hostWork?: string; bound?(): Promise<boolean>; leftEnded?(context: Context): Promise<void> };
+/** The environment a boxed tool's call runs on: the run's box's (run-box.ts). `note` writes a row on the run's timeline
+ *  while the box is being had (its image still coming). `hostWork`: the run's own work/ on this machine, the source the
+ *  box binds at BOX_WORK; `bound`, whether the box's provider binds it there (Docker does). */
+export type BoxedEnv = { env(context: Context, note?: (summary: string) => Promise<void>): Promise<unknown>; hostWork?: string; bound?(): Promise<boolean>; leftEnded?(context: Context): Promise<void> };
 
 /** A failed call's error with what the file environment said, where pi's message gives only its code (edit's "Error
  *  code: permission_denied."), so the model reads why and what it can do. */
@@ -80,7 +82,9 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
         await box.leftEnded?.(context);
         return tool.execute(given as typeof args, { ...api, env: here as typeof api.env }, context).catch((error: unknown) => Promise.reject(withCause(error)));
       }
-      return tool.execute(given as typeof args, { ...api, env: (await box.env(context)) as typeof api.env }, context);
+      // A row the box's wait writes goes on the run's root, as a host's phase (pi-durable-agent's timeline shows it).
+      const note = (summary: string) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data: { summary } })), context);
+      return tool.execute(given as typeof args, { ...api, env: (await box.env(context, note)) as typeof api.env }, context);
     },
   })));
   // The permission gate (allow, ask, deny) wraps this source: the one call it takes, whichever of the two lands second.

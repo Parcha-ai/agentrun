@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, HOST_PHASE, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 /** The root conversation of a Codex run in QA run 3 (F22: "Write a file called hello.md…", then "Now add a second line
@@ -898,6 +898,28 @@ test("web_search reads as a search, in the past tense: the query scrubbed and cu
   const [first] = text(rows).split("\n");
   assert.match(first, /^\S+\s+Searched the web 3 times: "acme anvils", "see https:\/\/x\.example\/a\?token=… for d\.\.\."\s+3 ok$/);
   assert.equal(foldLabel("web_search", [{ input: "a", output: null }]), 'Searched the web 1 times: "a"');
+});
+
+test("a host's own step (HOST_PHASE) is one phase row with its summary's first line, cut at the cap, stored and live; with no summary it shows nothing; it is no request and no cost", () => {
+  const preparing = "Preparing the box image: pulling debian:bookworm-slim…";
+  const entries = [
+    assistant([call("t1", "bash", { command: "true" })], 0),
+    custom(HOST_PHASE, { summary: preparing }),
+    custom(HOST_PHASE, {}),
+    result("t1", "bash", "", 0),
+    assistant([{ type: "text", text: "done" }], 0),
+  ];
+  const rows = timelineOf(entries, { settled: true });
+  assert.deepEqual(rows.filter((r) => r.kind === "phase").map((r) => r.summary), [preparing], "one row: the one with a summary");
+  const phase = rows.findIndex((r) => r.kind === "phase");
+  assert.ok(phase > rows.findIndex((r) => r.kind === "tool_use") && phase < rows.findIndex((r) => r.kind === "final_answer"), "in log order");
+  assert.equal(rows.at(-1).summary, "Cost so far: $0.0200 over 2 model requests", "no request of its own, no cost");
+  const reducer = timelineReducer();
+  reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
+  assert.deepEqual(reducer.rows().filter((r) => r.kind === "phase").map((r) => r.summary), [preparing], "live, the same row");
+  const long = timelineOf([custom(HOST_PHASE, { summary: `${"x".repeat(CAPS.summary + 50)}\nsecond line` })]);
+  assert.equal(long[0].summary.length <= CAPS.summary, true, "cut at the cap");
+  assert.ok(!long[0].summary.includes("second line"), "its first line only");
 });
 
 test("a run's process that opened again after the last one ended unfinished is a row of its own, from its entry: after a crash, or after the server stopped", () => {

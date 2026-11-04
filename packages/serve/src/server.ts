@@ -40,6 +40,7 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes } from "./boxes.js";
+import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
@@ -630,12 +631,34 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // box stands in for Docker, and nothing asks Docker.
   const boxes = await boxRegistry(env);
   const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
-  const boxOffers: BoxOffer[] = boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer));
+  // The Docker box's image, asked of Docker now and pulled in the background when Docker has none (box-image.ts): docker
+  // is preparing until it is in, and unavailable if the pull fails. Its record tells the run's processes; with no Docker
+  // box here there is none, so no run waits on one an earlier start left.
+  let image: DockerImage | undefined;
+  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? { id: "docker", available: true, reason: "a faux box (tests)" } : offer.id === "docker" && image ? withImage(offer, image.state()) : offer));
+  const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
+  let boxOffers: BoxOffer[] = offersNow();
+  const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
+  if (boxImage) {
+    image = await dockerImage(env, data, boxImage, {
+      warn: (message) => (log ? log(logLine("box_image", { image: boxImage, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
+      onChange: (state, ms) => {
+        boxOffers = offersNow();
+        imageLog(state, { ms });
+        // The box's state is in caps alone, not in the offers: recomposed now, or, while the start's probe of the offers
+        // has not ended, by that probe, which reads the box offers when it does.
+        if (offers) recompose();
+      },
+    });
+    stops.push(async () => void (await image?.close()));
+  } else await clearImage(data);
+  boxOffers = offersNow();
   const runBoxes = fauxBox ?? boxes.provider("docker");
   // Daytona's boxes are made, seeded, pulled and destroyed here, with the key this server holds; a run's process reaches
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
+  if (image) imageLog(image.state());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
@@ -1683,6 +1706,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
     await runs.close();
     await relay?.close();
+    // Before the lock goes: the image's last record lands first (box-image.ts), never after the next server's start.
+    await image?.close();
     await webhooks.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();

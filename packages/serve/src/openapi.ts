@@ -10,7 +10,7 @@ import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
-import { BOX_IDS } from "./boxes.js";
+import { BOX_IDS, BOX_STATES } from "./boxes.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
@@ -1000,9 +1000,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, reason: { type: "string" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" } } } },
       },
-      description: "The places a revision may name, this host's default, and each box: whether this server has it, and when not, why.",
+      description: "The places a revision may name, this host's default, and each box: whether this server has it, its state (ready, preparing or unavailable), and when not, why.",
       "x-agentrun-serve": "place/1",
     },
     harnesses: {
