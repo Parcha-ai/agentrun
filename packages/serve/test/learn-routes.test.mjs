@@ -50,7 +50,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // An agent whose learning was never on has no folder: an empty view; its run has no learning and no diff.
   await made(api, agent("plain"));
   const plain = (await api("GET", "/agents/plain/learning")).body;
-  assert.deepEqual(plain, { agent: "plain", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } });
+  assert.deepEqual(plain, { agent: "plain", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null });
   meets("/agents/{agent_id}/learning", plain);
   const plainRun = await started(api, "plain");
   await follow(api, plainRun, ["completed"]);
@@ -79,7 +79,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal(view.main, main1);
   assert.equal(view.index, `${line("check-units.md", "Check units", "Convert every amount to one unit before comparing")}\n${line("quote-sources.md", "Quote sources", "Name the page each figure came from")}\n`);
   assert.deepEqual(view.notes.items.map((n) => [n.file, n.status, n.type, n.superseded_by]), [["check-units.md", "active", "reference", null], ["quote-sources.md", "active", "reference", null]]);
-  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", superseded_by: null, text: UNITS });
+  assert.deepEqual(view.notes.items[0], { file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing", type: "reference", status: "active", superseded_by: null, text: UNITS, etag: `"${git(repoOf(data, id), ["rev-parse", "main:check-units.md"])}"` });
   assert.deepEqual(view.log, { items: [{ by: { run: one }, commit: main1, at: view.log.items[0].at, reason: "Each note is general and new.", files: ["MEMORY.md", "check-units.md", "quote-sources.md"] }], total: 1, next_cursor: null });
   assert.deepEqual(view.counts, { merged: 1, dropped: { grader: 1 }, in_progress: 0 });
 
@@ -325,6 +325,35 @@ test("a restarted server counts an agent's runs that tried to learn from the lea
   }
 });
 
+test("each note in the view and in its pages carries its ETag, the one its file's GET answers: a retire or an edit by it changes exactly the version shown, and a card shown before a change is 412", { timeout: 60_000 }, async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  await made(api, agent("carded"));
+  const files = "/agents/carded/learning/files";
+  for (const [file, text] of [["check-units.md", UNITS], ["quote-sources.md", SOURCES]]) assert.equal((await api("PUT", `${files}/${file}`, { text }, { "if-none-match": "*" })).status, 201);
+  const etags = async () => Object.fromEntries(await Promise.all(["check-units.md", "quote-sources.md"].map(async (file) => [file, (await api("GET", `${files}/${file}`)).headers.get("etag")])));
+  const cards = (items) => Object.fromEntries(items.map((item) => [item.file, item.etag]));
+  const view = (await api("GET", "/agents/carded/learning")).body;
+  const read = await etags();
+  assert.match(read["check-units.md"], /^"[0-9a-f]{40,64}"$/);
+  assert.deepEqual(cards(view.notes.items), read, "the view's cards");
+  const page = (await api("GET", "/agents/carded/learning/notes?limit=1")).body;
+  const next = (await api("GET", `/agents/carded/learning/notes?limit=1&cursor=${page.next_cursor}`)).body;
+  assert.deepEqual(cards([...page.items, ...next.items]), read, "and the pages'");
+  for (const body of [view, page]) assert.deepEqual(schemaProblems(doc, doc.paths["/agents/{agent_id}/learning"].get.responses["200"].content["application/json"].schema.properties.notes, body.notes ?? body), []);
+
+  // An edit by the card's ETag lands, and the card the view now shows carries the new one.
+  const edited = await api("PUT", `${files}/check-units.md`, { text: EDITED }, { "if-match": view.notes.items.find((item) => item.file === "check-units.md").etag });
+  assert.equal(edited.status, 200);
+  const after = cards((await api("GET", "/agents/carded/learning")).body.notes.items);
+  assert.equal(after["check-units.md"], edited.headers.get("etag"));
+  // The card shown before the edit is stale: a retire by it is 412, and nothing changes.
+  assert.equal((await api("POST", `${files}/check-units.md/retire`, undefined, { "if-match": view.notes.items.find((item) => item.file === "check-units.md").etag })).status, 412);
+  // A retire by the card's ETag lands.
+  assert.equal((await api("POST", `${files}/quote-sources.md/retire`, undefined, { "if-match": after["quote-sources.md"] })).status, 200);
+  assert.deepEqual((await api("GET", "/agents/carded/learning")).body.notes.items.map((item) => [item.file, item.status]), [["check-units.md", "active"], ["quote-sources.md", "retired"]]);
+});
+
 test("a commit's notes are read once: a later page and the view at the same main read no note again, and a log page reads only its own commits", { timeout: 60_000 }, async (t) => {
   const { api, port, token } = await serve(t);
   await made(api, learner("paged"));
@@ -361,7 +390,7 @@ test("a commit's notes are read once: a later page and the view at the same main
   assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
 });
 
-test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log and the run's diff read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
+test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log, the run's diff and the notes a run learned and used read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
   // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
   const value = ["s3cret", "store", "pass", process.pid, Date.now().toString(36)].join("-");
   const named = `${value}.md`;
@@ -378,6 +407,11 @@ test("a note's name that holds a value made secret after it was written is never
   settled(two.view, two.rows, "merged");
   const before = (await first.api("GET", "/agents/namer/learning")).body;
   assert.deepEqual(before.notes.items.map((n) => [n.file, n.status, n.superseded_by]), [[named, "active", null], ["old-plan.md", "superseded", named]], "shown as it is while no secret");
+  assert.deepEqual(two.view.learning.learned, [{ file: named, name: "Plan", supersedes: ["old-plan.md"] }], "shown as it is while no secret");
+  // A third run reads the note by that name.
+  assert.equal((await first.api("PUT", "/agents/namer/definition", learner("namer", { tools: ["write", "read"], instructions: `Answer the question.\nRead: ${JSON.stringify([`.learning/${named}`])}`, version: 3 }))).status, 200);
+  const three = await ended(first.api, await started(first.api, "namer"));
+  assert.deepEqual(three.view.learning.used, [{ file: named, name: "Plan" }], "shown as it is while no secret");
   await first.close();
 
   // The server again, with the name's value as a launcher's secret (the model key).
@@ -407,7 +441,14 @@ test("a note's name that holds a value made secret after it was written is never
   assert.deepEqual(after.notes.items.map((n) => [n.file, n.status]), [["[redacted]", "retired"], ["old-plan.md", "superseded"]]);
   const learned = (await api("GET", `/runs/${two.view.run_id}/learning`)).body;
   assert.deepEqual(learned.verdict.items, [{ file: "[redacted]", keep: true, why: "It holds as a general rule." }], "the grader's item names the note [redacted]");
-  const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after]);
+  // What run two learned and run three used, on each run's view and in the list, name the note [redacted].
+  const runTwo = (await api("GET", `/runs/${two.view.run_id}`)).body.learning;
+  const runThree = (await api("GET", `/runs/${three.view.run_id}`)).body.learning;
+  const listed = (await api("GET", "/agents/namer/runs")).body.runs;
+  assert.deepEqual([runTwo.learned, runThree.used], [[{ file: "[redacted]", name: "Plan", supersedes: ["old-plan.md"] }], [{ file: "[redacted]", name: "Plan" }]]);
+  const inList = (runId) => listed.find((run) => run.run_id === runId).learning;
+  assert.deepEqual([inList(two.view.run_id).learned, inList(three.view.run_id).used], [runTwo.learned, runThree.used], "and in the list");
+  const shown = JSON.stringify([view, page1, page2, log, diff, learned, old.body, [...old.headers], [...own.headers], retire.body, [...retire.headers], after, runTwo, runThree, listed]);
   assert.ok(!shown.includes(value), "the value is nowhere a person reads");
 });
 
@@ -498,6 +539,38 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   const bare = await api("POST", `${files}/bare.md/retire`, undefined, { "if-match": await etag("bare.md") });
   assert.deepEqual([bare.status, bare.body?.error?.problems?.map((p) => p.rule)], [400, ["note"]]);
   assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
+});
+
+test("an edit of a note whose text holds a value made secret after it was written is refused, whatever the ETag: its read shows [redacted], so saving it would write [redacted] over the hidden text; main untouched, and the editor is told why", { timeout: 120_000 }, async (t) => {
+  // Built at the run: a value no file of this repository holds, made a launcher's secret only once its note is on main.
+  const value = ["vault", "code", process.pid, Date.now().toString(36)].join("-");
+  withEnv(t, {}, ["AGENT_MODEL_API_KEY"]);
+  const first = await serve(t);
+  const { data } = first;
+  await made(first.api, learner("masked"));
+  const repo = repoOf(data, "masked");
+  const files = "/agents/masked/learning/files";
+  const VAULT = note("Vault", "Where the vault code is", `The vault code is ${value}.\nAsk the shift lead before opening it.\n`);
+  assert.equal((await first.api("PUT", `${files}/vault.md`, { text: VAULT }, { "if-none-match": "*" })).status, 201);
+  await first.close();
+
+  // The server again, with the vault code as a launcher's secret (the model key).
+  process.env.AGENT_MODEL_API_KEY = value;
+  const { api } = await serve(t, { data });
+  const read = await api("GET", `${files}/vault.md`);
+  const shownText = typeof read.body === "string" ? read.body : read.body.text;
+  assert.ok(shownText.includes("The vault code is [redacted].") && !shownText.includes(value), shownText);
+  const main = git(repo, ["rev-parse", "main"]);
+  // The person edits an unrelated line of what they were shown, with the note's own ETag.
+  const edited = shownText.replace("Ask the shift lead", "Ask the duty manager");
+  const put = await api("PUT", `${files}/vault.md`, { text: edited }, { "if-match": read.headers.get("etag") });
+  assert.equal(put.status, 400, JSON.stringify(put.body));
+  assert.deepEqual(put.body?.error?.problems?.map((p) => [p.rule, p.path]), [["secret_value", "vault.md"]]);
+  assert.match(put.body.error.problems[0].detail, /secret/i);
+  assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
+  assert.ok(git(repo, ["show", "main:vault.md"]).includes(`The vault code is ${value}.`), "the hidden text is kept");
+  // A retire is still the way out.
+  assert.equal((await api("POST", `${files}/vault.md/retire`, undefined, { "if-match": read.headers.get("etag") })).status, 200);
 });
 
 test("a file on main that is not a note (over the read cap, not UTF-8, executable or a link) is never written over: a create of its name is 412, and an edit or a retire by its blob is 412 with no hint to create it, main untouched", { timeout: 60_000 }, async (t) => {

@@ -1,4 +1,5 @@
 import { agentHash } from "@/components/AgentPage";
+import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { bounded, cost, when } from "@/lib/format";
 import type { MissionView } from "@/lib/mission";
@@ -76,7 +77,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
                   <StatusBadge run={r} />
                   {/* The run's title, then its chips (what it learned and used) right after it. */}
-                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{r.title}</span></span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{r.title}</span><LearningChips run={r} className="hidden sm:inline-flex" /></span>
                   <span className="hidden shrink-0 text-[13px] text-muted-foreground md:inline">{name(r.agent_id)}</span>
                   {r.ended_at && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
                   {r.cost && (r.cost.usd !== null || bounded(r.cost)) && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{cost(r.cost)}</span>}

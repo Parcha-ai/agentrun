@@ -3,14 +3,18 @@
 // instructions plan, one write a request, then says "Reflected.". The instructions plan with one line:
 // - `Learn: <JSON>`: an array of [file, text] pairs, each written into the run's copy of the folder;
 // - `Learn once: <JSON>`: the same, less the files the run's index names already (a later run of the agent adds none).
+// A line `Read: <JSON>` (an array of paths) has the job read each path first, one read a request, then answer: on pi with
+// pi's own read tool, on the faux harness with the host's.
 // On pi the instructions can also say "Answer once <file> exists." (the job's answer holds until the test makes that
 // file), "Reflect once <file> exists." (the turn holds until the test makes that file) or "Reflect slowly." (the turn
 // answers after a minute, or when it is aborted). A later message `Write: <JSON>` ([file, text] pairs) writes each file
 // into `.learning/`, one write a request, then says "Written.": a follow-up that changes the run's copy.
 // The server's grader is answered here too, on the agent's own model, by what the instructions say: "Grade: drop." keeps
 // no note, "Grade: drop <file>." keeps every note but that one and merges none, "Grade: sly." says merge and keeps
-// none, "Grade: garbage." is no JSON, "Grade: fail." fails the call; anything else keeps every note. "Grade once <file>
-// exists." holds the answer until the test makes that file (or the call is aborted). With
+// none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
+// whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason that names
+// <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
+// (or the call is aborted). With
 // AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader answers only once it is aborted; set to
 // `never`, it never answers at all, aborted or not. Each grader call is filed as a line in the file
 // AGENTRUN_TEST_FAUX_CALLS names.
@@ -36,6 +40,8 @@ export function planned(system) {
 export const note = (name, description, body = `${description}.\n`, extra = "") => `---\nname: ${name}\ndescription: ${description}\ntype: reference\n${extra}---\n${body}`;
 
 const answerOf = (system) => (/Say your prompt\./.test(system) ? system : "Job answer.");
+/** The paths the instructions in `system` have the job read before it answers. */
+const readsOf = (system) => JSON.parse(/^Read: (\[.*\])$/m.exec(system)?.[1] ?? "[]");
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
 const slow = (faux, ms, text) =>
@@ -69,12 +75,14 @@ function grade(prompt, faux) {
 function verdictOf(rules, files, faux) {
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");
-  const keep = !rules.includes("Grade: drop.") && !rules.includes("Grade: sly.");
+  const long = rules.includes("Grade: drop at length.");
+  const saying = /Grade: drop saying (\S+)\./.exec(rules)?.[1];
+  const keep = !rules.includes("Grade: drop.") && !rules.includes("Grade: sly.") && !long && !saying;
   const dropped = /Grade: drop (\S+\.md)\./.exec(rules)?.[1];
   const kept = (file) => keep && file !== dropped;
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
-    reason: keep && !dropped ? "Each note is general and new." : "A note is about the one case it came from.",
+    reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
     items: files.map((file) => ({ file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : "It is about one case." })),
   }));
 }
@@ -101,6 +109,8 @@ export default function reply(context, faux) {
       return faux.message(answerOf(system));
     })();
   }
+  const reads = readsOf(system);
+  if (!asked && done < reads.length) return faux.message(faux.toolCall("read", { path: reads[done] }), { stopReason: "toolUse" });
   if (!asked) return faux.message(answerOf(system));
   const plan = planned(system);
   return (async () => {
@@ -117,5 +127,6 @@ export default function reply(context, faux) {
 export function script(spec) {
   const system = spec.system.join("\n");
   const writes = planned(system).map(([file, content]) => ({ call: "write", args: { path: `.learning/${file}`, content }, usd: 0.001 }));
-  return [{ say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, ...writes, { say: "Reflected.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  const reads = readsOf(system).map((path) => ({ call: "read", args: { path }, usd: 0.001 }));
+  return [...reads, { say: answerOf(system), usd: 0.001 }, { end: true, usd: 0.001 }, ...writes, { say: "Reflected.", usd: 0.001 }, { end: true, usd: 0.001 }];
 }
