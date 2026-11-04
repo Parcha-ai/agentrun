@@ -173,6 +173,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const stops: Array<(harness: Harness) => void | Promise<void>> = [];
   const host: ToolHost = {
     where, env, coding, install: (extension) => registry.install(extension),
+    // A workflow's model nodes each name their own tools, and a tool is bound once for the run: its words name none.
+    tools: revision.kind === "agentic" ? [...revision.body.tools] : [],
     onConversation: (write) => void writes.push(write), beforeResume: (settle) => void settles.push(settle), beforeRelease: (stop) => void stops.push(stop),
   };
   const letGo = async (harness: Harness) => { for (const stop of stops) await stop(harness); };

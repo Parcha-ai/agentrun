@@ -3,7 +3,7 @@ import { BrowserFailureError, FenceRefusal, refusedError, loadedNoPage, passedTh
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
 import type { Decisions, PageVerdict } from "./decisions.js";
 import { fetchDownloads } from "./downloads.js";
-import { browserFailure, classifyBrowserError, transportFactOf, type BrowserFailure } from "./failures.js";
+import { browserFailure, classifyBrowserError, transportFactOf, type BrowserFailure, type FailureWords } from "./failures.js";
 import type { WorkspaceFiles } from "./host.js";
 import { createRepeatGuard, type RepeatGuard } from "./guard.js";
 import { regionOf, type Locate } from "./clip.js";
@@ -64,7 +64,7 @@ export type PageDriver = BrowserDriver & {
   setInputFiles?(selector: string, file: { name: string; mimeType: string; buffer: Uint8Array }): Promise<void>;
 };
 
-export type ToolCall = { callId: string; conversationId: number; signal: AbortSignal | undefined; label: string; redact: Redact; evidence: EvidenceSink; classifyPage?: Decisions["classifyPage"]; workspace?: string; files?: WorkspaceFiles };
+export type ToolCall = { callId: string; conversationId: number; signal: AbortSignal | undefined; label: string; redact: Redact; evidence: EvidenceSink; classifyPage?: Decisions["classifyPage"]; workspace?: string; files?: WorkspaceFiles; /** The host's words in a failure (failures.ts FailureWords). */ words?: FailureWords };
 export type ToolImpl<D extends BrowserDriver = BrowserDriver, A = unknown> = (args: A, port: CustodyPort<D>, call: ToolCall) => Promise<ToolOutput>;
 /** Each browser tool's arguments, as its contract's schema admits them. */
 export type BrowserToolArgs = {
@@ -214,7 +214,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
 
   async function failureOf(error: unknown, effectful: boolean, port: CustodyPort<PageDriver>, call: ToolCall, action?: string): Promise<BrowserFailure> {
     if (error instanceof BrowserFailureError) return error.failure;
-    const facts = { aborted: call.signal?.aborted === true, action, redact: call.redact };
+    const facts = { aborted: call.signal?.aborted === true, action, redact: call.redact, words: call.words };
     const first = classifyBrowserError(error, effectful, facts);
     if (first.code === "aborted" || first.code === "auth" || !(await port.ended().catch(() => false))) return first;
     return classifyBrowserError(error, effectful, { ...facts, sessionEnded: true });

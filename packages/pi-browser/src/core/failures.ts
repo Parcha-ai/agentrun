@@ -37,7 +37,15 @@ export type FailureFacts = {
   action?: string;
   /** Removes the run's registered values from the error text; it runs over the whole text before any cut below, so no fragment of a value survives a cut point. */
   redact?: (text: string) => string;
+  /** The host's words (FailureWords). */
+  words?: FailureWords;
 };
+
+/** What only the host knows, in the words a model reads: who refused which credential and where a person fixes it
+ *  (`refusedCredential`, in place of the provider's 401 in general words), and the tool the run has that reads a page
+ *  without the browser (`otherSource`, e.g. "web_fetch"). Without one, a failure names no tool: the package cannot know
+ *  which the run holds. */
+export type FailureWords = { refusedCredential?: string; otherSource?: string };
 
 /** The vendored facade's refusal texts (vendor/stagehand-facade/contract.ts), copied so the root entry does not load the facade; a test pins
  *  them to the facade's own. */
@@ -106,12 +114,13 @@ export function classifyBrowserError(error: unknown, effectful: boolean, facts: 
   const effect = effectful ? "possibly_effected" : "none";
   const detail = message.slice(0, 2_000);
   if (facts.aborted || fact.errorName === "AbortError") return browserFailure("aborted", "The browser call was cancelled by the run.", { effect, detail });
-  if (status === 401) return browserFailure("auth", "The browser provider refused the credential (401). The browser plane is unavailable for this run; use fetch (executor tools).", { detail });
-  if (status === 403) return browserFailure("auth", "The browser provider refused this session type (403). Retry without `verified`, or use web_fetch.", { detail });
+  const other = facts.words?.otherSource;
+  if (status === 401) return browserFailure("auth", `${facts.words?.refusedCredential ?? "The browser provider refused its credential (401)."} The browser can't open pages in this run${other ? `; ${other} still reads public pages` : ""}.`, { detail });
+  if (status === 403) return browserFailure("auth", `The browser provider refused this session type (403). Retry without \`verified\`${other ? `, or use ${other}` : ""}.`, { detail });
   if (status === 429) return browserFailure("rate_limited", `The browser provider is rate limiting this run (429). ${effectful ? "Your call may have acted: take a snapshot before you act again." : "Wait a moment, then try again."}`, { retryable: !effectful, effect, detail });
   if (facts.sessionEnded) return browserFailure("session_ended", "The browser session ended (the provider closed it at its timeout, or the browser died). Your next browser call opens a fresh session automatically; the old tabs, page state and cookies are gone — navigate to the page again with run, then continue from there.", { retryable: true, effect, detail });
-  if (facts.timedOut || fact.errorName === "TimeoutError") return browserFailure("timeout", "The browser call timed out. Take a fresh snapshot before acting again; split a long `run` into smaller batches; if the page never loads, use web_fetch or another source.", { retryable: true, effect, detail });
+  if (facts.timedOut || fact.errorName === "TimeoutError") return browserFailure("timeout", `The browser call timed out. Take a fresh snapshot before acting again; split a long \`run\` into smaller batches; if the page never loads, use ${other ? `${other} or ` : ""}another source.`, { retryable: true, effect, detail });
   if (isStaleSnapshot(own)) return browserFailure("stale_snapshot", message, { retryable: true, detail });
-  if ((fact.causeCode && UNREACHABLE_CAUSES.has(fact.causeCode)) || (fact.errorName && UNREACHABLE_NAMES.has(fact.errorName)) || lostLoopback(error)) return browserFailure("browser_unavailable", "The browser could not be reached on this lane. The browser plane is unavailable for this run; use web_fetch or executor tools.", { effect, detail });
+  if ((fact.causeCode && UNREACHABLE_CAUSES.has(fact.causeCode)) || (fact.errorName && UNREACHABLE_NAMES.has(fact.errorName)) || lostLoopback(error)) return browserFailure("browser_unavailable", `The browser could not be reached, so it can't open pages in this run${other ? `; ${other} still reads public pages` : ""}.`, { effect, detail });
   return browserFailure(effectful ? "code_error" : "command_failed", effectful ? `${facts.action ?? "Your browser code"} threw: ${message.slice(0, 600)}` : `The browser call failed: ${message.slice(0, 600)}`, { retryable: true, effect, detail });
 }

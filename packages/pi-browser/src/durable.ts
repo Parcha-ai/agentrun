@@ -9,7 +9,7 @@ import { forModel } from "./durable/result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import { EffectObserver, effectDecider, observerFailure } from "./core/effects.js";
-import { browserFailure, classifyBrowserError } from "./core/failures.js";
+import { browserFailure, classifyBrowserError, type FailureWords } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
 import type { RepeatGuard } from "./core/guard.js";
 import { drivingGuarded } from "./core/driving-guard.js";
@@ -59,6 +59,9 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
   prices?: Partial<PriceTable>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };
+  /** The host's words in a failure the model reads (failures.ts FailureWords): who refused which credential, and the
+   *  run's other way to read a page. Absent, a failure names no tool. */
+  words?: FailureWords;
   section?: { addendum?: string };
   decisions?: Decisions;
   /** How long a create may still land at the provider after its caller stopped waiting; default 60 s. */
@@ -257,8 +260,8 @@ async function stateOf<D extends PageDriver>(c: Custody<D>, scope: Scope): Promi
   return ((await scope.read.snapshot(c.Sessions, scope.cid, scope.context)) as SessionsState | undefined) ?? emptySessions();
 }
 
-const failure = (error: unknown, scope: Scope, redact: Redact) =>
-  error instanceof BrowserFailureError ? error : new BrowserFailureError(classifyBrowserError(error, false, { aborted: scope.signal.aborted, redact }));
+const failure = (error: unknown, scope: Scope, redact: Redact, words?: FailureWords) =>
+  error instanceof BrowserFailureError ? error : new BrowserFailureError(classifyBrowserError(error, false, { aborted: scope.signal.aborted, redact, words }));
 
 /** `bound`, when given, limits the attach beside the call's own signal (a reconnect's budget); the check for a session the
  *  provider ended keeps the call's own. */
@@ -280,7 +283,7 @@ async function attachLive<D extends PageDriver>(c: Custody<D>, scope: Scope, rec
   try {
     return await connect(c, bound ? { ...scope, signal: AbortSignal.any([scope.signal, bound]) } : scope, provider, ref);
   } catch (error) {
-    if (!(await markEnded(c, scope, record, provider))) throw failure(error, scope, c.redact);
+    if (!(await markEnded(c, scope, record, provider))) throw failure(error, scope, c.redact, c.options.words);
     return null;
   }
 }
@@ -329,7 +332,7 @@ async function refuseHeld<D extends PageDriver>(c: Custody<D>, scope: Scope, rec
 
 async function settleCreating<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord): Promise<void> {
   const provider = await scopeProvider(c, scope);
-  try { await c.store.bindByTag(provider, rowOf(scope.cid, record), scope.commit, scope.signal); } catch (error) { throw failure(error, scope, c.redact); }
+  try { await c.store.bindByTag(provider, rowOf(scope.cid, record), scope.commit, scope.signal); } catch (error) { throw failure(error, scope, c.redact, c.options.words); }
 }
 
 async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrides: Overrides, presetTag?: string): Promise<{ record: SessionRecord; driver: D }> {
@@ -362,7 +365,7 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
       // The session found by its tag is the one kept (bindByTag releases the others first), and it is owned before it is
       // recorded, as a create's own answer is: a store that cannot record it still lets close release it.
       if (found[0]) c.owned.set(tag, { cid: scope.cid, provider, ref: found[0] });
-      return (await c.store.bindByTag(provider, row, scope.commit, scope.signal, found)) ?? Promise.reject(failure(error, scope, c.redact));
+      return (await c.store.bindByTag(provider, row, scope.commit, scope.signal, found)) ?? Promise.reject(failure(error, scope, c.redact, c.options.words));
     });
   const live: SessionRecord = { ...record, state: "live", resourceId: ref.id };
   try {
@@ -371,7 +374,7 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
     if (plan.fresh) await c.held.capture(ref.tag);
     await emit(c, scope.cid, config.label, live, "launched", provider);
     return { record: live, driver };
-  } catch (error) { throw failure(error, scope, c.redact); }
+  } catch (error) { throw failure(error, scope, c.redact, c.options.words); }
 }
 
 async function acquire<D extends PageDriver>(c: Custody<D>, scope: Scope, bound?: AbortSignal): Promise<{ record: SessionRecord; driver: D; note: string | null }> {
@@ -610,7 +613,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
             const view = provider.liveView ? await provider.liveView({ id: sessionId, tag }).catch(() => null) : null;
             const liveView = view && hostLiveView(view, c.redact);
             return person.request({ requestId: ask.requestId, sessionTag: tag, sessionId, liveView, instruction: ask.instruction, completionCondition: ask.completionCondition }, scope.signal);
-          })().catch(async (error) => { await port.resume(null); throw failure(error, scope, c.redact); });
+          })().catch(async (error) => { await port.resume(null); throw failure(error, scope, c.redact, c.options.words); });
           if ("refused" in asked) { await port.resume(null); return asked; }
           interactionId = await api.memo(slot, asked.interactionId, context);
         }
@@ -763,11 +766,11 @@ function toolsFor<D extends PageDriver>(c: Custody<D>, impls: Partial<Record<str
         try {
           const workspace = c.options.workspace?.(api.conversationId);
           const files = c.options.files ?? (workspace === undefined ? undefined : workspaceFiles(workspace));
-          const call = { callId: api.callId, conversationId: api.conversationId, signal: context.abortSignal, label: config?.label ?? "", redact: c.redact, evidence: c.options.evidence, classifyPage: c.options.decisions?.classifyPage, workspace, files };
+          const call = { callId: api.callId, conversationId: api.conversationId, signal: context.abortSignal, label: config?.label ?? "", redact: c.redact, words: c.options.words, evidence: c.options.evidence, classifyPage: c.options.decisions?.classifyPage, workspace, files };
           // Inside an async function, so a host tool that throws before it returns a promise is caught too.
           const out = await (async () => impls[contract.name]!(args, portFor(c, api, context), call))().catch((error): ToolOutput => {
             // A throw would reach pi's diagnostic unscrubbed: every failure comes back as the typed envelope, redacted.
-            const typed = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, contract.effect === "effect", { aborted: context.abortSignal?.aborted === true, redact: c.redact });
+            const typed = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, contract.effect === "effect", { aborted: context.abortSignal?.aborted === true, redact: c.redact, words: c.options.words });
             return { content: [{ type: "text", text: JSON.stringify(typed) }], isError: true };
           });
           // A charge that cannot be committed now is carried by the next one.

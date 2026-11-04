@@ -60,6 +60,8 @@ export type CodingAgentOptions = VaultOptions & {
 
 const BROWSER_FLAGS = ["browser-provider", "browser-endpoint", "browser-chrome", "browser-headed", "browser-no-sandbox"] as const;
 
+/** This extension always lists web_fetch beside the browser (below): a browser failure may point to it. */
+const WORDS = { otherSource: "web_fetch" } as const;
 const UNHELD_ACTIONS = browserFailure("browser_unavailable", "This run's action policy holds the requests the browser would send (deny or ask), and the pi coding agent cannot hold them, so no browser is started. web_fetch still reads pages. To browse, the person sets the policy's `actions` to \"allow\" (or leaves it out), or runs the browser through the pi-durable adapter, which holds requests.");
 
 /** No browser can be had: a missing key, a bad flag or no Chrome. Unavailable unless the cause is a credential (`auth`) or a refusal. */
@@ -132,7 +134,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   }
 
   private failure(error: unknown, signal?: AbortSignal): BrowserFailureError {
-    return error instanceof BrowserFailureError ? error : new BrowserFailureError(classifyBrowserError(error, false, { aborted: signal?.aborted === true, redact: this.d.redact }));
+    return error instanceof BrowserFailureError ? error : new BrowserFailureError(classifyBrowserError(error, false, { aborted: signal?.aborted === true, redact: this.d.redact, words: WORDS }));
   }
 
   /** Release every session the branch's entries leave open (a browser a crashed process left running); never adopted. */
@@ -504,13 +506,13 @@ async function openRuntime(pi: ExtensionAPI, settings: Settings, ctx: ExtensionC
       const impl = impls[tool]!;
       custody.activity(1);
       try {
-        const call: ToolCall = { callId, conversationId: CONVERSATION, signal, label: config.label, redact, evidence, workspace: ctx.cwd, files: options.files ?? workspaceFiles(ctx.cwd) };
+        const call: ToolCall = { callId, conversationId: CONVERSATION, signal, label: config.label, redact, words: WORDS, evidence, workspace: ctx.cwd, files: options.files ?? workspaceFiles(ctx.cwd) };
         return await impl(args, custody, call);
       } catch (error) {
         // A throw would reach the model as its raw message, unredacted (pi shows a tool's error text): every failure comes back as the typed envelope the durable
         // adapter gives, redacted, so the model reads its code and `retryable`. A typed one is thrown before the tool's own handling (the driving guard refuses a
         // release or relaunch for a person who is driving before the tool runs); any other is classified here.
-        const typed = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, [...BROWSER_TOOLS, ...WEB_TOOLS].find((contract) => contract.name === tool)?.effect === "effect", { aborted: signal?.aborted === true, redact });
+        const typed = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, [...BROWSER_TOOLS, ...WEB_TOOLS].find((contract) => contract.name === tool)?.effect === "effect", { aborted: signal?.aborted === true, redact, words: WORDS });
         return { content: [{ type: "text", text: JSON.stringify(typed) }], isError: true };
       } finally { custody.activity(-1); }
     },

@@ -483,6 +483,17 @@ function createProjector(options: TimelineOptions) {
     });
   };
 
+  /** The conversation's browser session, once a browser call got one: its first opener that did not fail, read as the
+   *  session opened right before that call (`use`, its row). A call the provider refused (a key it does not take) opened
+   *  none, so no row says one was. */
+  function opened(conv: number, name: string, view: ToolResultView, use: TimelineEvent, show: (row: TimelineEvent) => void) {
+    if (!BROWSER_OPENERS.has(name) || browsers.has(conv) || callFailed(name, view)) return;
+    browsers.add(conv);
+    const row = make("phase", conv, `${use.id}:session`, { summary: "Opened a live browser session", seq: (use.seq ?? 0) - 0.25 });
+    rows.splice(Math.max(rows.indexOf(use), 0), 0, row);
+    show(row);
+  }
+
   /** A call that spawned a conversation: its rows, and the child's, now name it as their parent. */
   function adopt(conv: number, child: number, callId: string, args: Obj, fallback: string): TimelineEvent[] {
     if (children.has(child) || child === conv) return [];
@@ -570,10 +581,6 @@ function createProjector(options: TimelineOptions) {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
           const args = obj(block.arguments) ?? {};
-          if (BROWSER_OPENERS.has(name) && !browsers.has(conv)) {
-            browsers.add(conv);
-            add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
-          }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
           const before = early.get(`${conv}:${id}`);
           calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: before !== undefined });
@@ -588,6 +595,7 @@ function createProjector(options: TimelineOptions) {
             rows.splice(rows.indexOf(before.row), 1);
             rows.splice(rows.indexOf(use) + 1, 0, before.row);
             touch(before.row);
+            opened(conv, name, before.view, use, touch);
           }
         });
       }
@@ -613,6 +621,7 @@ function createProjector(options: TimelineOptions) {
       const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
       if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
       add(row);
+      if (call) opened(conv, name, view, call.use, touch);
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
