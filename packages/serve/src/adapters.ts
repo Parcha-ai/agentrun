@@ -129,7 +129,7 @@ export function gatewayBase(setting: string, value: string): string {
  *  AGENT_MODEL_BASE_URL is set; claude-agent Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike. None for pi,
  *  whose keys are its models' (model.ts' modelKeys). */
 export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv): string[] {
-  if (harness === "codex") return [env.AGENT_MODEL_BASE_URL ? "AGENT_MODEL_API_KEY" : "OPENAI_API_KEY"];
+  if (harness === "codex") return env.AGENT_MODEL_BASE_URL ? ["AGENT_MODEL_API_KEY"] : ["OPENAI_API_KEY"];
   if (harness === "claude-agent") return ["ANTHROPIC_API_KEY"];
   return [];
 }

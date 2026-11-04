@@ -1151,8 +1151,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   names would leave it in the server's environment and out of every run's, and a run on that provider would fail at
   its start for want of the key.
 - The cut is by name alone. A variable named like no key whose value is one reaches a run's environment and is not cut
-  from what an import or a harness's log keeps: a URL with credentials (`DATABASE_URL=postgres://user:pass@host/db`,
-  `HTTPS_PROXY=http://user:pass@proxy`), headers that carry a token (`OTEL_EXPORTER_OTLP_HEADERS`), or a held key's
+  from what an import or a harness's log keeps: a URL with a user and password in it (`DATABASE_URL`, `HTTPS_PROXY`),
+  headers that carry a token (`OTEL_EXPORTER_OTLP_HEADERS`), or a held key's
   value under another name.
 - The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
   server has read it.
