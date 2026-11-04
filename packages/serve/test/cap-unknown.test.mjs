@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn } from "../dist/cap.js";
+import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn, streamedBytes } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -435,13 +435,13 @@ test("pi under a cap: a request stopped before its end whose stream and the 1,02
 });
 
 /** Requests the test ends itself, each recorded with the options it went with: `end(stopReason, text, total)` streams
- *  `text` as its content and ends it so. */
+ *  `text` as its content (a string as one text block, an array as the blocks themselves) and ends it so. */
 function streamingModels() {
   const sent = [];
   const send = (m, ctx, options) => {
     const events = createAssistantMessageEventStream();
     const end = (stopReason, text, total) => {
-      const message = { role: "assistant", content: text ? [{ type: "text", text }] : [], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } }, stopReason, timestamp: Date.now() };
+      const message = { role: "assistant", content: Array.isArray(text) ? text : text ? [{ type: "text", text }] : [], api: "fake", provider: "fake", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } }, stopReason, timestamp: Date.now() };
       events.push(stopReason === "aborted" ? { type: "error", reason: "aborted", error: message } : { type: "done", reason: "stop", message });
       events.end(message);
     };
@@ -503,6 +503,27 @@ test("pi under a cap: a request the person stops counts at what it can have cost
   await cut.result();
   await settle();
   assert.equal(await spentSaid(small), eight(hold), "500 bytes and 1,024 tokens pass its limit: at its hold");
+});
+
+test("a stopped request counts every byte it streamed, whatever its blocks hold: thinking, a tool call's name and arguments, and text outside ASCII, each UTF-8 byte a token", async () => {
+  const thinking = "Je réfléchis… 思考する";
+  const call = { name: "write", arguments: { path: "notes/é.md", text: "naïve ✓ — 1 €" } };
+  const text = "Écrit ✓";
+  const content = [{ type: "thinking", thinking }, { type: "toolCall", id: "c1", ...call }, { type: "text", text }];
+  // UTF-8 bytes, never characters: each of these takes more bytes than it has characters.
+  const bytes = Buffer.byteLength(thinking) + Buffer.byteLength(`${call.name}${JSON.stringify(call.arguments)}`) + Buffer.byteLength(text);
+  assert.equal(streamedBytes({ content }), bytes);
+  assert.ok(bytes > thinking.length + call.name.length + JSON.stringify(call.arguments).length + text.length, "more bytes than characters");
+  // Each block alone counts its own bytes, so none is left out of the sum.
+  assert.deepEqual(content.map((block) => streamedBytes({ content: [block] })), [Buffer.byteLength(thinking), Buffer.byteLength(`${call.name}${JSON.stringify(call.arguments)}`), Buffer.byteLength(text)]);
+  // Stopped under $1 with $0.004 spent, clamped: it counts those bytes and the allowance, at the output price.
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0.004);
+  const request = capped.streamSimple(clamped, context, { maxTokens: 64_000 });
+  sent[0].end("aborted", content, 0);
+  await request.result();
+  await settle();
+  assert.equal(await spentSaid(capped), eight(0.004 + (bytes + STOP_ALLOWANCE) * 100 / 1e6));
 });
 
 test("pi under a cap: a summary that fails with no answer counts at the worst case the cap held for it", async () => {

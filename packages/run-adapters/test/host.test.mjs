@@ -329,11 +329,14 @@ test("a client that hangs up once it has read the usage the provider reported (t
   await settled(reported.hooks);
   assert.deepEqual(reported.hooks.after, [{ input: 11, output: 4, cacheRead: 0, usd: 0.001, estimated: true }], 'the usage the provider reported is booked');
 
-  const silent = await proxy(t, { fetch: holding('data: {"delta":"hi"}\n\n') });
+  // A piece outside ASCII: what it was sent is counted in bytes, never characters.
+  const piece = 'data: {"delta":"hé ✓ 思考"}\n\n';
+  const silent = await proxy(t, { fetch: holding(piece) });
   await hangUp(silent.p.url, 'without usage');
   await settled(silent.hooks);
-  // The client left part way: the booking also says what it was sent (the one 22-byte piece), which a host counts it by.
-  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength('data: {"delta":"hi"}\n\n') }], 'no usage seen: an unknown cost, with what streamed');
+  // The client left part way: the booking also says what it was sent (the one piece's bytes), which a host counts it by.
+  assert.ok(Buffer.byteLength(piece) > piece.length);
+  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(piece) }], 'no usage seen: an unknown cost, with what streamed');
 });
 
 test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {
