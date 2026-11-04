@@ -909,7 +909,7 @@ const PENDING: Json = {
       description: "A question the run asked a person (status input_required, state waiting): a message answers it.",
     },
     {
-      type: "object", additionalProperties: false, required: ["kind", "id", "tool", "call_id", "args_preview", "requested_at", "held"],
+      type: "object", additionalProperties: false, required: ["kind", "id", "tool", "call_id", "args_preview", "requested_at"],
       properties: {
         kind: { const: "approval" },
         id: { type: "string", description: "Answered at POST /runs/{run_id}/approvals/{id}; the same for the same call after a restart." },
@@ -917,7 +917,7 @@ const PENDING: Json = {
         call_id: { type: "string", description: "The call's id, as its tool_result row's tool_use_id." },
         args_preview: { type: "string", maxLength: ARGS_PREVIEW_BYTES, description: `The call's arguments as JSON, cut at ${ARGS_PREVIEW_BYTES} bytes.` },
         requested_at: { type: "string", format: "date-time" },
-        held: { type: "boolean", description: "Whether the call is held open while it waits rather than parked: false here, where the call is parked and its turn ended." },
+        price: { oneOf: [{ type: "number", minimum: 0 }, { const: "not metered" }], description: "What the call costs, in USD, where its tool declares a price; \"not metered\" for an unpriced MCP call. Absent when the tool names none." },
       },
       description: "A tool call set to ask waits for the owner's approval (status input_required, state waiting): POST /runs/{run_id}/approvals/{id} answers it.",
       "x-agentrun-serve": "approvals/1",

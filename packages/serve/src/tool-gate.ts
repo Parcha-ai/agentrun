@@ -1,31 +1,22 @@
 // The tool gate: one gate every tool call passes, on every harness (plan item 4, "approvals that pause and resume").
 // Each tool has a permission: allow (it runs), deny (it is refused, and the model reads why), or ask (a person approves
 // or denies it first). The run's tool paths call it: pi's tools, wrapped where the run's registry composes its agents'
-// tools (app.ts), the kernel's host tools on claude-agent and codex (host-tools.ts), and, with hold mode, the MCP
-// gateway. Park mode is built (RunGate); hold mode and the executors of tool families the gate does not own come next.
+// tools (app.ts), the kernel's host tools on claude-agent and codex (host-tools.ts), and the MCP gateway, which takes
+// the same park (harness-app.ts) and registers an executor for its approved calls.
 //
-// Two ways an ask waits, chosen by the caller:
-// - PARK (the default; pi's tools and the kernel's host tools). The gated call answers at once with WAITING_TEXT and
-//   the turn ends, as ask_person's does; the run goes needs_input with the pending approval. On an answer the gate runs
-//   the approved call itself (its tool family's executor, exactly once, through the journaled path) and resumes the
-//   session with a message naming the call. No CLI waits inside a tool call, so no CLI tool timeout applies.
-// - HOLD (`{ hold: true }`; the MCP gateway, per the owner's ruling of 11-04). The gate raises the SAME pending approval
-//   (needs_input, pending.kind "approval", the Timeline row, the same answer route) and returns a promise the caller
-//   awaits while it holds the CLI's MCP call open: undefined on allow (the caller then calls upstream and passes the
-//   result through spill), the refusal on deny. The turn does not end; the run reads needs_input while the call is
-//   held and working once it is answered. An abort (`signal`: a cancel, or the client went away) rejects the promise
-//   with GateAborted. If the run's process dies while a call is held, the call is answered interrupted when the run
-//   resumes, the approval stays pending, and an approval given later runs it through the executor once and resumes
-//   the session with a message naming the call: park's semantics are the fallback. In hold mode a second ask QUEUES
-//   behind the first and raises its approval when the first is answered (CLIs make parallel MCP calls); in park mode
-//   a second ask is refused while one waits.
+// An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The gated call answers at once
+// with waitingText and the turn ends, as ask_person's does; the run goes needs_input with the pending approval. On an
+// answer the gate runs the approved call itself (exactly once, through the journaled path: the kernel's host tool; an
+// MCP call, the executor its gateway registers, which comes with the gateway) and resumes the session with a message
+// naming the call. No CLI waits inside a tool call, so no CLI tool timeout applies. One call waits at a time: another
+// asked meanwhile is refused.
 //
 // The answer: POST /v2/runs/{id}/approvals/{approval_id} { decision: "allow" | "deny", note? } -> 204. The first answer
 // wins; the same answer again is 204, a conflicting one 409. Only the owner's password session answers (server.ts), never
-// a token. A cancel marks pending approvals canceled. There is no ask
-// timeout. A run nobody attends (a trigger's, later) denies what is set to ask.
+// a token. A cancel marks pending approvals canceled. There is no ask timeout; a run nobody attends (a trigger's,
+// later) is to deny what is set to ask, which is not built yet.
 //
-// Park mode, in the run's process: the asked call's request is kept in the run's own store (an `agentrun.tool_approval`
+// In the run's process: the asked call's request is kept in the run's own store (an `agentrun.tool_approval`
 // entry on its root conversation), so a restart keeps it. The server keeps a person's answer in the run's serve.json
 // (runs.ts); the gate reads it there, runs an allowed call once through the kernel's journal (the intent-then-outcome
 // effect any host tool's call is, on a session key of its own: a call a crash cut off runs again only where it is
@@ -91,8 +82,8 @@ export const permissionOf = (name: string, server: PermissionSettings, agent: Pe
 /** A call's answer as the model reads it: its text, and whether it failed. */
 export type ToolAnswer = { text: string; isError: boolean };
 
-/** A held approval's price for the person who answers it: USD where the tool declares one (held and booked through the
- *  spend cap's paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04). */
+/** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
+ *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04). */
 export type ApprovalPrice = number | "not metered";
 
 /** One pending approval, as the run's view shows it (`pending`) and the console's approval card reads it. */
@@ -105,48 +96,32 @@ export type PendingApproval = {
   /** The call's arguments as text, at most ARGS_PREVIEW_BYTES. */
   args_preview: string;
   requested_at: string;
-  /** Whether the call is held open (hold mode) rather than parked. */
-  held: boolean;
   price?: ApprovalPrice;
 };
 
 /** The run's journal commit for the call, which makes the request durable before the gate answers. */
 export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>; parked?(callId: string): void };
 
-/** How a call waits when its tool is set to ask; see the header. */
+/** What a call's ask carries beyond the call. */
 export type EnterOptions = {
-  /** Hold the call open until it is answered (the MCP gateway); default false: park and end the turn. */
-  hold?: boolean;
-  /** Aborts a held wait: a cancel, or the client went away. */
-  signal?: AbortSignal;
   /** What the approval card shows the call costs. */
   price?: ApprovalPrice;
 };
 
-/** enter's answer. `undefined`: run the call (and pass its result through spill). Otherwise the answer the model reads
- *  instead: a refusal (`isError: true`), or, in park mode, the waiting text with `parked: true`, after which the caller
- *  ends the turn. */
+/** enter's answer. `undefined`: run the call. Otherwise the answer the model reads instead: a refusal
+ *  (`isError: true`), or the waiting text with `parked: true`, after which the caller ends the turn. */
 export type Entered = undefined | (ToolAnswer & { parked?: true });
 
 /** Runs an APPROVED parked call of a tool family the gate does not own (the MCP gateway's), exactly once. */
 export type Executor = (tool: string, args: unknown, callId: string, signal: AbortSignal) => Promise<ToolAnswer>;
 
-/** A held wait ended by its signal, before an answer. */
-export class GateAborted extends Error {
-  constructor(readonly tool: string, readonly callId: string) {
-    super(`The ${tool} call ${callId} stopped waiting for its approval.`);
-    this.name = "GateAborted";
-  }
-}
-
 /** The gate of one run, in the run's process. */
 export interface Gate {
-  /** One model-initiated call at the gate: allow, deny, or ask (park or hold; see the header). */
+  /** One model-initiated call at the gate: allow, deny, or ask, which parks (see the header). */
   enter(tool: string, args: unknown, callId: string, park: Park, options?: EnterOptions): Promise<Entered>;
   /** Registers how an approved parked call of tools named `prefix…` (e.g. "mcp:") runs; one per prefix and run. */
   executor(prefix: string, run: Executor): void;
-  /** A call's result text as the model gets it: one over SPILL_BYTES is saved under the run's work/ and replaced by
-   *  its path and a preview. */
+  /** A call's result text as the model gets it: as it is, a host tool's result already cut by HOST_RESULT_MAX_CHARS. */
   spill(callId: string, text: string): string;
 }
 
@@ -156,20 +131,14 @@ export const deniedText = (tool: string): string => `Permission denied: ${tool} 
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
 /** A call a person denied, with their reason when they gave one. */
 export const refusedText = (tool: string, note?: string): string => `The user denied this ${tool} call.${note ? ` Reason: ${note}` : ""}`;
-/** A held call the run's process died during: it was not run, and its approval stays pending. */
-export const interruptedText = (tool: string): string => `This ${tool} call was interrupted while it waited for a person's approval; it was not run. If they approve it, it runs then and the run continues with its result.`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
 /** A call's arguments shown on its approval, at most this many bytes. */
 export const ARGS_PREVIEW_BYTES = 2048;
-/** A result over this many bytes is spilled to work/ (see spill). */
-export const SPILL_BYTES = 48 * 1024;
-/** The preview a spilled result keeps. */
-export const PREVIEW_BYTES = 8 * 1024;
 
 /** A gate of `policy` (the run's permission of a tool now) with no run behind it: allow and deny are enforced and
- *  executors are kept; an ask throws, since nothing here can park or hold a call (a run's is RunGate), and spill returns
+ *  executors are kept; an ask throws, since nothing here can park a call (a run's is RunGate), and spill returns
  *  the text as it is. */
 export function gateOf(policy: (tool: string) => Permission): Gate {
   const executors = new Map<string, Executor>();
@@ -231,7 +200,7 @@ export function inLearning(work: string, path: unknown): boolean {
 }
 
 /** One call that waits for approval, as the run's store keeps it. */
-export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string };
+export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; price?: ApprovalPrice };
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
 export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>) => Promise<void>;
 
@@ -292,14 +261,13 @@ export class RunGate {
     const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
     if (verdict === "allow") return undefined;
     if (verdict === "deny") return { text: deniedText(tool), isError: true };
-    if (options.hold) throw new Error(`Holding a call open for its approval comes with the MCP gateway's approvals (${tool}).`);
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
     // Named by the call, so a call run again after a crash parks as the same request.
     const id = `ap_${createHash("sha256").update(JSON.stringify([callId, tool, args ?? null])).digest("hex").slice(0, 16)}`;
     const other = [...this.requests.values()].find((held) => !held.resolved && held.id !== id);
     if (other) return { text: `This ${tool} call was not run: the ${other.tool} call ${other.call_id} already waits for a person's approval. Call it again once that one is answered.`, isError: true };
     if (!this.requests.has(id)) {
-      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString() };
+      const request: ApprovalRequest = { id, tool, call_id: callId, args: args ?? null, args_preview: argsPreview(args), requested_at: new Date().toISOString(), ...(options.price !== undefined ? { price: options.price } : {}) };
       await park.commit((tx) => (tx as Tx).appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "requested", ...request } as never }));
       this.requests.set(id, request);
     }

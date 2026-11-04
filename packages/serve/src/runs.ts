@@ -164,7 +164,7 @@ type RunMeta = {
 };
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-type Approval = { id: string; tool: string; call_id: string; args_preview: string; requested_at: string; resolved?: true };
+type Approval = { id: string; tool: string; call_id: string; args_preview: string; requested_at: string; price?: number | "not metered"; resolved?: true };
 type ApprovalAnswer = { decision: "allow" | "deny" | "canceled"; note?: string; answered_at: string };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -355,17 +355,16 @@ function noteApprovals(run: Run, entries: readonly unknown[]): void {
     const data = value.data;
     run.approvals ??= new Map();
     const known = run.approvals.get(data.id as string);
-    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_preview: String(data.args_preview ?? ""), requested_at: String(data.requested_at) });
+    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_preview: String(data.args_preview ?? ""), requested_at: String(data.requested_at), ...(typeof data.price === "number" || data.price === "not metered" ? { price: data.price } : {}) });
     else if (data.phase === "resolved" && known) known.resolved = true;
   }
 }
 /** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
 const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
-/** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. Park mode's calls are
- *  never held open (tool-gate.ts). */
+/** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
 const approvalOf = (run: Run): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: waiting.args_preview, requested_at: waiting.requested_at, held: false } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: waiting.args_preview, requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
 };
 /** One answered (allow or deny) whose answer the run's process has not acted on yet. */
 const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && run.meta.approvals[a.id]!.decision !== "canceled");
