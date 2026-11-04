@@ -11,6 +11,12 @@ export function applyPage(held: TimelineRow[], page: TimelinePage): TimelineRow[
   return [...byId.values()].sort((a, b) => a.seq - b.seq);
 }
 
+/** What a row opens to on the timeline: a call's input, a result's output, or else its own text. */
+export const rowDetail = (row: TimelineRow): string | null =>
+  (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text) ?? null;
+/** A row that failed: a call its result says did not do its work, or an error. */
+export const rowFailed = (row: TimelineRow) => row.tool_status === "failed" || row.kind === "error";
+
 /** One step of a run as a person reads it: a row, and what folds into it. `ms`: how long a tool took (its call to its
  *  result, or to its row's `ended_at`); `saved`: the file it saved; `times` and `until`: a failure repeated in a row,
  *  how many times and its last; `detail`: what opens under it (a tool's input, then its result); `above`: a question

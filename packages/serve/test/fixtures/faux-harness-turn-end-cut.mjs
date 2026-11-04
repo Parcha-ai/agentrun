@@ -6,6 +6,8 @@
 // opened next writes as it would. The arm file may hold a number: that many turn ends pass first, then the next is held.
 // "<n> after": n turn ends pass, then the first record of any kind written after the n-th (in a commit of its own, after
 // that turn end's) is held instead; TURN_END_HELD then also names that record's kind (`at`).
+// TURN_END_AGAIN, once TURN_END_HELD exists: the process opened next holds once more, the same way (the arm's count and
+// mode, counted in that process), and notes in the file TURN_END_AGAIN names instead; once that exists nothing holds.
 // TURN_END_GATE, once TURN_END_HELD exists: the process opened next waits in its open, before it writes anything of the
 // reopen's, until it has answered an event stream (the server's, its snapshot written with the door idle), then notes so
 // in the file TURN_END_GATE names. serve imports this module in the run's open (adapters.ts adapterFor), after the door
@@ -14,7 +16,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { ServerResponse } from "node:http";
 import { StatementSync } from "node:sqlite";
 
-const [arm, held] = [process.env.TURN_END_ARM, process.env.TURN_END_HELD];
+const [arm, held, again] = [process.env.TURN_END_ARM, process.env.TURN_END_HELD, process.env.TURN_END_AGAIN];
 // Only a run's process: the server never runs a turn.
 if (arm && held && process.argv.includes("--app")) {
   const run = StatementSync.prototype.run;
@@ -22,7 +24,9 @@ if (arm && held && process.argv.includes("--app")) {
   const passed = new Set();
   StatementSync.prototype.run = function (...params) {
     const record = params.at(-1);
-    if (typeof record === "string" && record.startsWith("{") && existsSync(arm) && !existsSync(held)) {
+    // The file this hold notes in: TURN_END_HELD first, then TURN_END_AGAIN's, in a process opened after it.
+    const into = !existsSync(held) ? held : again && !existsSync(again) ? again : undefined;
+    if (typeof record === "string" && record.startsWith("{") && existsSync(arm) && into) {
       let kind;
       try { kind = JSON.parse(record).kind; } catch { kind = undefined; }
       const [count, mode] = readFileSync(arm, "utf8").trim().split(/\s+/);
@@ -32,7 +36,7 @@ if (arm && held && process.argv.includes("--app")) {
         passed.add(record);
         since.push(kind);
       } else if (after ? typeof kind === "string" && passed.size >= pass : kind === "adapter.turn_end") {
-        writeFileSync(held, JSON.stringify({ pid: process.pid, since, at: kind }));
+        writeFileSync(into, JSON.stringify({ pid: process.pid, since, at: kind }));
         const nap = new Int32Array(new SharedArrayBuffer(4));
         for (let i = 0; i < 3_000; i++) Atomics.wait(nap, 0, 0, 20);
       } else if (typeof kind === "string") since.push(kind);

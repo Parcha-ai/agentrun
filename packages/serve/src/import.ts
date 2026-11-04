@@ -49,6 +49,9 @@ export type ImportOptions = {
   sources?: readonly Source[];
   /** Keep projects whose directory is gone or under the temp directory, and sessions with no message of the person's. */
   all?: boolean;
+  /** Keep projects whose directory is gone (a deleted worktree's, a moved checkout's): each still its own agent, with no
+   *  instructions or skills to read. */
+  deleted?: boolean;
   /** The environment whose key-shaped values are cut out of everything written. */
   env: NodeJS.ProcessEnv;
   /** The tool keys saved through the settings API, opened (tool-keys.ts' `values`): cut out by the same rule. */
@@ -67,7 +70,11 @@ export type ImportOptions = {
   /** Read each session's turns while planning, and measure it (`Plan.found`): what a dry run's summary counts. */
   measure?: boolean;
 };
-export type Skipped = { what: string; why: string };
+/** Why a session file or a project's file is left out, by kind, as the left-out counts group them (leftOutLines). */
+export type LeftOut = "gone" | "temp" | "live" | "large" | "unread" | "no-project" | "no-words" | "copies" | "vanished" | "file";
+/** `session`, when the file was read: the session it holds (`<source>:<id>`), so a session of two files (a resumed Codex
+ *  thread) is counted once. */
+export type Skipped = { what: string; why: string; kind: LeftOut; session?: string };
 export type ProjectPlan = {
   cwd: string;
   agentId: string;
@@ -198,13 +205,13 @@ async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile 
   }
   return out;
 }
-const unread = (file: string, error: unknown): Skipped => ({ what: file, why: `not read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})` });
+const unread = (file: string, error: unknown): Skipped => ({ what: file, why: `not read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`, kind: "unread" });
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal, keys: scan = true, onKeys }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, deleted = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal, keys: scan = true, onKeys }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
   // import's run then goes by the id as kept.
   const idOf = keptId([env, stored ?? {}]);
@@ -233,11 +240,12 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
         skipped.push({
           what: file,
           why: "written in the last 10 minutes: it may still be running",
+          kind: "live",
         });
         continue;
       }
       if (stats.size > MAX_SESSION_BYTES) {
-        skipped.push({ what: file, why: `over ${MAX_SESSION_BYTES} bytes` });
+        skipped.push({ what: file, why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" });
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
@@ -252,25 +260,28 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
         continue;
       }
       if (!session.cwd) {
-        skipped.push({ what: file, why: "no project directory in it" });
+        skipped.push({ what: file, why: "no project directory in it", kind: "no-project" });
         continue;
       }
       if (!all && session.users === 0 && !session.child) {
-        skipped.push({ what: file, why: "no message of the person's" });
+        skipped.push({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` });
         continue;
       }
       const cwd = session.cwd;
       if (!all) {
-        const there = await lstat(cwd).catch(() => null);
-        if (!there?.isDirectory()) {
-          skipped.push({ what: file, why: `its project ${cwd} is gone` });
-          continue;
-        }
+        // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
         if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
           skipped.push({
             what: file,
             why: `its project ${cwd} is a temp directory`,
+            kind: "temp",
+            session: `${source}:${session.id}`,
           });
+          continue;
+        }
+        const there = await lstat(cwd).catch(() => null);
+        if (!there?.isDirectory() && !deleted) {
+          skipped.push({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` });
           continue;
         }
       }
@@ -329,11 +340,12 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
       found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents) });
     }
   }
-  // A new agent's own text (its name, its path, its instructions and skills) is the import's to cut too: counted here,
-  // after every key is known, as the import cuts it.
+  // Each project's files read as the import reads them, held agent or new: each file it leaves out (a link, one over its
+  // cap) is among what the dry run says it leaves out. A new agent's own text (its name, its path, its instructions and
+  // skills) is the import's to cut too: counted here, after every key is known, as the import cuts it.
   for (const project of plan.projects) {
+    const files = await projectFiles(project.cwd, skipped);
     if (store?.readAgent(project.agentId)) continue;
-    const files = await projectFiles(project.cwd, []);
     counting.text(project.name);
     counting.text(project.cwd);
     for (const text of Object.values(files.instructions)) counting.text(text);
@@ -545,7 +557,7 @@ export async function projectFiles(
 }> {
   const instructions: Record<string, string> = {};
   const skills: Record<string, string> = {};
-  // A project kept by --all whose directory is gone has neither.
+  // A project kept by --all or --include-deleted whose directory is gone has neither.
   if (!(await lstat(cwd).catch(() => null))?.isDirectory()) return { instructions, skills };
   const why = (reason: RefusedReason) => (reason === "over_cap" ? `over ${MAX_FILE_BYTES} bytes` : reason === "link" ? "a link: not followed" : reason.replace("_", " "));
   const text = async (rel: string): Promise<string | undefined> => {
@@ -560,11 +572,11 @@ export async function projectFiles(
               return undefined;
             }
           })();
-      if (decoded === undefined) skipped.push({ what: join(cwd, rel), why: "not text" });
+      if (decoded === undefined) skipped.push({ what: join(cwd, rel), why: "not text", kind: "file" });
       return decoded;
     } catch (error) {
       if (!(error instanceof WorkRefused)) throw error;
-      if (error.reason !== "missing") skipped.push({ what: join(cwd, rel), why: why(error.reason) });
+      if (error.reason !== "missing") skipped.push({ what: join(cwd, rel), why: why(error.reason), kind: "file" });
       return undefined;
     }
   };
@@ -584,6 +596,7 @@ export async function projectFiles(
         skipped.push({
           what: join(cwd, ...parts.slice(0, i)),
           why: at.isSymbolicLink() ? "a link: not followed" : "not a directory",
+          kind: "file",
         });
         reachable = false;
       }
@@ -601,13 +614,13 @@ export async function projectFiles(
         },
         {
           depth: 8,
-          refused: (path, reason) => skipped.push({ what: join(cwd, dir, path), why: why(reason) }),
+          refused: (path, reason) => skipped.push({ what: join(cwd, dir, path), why: why(reason), kind: "file" }),
         },
       );
     } catch (error) {
       // The folder itself is not read (unreadable to this user): named, and the project's other folders still are.
       if (!(error instanceof WorkRefused)) throw error;
-      skipped.push({ what: join(cwd, dir), why: why(error.reason) });
+      skipped.push({ what: join(cwd, dir), why: why(error.reason), kind: "file" });
       continue;
     }
     for (const [name, paths] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
@@ -615,6 +628,7 @@ export async function projectFiles(
         skipped.push({
           what: join(cwd, dir, name),
           why: "no SKILL.md: not a skill",
+          kind: "file",
         });
         continue;
       }
@@ -622,6 +636,7 @@ export async function projectFiles(
         skipped.push({
           what: join(cwd, dir, name),
           why: "a skill of this name was already taken from another folder",
+          kind: "file",
         });
         continue;
       }
@@ -635,6 +650,7 @@ export async function projectFiles(
           skipped.push({
             what: join(cwd, dir, path),
             why: `the project's skill files are over ${MAX_SKILL_BYTES} bytes together`,
+            kind: "file",
           });
           continue;
         }
@@ -644,6 +660,7 @@ export async function projectFiles(
         skipped.push({
           what: join(cwd, dir, name),
           why: "its SKILL.md was not read: not a skill",
+          kind: "file",
         });
         continue;
       }
@@ -899,12 +916,12 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       let changed = false;
       for (const { file } of files) {
         const stats = await stat(file).catch(() => null);
-        const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed" });
+        const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
         if (!part || !stats) continue;
         searched.push(part);
         // A file of it holding only copies adds nothing to it.
         if (heldRun === undefined && ownless(part)) {
-          report.skipped.push({ what: file, why: "holds only records of sessions imported already" });
+          report.skipped.push({ what: file, why: "holds only records of sessions imported already", kind: "copies" });
           continue;
         }
         read ??= { path_sha256: hash(file), size: stats.size, mtime_ms: stats.mtimeMs };
@@ -970,9 +987,40 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   return report;
 }
 
-/** The plan as a person reads it: one line per project, its sessions counted as the import takes them, then what is
- *  left out and why. */
-export function describePlan(plan: Plan, store?: AgentStoreReader): string[] {
+const counted = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
+// What each kind of left-out file is, counted: sessions first by how many, a project's files apart.
+const LEFT_OUT: Record<LeftOut, (n: number) => string> = {
+  gone: (n) => `${counted(n, "session")} from folders that no longer exist`,
+  temp: (n) => `${counted(n, "session")} from temp folders`,
+  live: (n) => `${counted(n, "session")} still being written: ${n === 1 ? "it comes" : "they come"} in next time`,
+  "no-words": (n) => `${counted(n, "session")} with no message of yours`,
+  "no-project": (n) => `${counted(n, "file")} that ${n === 1 ? "is not a session" : "are not sessions"} (no project folder in ${n === 1 ? "it" : "them"})`,
+  large: (n) => `${counted(n, "session")} over ${MAX_SESSION_BYTES / 1024 / 1024} MB`,
+  unread: (n) => `${counted(n, "session file")} that could not be read`,
+  vanished: (n) => `${counted(n, "session file")} gone since ${n === 1 ? "it was" : "they were"} counted`,
+  copies: (n) => `${counted(n, "file")} holding only copies of sessions imported already`,
+  file: (n) => `${counted(n, "project file")} not copied (a link, not text, over its size cap, or a folder with no SKILL.md)`,
+};
+/** What an import left out, by why: one group per kind, the most first (a project's files last), each counted in words
+ *  ("84 sessions from folders that no longer exist"): a session by its id where the file was read, so one of two files
+ *  counts once, else each file. */
+export function leftOutOf(skipped: readonly Pick<Skipped, "kind" | "what" | "session">[]): { kind: LeftOut; count: number; label: string }[] {
+  const seen = new Map<LeftOut, Set<string>>();
+  for (const { kind, what, session } of skipped) seen.set(kind, (seen.get(kind) ?? new Set()).add(session ?? `file:${what}`));
+  const by = new Map([...seen].map(([kind, ids]) => [kind, ids.size] as const));
+  const order = Object.keys(LEFT_OUT) as LeftOut[];
+  return [...by]
+    .sort(([a, x], [b, y]) => Number(a === "file") - Number(b === "file") || y - x || order.indexOf(a) - order.indexOf(b))
+    .map(([kind, count]) => ({ kind, count, label: LEFT_OUT[kind](count) }));
+}
+// How the CLI brings a kind in, when one of its flags does.
+const BRING_IN: Partial<Record<LeftOut, string>> = { gone: "--include-deleted", temp: "--all", "no-words": "--all" };
+/** The CLI's left-out lines: each group (leftOutOf), with the flag that imports it too. */
+const leftOutLines = (skipped: readonly Skipped[]): string[] => leftOutOf(skipped).map(({ kind, count, label }) => `left out: ${label}${BRING_IN[kind] ? ` (${BRING_IN[kind]} imports ${count === 1 ? "it" : "them"} too)` : ""}`);
+
+/** The plan as a person reads it: one line per project, its sessions counted as the import takes them, then (`verbose`)
+ *  each file left out and why. */
+export function describePlan(plan: Plan, store?: AgentStoreReader, { verbose = false }: { verbose?: boolean } = {}): string[] {
   const held = store ? importedIn(store) : undefined;
   const lines = plan.projects.map((project) => {
     const sessions = sessionsOf(project.sessions);
@@ -982,7 +1030,7 @@ export function describePlan(plan: Plan, store?: AgentStoreReader): string[] {
     const priced = sessions.filter((s) => s.priced).length;
     return `${project.cwd}  ${[...by].map(([source, n]) => `${source} ${n}`).join(", ")}  cost known ${priced}/${sessions.length}${already ? `  already imported ${already}` : ""}`;
   });
-  return [...lines, ...(plan.already ? [`already imported, unchanged: ${plan.already} session files`] : []), ...plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`)];
+  return [...lines, ...(plan.already ? [`already imported, unchanged: ${plan.already} session files`] : []), ...(verbose ? plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`) : [])];
 }
 
 /** `agentrun-serve import ARGS`: its exit code. */
@@ -991,6 +1039,8 @@ export async function importCommand(
   usage: string,
   {
     home = homedir(),
+    // The folder whose projects are left out as temporary (the OS's temp directory).
+    temp = tmpdir(),
     // The server's own keys, which its start moved out of process.env (secrets.ts), read back in: the import cuts them
     // out of what it keeps, as it cuts every other key in the environment.
     env = withSecrets(process.env),
@@ -999,6 +1049,7 @@ export async function importCommand(
     home?: string;
     env?: NodeJS.ProcessEnv;
     out?: (line: string) => void;
+    temp?: string;
   } = {},
 ): Promise<number> {
   // What it prints goes through the cut what it keeps does, with the keys secretlint finds in the lines themselves: a
@@ -1021,6 +1072,8 @@ export async function importCommand(
           from: { type: "string" },
           "dry-run": { type: "boolean" },
           all: { type: "boolean" },
+          "include-deleted": { type: "boolean" },
+          verbose: { type: "boolean" },
           port: { type: "string" },
         },
       }));
@@ -1050,6 +1103,8 @@ export async function importCommand(
       home,
       sources: sources as Source[],
       all: values.all === true,
+      deleted: values["include-deleted"] === true,
+      temp,
       env,
       stored: keys.values(),
     };
@@ -1064,13 +1119,14 @@ export async function importCommand(
       let found: Found[];
       try {
         plan = await planImport({ ...options, measure: true }, reader);
-        for (const line of describePlan(plan, reader)) out(line);
+        for (const line of describePlan(plan, reader, { verbose: values.verbose === true })) out(line);
         found = [...plan.found!, ...(reader ? await foundAll(reader, plan.held) : []), ...(await untiedFound(plan))];
       } finally {
         reader?.close();
       }
       out(`${plan.projects.length} projects, ${sessionsOf(plan.projects.flatMap((p) => p.sessions)).length} sessions; nothing was written (dry run)`);
       if (plan.secretsFound !== undefined) out(`${plan.secretsFound} secret${plan.secretsFound === 1 ? "" : "s"} would be removed`);
+      for (const line of leftOutLines(plan.skipped)) out(line);
       for (const line of summaryLines(found, open, { dryRun: true })) out(line);
       return 0;
     }
@@ -1080,9 +1136,10 @@ export async function importCommand(
       const report = await runImport(store, plan, options);
       for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.finished ? `, finished ${agent.finished}` : ""}${agent.already ? `, already imported ${agent.already}` : ""}`);
       if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
-      for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
+      if (values.verbose) for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
       out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
       out(`${report.secretsRemoved ?? 0} secret${report.secretsRemoved === 1 ? "" : "s"} removed`);
+      for (const line of leftOutLines(report.skipped)) out(line);
       // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
       const held = importedIn(store);
       const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];

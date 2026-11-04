@@ -14,10 +14,10 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
-import { ApiError, type InputIssue, invalid } from "./errors.js";
+import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
-import { isObject } from "./validate.js";
+import { isObject, unknownFields } from "./validate.js";
 
 export const WEBHOOK_EVENTS = ["run.needs_input", "run.ended"] as const;
 /** The message types: a run's two notices, and the test send's. */
@@ -122,7 +122,7 @@ export class Webhooks {
 
   /** PUT: the URL, and the webhook on again. The first makes the secret and answers it, once; a later one keeps it. */
   save(body: Record<string, unknown>): { created: boolean; view: ReturnType<Webhooks["view"]>; secret?: string } {
-    const issues: InputIssue[] = Object.keys(body).filter((key) => key !== "url").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+    const issues = unknownFields(body, ["url"]);
     const url = typeof body.url === "string" && body.url.length <= MAX_URL ? URL.parse(body.url) : null;
     if (body.url === undefined) issues.push({ field: "url", reason: "missing", message: "url is the http or https address to POST each message to" });
     else if (!url || !["http:", "https:"].includes(url.protocol)) issues.push({ field: "url", reason: "invalid", message: `url is an http or https address of at most ${MAX_URL} characters` });

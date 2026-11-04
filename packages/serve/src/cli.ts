@@ -12,9 +12,9 @@ import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -32,6 +32,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     Docker's 10 s grace); a run cut off resumes at the next start
   --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
                     says learning: true starts from what that agent learned and adds to it; off, no run does
+  --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
+                    strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -51,7 +53,8 @@ data directory is (inside the container) clears it and signs every browser out, 
 CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read but not continue. Nothing leaves this
 machine; the values of key-shaped environment variables are cut out of what is written. --dry-run lists what it would
 import; run again, it imports only what it has not. Sessions written in the last 10 minutes wait for the next import;
---all keeps projects whose directory is gone or temporary. Each run keeps what its session used (tokens, requests, tools,
+What is left out is counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a
+deleted worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
 time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
 session found, those imported before included, and the address to open the console at (--port as the server takes it).`;
 
@@ -90,6 +93,7 @@ try {
       documents: { type: "string" },
       "allow-code-nodes": { type: "boolean", default: false },
       learning: { type: "string" },
+      "grade-model": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -128,7 +132,7 @@ try {
   serve = await startServe({
     data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
-    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true, ...(publicUrl ? { publicUrl } : {}) } : {}),
   });
 } catch (error) {
