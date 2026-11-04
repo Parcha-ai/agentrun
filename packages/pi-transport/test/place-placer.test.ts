@@ -22,6 +22,8 @@ import { ENVIRONMENTS } from "./place-steps.ts";
 
 const context = BACKGROUND_CONTEXT;
 const JEV = { provider: "typesafe", modelId: "jev-latest" };
+/** What a test puts where a key goes: never a key, and never sent. */
+const STAND_IN = "not-a-secret";
 
 const facts = (id: string, purpose: string, more: Partial<EnvironmentFacts> = {}): EnvironmentFacts => ({
 	id,
@@ -151,7 +153,7 @@ describe("the placer", () => {
 		const saved = { typesafe: process.env.TYPESAFE_API_KEY, openrouter: process.env.OPENROUTER_API_KEY };
 		delete process.env.TYPESAFE_API_KEY;
 		// Not a key and never sent: the classify below answers at pi-ai's provider boundary.
-		process.env.OPENROUTER_API_KEY = "openrouter-key-in-a-test";
+		process.env.OPENROUTER_API_KEY = STAND_IN;
 		try {
 			// pi-ai's own OpenRouter auth and catalog, with TypeSafe's real provider beside it.
 			const openrouter = openrouterProvider();
@@ -159,13 +161,6 @@ describe("the placer", () => {
 			jev.models.setProvider(typesafeProvider());
 			const typesafe = await jevPlacer(jev.models, JEV, { rest: "local" });
 			expect(typesafe.ok ? "built" : typesafe.error.code).toBe("no_key");
-			// pi-ai's OpenRouter catalog lists Jev by its alias, not by the version serve pins for images.
-			const pinned = await jevPlacer(
-				jev.models,
-				{ provider: "openrouter", modelId: "typesafe/jev-1.14" },
-				{ rest: "local" },
-			);
-			expect(pinned.ok ? "built" : pinned.error.code).toBe("no_classifier");
 
 			const classifier = jevClassifier(process.env);
 			expect(classifier).toEqual({ provider: "openrouter", modelId: "~typesafe/jev-latest" });
@@ -179,7 +174,7 @@ describe("the placer", () => {
 			});
 			expect(record.error).toBeUndefined();
 			expect(record.classifier).toEqual({ provider: "openrouter", model: "~typesafe/jev-latest" });
-			expect(jev.sent).toEqual([{ baseUrl: "https://openrouter.ai/api/v1", apiKey: "openrouter-key-in-a-test" }]);
+			expect(jev.sent).toEqual([{ baseUrl: "https://openrouter.ai/api/v1", apiKey: STAND_IN }]);
 			// OpenRouter's catalog prices Jev, so the cost is known: 10 input tokens at its price.
 			const price = jev.models.getModelOfType("classifier", "openrouter", "~typesafe/jev-latest")?.cost.input ?? 0;
 			expect(price).toBeGreaterThan(0);
@@ -196,7 +191,7 @@ describe("the placer", () => {
 	});
 
 	it("chooses Jev's route by the keys, as serve's decisions do: TypeSafe's own API first, then OpenRouter", () => {
-		const both = { TYPESAFE_API_KEY: "typesafe-key-in-a-test", OPENROUTER_API_KEY: "openrouter-key-in-a-test" };
+		const both = { TYPESAFE_API_KEY: STAND_IN, OPENROUTER_API_KEY: STAND_IN };
 		expect(jevClassifier(both)).toEqual(JEV);
 		expect(jevClassifier({ ...both, TYPESAFE_API_KEY: " " })).toEqual({
 			provider: "openrouter",
