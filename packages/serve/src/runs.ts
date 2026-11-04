@@ -1272,7 +1272,7 @@ export class Runs {
     const child = spawn(process.execPath, [
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
-      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", join(run.dir, RUN_DOOR_TOKEN), "--drain-timeout", drain,
+      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", join(run.dir, RUN_DOOR_TOKEN), "--drain-timeout", drain, // key-gate: loopback-rule the door of a run listens on loopback only, for this server
     ], { stdio, env });
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;
