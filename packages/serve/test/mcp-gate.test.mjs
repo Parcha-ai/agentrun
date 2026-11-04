@@ -56,10 +56,14 @@ async function owner(server) {
 }
 
 /** Run `runId` parked on a call that waits for its approval: its pending approval, once it reads input_required. */
+/** One MCP call asks the gate once: exactly one approval is requested for it (only the gateway enters the gate for an
+ *  MCP call; no harness path does too). */
 async function parked(api, runId) {
-  await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(view.pending?.kind, "approval", JSON.stringify(view.pending));
+  const asked = rows.filter((row) => row.kind === "tool_approval_requested");
+  assert.deepEqual(asked.map((row) => row.tool_name), [view.pending.tool], `exactly one approval for the call: ${JSON.stringify(asked)}`);
   return view.pending;
 }
 
@@ -119,7 +123,7 @@ test("pi: allowed by the agent's exact key, or by the server's mcp:fake/*, the c
   assert.equal(calls(fake, "add").length, 2, "one call each");
 });
 
-test("pi: with no setting an MCP tool asks: the call parks and the turn ends, the run reads input_required with the approval (the tool, its arguments, its price) and the server saw nothing; a token cannot answer; the owner's allow runs it once and resumes the run with its result", { timeout: 120_000 }, async (t) => {
+test("pi: with no setting an MCP tool asks once (exactly one approval): the call parks and the turn ends, the run reads input_required with the approval (the tool, its arguments, its price) and the server saw nothing; a token cannot answer; the owner's allow runs it once and resumes the run with its result", { timeout: 120_000 }, async (t) => {
   const server = await serve(t);
   const { api } = server;
   const answer = await owner(server);
@@ -207,7 +211,7 @@ test("pi: a tool with no price runs, shown not metered on the timeline and in /u
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/UsageLine" }, tools), []);
 });
 
-test("claude-agent: with no setting the CLI's MCP call parks: the session is interrupted after its parked result with no model request between, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("claude-agent: with no setting the CLI's MCP call asks once (exactly one approval) and parks: the session is interrupted after its parked result with no model request between, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
     reply: (request) => {
       // The gate's resume of the answered call (the CLI may wrap it, so it is found in the conversation's text).
