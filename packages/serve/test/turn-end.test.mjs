@@ -212,6 +212,39 @@ test("a follow-up queued before a steer that settled stays open: the snapshot st
   assert.deepEqual([turns.open, turns.end()], [1, undefined], "F stays open: the run does not end mid-turn");
 });
 
+test("a follow-up queued before a steer runs after it: once its turn ends, the run's end is the follow-up's, the turn that ran last, never the steer's with its higher id", () => {
+  // pi places a steer at the running turn's next tool boundary and a follow-up only at its end (pi-durable's inbox), so
+  // F (id 3), queued while A ran, runs after S (id 5), a steer sent later that settled inside A's turn. Ids are the order
+  // they came in; each one's placed entry is the order they ran.
+  const a = { id: 2, conversationId: 1, type: "input", status: "done", entry: 4, answer: 7, requestId: "first-r1", answer_text: "Answer A." };
+  const s = { id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 7, requestId: "steer-r1", answer_text: "Answer A." };
+  const f = { id: 3, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" };
+  const fPlaced = { ...f, status: "placed", entry: 9 };
+  const ran = (last) => {
+    const turns = new Turns();
+    turns.note([], [{ ...a, status: "placed", answer: undefined, answer_text: undefined }, f], undefined, 1_000);
+    turns.note([], [s, a]);
+    turns.note([], [fPlaced]);
+    turns.note([], [last]);
+    return turns;
+  };
+  assert.equal(answerOf(ran({ ...fPlaced, status: "done", answer: 11, answer_text: "Answer F." })), "Answer F.", "the follow-up's answer, not the steer's");
+  assert.deepEqual(ran({ ...fPlaced, status: "unanswered", reason: "model_error", detail: "the model failed" }).end(), { status: "failed", answer: null, error: "the model failed" }, "a follow-up that failed fails the run");
+  assert.equal(ran({ ...fPlaced, status: "unanswered", reason: "aborted" }).end()?.status, "interrupted", "a follow-up that was stopped leaves the run waiting");
+  // The same through a reconnect's snapshot: every input settled, each with its placed entry.
+  const turns = new Turns();
+  turns.note([], [{ ...a, status: "placed", answer: undefined, answer_text: undefined }, f], undefined, 1_000);
+  snapshot(turns, [a, { ...fPlaced, status: "done", answer: 11, answer_text: "Answer F." }, s]);
+  assert.equal(answerOf(turns), "Answer F.", "the snapshot keeps the follow-up as the turn that ran last");
+});
+
+test("guard: inputs that ran in the order they came in end on the newest, the steer's when it came and ran last", () => {
+  const a = { id: 2, conversationId: 1, type: "input", status: "done", entry: 4, answer: 5, requestId: "first-r1", answer_text: "Answer A." };
+  const s = { id: 3, conversationId: 1, type: "input", status: "done", entry: 6, answer: 8, requestId: "steer-r1", answer_text: "Answer S." };
+  assert.equal(answerOf(read([], [a, s])), "Answer S.");
+  assert.equal(answerOf(read([], [s, a])), "Answer S.", "whatever order the records are read in");
+});
+
 test("a reconnect's snapshot whose newest settled input is the end-of-run turn's: the run's own newest settled input is the one the ledger reads", () => {
   // X read open; then X, A and the end-of-run turn's input R all settled while the stream was down. The snapshot holds A
   // (the run's own newest settled), F queued behind it, and R. X, missing and older than A, settled; F stays open.
