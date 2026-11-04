@@ -32,7 +32,7 @@ async function withBin(t, bin, run) {
 }
 
 test("opencode is offered on the pinned build: available with a model key, unavailable for the key it names without one", { skip }, async () => {
-  assert.deepEqual(await opencodeOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "opencode", available: true, steer: false, default_model: null }, "no default model here");
+  assert.deepEqual(await opencodeOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "opencode", available: true, steer: false, default_model: null, run_memory_mib: 704 }, "no default model here");
   const keyless = await opencodeOf({});
   assert.equal(keyless.available, false);
   assert.match(keyless.reason, /^opencode needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL\.$/);

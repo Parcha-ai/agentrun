@@ -92,7 +92,9 @@ test("an opencode run whose cap is below one request's ceiling is refused before
 test("a run on opencode goes through the adapter's proxy to serve's gateway, priced from serve's catalog and booked once, with OpenCode's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
   const { api, standIn, data } = await opencodeServe(t, gw);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "opencode"), { id: "opencode", available: true, steer: false, default_model: "agent-model/gpt-test" });
+  // How many fit at once is this host's memory (admission.test.mjs).
+  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "opencode");
+  assert.deepEqual(offer, { id: "opencode", available: true, steer: false, default_model: "agent-model/gpt-test", run_memory_mib: 704 });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   for (let i = 0; gw.seen.length === 0; i++) {
