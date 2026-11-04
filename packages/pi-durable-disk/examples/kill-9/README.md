@@ -36,7 +36,7 @@ the first process ended (SIGKILL); its command is still running: a bare kill -9 
 generation 2 opened the run in /.../kill-9-run (3 tool results before)
   write: Successfully wrote to plan.txt
   write: Successfully wrote to notes.txt
-  write [error]: [error] /.../kill-9-run/escaped.txt: outside the workspace /.../kill-9-run/work
+  write [error]: [error] outside the workspace
   bash [error]: [error] Tool bash was interrupted and may have partially run
 agent: The job was cut and never rerun; the plan and the notes are intact.
 ok: after kill -9 the files were intact, the next open ended the cut command and it came back interrupted without a rerun, the agent finished in generation 2, and its file tools stayed in work/

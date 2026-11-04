@@ -91,9 +91,16 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 					const got = await box.download([path], context);
 					return got.ok ? new TextDecoder().decode(got.value[0]?.bytes) : undefined;
 				};
-				expect((await until("the program's uid", () => read("/tmp/uid"))).trim()).toBe("0");
-				expect(await until("its environment", () => read("/tmp/tools"))).toBe(`pda ${uid}`);
-				expect((await until("its secrets", () => read("/tmp/sec"))).trim()).toBe(sha(JSON.stringify(secrets)));
+				// Each file is created empty by its redirect before the command writes it: the waits are for the text.
+				expect(
+					(await until("the program's uid", async () => (await read("/tmp/uid"))?.trim() || undefined)).trim(),
+				).toBe("0");
+				expect(await until("its environment", async () => (await read("/tmp/tools")) || undefined)).toBe(
+					`pda ${uid}`,
+				);
+				expect((await until("its secrets", async () => (await read("/tmp/sec"))?.trim() || undefined)).trim()).toBe(
+					sha(JSON.stringify(secrets)),
+				);
 				getOrThrow(await launchStop(box, started.launch, { graceMs: 1_000 }, context));
 			});
 		});

@@ -2,6 +2,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Json } from "./validate.js";
 
@@ -15,6 +16,14 @@ export const RUN_CANCELLED = "cancelled";
 export const RUN_LAUNCHING = "launching";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
+
+/** The server's data directory when none is given (`--data`): `agentrun/agents` under XDG_DATA_HOME, or ~/.local/share.
+ *  The server, its import and reset-password default to it. `npx @parcha/agentrun` keeps its own, ~/.agentrun, and
+ *  passes it as --data. */
+export const defaultData = (env: NodeJS.ProcessEnv = process.env): string => join(env.XDG_DATA_HOME || join(env.HOME || homedir(), ".local", "share"), "agentrun", "agents");
+/** The server's own data directory, on its reading of the environment (startServe): an npx hint names it (adapters.ts
+ *  npxLine). */
+export const DATA_ENV = "AGENTRUN_SERVE_DATA";
 
 export const HOMES_DIR = "homes";
 /** Paths in an agent's home that only the host writes (another component owns them): read through the API, never written through it. */

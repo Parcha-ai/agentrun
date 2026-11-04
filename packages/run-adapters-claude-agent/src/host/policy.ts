@@ -190,6 +190,41 @@ function thinking(value: unknown, maxTokens: number): unknown {
   return { ...value, budget_tokens: maxTokens - 1 };
 }
 
+/** The tokens a request keeps for its answer when its output is limited, and the least thinking budget the provider
+ *  takes: a request that thinks may be limited to no less than both. */
+export const ANSWER_TOKENS_LEAST = 1024;
+export const THINKING_BUDGET_LEAST = 1024;
+
+/** The output tokens a Messages body asks for at most: its `max_tokens` (as `apply` clamped it). */
+export function anthropicOutputAsked(body: Record<string, unknown>): number | undefined {
+  return typeof body.max_tokens === "number" && Number.isSafeInteger(body.max_tokens) && body.max_tokens > 0 ? body.max_tokens : undefined;
+}
+
+/** The least output a Messages body may be limited to and still answer: 1,024 tokens, and with extended thinking on (a
+ *  budget) the provider's least budget beside them. Adaptive thinking takes no budget, so it needs none. */
+export function anthropicOutputLeast(body: Record<string, unknown>): number {
+  return isPlain(body.thinking) && body.thinking.type === "enabled" ? ANSWER_TOKENS_LEAST + THINKING_BUDGET_LEAST : ANSWER_TOKENS_LEAST;
+}
+
+/** A Messages body with its output limited to `max` tokens, thinking included: `max_tokens` at most `max`, never raised,
+ *  and a thinking budget squeezed under it so that 1,024 tokens stay for the answer, never below the provider's least
+ *  budget. Only numbers get smaller, so the body is never longer. */
+export function limitAnthropicOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
+  const asked = anthropicOutputAsked(body);
+  const limited = asked === undefined ? max : Math.min(asked, max);
+  const out: Record<string, unknown> = { ...body, max_tokens: limited };
+  const thought = body.thinking;
+  if (isPlain(thought) && thought.type === "enabled" && typeof thought.budget_tokens === "number") {
+    const room = limited - ANSWER_TOKENS_LEAST;
+    if (thought.budget_tokens > room) {
+      const budget = Math.max(THINKING_BUDGET_LEAST, room);
+      if (budget >= limited) refuse(400, `max_tokens ${limited} leaves no room for the least thinking budget (${THINKING_BUDGET_LEAST}) and an answer`);
+      out.thinking = { ...thought, budget_tokens: budget };
+    }
+  }
+  return out;
+}
+
 /** The body the provider gets for a request on `route`. */
 export function applyAnthropic(body: unknown, route: ProxyRoute, options: AnthropicPolicyOptions): Record<string, unknown> {
   if (!isPlain(body)) return refuse(400, "the body is not an object");
@@ -324,6 +359,9 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
+    outputAsked: anthropicOutputAsked,
+    outputLeast: anthropicOutputLeast,
+    limitOutput: limitAnthropicOutput,
     usageOf: anthropicUsage,
   };
 }

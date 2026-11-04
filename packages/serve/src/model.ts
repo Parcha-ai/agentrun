@@ -5,6 +5,7 @@
 // gateway; otherwise pi-ai's providers serve it, with their keys from the environment.
 import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { authContextOf } from "./secrets.js";
 
 /** The child's environment names the faux module by absolute path. */
@@ -31,8 +32,41 @@ const TIER_ENV: Record<Tier, string> = { fast: "AGENT_MODEL_FAST", default: "AGE
 /** The workflow node kinds that run on a model. */
 export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 
-/** The host's model id for `tier`: its own variable, else the default's. */
-const tierModel = (env: NodeJS.ProcessEnv, tier: Tier): string | undefined => env[TIER_ENV[tier]] || env.AGENT_MODEL || undefined;
+/** The model providers whose key a person may save here (tool-keys.ts' `model` rows), in the order a default is taken
+ *  from, each with the model a run gets on its key when neither its revision nor the host names one: the provider's
+ *  capable everyday model, not its dearest (Claude Sonnet 5.5 and GPT-6.1 Sol, each $2 in and $10 out per million
+ *  tokens; through OpenRouter, the same Sonnet). `harnesses`: those that run on the key, pi on any model of it and the
+ *  harness that is the provider's own. */
+export const MODEL_KEYS = [
+  { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: [DEFAULT_HARNESS, "claude-agent"] },
+  { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, "codex"] },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/anthropic/claude-sonnet-5.5", harnesses: [DEFAULT_HARNESS] },
+] as const;
+
+/** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
+ *  starts (MODEL_KEYS' fields). */
+export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${MODEL_KEYS.map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
+
+/** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`), as it talks to
+ *  Anthropic's endpoint only; codex an OpenAI model, or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL),
+ *  as it takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
+export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string): boolean {
+  if (harness === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV]) return true;
+  const slash = id.indexOf("/");
+  const provider = slash > 0 ? id.slice(0, slash) : undefined;
+  if (harness === "claude-agent") return provider === "anthropic";
+  if (harness === "codex") return provider === "openai" || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
+  return true;
+}
+
+/** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
+ *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
+ *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on. Undefined when none
+ *  is: the harness has no default here. */
+export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
+  for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
+  return MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness))?.model;
+}
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";
 
@@ -47,8 +81,8 @@ export type ModelSource = { source: (typeof MODEL_SOURCES)[number]; route_prefix
 export function modelSource(env: NodeJS.ProcessEnv): ModelSource {
   const each = (name: (tier: Tier) => string | null) => Object.fromEntries(TIERS.map((tier) => [tier, name(tier)])) as Record<Tier, string | null>;
   if (env[FAUX_ENV]) return { source: "faux", route_prefix: null, ...each((tier) => `faux/${fauxModel(env, tier)}`) };
-  if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", route_prefix: MODEL_PROVIDER, ...each((tier) => (tierModel(env, tier) ? `${MODEL_PROVIDER}/${tierModel(env, tier)}` : null)) };
-  return { source: "providers", route_prefix: null, ...each((tier) => tierModel(env, tier) ?? null) };
+  if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", route_prefix: MODEL_PROVIDER, ...each((tier) => (hostModel(env, tier) ? `${MODEL_PROVIDER}/${hostModel(env, tier)}` : null)) };
+  return { source: "providers", route_prefix: null, ...each((tier) => hostModel(env, tier) ?? null) };
 }
 
 /** A workflow's nodes as the DSL's inspection lists them, each read from the document at its path: only what the
@@ -81,33 +115,45 @@ export function llmTiers(nodes: readonly Record<string, unknown>[], tiers: reado
 }
 
 export type ModelRef = { provider: string; modelId: string };
+/** What a run that cannot have its model here needs: a provider's key, or another model. */
+export type ModelNeeds = "key" | "model";
 
 /**
  * The model a revision runs on here, or why it cannot: `ref` is an agentic revision's "provider/model-id", absent for
  * the host's model of `tier`. Through the gateway the ref goes whole, as a gateway such as OpenRouter names its models
  * `vendor/model` (with `AGENT_MODEL_GATEWAY_IDS=bare`, only the part after the provider), and `namedProvider` is that
  * provider, whose catalog entry prices the model. `host` says a setting of this host (a key, a default model) could
- * make it reachable; a model the revision names that pi-ai does not know is not.
+ * make it reachable; a model the revision names that pi-ai does not know is not. `needs`: what would: a provider's key
+ * (none names a model, or the model's provider has no key here), or another model. `harness` picks the host's model
+ * when `ref` is absent (hostModel).
  */
-export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default"): Promise<{ model: ModelRef; namedProvider?: string } | { why: string; host: boolean }> {
+export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<{ model: ModelRef; namedProvider?: string } | { why: string; host: boolean; needs: ModelNeeds }> {
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
-  const named = ref ?? tierModel(env, tier);
-  const none = tier === "default" ? "The revision names no model, and this host has no default" : `A workflow node of the ${tier} tier has no model here (${TIER_ENV[tier]}), and this host has no default`;
+  const named = ref ?? hostModel(env, tier, harness);
+  // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
+  const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
   if (env.AGENT_MODEL_BASE_URL) {
-    if (!named) return { why: `${none}: set AGENT_MODEL, or name a model in the definition.`, host: true };
-    const slash = ref?.indexOf("/") ?? -1;
-    const sent = ref && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? ref.slice(slash + 1) : named;
-    return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
+    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
+    // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
+    // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
+    const id = ref ?? ([env[TIER_ENV[tier]], env.AGENT_MODEL].includes(named) ? undefined : named);
+    const slash = id?.indexOf("/") ?? -1;
+    const sent = id && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
+    return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
-  if (!named) return { why: `${none}: set AGENT_MODEL to a provider/model-id, start agentrun-serve with --faux MODULE, or name a model in the definition.`, host: true };
+  if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true };
+  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const models = builtinModels({ authContext: authContextOf(env) });
   const model = models.getModel(provider, modelId);
-  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined };
-  if (!(await models.getAuth(model))) return { why: `pi-ai finds no key for ${provider} in this environment (${models.getProvider(provider)?.auth.apiKey?.name ?? "its API key"}): set it where agentrun-serve starts.`, host: true };
+  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
+  if (!(await models.getAuth(model))) {
+    const row = MODEL_KEYS.find((r) => r.id === provider);
+    const field = row?.field ?? models.getProvider(provider)?.auth.apiKey?.name ?? "its API key";
+    return { why: `No ${row?.label ?? provider} key here for ${named}: ${row ? `add one in Settings → Model keys, or set ${field}` : `set ${field}`} where AgentRun starts.`, host: true, needs: "key" };
+  }
   return { model: { provider, modelId } };
 }
 
@@ -132,14 +178,14 @@ export type FauxHelpers = {
  *  default) is its `default`, and a workflow's tiers are the ones its nodes name. The faux module's replies, the gateway
  *  in the environment, or pi-ai's providers. `unpriced`: the ids of its models serve has no price for (a gateway model the
  *  catalog does not list, with no price set), which a cap cannot be kept on. */
-export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"]) {
+export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS) {
   const ai = await import("@earendil-works/pi-ai");
   const { createModels, createProvider } = await import("@earendil-works/pi-ai/models");
   const faux = env[FAUX_ENV];
   const byTier = new Map<Tier, ModelRef>();
   const namedBy = new Map<Tier, string>();
   for (const tier of new Set(tiers)) {
-    const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier);
+    const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier, harness);
     if ("why" in chosen) throw new Error(chosen.why);
     byTier.set(tier, chosen.model);
     if (chosen.namedProvider) namedBy.set(tier, chosen.namedProvider);

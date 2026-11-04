@@ -90,9 +90,10 @@ describe("a launch's stdin and secrets", () => {
 			const launched = getOrThrow(await launch(box, "framed", { argv: program, stdin, secrets }, context));
 			// The launcher writes in the box's own TMPDIR, under its root: the root is walked whole.
 			expect(launched.directory.startsWith(`${root}/`)).toBe(true);
+			// fd.2 is the last file the second incarnation writes: once it has text, every file read below is whole.
 			await until("the second incarnation", async () => {
 				const read = getOrThrow(await launchState(box, { v: 1, name: "framed" }, context));
-				return read?.phase === "running" && read.incarnation === 2 && (await fileIn(box, "sec.2"))
+				return read?.phase === "running" && read.incarnation === 2 && (await fileIn(box, "fd.2"))?.trim()
 					? read
 					: undefined;
 			});
@@ -198,7 +199,9 @@ describe("a launch's user", () => {
 		const { box } = await aBox();
 		const me = userInfo().username;
 		getOrThrow(await launch(box, "self", { argv: ["sh", "-c", "id -u > uid; exec sleep 300"], user: me }, context));
-		expect((await until("the program's uid", () => fileIn(box, "uid")))?.trim()).toBe(String(process.getuid?.()));
+		expect(
+			(await until("the program's uid", async () => (await fileIn(box, "uid"))?.trim() || undefined))?.trim(),
+		).toBe(String(process.getuid?.()));
 		const state = getOrThrow(await launchState(box, { v: 1, name: "self" }, context));
 		expect(state?.user).toEqual({ name: me, uid: process.getuid?.() });
 		getOrThrow(await launchStop(box, { v: 1, name: "self" }, { graceMs: 1_000 }, context));
