@@ -98,6 +98,18 @@ describe("NeedsYouStrip, the failures", () => {
 });
 
 describe("NeedsYouStrip, the live runs", () => {
+  // Stop ends an agentic run's turn. A workflow run, or one not in a turn, doesn't stop (the server answers stopped:
+  // false and it keeps running), so the strip doesn't offer Stop for it: it points to the run's page, where Cancel is.
+  it("offers Stop only for a run that can stop, and points a workflow run to its page to cancel", () => {
+    const wf = { ...live[0]!, run_id: "w2", kind: "workflow" as const, title: "Nightly invoice batch" };
+    const idle = { ...live[0]!, run_id: "w3", state: "idle" as const, title: "Parked notes" };
+    const h = html({ asking: [], failed: [], live: [wf, idle] });
+    expect(h).not.toContain(">Stop<");
+    expect(h.match(/>Open to cancel</g)).toHaveLength(2);
+    expect(h).toContain('href="#/runs/w2"');
+    expect(html({ asking: [], failed: [], live })).toContain(">Stop<");
+  });
+
   it("shows each live run with how long it has worked, its cost so far, Steer (its page) and Stop", () => {
     const h = html();
     expect(h).toContain("Draft release notes for 2.15");

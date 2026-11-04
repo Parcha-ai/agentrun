@@ -20,7 +20,7 @@ import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
-import { appendRuns, keeper, sendOnce, uuid } from "@/lib/idempotency";
+import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
 import { hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
@@ -320,11 +320,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     const stop = pollSettled(read, 10_000);
     return () => { live = false; stop(); };
   }, [v2, where.section, needsTry]);
-  const answerKeys = useRef(keeper()).current;
+  // A key per run: an answer whose reply was lost keeps its key while another run is answered, so its retry is the same send.
+  const answerKeys = useRef(keepersByRun()).current;
   // After an action the strip reads again in a moment, so an answered question or a run started again leaves it.
   const later = () => setTimeout(() => setNeedsTry((n) => n + 1), 2500);
   const answer = async (runId: string, text: string) => {
-    try { await sendOnce(answerKeys, runId, text, v2.sendMessage); later(); return null; } catch (e) { return problemOf(e); }
+    try { await sendOnce(answerKeys(runId), runId, text, v2.sendMessage); later(); return null; } catch (e) { return problemOf(e); }
   };
   // A run is started again with its own whole first message (read from its timeline: a run's read carries no input),
   // its effort and its spend cap. Each start keeps its key until it lands, so a retry after a lost answer is the same

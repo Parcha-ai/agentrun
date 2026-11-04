@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { cost } from "@/lib/format";
 import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
+import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
@@ -171,7 +172,11 @@ function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at:
       <span className="font-mono text-[13px] text-[hsl(var(--run-active))]">working · {elapsed(at - Date.parse(run.created_at))}</span>
       <span className="font-mono text-[12px] text-muted-foreground">{spent}</span>
       <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-[12px] hover:bg-accent">Steer</a>
-      <Button type="button" size="sm" disabled={busy} onClick={async () => { setBusy(true); setProblem(await onStop(run.run_id)); setBusy(false); }}>Stop</Button>
+      {/* Stop ends an agentic run's turn (runState's rule, as the run page offers it). A workflow run, or one not in a
+          turn, doesn't stop: its page has Cancel. */}
+      {runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review).canStop
+        ? <Button type="button" size="sm" disabled={busy} onClick={async () => { setBusy(true); setProblem(await onStop(run.run_id)); setBusy(false); }}>Stop</Button>
+        : <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-[12px] hover:bg-accent">Open to cancel</a>}
       {problem && <p className="w-full font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
     </li>
   );
