@@ -9,6 +9,7 @@
 // With no launcher (a test that starts the server in its own process), a secret set in the environment is read from it.
 import { closeSync, existsSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
+import { MIN_SECRET } from "./learn/secrets.js";
 
 /** The pipe and how many bytes of it are the secrets: the launcher's, or serve's to a run's process. */
 export const SECRETS_FD_ENV = "AGENTRUN_SECRETS_FD";
@@ -79,6 +80,20 @@ function readExactly(fd: number, length: number): Buffer {
  *  servers in one process never read each other's saved keys. A run's process has none: it gets what it needs over its
  *  pipe, as it gets the rest. */
 export type StoredKeys = (name: string) => string | undefined;
+
+/** A name an environment gives a secret: a key, a token, a secret or a password. */
+const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
+
+/** This host's secrets, for a scan of what a run wrote: each one the launcher lists, as this process holds it (never in
+ *  the environment once handed over, so a scan of process.env alone sees none of them), and beside it the key a person
+ *  saved under that name on the server `stored` reads for (a run that names its tool is handed it), and the value of
+ *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
+ *  whitespace aside, matches too much text by chance to be refused, and is left out. */
+export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
+  const held = SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]);
+  const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
+  return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+};
 
 /** A secret this process was started with: as handed over, else (no launcher) as its environment has it now. */
 const own = (name: string): string | undefined => held.get(name) ?? process.env[name];
