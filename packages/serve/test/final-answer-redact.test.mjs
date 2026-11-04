@@ -2,9 +2,12 @@
 // rule as the Timeline (learning's redactSecrets over the values the server holds and handed the run), over the WHOLE
 // answer, never cut. The stored record stays as the run wrote it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
-import { redactedOutput } from "../dist/key-refusal.js";
+import * as refusal from "../dist/key-refusal.js";
+
+const { redactedAnswer, redactedOutput } = refusal;
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
@@ -89,4 +92,53 @@ test("two property names that redact to the same name withhold their object whol
   const out = redactedOutput({ keep: 1, both: { [CUT_KEY]: "a", [`${CUT_KEY}-2`]: "b" }, [CUT_KEY]: "top" }, [CUT_KEY, `${CUT_KEY}-2`]);
   noKey(JSON.stringify(out), "the output");
   assert.deepEqual(out, { keep: 1, both: "[redacted]", "[redacted]": "top" });
+});
+
+// A view reads the answer the server already redacted for this run and these held values: a console polls a run's view,
+// and an answer a run was made to write can be large.
+test("a run's view redacts its answer once per held key set: a second view reads nothing again", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("long-sk"))).status, 201);
+  const started = await api("POST", "/agents/long-sk/runs", { input: { content: "Answer with a megabyte of sk- runs." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 80_000 });
+  const first = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  const read = refusal.answerPasses?.count;
+  assert.equal(typeof read, "number", "key-refusal.ts counts the texts redactedAnswer reads");
+  const second = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(refusal.answerPasses.count, read, "the second view read the answer from what the first one redacted");
+  assert.equal(second.result.final_answer, first.result.final_answer);
+  assert.equal(second.result.final_answer, "[redacted] ".repeat(128), "each sk- run is redacted whole");
+});
+
+test("a value saved as a key after a run's answer was first served is redacted from the next view", { timeout: 90_000 }, async (t) => {
+  const later = ["not-a-secret", "later-key-0123456789abcdef"].join("-");
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY"]);
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("later"))).status, 201);
+  const started = await api("POST", "/agents/later/runs", { input: { content: "Answer quoting the later key." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 50_000 });
+  assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer, `Later: ${later} ends here.`, "no key holds it yet");
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: later } })).status, 204);
+  assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer, "Later: [redacted] ends here.", "saved, it is held");
+});
+
+test("an answer of about 1 MB made of sk- runs is redacted in time linear in its length, every run whole", () => {
+  const text = `${"sk-".repeat(2730)} `.repeat(128);
+  const began = performance.now();
+  const out = redactedAnswer(text, [CUT_KEY]);
+  const took = performance.now() - began;
+  assert.equal(out, "[redacted] ".repeat(128));
+  // Each sk- run started again at every third character took about 5 s here; read once, it takes well under a second.
+  assert.ok(took < 1500, `took ${Math.round(took)} ms`);
+});
+
+test("an sk- run, a key after a dash inside it, and a held value inside one are redacted as before", () => {
+  const tail = "A".repeat(24);
+  assert.equal(redactedAnswer(`pre sk-sk-sk-${tail} post`, []), "pre [redacted] post");
+  assert.equal(redactedAnswer(`pre x-sk-${tail}-sk-${tail} post`, []), "pre x-[redacted] post");
+  assert.equal(redactedAnswer(`a sk-${tail}${CUT_KEY}${tail} b`, [CUT_KEY]), "a [redacted] b");
+  assert.equal(redactedAnswer(`a xoxb-xoxb-${"1".repeat(12)} b`, []), "a [redacted] b");
 });

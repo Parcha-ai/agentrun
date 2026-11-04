@@ -225,6 +225,10 @@ export default function reply(context, faux) {
   if (first.includes("Answer quoting the held key.")) return faux.message(`Here it is: ${CUT_KEY} and ${Buffer.from(CUT_KEY).toString("base64")}. The rest stays.`);
   // A long answer (about 50 KB) that quotes the held key near its end.
   if (first.includes("Answer at length quoting the held key.")) return faux.message(`${"word ".repeat(10_000)}near the end ${CUT_KEY} done.`);
+  // About 1 MB of "sk-" runs, a space every 8 K: each run is one long sk- shape that every third character starts again.
+  if (first.includes("Answer with a megabyte of sk- runs.")) return faux.message(`${"sk-".repeat(2730)} `.repeat(128));
+  // An answer quoting a value no key holds yet (final-answer-redact.test.mjs saves it as one after the run).
+  if (first.includes("Answer quoting the later key.")) return faux.message(`Later: ${["not-a-secret", "later-key-0123456789abcdef"].join("-")} ends here.`);
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
   // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
