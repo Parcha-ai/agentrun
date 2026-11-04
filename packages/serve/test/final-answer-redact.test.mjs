@@ -143,3 +143,37 @@ test("an sk- run, a key after a dash inside it, and a held value inside one are 
   assert.equal(redactedAnswer(`a sk-${tail}${CUT_KEY}${tail} b`, [CUT_KEY]), "a [redacted] b");
   assert.equal(redactedAnswer(`a xoxb-xoxb-${"1".repeat(12)} b`, []), "a [redacted] b");
 });
+
+// A held value can be all digits (a gateway's key), and a workflow's output can quote it as a number.
+const DIGITS = ["1234", "5678", "9012"].join("");
+
+test("a workflow output quoting an all-digit held key as a number is served with it withheld, and its other numbers kept", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: DIGITS }, NAMES);
+  const { api } = await serve(t);
+  const flow = {
+    v: 2, name: "numbered",
+    schemas: {
+      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Out: { type: "object", required: ["note", "n", "kept"], properties: { note: { type: "string" }, n: { type: "number" }, kept: { type: "number" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Out", path: "out" },
+    root: { node: "chain", steps: [{ node: "extract", label: "out", instructions: "Submit the held number.", out: "Out", as: "out" }] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("numbered", flow))).status, 201);
+  const started = await api("POST", "/agents/numbered/runs", { input: { question: "x" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 50_000 });
+  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.ok(!JSON.stringify(run.result).includes(DIGITS), JSON.stringify(run.result));
+  assert.deepEqual(run.result.output, { note: "ok", n: "[redacted]", kept: 42 });
+});
+
+test("a number that is a held value, or whose digits hold one, nested or not, is withheld as a string holding it is; other numbers stay", () => {
+  const held = Number(DIGITS);
+  assert.deepEqual(redactedOutput(held, [DIGITS]), "[redacted]", "a number equal to it");
+  assert.deepEqual(redactedOutput({ n: Number(`9${DIGITS}3`) }, [DIGITS]), { n: "[redacted]" }, "a number whose digits hold it");
+  assert.deepEqual(redactedOutput({ list: [1, held], deep: { x: { y: held } } }, [DIGITS]), { list: [1, "[redacted]"], deep: { x: { y: "[redacted]" } } }, "nested");
+  assert.deepEqual(redactedOutput({ big: BigInt(`7${DIGITS}`) }, [DIGITS]), { big: "[redacted]" }, "a bigint");
+  assert.deepEqual(redactedOutput({ n: 42, f: 3.5, near: Number(DIGITS.slice(0, 11)), flag: true, none: null }, [DIGITS]), { n: 42, f: 3.5, near: Number(DIGITS.slice(0, 11)), flag: true, none: null }, "no held value: kept as it is");
+});

@@ -31,7 +31,8 @@ const MAX_BYTES = 1024 * 1024;
 
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SKILL_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
-const SKILL_BYTES = 1024 * 1024;
+/** The most bytes a host's skills hold in all, every file of every skill (`skillProblems`): over it the set is refused. */
+export const SKILL_BYTES = 1024 * 1024;
 
 /** The skills, checked, as every adapter that takes a host's skills checks them when it is made: each a name, a
  *  `SKILL.md` whose front matter has that name and a description, and files at plain relative paths, 1 MiB in all; or the
