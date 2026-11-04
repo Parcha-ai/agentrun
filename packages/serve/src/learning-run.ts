@@ -635,6 +635,9 @@ export class LearningRuns {
     if (learning?.state === "seeded") return this.setLearning(run, "dropped", ...((run.cancel || outcome === "cancelled" ? ["cancelled", said.stopped(STOPPED.cancelled)] : ["crashed", said.stopped(STOPPED.crashed)]) as [LearningReason, string]));
     if (!reflect || reflect.until !== undefined) return;
     reflect.until = run.lastEntry ?? reflect.after;
+    // The run ends now, when its end-of-run turn closed: `answered_at` keeps when its job answered, and the end the run's
+    // settle writes once (runs.ts carryBack) is this one, not the answer's.
+    run.endedAt = new Date().toISOString();
     // What the turn cost: the run's cost now, its job's set apart; unknown when either is.
     if (learning) {
       const total = this.kernel.costOf(run.rows);
