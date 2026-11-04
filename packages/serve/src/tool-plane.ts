@@ -177,7 +177,9 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   for (const name of PICKABLE) {
     if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
   }
-  if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
+  // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
+  // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).
+  if (plane.web_search === "native" && model) plane.model = model;
   return plane;
 }
 

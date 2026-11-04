@@ -188,8 +188,9 @@ export type Turn = { answer: string; asked: string[] };
  *  `skills`: the files of the learned skills laid in its work, by their paths under `.agents/skills/`, as a revision
  *  names its own; `skills_left_out`: the learned skills it does not get, over their budget or holding a secret.
  *  `workflows`: the names of the learned workflows the run may run (its `learned_workflow` tool), each written whole in
- *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work. */
-export type Pin = { seed: string; section?: string; learned?: string; skills?: string[]; skills_left_out?: string[]; workflows?: string[] };
+ *  LEARNED_WORKFLOWS_FILE in the run's directory, outside its work; `workflows_left_out`: the learned workflows it does
+ *  not get, their lines over what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). */
+export type Pin = { seed: string; section?: string; learned?: string; skills?: string[]; skills_left_out?: string[]; workflows?: string[]; workflows_left_out?: string[] };
 /** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
  *  top. `skipped` names what was there and not read. `recent`, when seedOf read it: the active notes' files, the one
  *  changed last on main first. `skills`, when seedOf read them: the skills the agent wrote, the one changed last on main
@@ -201,6 +202,11 @@ export type LearnedWorkflow = { name: string; description: string; workflow: str
 /** Where a run keeps the learned workflows its pin names, whole: in the run's directory, beside its pin, never in its
  *  work, so nothing the run does changes what its `learned_workflow` tool runs. */
 export const LEARNED_WORKFLOWS_FILE = "learned-workflows.json";
+/** The most bytes the `learned_workflow` tool's description gives its workflows, each one's line (workflowLine)
+ *  together: every harness sends the description with each request, so it never grows with what an agent learned. */
+export const LEARNED_WORKFLOWS_BUDGET = 8 * 1024;
+/** A learned workflow's line in the `learned_workflow` tool's description: its name, and what its README says it does. */
+export const workflowLine = ({ name, description }: Pick<LearnedWorkflow, "name" | "description">): string => `- ${name}: ${description || "(no description)"}`;
 
 /** The most bytes of learned skills one run gets, every file of each together. They get no more than what the
  *  revision's own skills leave of the adapters' cap on a run's skills in all (SKILL_BYTES): over that cap an adapter
@@ -831,10 +837,19 @@ export async function pinSeed(runDir: string, work: string, seed: Seed, options:
     const section = learnedOf(seed, options);
     const { taken, left } = await chooseSkills(work, seed, options.own ?? [], options.shown);
     const skills = taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`));
-    // The learned workflows the run may run, whole, in its directory before the pin names them (a reopen keeps them).
-    const flows = (seed.workflows ?? []).filter(({ workflow, description }) => !options.shown.holds(workflow) && !options.shown.holds(description));
+    // The learned workflows the run may run, whole, in its directory before the pin names them (a reopen keeps them):
+    // by name, each while its line fits what is left of the tool's description budget; one that does not is left out.
+    const flows: LearnedWorkflow[] = [];
+    const flowsLeft: string[] = [];
+    let room = LEARNED_WORKFLOWS_BUDGET;
+    for (const flow of seed.workflows ?? []) {
+      if (options.shown.holds(flow.workflow) || options.shown.holds(flow.description)) continue;
+      const bytes = Buffer.byteLength(`${workflowLine(flow)}\n`, "utf8");
+      if (bytes > room) flowsLeft.push(flow.name);
+      else (room -= bytes), flows.push(flow);
+    }
     if (flows.length) await writeDurable(join(runDir, LEARNED_WORKFLOWS_FILE), `${JSON.stringify(flows)}\n`);
-    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}) };
+    const pin: Pin = { seed: seed.sha, ...(section ? { section } : {}), ...(skills.length ? { skills } : {}), ...(left.length ? { skills_left_out: left } : {}), ...(flows.length ? { workflows: flows.map(({ name }) => name) } : {}), ...(flowsLeft.length ? { workflows_left_out: flowsLeft } : {}) };
     // The pin names the skills before they are laid: a server that goes down while they are takes them back (dropSeed).
     await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
     await laySkills(work, taken, made);
@@ -889,7 +904,7 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
   const pin = JSON.parse(text) as unknown;
   const names = (value: unknown, shape: (entry: string) => boolean) => value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string" && shape(entry)));
   const skillFile = (entry: string) => SKILL_NAME.test(entry.split("/")[0]!) && SKILL_FILE_PATH.test(entry.slice(entry.indexOf("/") + 1)) && entry.includes("/");
-  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string") || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
+  if (!isObject(pin) || typeof pin.seed !== "string" || (pin.section !== undefined && typeof pin.section !== "string") || (pin.learned !== undefined && typeof pin.learned !== "string") || !names(pin.skills, skillFile) || !names(pin.skills_left_out, () => true) || !names(pin.workflows, (entry) => WORKFLOW_NAME.test(entry)) || !names(pin.workflows_left_out, (entry) => WORKFLOW_NAME.test(entry))) throw new Error(`the run's ${LEARNING_PIN} is not a learning pin`);
   return pin as Pin;
 }
 

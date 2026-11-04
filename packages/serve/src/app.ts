@@ -115,7 +115,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
   // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
+  // On another harness these models carry only the run's own requests (a learned workflow's, a hosted search's), under
+  // the run's one total, which the harness keeps (cap.ts capModels' `joined`): what they cost in earlier processes is
+  // read here, as the harness's booking does not hold it.
+  const joined = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE), { sides: joined }), { unpriced: chosen.unpriced, refused: marked.refused, joined });
+  // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
+  // on another harness too, for a learned workflow's call node.
+  searchOn(models);
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   // The run's place, as its start resolved and kept it (serve.json): in a box, its coding tools run there (run-box.ts).
   const meta = await readJson(join(where.root, RUN_META));
@@ -135,10 +142,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // every harness (learning.ts).
   const learned = revision.kind === "agentic" ? await withLearned(where.root, where.work, revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
   // The workflows the agent learned that its run may run, as one tool (learned-workflow.ts), when its pin names any: on
-  // the run's models, as side requests under its cap; the `llm` tool's completion for a call node that names it.
+  // the run's models, as side requests under its cap, each model node and `llm` call on the run's model of its tier,
+  // else the run's own (the only one the run was made with, and handed the key of); the `llm` tool's completion for a
+  // call node that names it.
   const flows = revision.kind === "agentic" ? await pinnedWorkflows(where.root, await readPin(where.root)) : [];
+  const learnedModel = (tier: unknown) => byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default");
   const learnedTool = flows.length && revision.kind === "agentic"
-    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, env, work: where.work, models: models as never, complete: completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default"), thinkingLevel) })
+    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
     : undefined;
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
@@ -173,8 +183,6 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // A learned workflow's model requests go through the run's models, marked on its store once it opens (markRequests).
     return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), learnedTool && marked.open(durable), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
-  // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
-  searchOn(models);
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
   // the run is released.

@@ -28,7 +28,7 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
+import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, sideSpend, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -151,7 +151,9 @@ export function adapterRun(
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
-    const answer = byCancel ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
+    // What the run spent: the booking's, its paid tools' charges, and its own model requests' beside the harness's (a
+    // learned workflow's: cap.ts sideSpend); theirs in flight are held with the paid calls' (paidHolds, capBefore).
+    const answer = byCancel ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(plus(request.spentUsd, charged), sideSpend()) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
@@ -571,12 +573,15 @@ export function adapterRun(
       await booking.bookCut();
       // A paid tool's check before it spends: the session's requests, each booked once the proxy has answered (waited
       // for, as at a turn's end), one still in flight at the worst case the cap held for it (as pi's spend counts it),
-      // with the run's charges; its charge joins them.
+      // with the run's charges and its own model requests' (sideSpend); its charge joins them. The run's own model
+      // requests read the same total at once (`now`: capModels' `joined`), a request in flight held, never less.
       if (budgetUsd !== undefined) {
+        const now = () => plus(plus(plus(booking.spentUsd(), charged), sideSpend()), inFlight.total());
         useSpend({
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), inFlight.total())),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), now()),
           add: (usd) => void (charged = plus(charged, usd)),
+          now,
         });
       }
       // Each request the session booked and the root has no entry for: its cost, with no content.
