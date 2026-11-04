@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/test/fake-app-server.mjs at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments
+// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments, 014-mcp-servers
 /**
  * A fake `codex app-server --stdio`, for the tests that need no network. It
  * speaks the subset of the protocol the harness uses and keeps a rollout
@@ -68,6 +68,8 @@
  * - `tamper shrink` / `tamper replace` truncates or replaces the rollout
  *   file mid-turn (`FAKE_CODEX_TAMPER` does it in every turn);
  * - `turn/interrupt` kills the running command and ends the turn interrupted;
+ * - `mcp <server> <tool> <json args>` calls a config.toml `mcp_servers` tool as Codex 0.164 does (`item/started`, then `tools/call` at once,
+ *   `_meta.callId`); a required server that does not start (`FAKE_CODEX_MCP_START=fail`) fails `thread/start`; `outputs` says the tool outputs;
  * - `recall` answers with the code word an earlier message of the thread
  *   ("the code word is …") named, from the rollout it resumed.
  */
@@ -175,6 +177,18 @@ function projectConfig(cwd) {
   return /^developer_instructions = "([^"]*)"/m.exec(readFileSync(file, 'utf8'))?.[1] ?? 'present';
 }
 
+/** A config.toml MCP server, and one request to it as Codex's client sends it: the answer's message (JSON, or SSE's last). */
+const mcpServer = (name) => ((t) => t ? { url: /^url = "([^"]+)"/m.exec(t)?.[1], key: process.env[/^bearer_token_env_var = "([^"]+)"/m.exec(t)?.[1]] ?? '', tools: /^enabled_tools = \[(.*)\]$/m.exec(t)?.[1] ?? '' } : undefined)(table(`mcp_servers.${name}`));
+const mcpPost = (server, message) => fetch(server.url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${server.key}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, ...message }) })
+  .then(async (res) => { const text = await res.text(); if (!res.ok) throw new Error(`HTTP ${res.status}`); return JSON.parse(text.startsWith('{') ? text : text.split('\n').filter((l) => l.startsWith('data: ')).at(-1).slice(6)); });
+/** The first required MCP server that does not start, as Codex says it. */
+async function mcpDown() {
+  for (const [, name] of config().matchAll(/^\[mcp_servers\.([^\]]+)\]$/gm)) {
+    const error = process.env.FAKE_CODEX_MCP_START === 'fail' ? 'handshaking with MCP server failed' : await mcpPost(mcpServer(name), { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } }).then(() => null, (err) => err.message);
+    if (error && /^required = true$/m.test(table(`mcp_servers.${name}`))) return `required MCP servers failed to initialize: ${name}: ${error}`;
+  }
+}
+
 /** One model request: `text` streamed back from the remote "model", each piece to `onPiece`. */
 async function stream(text, onPiece) {
   const res = await fetch(`${modelBase()}/responses`, {
@@ -258,6 +272,22 @@ async function runTurn(turnId, clientId, text) {
     }
     await sleep(300);
     last = 'tampered';
+    await say(turnId, last);
+  } else if (trimmed === 'outputs') {
+    last = thread.lines.filter((l) => l.payload?.type === 'function_call_output').map((l) => l.payload.output).join(' | ') || 'no outputs';
+    await say(turnId, last);
+  } else if (/^mcp\s/.test(trimmed)) {
+    const [, name, tool, args] = /^mcp\s+(\S+)\s+(\S+)\s*([\s\S]*)$/.exec(trimmed);
+    const callId = `call_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+    await say(turnId, `Calling ${name} ${tool}.`);
+    write('response_item', { type: 'function_call', name: tool, namespace: `mcp__${name}`, arguments: args, call_id: callId });
+    const item = { type: 'mcpToolCall', id: callId, server: name, tool, status: 'inProgress', arguments: JSON.parse(args) };
+    notify('item/started', { threadId: thread.id, turnId, item });
+    const answer = mcpServer(name)?.tools.includes(`"${tool}"`) ? await mcpPost(mcpServer(name), { method: 'tools/call', params: { _meta: { callId }, name: tool, arguments: item.arguments } }).catch((err) => ({ error: err })) : { error: { message: 'no such tool' } };
+    const out = answer.error?.message ?? answer.result.content.map((c) => c.text).join('');
+    write('response_item', { type: 'function_call_output', call_id: callId, output: out });
+    notify('item/completed', { threadId: thread.id, turnId, item: { ...item, status: answer.error || answer.result.isError ? 'failed' : 'completed', result: answer.result ?? null, error: answer.error ? { message: out } : null } });
+    last = `${tool} ${answer.error ? 'failed' : 'returned'}: ${out.slice(0, 200)}`;
     await say(turnId, last);
   } else if (trimmed === 'recall') {
     const said = thread.lines.map((l) => JSON.stringify(l.payload ?? {})).join('\n');
@@ -393,6 +423,8 @@ async function handle(m) {
     case 'thread/start': {
       const id = randomUUID();
       const path = join(home, 'sessions', '2026', '10', '06', `rollout-2026-10-06T00-00-00-${id}.jsonl`);
+      const down = await mcpDown();
+      if (down) return fail(-32603, down);
       thread = { id, path, cwd: p.cwd, dynamicTools: p.dynamicTools ?? [], lines: [], planted: projectConfig(p.cwd) };
       return reply({ thread: { id, path }, approvalPolicy: p.approvalPolicy, sandbox: { type: 'readOnly' } });
     }

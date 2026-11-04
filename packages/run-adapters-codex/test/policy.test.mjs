@@ -614,3 +614,13 @@ test("web search live: the count is the terminal event's own; an earlier event's
   assert.deepEqual(await book({}), unknown);
   assert.deepEqual(await book({ output: [reasoning] }), unknown);
 });
+
+test("a remote MCP server's granted tools pass in the namespace the pinned CLI offers them in (mcp__<server>); its other tools, another server's and a bare name do not", () => {
+  const policy = codexPolicy({ model: 'm', tools: ['lookup'], mcpTools: ['mcp__fake__add'] });
+  const fn = (name) => ({ type: 'function', name, description: name, parameters: { type: 'object', properties: {} } });
+  // As Codex 0.164 sent a granted server through a loopback proxy: one namespace per server, each tool by its own name.
+  const body = { model: 'x', input: [], tools: [fn('lookup'), { type: 'namespace', name: 'mcp__fake', description: '', tools: [fn('add'), fn('delete_thing')] }, { type: 'namespace', name: 'mcp__other', description: '', tools: [fn('add')] }, fn('add')] };
+  const out = policy.apply(body);
+  assert.deepEqual(out.tools.map((tool) => (tool.type === 'namespace' ? `${tool.name}:${tool.tools.map((t) => t.name).join(',')}` : tool.name)), ['lookup', 'mcp__fake:add']);
+  assert.equal(codexPolicy({ model: 'm', tools: ['lookup'] }).apply(body).tools.length, 1, 'with no grant, no MCP tool passes');
+});

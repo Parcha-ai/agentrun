@@ -17,7 +17,7 @@ import { wireName } from "./catalog.js";
 import { mcpNameOf } from "./mcp-gateway.js";
 
 /** The harnesses an agent's MCP tools run on here. */
-export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent"];
+export const MCP_HARNESSES: readonly string[] = [DEFAULT_HARNESS, "claude-agent", "codex"];
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
@@ -98,7 +98,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         const named = mcpNameOf(tool);
         const listed = named && mcp?.(named.server);
         if (!named) out.push({ field, reason: "not_an_option", message: `${tool} is not an MCP tool's name: mcp:<server>/<tool>, the server's name in lowercase letters, digits and -.`, host: false, tool });
-        else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.join(" and ")} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
+        else if (!MCP_HARNESSES.includes(harness)) out.push({ field, reason: NOT_SET_UP, message: `${tool} runs on ${MCP_HARNESSES.slice(0, -1).join(", ")} and ${MCP_HARNESSES.at(-1)} here; on ${harness} MCP tools are not bound yet.`, host: true, tool });
         else if (!listed) out.push({ field, reason: "not_an_option", message: `No MCP server ${named.server} is saved on this server: add it in Settings → MCP servers first.`, host: false, tool });
         else if (!listed.includes(named.tool)) out.push({ field, reason: "not_an_option", message: `The MCP server ${named.server} has no tool ${named.tool}; its tools are ${listed.join(", ") || "none"}.`, host: false, tool });
         else if (wireName(tool) !== `mcp__${named.server}__${named.tool}`) out.push({ field, reason: "not_an_option", message: `${tool} is too long: mcp__${named.server}__${named.tool} must be at most 52 characters, the budget every harness's tool names share.`, host: false, tool });

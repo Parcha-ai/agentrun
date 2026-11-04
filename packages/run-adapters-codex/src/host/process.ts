@@ -76,6 +76,9 @@ export interface SessionMachine {
   announcedExec?(): string | undefined;
   /** Told each line the rollout's tail reads, as it reads it: the harness's view of code mode follows the log from here. */
   onRolloutLine?(listener: (line: string) => void): void;
+  /** Given the drive's barrier for a call the harness never sees (a remote MCP server's tool, mcp.ts): resolves true once
+   *  the call's own line (a script's nested call: its script's) is in the log, false when it never came. */
+  onCallBarrier?(barrier: (callId: string) => Promise<boolean>): void;
   /** Given Codex's `config.toml` settings before the harness writes them, to set what the session's own options decide
    *  and the harness does not (its web search, a key reserved from callers). */
   configure?(config: Record<string, TomlValue>): void;

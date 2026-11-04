@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, readdir, readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -164,9 +165,24 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   assert.deepEqual(leaked, [], "no file of the run, the CLI's own state among them, holds the token");
 });
 
-/** serve with codex on a copy of the repo's stand-in for Codex's app-server (no Codex binary, no network): its "model" is
- *  the turn's text, `mcp <server> <tool> <json>` a call of a server's tool through the MCP client Codex has, at the URL its
- *  config.toml names. `standInEnv` is the stand-in's own. */
+/** serve's gateway on loopback: each Responses request answered with the text it carries, and its usage. */
+async function echoGateway(t) {
+  const server = createServer(async (req, res) => {
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const text = JSON.parse(body || "{}").input?.[0]?.content?.[0]?.text ?? "";
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 10 } } })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+/** serve with codex on a copy of the repo's stand-in for Codex's app-server (no Codex binary): its "model" is the turn's
+ *  text, said through serve's gateway, and `mcp <server> <tool> <json>` a call of a server's tool through the MCP client
+ *  Codex has, at the URL its config.toml names. `standInEnv` is the stand-in's own. */
 async function codexServe(t, standInEnv = {}) {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
@@ -174,9 +190,8 @@ async function codexServe(t, standInEnv = {}) {
   withEnv(t, {
     AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"),
     AGENTRUN_CODEX_STANDIN: "1",
-    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: standInEnv }),
-    // No request reaches a model: the stand-in types its answers itself.
-    AGENT_MODEL_BASE_URL: "http://127.0.0.1:9",
+    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote", ...standInEnv } }),
+    AGENT_MODEL_BASE_URL: await echoGateway(t),
     AGENT_MODEL: "gpt-test",
     AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`,
   }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
@@ -224,7 +239,7 @@ test("codex: a server that does not start fails the run, naming it, rather than 
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "failed");
   const view = (await api("GET", `/runs/${runId}`)).body;
-  assert.match(JSON.stringify(view.error ?? view), /MCP server fake did not start/);
+  assert.match(JSON.stringify(view.error ?? view), /MCP servers failed to initialize: fake\b/);
 });
 
 test("codex: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
@@ -240,7 +255,12 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
   process.kill(holder.pid, "SIGKILL");
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
-  const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__slow_write");
-  assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted/i, JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
+  // What the model reads of the call in the resumed thread: Codex was told it was interrupted.
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "outputs" })).status, 202);
+  await sleep(500);
+  const { last: after } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(after.status, "completed");
+  assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /interrupted/i);
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
 });
+

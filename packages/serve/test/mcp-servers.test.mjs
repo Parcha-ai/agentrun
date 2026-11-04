@@ -73,7 +73,7 @@ test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, 
   assert.ok(!existsSync(join(data, "mcp-servers.json")), "a preview stores nothing");
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] });
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.mcp_client, { routes: true, transports: ["streamable-http"], auth: ["none", "bearer", "headers"], at_rest: "sealed", harnesses: ["pi", "claude-agent"] });
+  assert.deepEqual(caps.features.mcp_client, { routes: true, transports: ["streamable-http"], auth: ["none", "bearer", "headers"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex"] });
 });
 
 test("preview tells a server that wants a credential (bearer or OAuth), one that is not MCP, one that is down, and one that redirects apart", async (t) => {
