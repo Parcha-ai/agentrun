@@ -3,6 +3,7 @@ import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import { LatestRun } from "@/components/LatestRun";
+import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
 import { RunBar } from "@/components/RunBar";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
@@ -41,7 +42,7 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a run bar (none for an archived
  *  agent, which takes no runs), and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`). */
-export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string }) {
+export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix, harnesses, efforts = [], go, tab, limits }: { v2: Client; agentId: string; defaultModel?: string; modelSource?: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -106,7 +107,7 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
         </dl>
         {offText && <p className="mt-3 font-mono text-[12px] text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
       </header>
-      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} />}
+      {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
       <div className="flex border-b px-5 md:px-8" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={at.id === t.id} onClick={() => go(agentHash(agent.agent_id, t.id))}
