@@ -100,6 +100,49 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.ok(stoppedEnd >= 0 && followUpEntry > stoppedEnd, `the stopped turn's end comes before the follow-up's message: ${stoppedEnd}, ${followUpEntry}`);
   });
 
+  test(`${harness}: a stopped turn the next process settled, which died before it wrote the turn's end: the process after it writes that end, interrupted, not completed`, { timeout: 240_000 }, async (t) => {
+    // The session holds the stopped turn ended (settled) while the root still has no end for it: the open after that finds
+    // the session idle, and the turn's end must still read interrupted, from the stop record.
+    const dir = await scratch(t);
+    const [arm, held, again, go] = [join(dir, "arm"), join(dir, "held"), join(dir, "again"), join(dir, "go")];
+    withEnv(t, { TURN_END_ARM: arm, TURN_END_HELD: held, TURN_END_AGAIN: again });
+    const { api, data } = await serve(t, { fauxHarness: CUT });
+    assert.equal((await api("POST", "/agents", agent(`resettled-${harness}`, { harness, instructions: `Cut until ${go}.` }))).status, 201);
+    const runId = (await api("POST", `/agents/resettled-${harness}/runs`, { input: { content: "hi" } })).body.run_id;
+    await until("the second request is admitted", async () => (await usageRow(api, runId))?.requests === 2);
+    await writeFile(arm, "");
+    assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+    let hold = null;
+    await until("the stopped turn reaches the write of its end", async () => (hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))) !== null);
+    assert.equal(holderOf(data, runId), hold.pid, "the held process is the run's");
+    await writeFile(go, "");
+    process.kill(hold.pid, "SIGKILL");
+    await until("the run's process is gone", () => gone(hold.pid));
+    // The follow-up opens the run's next process. It settles the stopped turn in the session, then holds in its open at
+    // the write of the turn's end on the root, and dies there, before it takes the message. The server's delivery tries
+    // again, on the process it opens next.
+    const posted = api("POST", `/runs/${runId}/messages`, { content: "go on" });
+    let second = null;
+    await until("the next process reaches the write of the stopped turn's end", async () => (second = JSON.parse(await readFile(again, "utf8").catch(() => "null"))) !== null);
+    assert.notEqual(second.pid, hold.pid);
+    assert.equal(holderOf(data, runId), second.pid, "the second held process is the run's");
+    process.kill(second.pid, "SIGKILL");
+    await until("the second process is gone", () => gone(second.pid));
+    assert.equal((await posted).status, 202);
+    await until("the follow-up is answered", async () => {
+      const { rows } = (await api("GET", `/runs/${runId}/timeline`)).body;
+      const at = rows.findIndex((r) => r.kind === "user_message" && r.summary === "You: go on");
+      return at >= 0 && rows.slice(at + 1).some((r) => ANSWERS.includes(r.kind));
+    }, 90_000);
+    await until("the run's process is gone", () => { const pid = holderOf(data, runId); return pid === undefined || gone(pid); }, 60_000);
+    const entries = storeEntries(data, runId);
+    const ends = entries.filter((e) => e.kind === "adapter.turn_end").map((e) => e.data?.status);
+    assert.deepEqual(ends, ["interrupted", "completed"], `the stopped turn's end, written by the process after the one that settled it, then the follow-up's: ${JSON.stringify(entries.map((e) => e.kind))}`);
+    const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+    const followUp = rows.findIndex((r) => r.kind === "user_message" && r.summary === "You: go on");
+    assert.deepEqual(rows.slice(0, followUp).filter((r) => ANSWERS.includes(r.kind)).map((r) => r.summary), [], `the stopped turn went on before the follow-up: ${JSON.stringify(rows.map((r) => [r.kind, r.summary]))}`);
+  });
+
   test(`${harness}: a turn a drain cut (its process stopped, no stop by the person) still goes on in the next process and ends with its answer`, { timeout: 180_000 }, async (t) => {
     // The guard for what must not change: only a person's stop settles an open turn; a crash or a drain resumes it.
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, drainTimeout: "1s" });
