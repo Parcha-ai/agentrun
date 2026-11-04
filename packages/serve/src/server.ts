@@ -1509,6 +1509,35 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
+  /** The server's stop: once (`close` keeps its promise). */
+  let stopped: Promise<void> | undefined;
+  async function stop(): Promise<void> {
+    // First, the record a start on this data root waits on while the runs' processes drain and exit (server-lock.ts),
+    // rewritten in place: this close's bound, with time for the deliveries and the listener after them. One not
+    // written leaves a start refused.
+    const { runs: busy, boundMs } = runs.stopping();
+    try {
+      markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
+    } catch (error) {
+      const fields = { reason: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
+      void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
+    }
+    if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
+    // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
+    // after close.
+    closing = true;
+    stopping.abort();
+    for (const worker of workers.keys()) worker.postMessage("stop");
+    await Promise.all([...workers.values()].map((w) => w.exit));
+    await importing;
+    // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
+    await runs.close();
+    await webhooks.close();
+    await new Promise((done) => (server.close(done), server.closeAllConnections()));
+    agents.close();
+    // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
+    lock.release();
+  }
   return {
     url,
     baseUrl: `${url}/v2`,
@@ -1518,32 +1547,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env)),
-    async close() {
-      // First, the record a start on this data root waits on while the runs' processes drain and exit (server-lock.ts),
-      // rewritten in place: this close's bound, with time for the deliveries and the listener after them. One not
-      // written leaves a start refused.
-      const { runs: busy, boundMs } = runs.stopping();
-      try {
-        markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
-      } catch (error) {
-        const fields = { reason: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
-        void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
-      }
-      if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
-      // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
-      // after close.
-      closing = true;
-      stopping.abort();
-      for (const worker of workers.keys()) worker.postMessage("stop");
-      await Promise.all([...workers.values()].map((w) => w.exit));
-      await importing;
-      // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
-      await runs.close();
-      await webhooks.close();
-      await new Promise((done) => (server.close(done), server.closeAllConnections()));
-      agents.close();
-      // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
-      lock.release();
-    },
+    // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
+    // never writes this data root's record again (the next server's, by then).
+    close: () => (stopped ??= stop()),
   };
 }
