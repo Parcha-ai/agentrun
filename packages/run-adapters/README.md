@@ -20,7 +20,8 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   cannot make), and `open` restores a session from its records. A session's `settleOpenTurn()` ends a turn its records
   still hold open (one the person stopped), interrupted, and runs nothing, so the turn is never resumed. A prompt it
   stopped before the harness placed it stays in the conversation: the next prompt or follow-up carries its text first,
-  with a line saying it was stopped before any work on it began.
+  with a line saying it was stopped before any work on it began. The carry is in that message's text in the session's
+  state, so a crash's recovery of it, placed but never recorded by the CLI, sends the stopped words too.
 - `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
   session: every writer opened earlier for that key is fenced from then on, and its appends are refused
   (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a

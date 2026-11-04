@@ -25,6 +25,8 @@ after(() => rmSync(ROOT, { recursive: true, force: true }));
 let n = 0;
 const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 
+/** The follow-up 'and now?' after a stopped 'go', as it is placed and sent: the stopped prompt, its line, then its own. */
+const CARRIED = 'go\n\n(The message above was stopped before any work on it began.)\n\nand now?';
 const SCHEMAS = { Out: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } };
 const doc = (root) => ({ v: 2, name: 'codex', schemas: SCHEMAS, output: { schemaId: 'Out', path: 'final' }, root });
 const agent = (extra = {}) => ({ node: 'agent', label: 'task', instructions: 'Answer.', out: 'Out', as: 'final', ...extra });
@@ -563,7 +565,7 @@ test("a turn stopped before its prompt was placed: settled, its prompt stays in 
   const modelSaw = [...nextModel.seen, ...laterModel.seen].map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
   assert.deepEqual(
     { pendingAfterSettle, laterOpen, ends, follows: placed.at(-1) },
-    { pendingAfterSettle: [], laterOpen: 'idle', ends: ['interrupted'], follows: 'and now?' },
+    { pendingAfterSettle: [], laterOpen: 'idle', ends: ['interrupted'], follows: CARRIED },
     "the stopped turn is settled: no later open finds it open or ends it again",
   );
   // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.
@@ -597,7 +599,7 @@ test("a turn stopped before its prompt was placed, then a message in the same pr
   const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
   assert.deepEqual(
     { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), follows: placed.at(-1) },
-    { afterStop: 'open_turn', pending: [], follows: 'and now?' },
+    { afterStop: 'open_turn', pending: [], follows: CARRIED },
     'the stop leaves the turn open to settle, and nothing is left pending',
   );
   // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.
@@ -666,7 +668,7 @@ test("an interrupt that lands while send() is still recording the prompt: the se
   const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
   assert.deepEqual(
     { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), follows: placed.at(-1) },
-    { afterStop: 'open_turn', pending: [], follows: 'and now?' },
+    { afterStop: 'open_turn', pending: [], follows: CARRIED },
     'the stop leaves the turn open to settle, and nothing is left pending',
   );
   // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.

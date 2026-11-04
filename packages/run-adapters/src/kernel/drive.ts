@@ -31,13 +31,15 @@ type SubmissionData = Omit<Submission, "receivedAt"> & { receivedAt: string };
 export function foldSession(runId: string, records: readonly SessionRecord[]): SessionState {
   const state: SessionState = { runId, status: "running", submissions: [], placed: new Set(), withdrawn: new Set(), effects: new Map(), effectOrder: [] };
   const byStep = new Map<string, EffectRecord>();
+  const carry = carrying();
   for (const record of records) {
     if (record.kind === KERNEL_RECORDS.submission) {
       const data = record.data as unknown as SubmissionData;
       if (state.submissions.some((s) => s.id === data.id)) continue;
-      state.submissions.push({ ...data, receivedAt: new Date(data.receivedAt) });
       // A withdraw lands only while its target is not placed yet.
       if (data.kind === "withdraw" && data.target && !state.placed.has(data.target)) state.withdrawn.add(data.target);
+      const text = carry(state, data);
+      state.submissions.push({ ...data, ...(text === undefined ? {} : { text }), receivedAt: new Date(data.receivedAt) });
     } else if (record.kind === KERNEL_RECORDS.start) {
       const data = record.data as unknown as StartData;
       const existing = state.effects.get(data.key);
@@ -71,38 +73,39 @@ export function foldSession(runId: string, records: readonly SessionRecord[]): S
 export const stoppedLine = (count: number): string =>
   count === 1 ? "(The message above was stopped before any work on it began.)" : "(The messages above were stopped before any work on them began.)";
 
-/** The texts each prompt or follow-up carries: those of the prompts and follow-ups withdrawn with `carry` since the one
- *  before it, in order, with whatever each of them carried, so several stops before a message all reach it. A steer
- *  neither carries nor is carried. */
-function carriedBy(state: SessionState): Map<string, string[]> {
-  const byId = new Map(state.submissions.map((s) => [s.id, s]));
+/** The carry, as the fold meets each submission: a prompt or follow-up after withdraws with `carry` of prompts and
+ *  follow-ups (those since the one before it, in order, with whatever each of them carried, so several stops before a
+ *  message all reach it) holds their texts first, then `stoppedLine`, then its own. A steer neither carries nor is
+ *  carried. It is the submission's text in the session's state, so every reader of it, pending or placed (the
+ *  harness's send, and a crash's recovery of a placed message its CLI never recorded), has the stopped words. */
+function carrying(): (state: SessionState, data: SubmissionData) => string | undefined {
+  // Each prompt's and follow-up's own words, and the words it carried.
+  const own = new Map<string, { kind: Submission["kind"]; text?: string }>();
   const carried = new Map<string, string[]>();
   let waiting: string[] = [];
-  for (const s of state.submissions) {
-    if (s.kind === "withdraw") {
-      const target = s.carry && s.target && state.withdrawn.has(s.target) ? byId.get(s.target) : undefined;
-      if (!target || (target.kind !== "prompt" && target.kind !== "followUp")) continue;
-      waiting.push(...(carried.get(target.id) ?? []), ...(target.text ? [target.text] : []));
-      carried.delete(target.id);
-    } else if (s.kind !== "steer" && waiting.length) {
-      carried.set(s.id, waiting);
-      waiting = [];
+  return (state, data) => {
+    if (data.kind === "withdraw") {
+      const target = data.carry && data.target && state.withdrawn.has(data.target) ? own.get(data.target) : undefined;
+      if (target && (target.kind === "prompt" || target.kind === "followUp")) {
+        waiting.push(...(carried.get(data.target!) ?? []), ...(target.text ? [target.text] : []));
+        carried.delete(data.target!);
+      }
+      return data.text;
     }
-  }
-  return carried;
+    own.set(data.id, { kind: data.kind, text: data.text });
+    if (data.kind === "steer" || !waiting.length) return data.text;
+    const before = waiting;
+    waiting = [];
+    carried.set(data.id, before);
+    return `${before.join("\n\n")}\n\n${stoppedLine(before.length)}\n\n${data.text ?? ""}`;
+  };
 }
 
-/** The submissions the harness has yet to place, oldest first. A prompt or follow-up after a stop's withdraw carries the
- *  stopped text first, then `stoppedLine`, then its own: the person's earlier words stay in the conversation, and the
- *  stopped turn never runs on its own. */
+/** The submissions the harness has yet to place, oldest first, each with its text as the fold made it: a prompt or
+ *  follow-up after a stop's withdraw carries the stopped text first (`carrying`), so the person's earlier words stay in
+ *  the conversation, and the stopped turn never runs on its own. */
 export function pendingSubmissions(state: SessionState): Submission[] {
-  const carried = carriedBy(state);
-  return state.submissions
-    .filter((s) => s.kind !== "withdraw" && !state.placed.has(s.id) && !state.withdrawn.has(s.id))
-    .map((s) => {
-      const before = carried.get(s.id);
-      return before?.length ? { ...s, text: `${before.join("\n\n")}\n\n${stoppedLine(before.length)}\n\n${s.text ?? ""}` } : s;
-    });
+  return state.submissions.filter((s) => s.kind !== "withdraw" && !state.placed.has(s.id) && !state.withdrawn.has(s.id));
 }
 
 export function hostToolIO(io: EffectIO, ctx: DriveContext, overrides: { signal?: AbortSignal; progress?: (chunk: unknown) => void } = {}): HostToolIO {
