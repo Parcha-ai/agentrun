@@ -32,10 +32,11 @@ export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}:
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
 /** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
- *  (null for each when the count failed). After: the import's state. */
+ *  (null for each when the count failed). After: the import's state. `{ offer: false }`: none, either way. */
 export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
 export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
 export type SetupImport = ImportOffer | ImportState;
+type NoOffer = { offer: false };
 
 /** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
  *  the others. */
@@ -109,8 +110,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
     /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
      *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
-     *  where the server offers none (404) or refuses the read. */
-    setupImport: () => call<SetupImport>("GET", "/setup/import").catch((e) => {
+     *  where the server offers none (`{ offer: false }`, or a 404 from an older server) or refuses the read. */
+    setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
       if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;
     }),

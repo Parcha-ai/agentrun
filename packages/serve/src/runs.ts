@@ -42,7 +42,7 @@ import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { keyRefusal, redacted, redactedAnswer, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
@@ -1276,7 +1276,7 @@ export class Runs {
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
-    const reducer = timelineReducer({ path: rowPaths(run.dir), redact: this.redactor(run) });
+    const reducer = timelineReducer({ path: rowPaths(run.dir), redact: this.redactor(run), redactLive: (text) => redactedLive(text, this.refusedValues(run)) });
     // `inputs=1`: the snapshot carries pi's newest input submissions, the settlements its turns end on (turns.ts).
     const up = await fetch(new URL(`/events?inputs=1&skip=${encodeURIComponent(REFLECT_REQUEST)}`, door), { signal, headers: { ...this.headers(run), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
