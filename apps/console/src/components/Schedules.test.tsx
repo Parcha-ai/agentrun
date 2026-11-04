@@ -246,7 +246,8 @@ describe("one schedule", () => {
 describe("editing a schedule", () => {
   // The server starts a schedule again from now whenever an edit names its source: an edit of the name alone must not.
   it("saves a name alone with no source in the PATCH, so the schedule keeps its times", async () => {
-    const every: Trigger = { ...NIGHTLY, source: { kind: "schedule", every_s: 300, start_at: "2026-11-04T00:07:00Z" } };
+    // A start the server set when it was made (to the second) reads back to the second.
+    const every: Trigger = { ...NIGHTLY, source: { kind: "schedule", every_s: 300, start_at: "2026-11-04T00:07:31Z" } };
     const { v2, calls } = server({ triggers: [every] });
     const t = await open(v2, { schedule: "trg_1", edit: true });
     await t.set("name", "nightly");
