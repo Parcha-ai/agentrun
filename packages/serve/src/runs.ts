@@ -31,7 +31,7 @@ import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, GATEWAY_KEY_ENV, hostModel, KEY_MODEL_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
@@ -1183,6 +1183,14 @@ export class Runs {
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
     const served = withSecrets(process.env, "all", this.options.storedKeys);
+    // A run on the host's default (its revision names no model, and the host no AGENT_MODEL) gets the model the server's
+    // keys give, never the key: behind a gateway its process holds the gateway's key alone (secretsFor) and could not
+    // tell. A tier the host names keeps its own (hostModel reads the tier's variable first). pi and codex choose through
+    // the gateway (chooseModel); claude-agent never does, and holds the key its route sends, which gives its default.
+    delete env[KEY_MODEL_ENV];
+    const harness = run.tooling?.harness ?? DEFAULT_HARNESS;
+    const keyModel = run.tooling && !run.tooling.model && !served.AGENT_MODEL && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
+    if (keyModel) env[KEY_MODEL_ENV] = keyModel;
     const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
