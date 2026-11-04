@@ -343,7 +343,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         const error = isPlain(p.error) ? p.error : {};
         const data = isPlain(error.data) ? error.data : {};
         if (error.name === "MessageAbortedError") turn.error = undefined;
-        else turn.error = String(data.message ?? error.name ?? "OpenCode reported an error").slice(0, 500);
+        else turn.error = errorText(error);
         turn.busy = true;
       }
     };
@@ -443,7 +443,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
             current.finalText = part.text;
           }
           const error = isPlain(info.error) ? info.error : undefined;
-          if (error && error.name !== "MessageAbortedError") current.error = String((isPlain(error.data) ? error.data.message : undefined) ?? error.name ?? "OpenCode reported an error").slice(0, 500);
+          if (error && error.name !== "MessageAbortedError") current.error = errorText(error);
         }
         current.end(current.error ? { status: "failed", error: current.error } : { status: "completed" });
       };
@@ -599,6 +599,16 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       rmSync(configFile, { force: true });
     }
   }
+}
+
+/** A turn's error as OpenCode recorded it, in the words a run's error takes. A provider's answer (an APIError) leads with
+ *  its HTTP status, as codex's does ("unexpected status 401 …"), so a refused key reads in plain words wherever a run's
+ *  error is shown (key-refusal.ts); the pinned build keeps the status in the error's `statusCode`, apart from its message. */
+function errorText(error: Record<string, unknown>): string {
+  const data = isPlain(error.data) ? error.data : {};
+  const message = String(data.message ?? error.name ?? "OpenCode reported an error");
+  const status = error.name === "APIError" && typeof data.statusCode === "number" ? `${data.statusCode} ` : "";
+  return `${status}${message}`.slice(0, 500);
 }
 
 /** How many transcript entries the session has: a recovery turn's own id. */
