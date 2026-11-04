@@ -1088,8 +1088,13 @@ export async function importCommand(
   const print = out;
   const lines: string[] = [];
   out = (line: string) => void lines.push(line);
+  // What it says on stderr (a key or a secret that does not open here, its file named) is held and cut the same way, and
+  // printed first.
+  const warnings: string[] = [];
+  const say = (event: string) => (fields: Record<string, string>) => void warnings.push(`agentrun-serve import: ${logLine(event, fields)}`);
   const flush = async () => {
-    printed.add(await secretsIn(lines.join("\n")));
+    printed.add(await secretsIn([...warnings, ...lines].join("\n")));
+    for (const line of warnings.splice(0)) console.error(printed.text(line));
     for (const line of lines.splice(0)) print(printed.text(line));
   };
   try {
@@ -1127,7 +1132,7 @@ export async function importCommand(
     // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
     // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
     // server says it at its start.
-    const keys = new ToolKeys(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("tool_keys", fields)}`));
+    const keys = new ToolKeys(dir, env, say("tool_keys"));
     keys.view();
     const options: ImportOptions = {
       home,
@@ -1137,7 +1142,7 @@ export async function importCommand(
       temp,
       env,
       stored: keys.values(),
-      own: ownSecrets(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("webhook_secret", fields)}`)),
+      own: ownSecrets(dir, env, say("webhook_secret")),
     };
     // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
     // keeps is.
