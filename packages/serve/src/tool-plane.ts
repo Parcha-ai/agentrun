@@ -200,6 +200,9 @@ export const handsParallel = (plane: Plane): boolean => PICKABLE.some((name) => 
 /** What a save of `permission` answers until the tool gate lands, so no one keeps a deny that nothing enforces. */
 export const NOT_YET = "permissions arrive with the tool gate";
 
+/** The permissions a tool offers. Today: allow only, until the tool gate lands. */
+export const permissionsOf = (_name: string): readonly string[] => ["allow"];
+
 /** The issues of `value` as a settings map, its fields under `at` (none: a body's own): each capability that has a
  *  choice to `{provider?}`, the provider one offered for it. */
 export function settingsIssues(value: unknown, at = ""): InputIssue[] {

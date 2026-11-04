@@ -159,3 +159,25 @@ export function gateOf(policy: (tool: string) => Permission): Gate {
     },
   };
 }
+
+// Stubs so the gate's tests load and each case fails on its own assertion; the next commit builds them.
+/** Where a run's root records the current turn's origin, which the reflect carve-out reads. */
+export const TURN_ORIGIN_FILE = "turn-origin.json";
+
+/** One call's verdict before the run's gate acts on it. Today: everything is allowed. */
+export const gateToolCall = (_call: { tool: string; args: unknown }, _at: { turnOrigin?: string; work: string; policy: (tool: string) => Permission }): Permission => "allow";
+
+/** A run's gate. Today: every tool is allowed and enter runs every call. */
+export class RunGate {
+  constructor(
+    readonly where: { root: string; work: string; data: string; runId: string },
+    readonly overrides: PermissionSettings = {},
+    readonly parks = true,
+  ) {}
+  policy(_tool: string): Permission {
+    return "allow";
+  }
+  async enter(_tool: string, _args: unknown, _callId: string, _park: Park, _options: EnterOptions = {}): Promise<Entered> {
+    return undefined;
+  }
+}
