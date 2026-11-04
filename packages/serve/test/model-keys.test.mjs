@@ -8,7 +8,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { claudeModel } from "../dist/adapters.js";
+import { claudeModel, harnessModelKeys } from "../dist/adapters.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
@@ -254,3 +254,13 @@ for (const [harness, model] of [["codex", "anthropic/claude-sonnet-5-5"], ["pi",
     assert.ok(!JSON.stringify(sent).includes(openai), "OpenAI's key is in no request");
   });
 }
+
+test("an opencode run is handed the model key its route sends, as a codex run is: the gateway's, OpenAI's, or OpenRouter's", () => {
+  const k = fakeKey("any");
+  for (const env of [{ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: k }, { OPENAI_API_KEY: k }, { OPENROUTER_API_KEY: k }, { OPENAI_API_KEY: k, OPENROUTER_API_KEY: k }]) {
+    const codex = harnessModelKeys("codex", env);
+    assert.equal(codex.length, 1, `setup: codex holds one key with ${Object.keys(env)}`);
+    assert.deepEqual(harnessModelKeys("opencode", env), codex, `opencode, with ${Object.keys(env)}`);
+  }
+  assert.deepEqual(harnessModelKeys("opencode", { OPENROUTER_API_KEY: k }, "openrouter/openai/gpt-6-sol"), ["OPENROUTER_API_KEY"], "a model named on OpenRouter");
+});
