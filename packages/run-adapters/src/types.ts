@@ -179,12 +179,19 @@ export interface AdapterSession {
   send(text: string): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
+  /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
+   *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
+   *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
+   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn). */
+  settleOpenTurn(): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
    *  calls in flight run on until their outcomes are recorded, for at most `drainMs`, before the turn stops; the host
    *  refuses new calls and paid requests meanwhile (the runner's `stop` does). An adapter that cannot drain stops at
-   *  once, as with no `drainMs`. */
+   *  once, as with no `drainMs`. It only stops the turn: the turn stays open in the session's records, and an adapter
+   *  whose session can tell reads `open_turn` after it while it does, so a host that is done with the turn (a person's
+   *  stop) settles it with `settleOpenTurn()`, and one that is not (a pause) leaves it for the next process. */
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;

@@ -145,7 +145,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
     const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
+    // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
+    const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord);
     return { models: {}, registry: createRegistry(), door, onOpen, beforeResume: markResumed } as unknown as AppOptions;
   }
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
