@@ -1399,10 +1399,16 @@ export class Runs {
 
   /** Reads what decides the secrets runs of `run`'s revision are handed (needsOf), once per revision: from `given` (a
    *  start's, read from the store), else from the agent store, waiting out a busy one as a run's end does. */
-  private async pinNeeds(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
-    if (this.needs.has(run.revision)) return;
-    const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
-    this.needs.set(run.revision, await needsOf(revision));
+  private async pinNeeds(run: Pick<Run, "id" | "revision"> & Partial<Pick<Run, "dir">>, given?: Revision): Promise<void> {
+    if (!this.needs.has(run.revision)) {
+      const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
+      this.needs.set(run.revision, await needsOf(revision));
+    }
+    // Every launch path comes here first: its MCP servers' OAuth tokens near expiry are refreshed now, in serve, so the
+    // synchronous launch hands the run a fresh access token (mcp-servers.ts headersForRun), never a refresh token.
+    const source = this.options.mcpServers;
+    const pin = run.dir && source?.refresh ? this.mcpPin(run as Run, this.needs.get(run.revision)?.tools) : undefined;
+    await Promise.all(Object.keys(pin ?? {}).map((name) => source!.refresh!(name)));
   }
 
   /** `run`'s pinned MCP tools: read from its directory, or at its first launch made from the granted `tools` and the

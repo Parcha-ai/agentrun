@@ -10,11 +10,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { McpServers } from "../dist/mcp-servers.js";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
+const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
 const sealKey = () => randomBytes(32).toString("base64");
 const holdsNone = (text, values, where) => { for (const value of values) assert.ok(!String(text).includes(value), `${where} holds a token or secret`); };
@@ -197,4 +198,32 @@ test("a sign-in the owner since forgot or replaced is not written back: a callba
   assert.equal((await api("DELETE", "/settings/mcp-servers/docs")).status, 204);
   assert.equal((await approve(beforeDelete)).headers.get("location"), "/#/settings/mcp?server=docs&sign_in=failed&error=changed_meanwhile");
   assert.equal((await api("GET", "/settings/mcp-servers/docs")).status, 404, "a forgotten server stays forgotten");
+});
+
+test("a run: its launch refreshes a token near expiry and the call goes with the new one; after a refused refresh the call says to sign in again", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const { as, mcp } = await fakes(t, { expiresIn: 60 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"] }))).status, 201);
+  const run = async () => {
+    const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+    assert.equal(made.status, 202, JSON.stringify(made.body));
+    await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+    return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer;
+  };
+
+  // The signed-in access token no longer works and has a minute left: only the launch's refresh makes the call work.
+  as.expire();
+  assert.equal(await run(), "The tool said: 5");
+  // A token that lives a minute is within the margin again as soon as it is made: each launch path refreshes it.
+  assert.ok(as.log.some((entry) => entry.form.grant_type === "refresh_token"), "the launch refreshed it");
+  assert.ok(mcp.log.some((entry) => entry.method === "tools/call" && entry.tool === "add" && entry.authorization));
+
+  as.revoke();
+  const said = await run();
+  assert.match(said, /The MCP server docs refused its credential/);
+  assert.match(said, /sign in again in Settings → MCP servers/);
+  assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "expired");
 });

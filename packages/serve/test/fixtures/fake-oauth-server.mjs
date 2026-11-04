@@ -100,6 +100,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     issued,
     accepts: (authorization) => typeof authorization === "string" && access.has(authorization.replace(/^Bearer /, "")),
     revoke: () => (refresh.clear(), access.clear()),
+    /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
+    expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),
   };
 }

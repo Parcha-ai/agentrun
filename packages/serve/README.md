@@ -911,8 +911,9 @@ grant means the tool runs.
 - **A call** goes to the pinned URL alone: no redirect is followed, at most 4 MiB is read, and it may take 120 s. The
   model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
   filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
-  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
-  in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
+  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential (its sign-in
+  expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential
+  there"; another failure names the server and the HTTP status, never a header. A stop, or a
   client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
   resumed run and never sent again.
 - **The timeline** shows each call as `<server> · <tool>`.
