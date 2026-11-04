@@ -205,6 +205,25 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(s.writes()).toEqual([expected("save again, the token kept")]);
   });
 
+  it("signs in again, never a PUT, when a saved OAuth server's scopes change; a change that needs no sign-in is saved", async () => {
+    const docs = saved({ name: "docs", auth: { type: "oauth" }, credential: "sealed", oauth: { scopes: ["read"], client: "dynamic" } });
+    const s = server([[docs]], (c) => (c.path.endsWith("/oauth/start") ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=w" }) : c.method === "PUT" ? json(200, docs) : undefined));
+    let p = await open(s.v2);
+    await p.click(/^Change$/, p.row("docs"));
+    await p.type("mcp-scopes", "read write");
+    expect(p.button(/^Save$/)).toBeUndefined();
+    await p.click(/^Sign in again with these settings$/);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/docs/oauth/start", body: { url: VARS.url, scopes: ["read", "write"] } }]);
+    expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=w"]);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const t = server([[docs]], (c) => (c.method === "PUT" ? json(200, docs) : undefined));
+    p = await open(t.v2);
+    await p.click(/^Change$/, p.row("docs"));
+    await p.type("mcp-url", "http://127.0.0.1:4100/v2/mcp");
+    await p.click(/^Save$/);
+    expect(t.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { url: "http://127.0.0.1:4100/v2/mcp", auth: { type: "oauth" } } }]);
+  });
+
   it("refreshes one and says what was added, removed and changed", async () => {
     const after = saved({ tools: [TOOLS[0], { name: "paid", description: "A call the server bills.", input_schema: {} }] });
     const s = server([[saved()], [after]], (c) => (c.path.endsWith("/refresh") ? json(200, { added: ["paid"], removed: ["slow_write"], changed: ["add"], server: after }) : undefined));

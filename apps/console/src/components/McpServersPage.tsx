@@ -138,6 +138,13 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
   const edits = useRef(0);
   const edited = () => { edits.current++; setPreview(null); };
   const value = (field: string) => ((form.current?.elements.namedItem(field) as HTMLInputElement | null)?.value ?? "").trim();
+  // A saved OAuth server keeps its sign-in only while nothing it signed in with changes: other scopes, a client, or
+  // another origin need a new sign-in, which Save can't make, so the form offers that instead.
+  const [needsSignIn, setNeedsSignIn] = useState(false);
+  const originOf = (u: string) => { try { return new URL(u).origin; } catch { return u; } };
+  const checkSignIn = (t = type) => setNeedsSignIn(!!saved && t === "oauth" && (saved.auth.type !== "oauth" || value("mcp-scopes") !== (saved.oauth?.scopes.join(" ") ?? "")
+    || !!value("mcp-client-id") || !!value("mcp-client-secret") || originOf(value("mcp-url")) !== originOf(saved.url)));
+  useEffect(() => checkSignIn(), [type]); // eslint-disable-line react-hooks/exhaustive-deps
   // The credential typed: none typed is none sent, which a save takes as "keep the sealed one".
   const auth = (): McpAuth => {
     if (type === "bearer") return value("mcp-token") ? { type, token: value("mcp-token") } : { type };
@@ -162,14 +169,14 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
   };
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (type === "oauth" && !saved) return void startSignIn();
+    if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
     void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth()); form.current?.reset(); onSaved(); });
   };
   const canSave = !busy && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Saved. {what}</span>;
   return (
     <form ref={form} autoComplete="off" onSubmit={submit} aria-label={saved ? `Change ${saved.name}` : "Add an MCP server"} className="space-y-4 border bg-card p-4"
-      onInput={(e) => { if ((e.target as HTMLInputElement).name !== "mcp-name") edited(); }}>
+      onInput={(e) => { if ((e.target as HTMLInputElement).name !== "mcp-name") edited(); checkSignIn(); }}>
       <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Name</span>
         <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
         <input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} className={input} /></label>
@@ -228,10 +235,12 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
         </section>
       )}
       <div className="flex flex-wrap gap-2">
-        {type === "oauth"
+        {type === "oauth" && needsSignIn
+          ? <Button type="submit" size="sm" variant="solid" disabled={busy || !url.trim() || cantStore}>Sign in again with these settings</Button>
+          : type === "oauth"
           ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim() || cantStore} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
           : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
-        {(type !== "oauth" || saved) && <Button type="submit" size="sm" variant="solid" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
+        {(type !== "oauth" || (saved && !needsSignIn)) && <Button type="submit" size="sm" variant="solid" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>
       </div>
     </form>
