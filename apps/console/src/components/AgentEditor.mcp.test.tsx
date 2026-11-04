@@ -99,6 +99,36 @@ describe("the Tools step's MCP servers", () => {
     expect((host.querySelector('input[value="mcp:fake/add"]') as HTMLInputElement).checked).toBe(true);
   });
 
+  it("keeps the newest read of the servers: an older one that fails last never replaces it", async () => {
+    const answers: ((r: Response) => void)[] = [];
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", etag: '"r1"' } });
+    const fetch = (async (url: string) => {
+      const path = String(url);
+      if (path === "/v2/agents/calc") return json(200, agent(["read", "mcp:fake/add"]));
+      if (path.startsWith("/v2/agents/calc/revisions")) return json(200, { revisions: [], next_cursor: null });
+      if (path === "/v2/settings/mcp-servers") return new Promise<Response>((done) => answers.push(done));
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    }) as typeof globalThis.fetch;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    // A second read while the first is still out (the page given its client again reads them again).
+    act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
+    await settle();
+    expect(answers.length).toBe(2);
+    await act(async () => { answers[1](json(200, { servers: [FAKE] })); });
+    await settle();
+    await act(async () => { answers[0](json(503, { error: { code: "unavailable", message: "busy", retryable: true } })); });
+    await settle();
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await settle();
+    expect(host.querySelector('[aria-label="MCP server fake"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("could not be read");
+  });
+
   it("says nothing of MCP on a server without MCP servers", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent(["read"]), caps: { ...CAPS, mcp: false }, step: "tools" }));
     expect(html).not.toContain("MCP");

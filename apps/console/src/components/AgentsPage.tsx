@@ -61,7 +61,14 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
   useEffect(() => { void load(); }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
   // The saved MCP servers, for the Tools step's MCP groups.
   const [mcpServers, setMcpServers] = useState<McpServer[] | null | "failed">(null);
-  const loadMcp = () => { if (caps.mcp) { setMcpServers(null); v2.listMcpServers().then((r) => setMcpServers(r.servers), () => setMcpServers("failed")); } };
+  // Only the newest read lands: an older one's late answer (a failure most of all) never replaces it.
+  const mcpAsked = useRef(0);
+  const loadMcp = () => {
+    if (!caps.mcp) return;
+    const n = ++mcpAsked.current;
+    setMcpServers(null);
+    v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
+  };
   useEffect(loadMcp, [v2, caps.mcp]); // eslint-disable-line react-hooks/exhaustive-deps
   // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never
   // reads as failed. The page shows the write's own answer; the refresh brings the ETag and the history. When the refresh
