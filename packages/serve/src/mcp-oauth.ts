@@ -54,11 +54,11 @@ export class McpSignIns {
   }
 
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
-  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation }): Promise<string> {
+  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind }): Promise<string> {
     const now = Date.now();
     for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
     const state = randomBytes(32).toString("base64url");
-    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.client ? "pre-registered" : "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
+    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const provider = this.provider(entry, { state, redirect: (to) => void (opened = to) });
     try {

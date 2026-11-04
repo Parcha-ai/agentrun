@@ -860,7 +860,8 @@ A server whose preview answers `details.auth: "oauth"` is signed in to by this s
 agent's machine never sees one. `POST /v2/settings/mcp-servers/{name}/oauth/start` with `{url, scopes?, client_id?,
 client_secret?}` answers `{authorization_url}`, the page the owner opens. It runs the official MCP SDK's OAuth: the
 server's protected-resource metadata (RFC 9728), then its authorization server's (RFC 8414); PKCE S256; the server's URL
-as the RFC 8707 `resource`. The client is, in this order, the `client_id` (and `client_secret`) you give; else this
+as the RFC 8707 `resource`. The client is, in this order, the `client_id` (and `client_secret`) you give; else, signing in again to the same
+origin, the client kept sealed from the last sign-in (so a pre-registered client's id and secret are given once); else this
 server's client metadata document, `GET /v2/settings/mcp-servers/oauth/client.json`, when this server's address
 (`AGENTRUN_PUBLIC_URL`) is public `https` and the authorization server takes one; else dynamic client registration.
 
@@ -872,8 +873,8 @@ does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
 plain `http` address and port it listens on.
 
-Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at, scopes, client}`, where `client` is
-`pre-registered`, `metadata-document` or `dynamic`; never a token. A `PUT` with `auth: {type: "oauth"}` keeps the token
+Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at, scopes, client, client_id}`, where
+`client` is `pre-registered`, `metadata-document` or `dynamic`; never a token or a client secret. A `PUT` with `auth: {type: "oauth"}` keeps the token
 set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
 (one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
 alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,

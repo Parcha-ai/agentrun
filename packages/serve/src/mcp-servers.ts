@@ -42,7 +42,7 @@ type AuthType = (typeof MCP_AUTH_TYPES)[number];
 export type McpTool = { name: string; title?: string; description?: string; input_schema: unknown; output_schema?: unknown; annotations?: unknown };
 type Listed = { protocol: string; server_info: unknown; instructions?: string; tools: McpTool[] };
 /** An OAuth sign-in, what may be shown of it: never a token. */
-type OAuthNote = { expires_at?: string; scopes: string[]; client: ClientKind; expired?: true };
+type OAuthNote = { expires_at?: string; scopes: string[]; client: ClientKind; client_id?: string; expired?: true };
 type Kept = Listed & { url: string; auth: { type: AuthType; sealed?: Record<string, string>; check?: string; oauth?: OAuthNote }; listed_at: string; updated_at: string };
 type HeaderMap = Record<string, string>;
 type Auth = { type: AuthType; headers?: HeaderMap };
@@ -163,9 +163,13 @@ export class McpServers {
     if (client_secret !== undefined && client_id === undefined) issues.push({ field: "client_id", reason: "missing", message: "A client_secret goes with the client_id it is the secret of." });
     if (issues.length) throw invalid(issues);
     if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
-    const client = typeof client_id === "string" ? { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) } : undefined;
     const was = this.servers()[name];
-    return { authorization_url: await this.signIns.start(name, url!, { was: was ? saving(was) : null,  ...(scopes ? { scope: (scopes as string[]).join(" ") } : {}), ...(client ? { client } : {}) }) };
+    // A body with no client_id signs in again with the client kept in the sealed token set (a pre-registered one with
+    // its secret, or the one registered or named last time), for the same origin only; one with a client_id replaces it.
+    const opened = typeof client_id !== "string" && was?.auth.type === "oauth" && new URL(was.url).origin === url!.origin ? this.open(name, was) : undefined;
+    const kept = opened && "set" in opened ? opened.set : undefined;
+    const client = typeof client_id === "string" ? { client: { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) }, kind: "pre-registered" as const } : kept ? { client: kept.client, kind: kept.kind } : {};
+    return { authorization_url: await this.signIns.start(name, url!, { was: was ? saving(was) : null, ...(scopes ? { scope: (scopes as string[]).join(" ") } : {}), ...client }) };
   }
 
   /** GET .../oauth/callback, the browser's way back: its state's sign-in finished (the code exchanged, the token set
@@ -244,7 +248,7 @@ export class McpServers {
 
   private sealedSet(name: string, set: TokenSet): Kept["auth"] {
     const oauth = seal(this.key!, Buffer.from(JSON.stringify(set), "utf8"), aad(name, "oauth")).toString("base64");
-    const note: OAuthNote = { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind };
+    const note: OAuthNote = { ...(set.expires_at ? { expires_at: set.expires_at } : {}), scopes: (set.tokens.scope ?? "").split(" ").filter(Boolean), client: set.kind, client_id: set.client.client_id };
     return { type: "oauth", sealed: { oauth }, check: this.sealCheck, oauth: note };
   }
 
@@ -274,7 +278,7 @@ export class McpServers {
       ...rest,
       auth: { type: auth.type, ...(auth.type === "headers" ? { headers: Object.keys(auth.sealed ?? {}) } : {}) },
       credential: opened === null ? null : !("headers" in opened) ? opened.unreadable : auth.oauth?.expired ? ("expired" as const) : ("sealed" as const),
-      ...(auth.oauth ? { oauth: { ...(auth.oauth.expires_at ? { expires_at: auth.oauth.expires_at } : {}), scopes: auth.oauth.scopes, client: auth.oauth.client } } : {}),
+      ...(auth.oauth ? { oauth: { ...(auth.oauth.expires_at ? { expires_at: auth.oauth.expires_at } : {}), scopes: auth.oauth.scopes, client: auth.oauth.client, ...(auth.oauth.client_id ? { client_id: auth.oauth.client_id } : {}) } } : {}),
     };
   }
 
