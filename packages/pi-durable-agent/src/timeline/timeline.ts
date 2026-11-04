@@ -676,7 +676,9 @@ function createProjector(options: TimelineOptions) {
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
       const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
-      const text = textOf(message);
+      // A person can paste a held key: their row shows it redacted, as the host's `redact` makes it. The entry, which the
+      // model reads, keeps what they typed.
+      const text = redactText(textOf(message));
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
       provisional.delete(conv);
     }
