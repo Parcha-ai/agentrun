@@ -287,17 +287,21 @@ async function bodyStart(answer: Response): Promise<string> {
   return text.slice(0, REFUSAL_BYTES);
 }
 
-/** The provider's words in a 401's body: its error's message (Anthropic's `{error: {message}}`, OpenRouter's too), else
- *  the text, or a cut body's message; the first line, at most 200 characters. */
+/** The provider's words in a 401's body: its error's message (Anthropic's `{error: {message}}`, OpenRouter's too), a
+ *  string `error`, or a top-level `message`; a body that is no JSON, its text; a cut body, its message if that much came.
+ *  Never JSON itself: a body with no string message says nothing, and the run's error is the plain refused-key words.
+ *  The first line, with no control character (C0 or C1), at most 200 characters. */
 export function refusalDetail(text: string): string {
-  let said: unknown = text;
+  let said = "";
   try {
-    const body = JSON.parse(text) as { error?: { message?: unknown } | string; message?: unknown };
-    said = typeof body.error === "object" ? body.error?.message : body.error ?? body.message ?? text;
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const error = body?.error;
+    const message = error !== null && typeof error === "object" ? (error as { message?: unknown }).message : error ?? body?.message;
+    said = typeof message === "string" ? message : "";
   } catch {
-    // A body cut before its end: its message, if that much came; never the raw JSON.
+    // A body cut before its end: its message, if that much came.
     const caught = /"message"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(text)?.[1];
     said = caught === undefined ? (text.trimStart().startsWith("{") ? "" : text) : jsonString(caught);
   }
-  return String(typeof said === "string" ? said : text).split("\n")[0]!.trim().slice(0, 200);
+  return said.split("\n")[0]!.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 200);
 }
