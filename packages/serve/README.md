@@ -848,7 +848,9 @@ origin stay the same: a saved credential never goes to another origin unless you
 null for `auth.type` none. No read, log line or error shows a credential; a server's error text is cut of the values
 sent before it is shown. `POST .../{name}/refresh` lists the tools again with the saved URL and credential, keeps them,
 and answers `{added, removed, changed, server}`: `changed` names a tool whose title, description, schemas or
-annotations differ. `DELETE .../{name}` forgets the server and its credential. Capabilities' `features.mcp_client`
+annotations differ. `DELETE .../{name}` forgets the server and its credential. A saved-servers file that does not read (damaged, or
+another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
+route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
 says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
 
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `node

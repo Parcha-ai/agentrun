@@ -4,7 +4,7 @@
 // a plain web page, a closed port and a redirect.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -238,4 +238,24 @@ test("a saved credential sealed under another key reads as unreadable, and a PUT
   assert.equal(again.status, 422, JSON.stringify(again.body));
   assert.equal(again.body.error.fields[0].field, "auth.token");
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer", token } })).body.credential, "sealed");
+});
+
+test("a saved-servers file that does not read is never written over: reads say so, and every write is refused, the file unchanged", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api, data } = await serve(t);
+  const server = await fake(t);
+  const file = join(data, "mcp-servers.json");
+  for (const damaged of ['{"format": "mcp-servers/1", "servers": {"fake": ', JSON.stringify({ format: "mcp-servers/9", servers: {} })]) {
+    writeFileSync(file, damaged, { mode: 0o600 });
+    const listed = await api("GET", "/settings/mcp-servers");
+    assert.equal(listed.status, 200);
+    assert.deepEqual(listed.body, { servers: [], file_unreadable: true });
+    for (const [method, path, body] of [["PUT", "/settings/mcp-servers/other", { url: server.url }], ["DELETE", "/settings/mcp-servers/fake"], ["POST", "/settings/mcp-servers/fake/refresh"], ["GET", "/settings/mcp-servers/fake"]]) {
+      const refused = await api(method, path, body);
+      assert.equal(refused.status, 409, `${method} ${path}: ${JSON.stringify(refused.body)}`);
+      assert.equal(refused.body.error.code, "store_unreadable");
+      assert.equal(readFileSync(file, "utf8"), damaged, `${method} ${path} left the file as it was`);
+    }
+  }
+  assert.deepEqual(server.log, [], "a PUT refused for the file contacts nothing");
 });

@@ -55,6 +55,7 @@ export class McpServers {
 
   list() {
     const servers = this.kept();
+    if (servers === "unreadable") return { servers: [], file_unreadable: true as const };
     return { servers: Object.keys(servers).sort().map((name) => this.view(name, servers[name]!)) };
   }
 
@@ -82,7 +83,7 @@ export class McpServers {
     if (!MCP_SERVER_NAME.test(name)) throw invalid([{ field: "name", reason: "invalid", message: "A server's name is 1 to 32 lowercase letters, digits and dashes, starting with a letter (no underscores, so mcp__<server>__<tool> splits one way)." }]);
     const { url, auth } = this.admit(body);
     if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
-    const was = this.kept()[name];
+    const was = this.servers()[name];
     let headers = auth.headers;
     if (auth.type !== "none" && !headers) {
       if (!was || was.auth.type !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
@@ -92,7 +93,7 @@ export class McpServers {
     const listed = await listServer(url, headers ?? {}, this.version, stop);
     const now = new Date().toISOString();
     const sealed = headers && Object.fromEntries(Object.entries(headers).map(([header, value]) => [header, seal(this.key!, Buffer.from(value, "utf8"), aad(name, header)).toString("base64")]));
-    const servers = this.kept();
+    const servers = this.servers();
     servers[name] = { url: url.href, auth: { type: auth.type, ...(sealed ? { sealed, check: this.sealCheck } : {}) }, ...listed, listed_at: now, updated_at: now };
     this.write(servers);
     return this.view(name, servers[name]);
@@ -102,7 +103,7 @@ export class McpServers {
   async refresh(name: string, stop?: AbortSignal) {
     const was = this.need(name);
     const listed = await listServer(new URL(was.url), this.opened(name, was, "name"), this.version, stop);
-    const servers = this.kept();
+    const servers = this.servers();
     const now = servers[name];
     if (!now) throw notFound(name);
     if (now.url !== was.url) throw new ApiError("unavailable", `The server ${name} was changed while its tools were listed: refresh it again.`);
@@ -119,14 +120,14 @@ export class McpServers {
   }
 
   remove(name: string): void {
-    const servers = this.kept();
+    const servers = this.servers();
     if (!servers[name]) throw notFound(name);
     delete servers[name];
     this.write(servers);
   }
 
   private need(name: string): Kept {
-    const kept = this.kept()[name];
+    const kept = this.servers()[name];
     if (!kept) throw notFound(name);
     return kept;
   }
@@ -170,13 +171,21 @@ export class McpServers {
     return { url: url!, auth: auth! };
   }
 
-  private kept(): Record<string, Kept> {
+  /** The saved servers: none with no file, "unreadable" when the file does not read as this format. */
+  private kept(): Record<string, Kept> | "unreadable" {
     try {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-      return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? ({ ...doc.servers } as Record<string, Kept>) : {};
-    } catch {
-      return {};
+      return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? ({ ...doc.servers } as Record<string, Kept>) : "unreadable";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : "unreadable";
     }
+  }
+
+  /** The saved servers, or 409: a file that does not read is never written over, so no saved server is lost to it. */
+  private servers(): Record<string, Kept> {
+    const kept = this.kept();
+    if (kept === "unreadable") throw new ApiError("store_unreadable", `${MCP_SERVERS_FILE} in the data directory does not read as ${FORMAT}: nothing is read from it or written to it until it is restored or removed.`);
+    return kept;
   }
 
   private write(servers: Record<string, Kept>): void {
