@@ -80,7 +80,15 @@ function marked(text: string, lines: readonly string[], replaced: readonly strin
  *  place of any of the three it had. */
 export function mergedNote(text: string, as: { origin: NoteOrigin; pending?: boolean }): string {
   if (!(NOTE_ORIGINS as readonly string[]).includes(as.origin)) throw new Error(`origin is ${NOTE_ORIGINS.join(" or ")}`);
-  return marked(text, [...(as.origin === "you" ? ["origin: you"] : []), ...(as.pending ? ["status: pending"] : [])], ["status", "superseded_by", "origin"]);
+  // The run's own `risky` mark is read by the grade (runMarkedRisky) and never kept: a held note says so by its status.
+  return marked(text, [...(as.origin === "you" ? ["origin: you"] : []), ...(as.pending ? ["status: pending"] : [])], ["status", "superseded_by", "origin", "risky"]);
+}
+
+/** Whether `text`, a run's new note, carries the mark its end-of-run turn sets on a risky rule: `risky: true` in its
+ *  front matter (reflectPrompt). Any other value, or none, is no mark. */
+export function runMarkedRisky(text: string | undefined): boolean {
+  const head = text === undefined ? null : FRONT.exec(text.replace(/\r\n/g, "\n"));
+  return Boolean(head && head.index === 0 && /^risky:[ \t]*"?true"?[ \t]*$/m.test(head[1]!));
 }
 
 /** `text`, a pending note's file, as the host leaves it when its owner approves it: active, no status; its origin kept. */
