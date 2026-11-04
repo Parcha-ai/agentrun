@@ -13,6 +13,7 @@ import { foldSession, pendingSubmissions } from "@parcha/agentrun-kernel/kernel"
 import { transcriptOf } from "@parcha/agentrun-kernel/process";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { OPENCODE_INSTALL, OPENCODE_VERSION, openCodeAdapter } from "../dist/harness-opencode/index.js";
+import { keyRefusal } from "../dist/key-refusal.js";
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const FAKE = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
@@ -588,4 +589,24 @@ test("a stream opened again after OpenCode took the prompt but before its turn s
   const said = s.events.filter((e) => e.type === "text").map((e) => e.delta).join("");
   await s.session.close();
   assert.deepEqual({ ended, asked, said }, { ended: { status: "completed" }, asked: 1, said: "Done." }, "the turn ends once OpenCode has answered it");
+});
+
+test("a key the provider refuses (401) ends the opencode turn with an error that reads in plain words, as codex's does: the key, and where to set it", { timeout: 60_000 }, async () => {
+  // The provider answers 401, as OpenAI does for a wrong key; the pinned build records it as an APIError with the
+  // provider's message and statusCode 401.
+  const refusing = openCodeAdapter({
+    model: "gpt-test",
+    provider: { origin: "https://provider.invalid", credential: () => "provider-secret" },
+    price: () => 0,
+    sessionsDir: join(scratch(), "sessions"),
+    standIn: { command: process.execPath, args: [FAKE] },
+    fetch: async () => new Response(JSON.stringify({ error: { message: "Incorrect API key provided: not-a-se**********.", type: "invalid_request_error", code: "invalid_api_key" } }), { status: 401, headers: { "content-type": "application/json" } }),
+  });
+  const s = await session(refusing, memorySessionStore(), spec([]));
+  await s.session.send("go");
+  const ended = await s.session.turnEnd();
+  await s.session.close();
+  assert.equal(ended.status, "failed");
+  const words = keyRefusal(ended.error, { who: "OpenAI", field: "OPENAI_API_KEY", saved: true }) ?? "";
+  assert.match(words, /^OpenAI refused OPENAI_API_KEY \(401: Incorrect API key provided.*\): set it where AgentRun starts, or save it in Settings \u2192 Model keys\.$/, `the turn's error: ${ended.error}`);
 });

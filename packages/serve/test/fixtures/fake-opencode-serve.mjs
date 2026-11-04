@@ -127,7 +127,13 @@ async function step(s, tools, system, signal) {
   const res = await fetch(`${provider.baseURL}/responses`, { method: "POST", headers: { authorization: `Bearer ${provider.apiKey}`, "content-type": "application/json", accept: "text/event-stream" }, body: JSON.stringify(body), signal });
   if (res.status !== 200) {
     const text = await res.text();
-    throw Object.assign(new Error(text.slice(0, 300) || `status ${res.status}`), { name: "APIError", statusCode: res.status });
+    // As the pinned build records a provider's refusal: an APIError with the provider's own message and its status.
+    let said = text.slice(0, 300) || `status ${res.status}`;
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed?.error?.message === "string") said = parsed.error.message;
+    } catch {}
+    throw Object.assign(new Error(said), { name: "APIError", statusCode: res.status });
   }
   const out = { text: "", calls: [], usage: undefined, deltas: [] };
   const decoder = new TextDecoder();
@@ -214,7 +220,7 @@ async function loop(sid, user) {
       if (!answer.calls.length) break;
     }
   } catch (err) {
-    error = signal.aborted ? { name: "MessageAbortedError", data: { message: "The operation was aborted." } } : { name: err?.name ?? "UnknownError", data: { message: String(err?.message ?? err) } };
+    error = signal.aborted ? { name: "MessageAbortedError", data: { message: "The operation was aborted." } } : { name: err?.name ?? "UnknownError", data: { message: String(err?.message ?? err), ...(typeof err?.statusCode === "number" ? { statusCode: err.statusCode } : {}) } };
   } finally {
     running.delete(sid);
   }
