@@ -26,7 +26,7 @@ const request = { kind: 'agent', label: 'filtered', system: [], user: 'What is 2
  *  then its last event, `end`. */
 const stream = (text, end) => {
   const pieces = text ? text.match(/[\s\S]{1,4096}/g) : [''];
-  return `${[...pieces.map((delta) => ({ delta, type: 'response.output_text.delta' })), end].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')}data: [DONE]\n\n`;
+  return `${[...pieces.map((delta) => ({ delta, type: 'response.output_text.delta' })), { delta: '', ...end }].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')}data: [DONE]\n\n`;
 };
 const usage = { input_tokens: 12, output_tokens: 0 };
 

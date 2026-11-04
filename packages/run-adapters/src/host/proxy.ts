@@ -556,6 +556,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     };
     /** The start of the line being read (LINE_START) and of the last whole lines (LINE_STARTS). */
     let lineStart = "";
+    let lineLength = 0;
     const starts: string[] = [];
     /** Tells the harness the provider stopped this answer on its content filter, when `text` (the answer so far, or the
      *  kept window of it) says so: once, and never failing the answer. */
@@ -629,16 +630,22 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           }
           // The provider's content-filter stop, read before the client has the piece that carries it: the harness ends the
           // turn before its client acts on the stop (asks for the refused answer again, or ends the turn its own way).
+          // A line longer than the window is read as it ends, from its start, while the lines just before it (an event's
+          // name) are still the last starts kept: a piece may carry the lines after it too.
+          const window = (tail + text).slice(-USAGE_WINDOW);
           const lines = text.split("\n");
           for (let at = 0; at < lines.length; at++) {
             if (lineStart.length < LINE_START) lineStart += lines[at]!.slice(0, LINE_START - lineStart.length);
+            lineLength += lines[at]!.length;
             if (at < lines.length - 1) {
               starts.push(lineStart);
               if (starts.length > LINE_STARTS) starts.shift();
+              if (upstream.ok && lineLength > USAGE_WINDOW) tellFiltered(window);
               lineStart = "";
+              lineLength = 0;
             }
           }
-          if (upstream.ok && lines.length > 1) tellFiltered((tail + text).slice(-USAGE_WINDOW));
+          if (upstream.ok && lines.length > 1) tellFiltered(window);
           // A client that reads slowly holds the provider back: nothing more is read until what was written drains. A
           // client gone after the stop was told is written nothing more: the answer is read on for its usage alone.
           if (!res.destroyed && !res.write(chunk)) {
