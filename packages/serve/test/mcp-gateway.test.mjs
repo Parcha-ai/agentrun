@@ -265,6 +265,7 @@ test("a priced call that never left (its server is down) books nothing: no mark,
   const unpriced = mcpGateway({ pin: { fake: { url: dead, tools } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
   await unpriced.call("fake", "add", {}, { signal: signal(), callId: "c2" });
   assert.deepEqual(entries, [], "nor marked not metered");
+});
 
 test("a tool's x-mcp-header parameter is mirrored into its Mcp-Param header on a 2026-07-28 server, from the pinned definition; a legacy server is called as before", async (t) => {
   const tagged = { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" }, n: { type: "integer" } }, required: ["region"] };

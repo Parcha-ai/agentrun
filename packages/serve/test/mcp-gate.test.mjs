@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic, lastUserText } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, serve as serveOf, withEnv } from "./support.mjs";
 
@@ -95,6 +96,16 @@ test("pi: an MCP tool set to deny is refused, the model reads why, and the serve
   assert.equal(calls(fake).length, 0, "nothing was sent");
 });
 
+test("pi: on a server with accounts off no one can approve, so an MCP tool's ask is refused at once in words, and the server sees nothing", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { accounts: false, openSetup: false });
+  const fake = await addFake(t, api);
+  const runId = await started(api, "unattended", ["mcp:fake/add"], ADD);
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  assert.equal(await answerOf(api, runId), `The tool said: ${noApproverText("mcp:fake/add")}`);
+  assert.equal(calls(fake).length, 0, "nothing was sent");
+});
+
 test("pi: allowed by the agent's exact key, or by the server's mcp:fake/*, the call runs once with no person asked", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t);
   const fake = await addFake(t, api);
@@ -157,6 +168,7 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
 test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's words; under a $1 cap it is sent and booked as a $0.05 tool cost", { timeout: 150_000 }, async (t) => {
   const { api } = await serve(t);
   const fake = await addFake(t, api, { paid: 0.05 });
+  assert.equal((await allowFake(api)).status, 200);
   const tight = await started(api, "tight", ["mcp:fake/paid"], PAID, { run: { max_cost_usd: 0.04 } });
   await follow(api, tight, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.match(await answerOf(api, tight), /^The tool said: spend_cap_reached: mcp:fake\/paid was not sent\. It could cost up to \$0\.05/);
@@ -176,6 +188,7 @@ test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's w
 test("pi: a tool with no price runs, shown not metered on the timeline and in /usage, outside the run's cost", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t);
   const fake = await addFake(t, api);
+  assert.equal((await allowFake(api)).status, 200);
   const runId = await started(api, "free", ["mcp:fake/add"], ADD, { run: { max_cost_usd: 0.04 } });
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(api, runId), "The tool said: 5");
@@ -243,6 +256,7 @@ test("claude-agent: a priced call through the CLI's own MCP client is held and b
   const { api } = await serve(t, { faux: undefined });
   const fake = await addFake(t, api, { paid: 0.05 });
   const claude = { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" };
+  assert.equal((await allowFake(api)).status, 200);
   const paid = await started(api, "claude-paid", ["mcp:fake/paid"], "Look up ada with the paid tool.", { extra: claude, run: { max_cost_usd: 2 } });
   const free = await started(api, "claude-free", ["mcp:fake/add"], "Add 2 and 3 with the add tool.", { extra: claude });
   for (const [runId, tool, summary] of [[paid, "mcp:fake/paid", /^Tool cost: fake charged \$0\.0500 for mcp:fake\/paid$/], [free, "mcp:fake/add", /^Not metered: mcp:fake\/add/]]) {
