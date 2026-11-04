@@ -24,7 +24,7 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
@@ -33,6 +33,7 @@ import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -42,9 +43,13 @@ export const BOOKED = "adapter.request";
 export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
-/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
-export const MESSAGE = "adapter.message";
-export const MESSAGE_END = "adapter.message_end";
+/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop
+ *  (turn-end.ts, which runs.ts reads them from). */
+export { MESSAGE, MESSAGE_END } from "./turn-end.js";
+/** A turn's end on the root (turn-end.ts), with the session's own outcome (`completed`, `interrupted`, `failed`): written
+ *  once its answer, its costs and any error are, before the door says the run is idle. The only record that a turn which
+ *  took the person's message is over: a request without content is written alike whether it ended the turn or not. */
+export { TURN_END } from "./turn-end.js";
 
 type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 type Pending = { request: number; usage: ModelUsage };
@@ -72,7 +77,7 @@ function tokensOf(usage: unknown): { input: number; output: number; cacheRead: n
  *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
 function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
   if (error !== undefined) {
-    return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+    return { role: "assistant", content: [], api: ADAPTER_API, provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
   const usage = request?.usage;
   const known = usage !== undefined && usage.usd !== null && usage.usd !== undefined;
@@ -80,7 +85,7 @@ function assistantMessage(harness: string, model: string | undefined, request: P
   return {
     role: "assistant",
     content: [...(text ? [{ type: "text", text }] : []), ...calls],
-    api: "agentrun-adapter",
+    api: ADAPTER_API,
     provider: harness,
     model: model ?? harness,
     usage: {
@@ -350,9 +355,11 @@ export function adapterRun(
       emit?.({ type: "run_start" });
       for (let start: (() => Promise<void>) | undefined = first; start; ) {
         let failed: string | undefined;
+        let status: TurnStatus = "failed";
         try {
           await start();
           const end = await session!.turnEnd();
+          status = end.status;
           if (end.status === "failed") failed = end.error ?? "the turn failed";
         } catch (error) {
           failed = String((error as Error)?.message ?? error);
@@ -369,6 +376,8 @@ export function adapterRun(
           // A cost that came in while this turn ended, after its flush: written now, while the run still reads busy, so a
           // message that comes in meanwhile waits its place below and goes on as the next turn of this busy period.
           if (costed.length) await flush().catch(() => undefined);
+          // Last, and before run_end: a live server reads the turn over no later than it reads the run idle.
+          await commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status: why === undefined ? status : "failed" } })));
         }
         const next = queue.shift();
         start = next === undefined ? undefined : sendOf(next);
@@ -422,18 +431,26 @@ export function adapterRun(
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
       const accepted = new Map<string, Message>();
       const paid: { kind: string; data?: unknown }[] = [];
+      // The turn that took the last message sent, while the root has no end for it (runTurns writes the end last, in a
+      // commit of its own): whether the bridge wrote that turn's error.
+      let unended: { failed: boolean } | undefined;
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
-          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown } | undefined;
+          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown; sent?: unknown } | undefined;
           if (entry.kind === TOOL_COST || entry.kind === TOOL_STARTED) paid.push(entry);
+          const message = (entry as { model?: { api?: unknown; stopReason?: unknown }[] }).model?.[0];
+          if (unended && message?.api === ADAPTER_API && message.stopReason === "error") unended.failed = true;
           if (data?.key !== spec.key) continue;
           if (entry.kind === BOOKED && typeof data.request === "number") {
             written.add(data.request);
             (data.unpriced === true ? unpriced : priced).add(data.request);
           } else if (entry.kind === PRICED_LATE && typeof data.request === "number") priced.add(data.request);
           else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
-          else if (entry.kind === MESSAGE_END && typeof data.id === "string") accepted.delete(data.id);
+          else if (entry.kind === MESSAGE_END && typeof data.id === "string") {
+            accepted.delete(data.id);
+            if (data.sent === true) unended = { failed: false };
+          } else if (entry.kind === TURN_END) unended = undefined;
         }
         if (page.next === undefined) break;
         cursor = page.next;
@@ -481,10 +498,22 @@ export function adapterRun(
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
       session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
+      // what this open wrote and before any new turn, so the message the turn took reads answered (runs.ts noteAnswer).
+      // The session says only that the turn is over: completed, or failed when the bridge wrote its error.
+      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (unended.failed ? "failed" : "completed") : undefined;
+      const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status } }))));
       queue.push(...accepted.values());
+      // With nothing waiting, that end is the run's: written while the door is idle. A message accepted and never sent
+      // still waits, and a server started anew counts none: the door is busy (run_start) before that end goes out, and
+      // the message's turn follows in the same busy period, so no server reads the run done before it answers.
+      if (restored && !queue.length) await restore(restored);
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
-      else if (queue.length) runTurns(sendOf(queue.shift()!));
+      else if (queue.length) {
+        const next = sendOf(queue.shift()!);
+        runTurns(restored ? async () => (await restore(restored), await next()) : next);
+      }
     },
   };
 }
