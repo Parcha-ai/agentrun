@@ -434,6 +434,28 @@ describe("App, the agents' names", () => {
     expect(rows().join("\n")).not.toContain(made.agent_id);
   });
 
+  it("names an agent made here, not by its id, on its first run in the Playground", async () => {
+    server();
+    const { host, until, button, type } = await open("#/agents/new");
+    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
+    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
+    await act(async () => { button(/^Create$/)!.click(); });
+    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
+    // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
+    await act(async () => { location.hash = "#/playground"; });
+    const pick = () => host.querySelector<HTMLSelectElement>("select");
+    await until(() => [...(pick()?.options ?? [])].some((o) => o.value === made.agent_id));
+    await act(async () => { const s = pick()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, made.agent_id); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
+    await act(async () => { button(/send request/i)!.click(); });
+    // The run panel's breadcrumb names the agent, as the run's page does.
+    const crumb = () => host.querySelector('nav[aria-label="Breadcrumb"]')?.textContent ?? "";
+    await until(() => crumb().includes(`Run ${started.run_id.slice(0, 8)}`));
+    await until(() => crumb().includes(made.definition.name!));
+    expect(crumb()).not.toContain(made.agent_id);
+  });
+
   it("names a run of an archived agent, which is not gone, and shows the id of one that is", async () => {
     const [kept, ...active] = agentsList();
     const gone = "01a18400-0000-7000-8000-000000000000";
