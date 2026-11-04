@@ -901,6 +901,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   TimelineUsage: SO_FAR,
   Run: {
     ...RUN_FIELDS,
+    last_progress_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description: "While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.",
+      "x-agentrun-serve": "turnend/1",
+    },
     place: RUN_PLACE,
     learning: LEARNING,
     review: REVIEW,
@@ -1214,6 +1220,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   createFile.responses["415"] = ref("responses/UnsupportedMediaType");
   createFile["x-agentrun-serve-changed"] = { requestBody: "upload/2", parameters: "upload/2", responses: "upload/2" };
   changed.push("POST /files");
+  // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
+  const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
+  cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;
+  cancel["x-agentrun-serve-changed"] = { description: "turnend/1" };
+  changed.push("POST /runs/{run_id}/cancel");
   // models/2: capabilities' `models.source` takes on the values this server answers with that the contract's enum (managed,
   // chatgpt, env, faux) lacks, `gateway` and `providers`. A client that validates against the contract's enum refuses them,
   // so the widening is a mark of its own, each value listed, as RunStatus's `paused` is.
