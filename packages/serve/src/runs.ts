@@ -35,7 +35,7 @@ import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, mo
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
-import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -164,7 +164,7 @@ type RunMeta = {
 };
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-type Approval = { id: string; tool: string; call_id: string; args_preview: string; requested_at: string; price?: number | "not metered"; resolved?: true };
+type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
 type ApprovalAnswer = { decision: "allow" | "deny" | "canceled"; note?: string; answered_at: string };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -355,16 +355,19 @@ function noteApprovals(run: Run, entries: readonly unknown[]): void {
     const data = value.data;
     run.approvals ??= new Map();
     const known = run.approvals.get(data.id as string);
-    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_preview: String(data.args_preview ?? ""), requested_at: String(data.requested_at), ...(typeof data.price === "number" || data.price === "not metered" ? { price: data.price } : {}) });
+    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_json: "args" in data ? (JSON.stringify(data.args ?? {}) ?? "{}") : String(data.args_preview ?? ""), requested_at: String(data.requested_at), ...(typeof data.price === "number" || data.price === "not metered" ? { price: data.price } : {}) });
     else if (data.phase === "resolved" && known) known.resolved = true;
   }
 }
 /** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
 const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
+/** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
+ *  no cut leaves the head of a held key. */
+const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
 const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: redact(waiting.args_preview), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
 };
 /** One answered (allow or deny) whose answer the run's process has not acted on yet. */
 const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && run.meta.approvals[a.id]!.decision !== "canceled");
@@ -377,7 +380,7 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
   return rows.flatMap((row) => {
     const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     if (!approval) return [row];
-    const args = redact(approval.args_preview);
+    const args = shownArgs(approval, redact);
     const summary = `${approval === waiting ? "Waiting for your approval" : "Asked your approval"}: ${approval.tool} ${clip(args, 400)}`;
     return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });

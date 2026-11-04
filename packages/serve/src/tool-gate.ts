@@ -239,11 +239,14 @@ export type ApprovalRequest = { id: string; tool: string; call_id: string; args:
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
 export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>) => Promise<void>;
 
-/** `args` as JSON, at most ARGS_PREVIEW_BYTES. */
-export function argsPreview(args: unknown): string {
-  const bytes = Buffer.from(JSON.stringify(args ?? {}) ?? "", "utf8");
+/** `text` cut to at most ARGS_PREVIEW_BYTES. What is shown of a call's arguments is the whole of them redacted first, then
+ *  cut (runs.ts), so a cut never leaves the head of a key no redaction recognizes. */
+export function previewOf(text: string): string {
+  const bytes = Buffer.from(text, "utf8");
   return bytes.length <= ARGS_PREVIEW_BYTES ? bytes.toString("utf8") : `${bytes.subarray(0, ARGS_PREVIEW_BYTES - 3).toString("utf8").replace(/\uFFFD+$/, "")}…`;
 }
+/** `args` as JSON, at most ARGS_PREVIEW_BYTES: the request's own record of them, never shown as it is. */
+export const argsPreview = (args: unknown): string => previewOf(JSON.stringify(args ?? {}) ?? "");
 
 /** The one message that resumes a session once a person answered: it names the call it answers (its tool, call id and
  *  arguments), so the model tells it from a person's new input, and carries the call's result, or the refusal. */
