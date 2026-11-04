@@ -20,7 +20,9 @@ test("a message that holds a held key: its Timeline row and the run's title (its
   const file = join(dir, "got.txt");
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("pasted"))).status, 201);
-  const content = `My key is ${KEY}, keep it safe. Record what you got in ${file} now.`;
+  // A console link with its fragment, and the key in a URL's query too.
+  const link = "http://127.0.0.1:7340/#/runs/01a1a88c-4f2e-7abc-8def-0123456789ab"; // key-gate: loopback-rule a console link a person pastes, as text
+  const content = `My key is ${KEY}, see ${link} and https://api.example/v1?k=${KEY}&x=1. Record what you got in ${file} now.`;
   const started = await api("POST", "/agents/pasted/runs", { input: { content } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -30,7 +32,10 @@ test("a message that holds a held key: its Timeline row and the run's title (its
   const own = rows.filter((row) => row.kind === "user_message");
   assert.equal(own.length, 1, JSON.stringify(rows.map((row) => row.kind)));
   assert.ok(!holdsRun(JSON.stringify(own), KEY), `the message's row: ${JSON.stringify(own.map((row) => [row.summary, row.text]))}`);
-  assert.match(own[0].text, /^My key is \[redacted\], keep it safe\. Record/, own[0].text);
+  assert.match(own[0].text, /^My key is \[redacted\], see /, own[0].text);
+  for (const [field, text] of [["summary", own[0].summary], ["text", own[0].text]]) {
+    assert.ok(text.includes(`see ${link} and https://api.example/v1?k=[redacted]&x=1.`), `the row's ${field}: ${text}`);
+  }
   const view = (await api("GET", `/runs/${runId}`)).body;
   const listed = (await api("GET", "/runs?agent=pasted")).body.runs.find((run) => run.run_id === runId);
   for (const [where, title] of [["the run's view", view.title], ["the run list", listed.title]]) assert.ok(!holdsRun(title, KEY), `${where}'s title: ${title}`);
