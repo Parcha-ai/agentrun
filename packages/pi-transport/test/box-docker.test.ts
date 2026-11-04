@@ -469,6 +469,16 @@ describe("docker boxes: resource limits", () => {
 			{ memory: 2 ** 30 },
 		));
 
+	it("refuse a spec's cpus too small for a quota as invalid, before Docker is asked: a quota of 0 would be no limit", () =>
+		withScriptedDocker(async (provider, _directory, calls) => {
+			for (const cpus of [0.000001, 0.005]) {
+				const refused = await provider.create({ maxLifetimeMs: 60_000, cpus }, context);
+				expect(refused.ok).toBe(false);
+				if (!refused.ok) expect(refused.error.code).toBe("invalid");
+			}
+			expect(calls()).toEqual([]);
+		}));
+
 	it("give way to a spec's cpus and memoryMb, whose memory is then the swap's bound too; pidsLimit stays", () =>
 		withScriptedDocker(
 			async (provider, _directory, calls) => {
@@ -500,7 +510,7 @@ describe("docker boxes: resource limits", () => {
 		// A string as JSON, so an empty one shows; a number as JavaScript writes it (NaN, Infinity).
 		const shown = (value: unknown) => (typeof value === "string" ? JSON.stringify(value) : String(value));
 		// 0.01 is the least: a quota is at least 1 ms of each 100 ms period.
-		for (const cpus of [0, -1, 0.001, Number.NaN, Number.POSITIVE_INFINITY, "2" as unknown as number])
+		for (const cpus of [0, -1, 0.001, 1e300, Number.NaN, Number.POSITIVE_INFINITY, "2" as unknown as number])
 			expect(make({ cpus })).toThrow(`the docker cpus ${shown(cpus)} is not a number of CPUs of at least 0.01`);
 		for (const memory of [0, -1, 1.5, Number.NaN, "", "0g", "-1g", "4x", "g", "4 g", "1e9"])
 			expect(make({ memory })).toThrow(

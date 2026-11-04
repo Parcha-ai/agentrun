@@ -251,6 +251,9 @@ async function checkSources(mounts: readonly ParsedMount[]): Promise<BoxError | 
 const CPU_PERIOD_US = 100_000;
 /** The fewest CPUs a quota can give: the kernel's least quota is 1 ms of each period. */
 const MIN_CPUS = 0.01;
+/** CPUs a quota can give: at least 0.01, and few enough that the quota is a whole number of µs Docker reads. */
+const quotaCpus = (cpus: unknown): cpus is number =>
+	typeof cpus === "number" && cpus >= MIN_CPUS && Number.isSafeInteger(Math.round(cpus * CPU_PERIOD_US));
 /** The most processes a cgroup may be given (the kernel's PID_MAX_LIMIT): a larger `--pids-limit` fails the create. */
 const MAX_PIDS = 4_194_304;
 const MIB = 1024 * 1024;
@@ -312,7 +315,7 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 	if (options.user !== undefined && !/^\d+(:\d+)?$/.test(options.user)) {
 		throw new Error(`the docker user ${options.user} is not uid or uid:gid`);
 	}
-	if (options.cpus !== undefined && !(Number.isFinite(options.cpus) && options.cpus >= MIN_CPUS)) {
+	if (options.cpus !== undefined && !quotaCpus(options.cpus)) {
 		throw new Error(`the docker cpus ${shown(options.cpus)} is not a number of CPUs of at least ${MIN_CPUS}`);
 	}
 	const memory = memoryOption(options.memory);
@@ -355,6 +358,10 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			const missing = await checkSources(mounts);
 			if (missing !== undefined) return err(missing);
 			const cpus = spec.cpus ?? options.cpus;
+			// A quota rounded to 0 is no limit at all: a spec's cpus too small to give one is refused, never dropped.
+			if (cpus !== undefined && !quotaCpus(cpus)) {
+				return err(new BoxError("invalid", `cpus ${shown(cpus)} is not a number of CPUs of at least ${MIN_CPUS}`));
+			}
 			const boxMemory = spec.memoryMb !== undefined ? { flag: `${spec.memoryMb}m`, mb: spec.memoryMb } : memory;
 			const facts: BoxFacts = {
 				provider: "docker",

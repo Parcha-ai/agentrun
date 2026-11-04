@@ -204,7 +204,7 @@ test("a box limit setting that every create would fail on refuses the start, nam
     }
   };
   // Below 0.01 CPUs the quota is under the kernel's 1 ms, and `none` is no value: a bigger number is the way to more.
-  for (const value of ["0", "-1", "0.005", "two", "1,5", "Infinity", "none"]) assert.equal(await refused("AGENTRUN_BOX_CPUS", value), `AGENTRUN_BOX_CPUS is a number of CPUs of at least 0.01, such as 2 or 1.5; it is ${JSON.stringify(value)}`);
+  for (const value of ["0", "-1", "0.005", "two", "1,5", "Infinity", "none", "9".repeat(400)]) assert.equal(await refused("AGENTRUN_BOX_CPUS", value), `AGENTRUN_BOX_CPUS is a number of CPUs of at least 0.01, such as 2 or 1.5; it is ${JSON.stringify(value)}`);
   // A size counts in bytes, as Docker reads it: a fraction of a byte, one past the largest safe count, or less than Docker's
   // least memory would fail every run's first box, so the start refuses it.
   for (const value of ["4096", "0g", "4 g", "4x", "-1g", "0.1b", "9007199254740991g", "1m", "6143k", "none"]) assert.equal(await refused("AGENTRUN_BOX_MEMORY", value), `AGENTRUN_BOX_MEMORY is a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g; it is ${JSON.stringify(value)}`);

@@ -53,7 +53,8 @@ export const DEFAULT_BOX_PIDS = 1024;
 /** A Docker box's limits, as pi-transport's Docker provider takes them. */
 export type BoxLimits = { cpus: number; memory: string; pidsLimit: number };
 
-/** The fewest CPUs a quota gives: the kernel's least quota is 1 ms of each 100 ms period. */
+/** The fewest CPUs a quota gives: the kernel's least quota is 1 ms of each 100 ms period. A quota is also a whole number of
+ *  µs, so a count too large for one (or a long string of digits, which reads as Infinity) is refused too. */
 const MIN_BOX_CPUS = 0.01;
 const MIB = 1024 * 1024;
 /** A size's units as Docker reads them, each 1024 of the one before. */
@@ -73,7 +74,7 @@ export function boxLimitsOf(env: NodeJS.ProcessEnv): BoxLimits {
     if (!takes(value)) throw new Error(`${name} is ${what}; it is ${JSON.stringify(value)}`);
     return value;
   };
-  const cpus = read(BOX_CPUS_ENV, "a number of CPUs of at least 0.01, such as 2 or 1.5", (value) => /^\d+(\.\d+)?$/.test(value) && Number(value) >= MIN_BOX_CPUS);
+  const cpus = read(BOX_CPUS_ENV, "a number of CPUs of at least 0.01, such as 2 or 1.5", (value) => /^\d+(\.\d+)?$/.test(value) && Number(value) >= MIN_BOX_CPUS && Number.isSafeInteger(Math.round(Number(value) * 100_000)));
   const memory = read(BOX_MEMORY_ENV, "a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g", (value) => {
     const size = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(value);
     // Its bytes as Docker reads them, and pi-transport's Docker provider: the number times the unit, the fraction dropped.
