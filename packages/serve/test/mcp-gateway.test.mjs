@@ -3,10 +3,11 @@
 // whose address changed is sent nothing.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { MCP_CLIP, mcpGateway } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -79,4 +80,27 @@ test("a server whose address changed, or that is no longer saved, is sent nothin
   assert.match(textOf(await gone.call("fake", "add", {}, { signal: signal() })), /no longer saved/);
   assert.match(textOf(await gone.call("fake", "delete_thing", {}, { signal: signal() })), /not a tool of the MCP server fake in this run/);
   assert.equal(fake.log.length, 0);
+});
+
+test("at the session proxy's /mcp/<server>: a client that drops a held tools/call cancels it at the server", async (t) => {
+  const { fake, gateway } = await setup(t);
+  const key = "session-key-for-tests";
+  const policy = { id: "test", routes: [], keyOf: (headers) => String(headers.authorization ?? "").replace(/^Bearer /, ""), authHeaders: () => ({}), apply: (body) => body, usageOf: () => undefined };
+  const proxy = await startModelProxy({ policy, model: "m", origin: "https://provider.invalid", credential: () => "c", hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(gateway) }, key);
+  t.after(() => proxy.close());
+  const gone = new AbortController();
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slow_write", arguments: { line: "x", seconds: 30 } } });
+  const held = new Promise((resolve) => {
+    const req = request(`${proxy.url}/mcp/fake`, { method: "POST", signal: gone.signal, headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" } }, (res) => res.resume());
+    req.once("error", () => resolve("dropped"));
+    req.end(body);
+  });
+  while (!fake.log.some((entry) => entry.tool === "slow_write")) await new Promise((resolve) => setTimeout(resolve, 20));
+  gone.abort();
+  assert.equal(await held, "dropped");
+  for (let i = 0; !fake.log.some((entry) => entry.method === "notifications/cancelled"); i++) {
+    assert.ok(i < 150, `the server is told the call was cancelled: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(fake.log.filter((entry) => entry.tool === "slow_write").length, 1, "and it was sent once");
 });

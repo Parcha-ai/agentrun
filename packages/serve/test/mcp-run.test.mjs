@@ -160,3 +160,40 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file of the run, the CLI's own state among them, holds the token");
 });
+
+test("claude-agent: a run killed mid-call resumes with the call reported interrupted to the model, and the server saw the call once", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // The model asks for the call once; every later answer says what it was told of it.
+  let asked = false;
+  const anthropic = await fakeAnthropic({
+    reply: (request) => {
+      if (!request.tools.includes("mcp__fake__slow_write")) return { text: "Noted." };
+      if (asked) return { text: "Done after the cut." };
+      asked = true;
+      return { tool: { name: "mcp__fake__slow_write", input: { line: "once", seconds: 60 } } };
+    },
+  });
+  t.after(() => anthropic.close());
+  const saved = { ...process.env };
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+  delete process.env.AGENT_MODEL_BASE_URL;
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
+  const { api, data } = await serve(t, { faux: undefined });
+  const fake = await addFake(t, api);
+  assert.equal((await api("POST", "/agents", agent("claude-writer", { harness: "claude-agent", model: "anthropic/claude-haiku-4-5", tools: ["mcp:fake/slow_write"] }))).status, 201);
+  const runId = await runOf(api, "claude-writer", "Write the line once with the slow_write tool.");
+  for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
+    assert.ok(i < 1200, "the call reaches the server");
+    await sleep(100);
+  }
+  const record = async () => JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8").catch(() => "{}"));
+  process.kill((await record()).holder.pid, "SIGKILL");
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
+  // The resumed session's model is told the call was cut and not run again, in the harness's recovery note.
+  const resumed = anthropic.messages().filter((request) => request.tools.includes("mcp__fake__slow_write")).slice(1);
+  assert.ok(resumed.some((request) => /interrupted[\s\S]*none was run again[\s\S]*mcp__fake__slow_write/.test(JSON.stringify(request.body.system ?? ""))), "the recovery note names the interrupted call");
+  assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
+});
