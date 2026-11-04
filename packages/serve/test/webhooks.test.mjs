@@ -986,7 +986,11 @@ test("a run that ended before record-keeping began is continued at once, its old
   await first.close();
   stopped = true;
   const before = endedIn(data, run.run_id);
-  asAnOlderServerLeftIt(data, new Date(Date.parse(before) + 1_000).toISOString());
+  const since = Date.parse(before) + 1_000;
+  asAnOlderServerLeftIt(data, new Date(since).toISOString());
+  // The next end must come after the since-time, as one after record-keeping began does: on a fast machine the restart
+  // and the continued turn take less than the second between them, and an end before the since-time is never sent.
+  while (Date.now() <= since) await sleep(50);
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   api = client(next.baseUrl, next.token);
