@@ -89,10 +89,11 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
 export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void>; mirror?: (path: string, data: string | Uint8Array) => Promise<void> };
 
 /** Where a run's box comes from: a provider of this process's own (Docker, or the tests' faux box), or, for a remote box,
- *  the server's relay in data root `relay`. */
+ *  the server's relay in data root `relay`. A bare function is a provider of this process's own. */
 export type BoxSource = { provider: () => Promise<BoxProvider> } | { relay: string };
 
-export function runBox(source: BoxSource, run: { id: string; root: string; dir: string; place: Place }): RunBox {
+export function runBox(given: BoxSource | (() => Promise<BoxProvider>), run: { id: string; root: string; dir: string; place: Place }): RunBox {
+  const source: BoxSource = typeof given === "function" ? { provider: given } : given;
   let held: Promise<{ env: ExecutionEnv; box: Box }> | undefined;
   // What the host tools filed while no box was open in this process: a box a process before it made has no seed now, so
   // these go in when it opens (and to a new box, whose seed carries them anyway, again: the same bytes).
