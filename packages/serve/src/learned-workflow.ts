@@ -1,0 +1,146 @@
+// learned_workflow: a run of an agent that learned a workflow runs it as one tool call, on any harness. The tool is the
+// run's when its pin names a learned workflow (learning.ts: one whose README sets no status, or `active`; a pending or
+// retired one is never named), with no edit of the agent's definition; its description names each one and what it does,
+// so the model needs no hint. A call checks the workflow again against the agent's own tools (S1's checker,
+// draftProblems: a node or a call that names a tool the agent was not granted, a code node or a shell or executor call
+// is refused at the call, never run), then runs it with the workflow DSL's runWorkflow:
+//   - a model node (agent, decide, extract, report) on this server's model of its tier, in a fresh session of its own
+//     (agentrun-pi's host runner), with no tool of its own: one that names a tool is refused at the call;
+//   - a call node `via: "tool"` on the tool table's effect, as a workflow revision's (app.ts), for a tool the agent has.
+// Each model request goes through the run's models as a side request (request-start.ts, cap.ts: under the run's cap,
+// marked, and costed on the run's timeline as `learned_workflow`), so what the workflow spends is the run's cost. A call
+// a crash cut off is never run again (`replay: "never"`): it is answered interrupted.
+import type { TSchema } from "@earendil-works/pi-ai";
+import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { sideRequests } from "./cap.js";
+import { draftProblems } from "./learn/index.js";
+import type { LearnedWorkflow } from "./learning.js";
+import { chooseModel, type ModelRef, type Tier } from "./model.js";
+import { forModel } from "./result.js";
+import { allows, CALL_TOOLS, learnedWorkflowTools, toolOf } from "./tools.js";
+import type { Complete } from "./llm.js";
+
+export const LEARNED_WORKFLOW_TOOL = "learned_workflow";
+
+/** The models a learned workflow's model nodes run on: the run's own (capped and marked: app.ts), as pi-ai's. */
+type RunModels = {
+  getModel(provider: string, id: string): unknown;
+  getModels(): readonly unknown[];
+  completeSimple(model: never, context: never, options?: never): Promise<unknown>;
+};
+
+export type LearnedWorkflowRun = {
+  /** The learned workflows the run's pin names (pinnedWorkflows). */
+  workflows: readonly LearnedWorkflow[];
+  /** The tools the agent's revision grants: a workflow may name only those a model or call node runs here. */
+  granted: readonly string[];
+  env: NodeJS.ProcessEnv;
+  work: string;
+  models: RunModels;
+  /** The `llm` tool's completion, for a call node that names it. */
+  complete?: Complete;
+};
+
+/** What a learned workflow's model node is refused with when it names a tool: it runs in a session of its own here. */
+export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without tools here";
+
+/** The tool's description: what it does, and each workflow by name with the line its README says what it does with. */
+export const learnedWorkflowDescription = (workflows: readonly LearnedWorkflow[]): string =>
+  [
+    "Run a workflow this agent learned, as one step: give its name and its input, a JSON object as the workflow's input",
+    "schema says. It answers the workflow's output as JSON, or why it did not run. The workflows:",
+    ...workflows.map(({ name, description }) => `- ${name}: ${description || "(no description)"}`),
+  ].join("\n");
+
+/** One model request as a pi-ai event stream, sent as a side request through `models.completeSimple`: marked and costed
+ *  on the run's timeline under `learned_workflow`, and under the run's cap. */
+async function sideStream(models: RunModels, model: unknown, context: object, options: object | undefined) {
+  const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
+  const stream = createAssistantMessageEventStream();
+  sideRequests.set(context, { label: LEARNED_WORKFLOW_TOOL, extraInputTokens: 0, maxFeeUsd: 0, feeUsd: () => 0 });
+  void (async () => {
+    try {
+      const message = (await models.completeSimple(model as never, context as never, options as never)) as { stopReason?: string; errorMessage?: string };
+      if (message.stopReason === "error" || message.stopReason === "aborted") stream.push({ type: "error", reason: message.stopReason, error: message } as never);
+      else stream.push({ type: "done", reason: message.stopReason, message } as never);
+      stream.end(message as never);
+    } catch (error) {
+      const failed = { role: "assistant", content: [], stopReason: "error", errorMessage: String((error as Error)?.message ?? error), timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      stream.push({ type: "error", reason: "error", error: failed } as never);
+      stream.end(failed as never);
+    }
+  })();
+  return stream;
+}
+
+/** The run's `learned_workflow` tool over `run.workflows`. */
+export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
+  const names = run.workflows.map(({ name }) => name);
+  return defineTool({
+    name: LEARNED_WORKFLOW_TOOL,
+    description: learnedWorkflowDescription(run.workflows),
+    // Never run again after a crash (pi-durable's "unsafe"; a HostTool's "never": host-tools.ts REPLAY).
+    replay: "unsafe",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "input"],
+      properties: {
+        name: { type: "string", enum: names, description: "The learned workflow to run." },
+        input: { type: "object", description: "The workflow's input, as its input schema says." },
+      },
+    } as unknown as TSchema,
+    execute: async (args, _api, context) => {
+      const { name, input } = (args ?? {}) as { name?: unknown; input?: unknown };
+      const flow = run.workflows.find((workflow) => workflow.name === name);
+      if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
+      const said = await runLearned(run, flow, input, context?.abortSignal);
+      return forModel(said.text, { isError: said.isError });
+    },
+  });
+}
+
+/** `flow` run on `input` for `run`: its output as JSON, or why it did not run. Never throws, but on an abort. */
+export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal): Promise<{ text: string; isError: boolean }> {
+  const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true });
+  if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
+  const dsl = await import("@parcha/agentrun-dsl");
+  // Checked again at the call, against the agent's own tools: what merged under another revision may name one it has no more.
+  const tools = learnedWorkflowTools(run.granted);
+  const problems = draftProblems(dsl, flow.workflow, tools);
+  if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
+  const doc = JSON.parse(flow.workflow);
+  const { createPiHostRunner } = await import("@parcha/agentrun-pi");
+  const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
+  const runnerFor = async (tier: Tier) => {
+    const known = runners.get(tier);
+    if (known) return known;
+    const chosen = await chooseModel(run.env, undefined, tier);
+    if ("why" in chosen) throw new Error(chosen.why);
+    const ref: ModelRef = chosen.model;
+    const model = run.models.getModel(ref.provider, ref.modelId);
+    if (!model) throw new Error(`the model ${ref.provider}/${ref.modelId} is not known here`);
+    const registry = { getAll: () => run.models.getModels() as never, streamSimple: (m: unknown, ctx: object, options?: object) => sideStream(run.models, m, ctx, options) as never };
+    const runner = createPiHostRunner({ cwd: run.work, model: model as never, modelRegistry: registry as never }, { tools: [] });
+    runners.set(tier, runner);
+    return runner;
+  };
+  const runNode = async (request: Parameters<NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>[0]) => {
+    if (request.tools?.length) throw new Error(`${NODE_TOOLS_REFUSED}: its node "${request.label}" names ${request.tools.join(", ")}`);
+    return (await runnerFor(((request.tier as Tier | undefined) ?? "default") as Tier))({ ...request, ...(signal ? { signal } : {}) });
+  };
+  const runEffect = async ({ node, input: given, signal: own }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal }) => {
+    const tool = node.via === "tool" ? node.tool : undefined;
+    const effect = tool && allows(CALL_TOOLS, tool) && tools.includes(tool) ? toolOf(tool)?.effect : undefined;
+    if (!effect) throw new Error(`call node "${node.label}": this agent runs no tool ${tool ?? `via ${node.via}`}`);
+    return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}) });
+  };
+  try {
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, ...(signal ? { signal } : {}) } as never);
+    if (result.status !== "complete") return refuse(`it ended ${result.status}`);
+    return { text: JSON.stringify(result.output ?? null), isError: false };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}`, isError: true };
+  }
+}

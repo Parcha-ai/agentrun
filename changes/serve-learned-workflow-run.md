@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A run whose agent learned a workflow runs it as one tool, `learned_workflow {name, input}`, on pi, claude-agent and codex, with no edit of the agent's definition. Only a workflow whose `README.md` sets no status (or `active`) is the run's: one held for its owner's OK, or retired, is not. The tool's description names each workflow with its README's line, and the run's pin names them (`workflows`), each kept whole in the run's directory. A call checks the workflow again against the agent's own tools and refuses one that names a tool the agent was not granted, a code node or a shell or executor call, without running it. It runs with the workflow DSL: each model node on this server's model of its tier, in a session of its own with no tool of its own, and each call node `via: "tool"` on a tool the agent has. Its model requests are the run's, under its cap and on its timeline as `learned_workflow` side requests, and a call a crash cut off is never run again.

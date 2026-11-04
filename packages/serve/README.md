@@ -1352,6 +1352,16 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   follow-up gets them laid again, fresh, whatever the run wrote over them; one the work no longer holds whole when the
   run's process starts is left out of what its harness gets, and the run goes on. A skill whose name or files are out
   of shape is not read, and a symbolic link or a submodule at `skills/` or anywhere under it is a learning fault.
+- The workflows the agent learned, each a folder `workflows/<name>/` on `main` with its `workflow.json` and its
+  `README.md`, are the run's as one tool, `learned_workflow {name, input}`, on every harness (pi, claude-agent, codex),
+  with no edit of the agent's definition. Only an active one is, by a skill's rule: its `README.md` sets no status, or
+  `active`. Its description names each workflow with the line its README gives, and the pin names them (`workflows`),
+  each kept whole in the run's directory (`learned-workflows.json`), outside its work. A call checks the workflow again
+  against the agent's own tools, as the merge did: one that names a tool the agent was not granted, or holds a code node
+  or a shell or executor call, is refused at the call and never run. It runs with the workflow DSL: each model node on
+  this server's model of its tier, in a session of its own with no tool of its own (a node that names one is refused),
+  each call node `via: "tool"` on a tool the agent has. Its model requests are the run's, under its cap and on its
+  timeline as side requests labelled `learned_workflow`. A call a crash cut off is answered interrupted, never run again.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
