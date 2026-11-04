@@ -1773,6 +1773,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // after close.
     closing = true;
     stopping.abort();
+    // Aborted now, so nothing it writes races the next server on the same refresh token; drained before the lock goes.
+    const mcpStopped = mcpServers.close();
     for (const worker of workers.keys()) worker.postMessage("stop");
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
@@ -1784,6 +1786,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     await webhooks.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     agents.close();
+    await mcpStopped;
     // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
     lock.release();
   }

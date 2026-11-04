@@ -18,6 +18,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   const refresh = new Map();
   const issued = [];
   let hanging = false;
+  let grantedUnanswered = false;
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
     const chunks = [];
@@ -60,10 +61,12 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     }
     if (url.pathname === "/token" && req.method === "POST") {
       if (hanging) return; // never answered: its client's own timeout ends it
+      // The next one is granted (a refresh token rotated) but its answer never sent.
+      const answer = grantedUnanswered ? ((grantedUnanswered = false), () => {}) : json;
       const basic = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
       const [id, secret] = basic ? Buffer.from(basic[1], "base64").toString("utf8").split(":").map(decodeURIComponent) : [form.client_id, form.client_secret];
       const client = registered.get(id);
-      if (client?.secret !== undefined && client.secret !== secret) return json(401, { error: "invalid_client" });
+      if (client?.secret !== undefined && client.secret !== secret) return answer(401, { error: "invalid_client" });
       const grant = () => {
         const set = { access_token: made("access"), refresh_token: made("refresh"), token_type: "Bearer", ...(expiresIn === null ? {} : { expires_in: expiresIn }) };
         access.add(set.access_token);
@@ -74,18 +77,18 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
         const pending = codes.get(form.code);
         codes.delete(form.code);
         const s256 = pending && createHash("sha256").update(form.code_verifier ?? "").digest("base64url");
-        if (!pending || pending.client_id !== id || pending.redirect_uri !== form.redirect_uri || s256 !== pending.challenge) return json(400, { error: "invalid_grant" });
+        if (!pending || pending.client_id !== id || pending.redirect_uri !== form.redirect_uri || s256 !== pending.challenge) return answer(400, { error: "invalid_grant" });
         const set = grant();
         refresh.set(set.refresh_token, { client_id: id, scope: pending.scope });
-        return json(200, { ...set, ...(pending.scope ? { scope: pending.scope } : {}) });
+        return answer(200, { ...set, ...(pending.scope ? { scope: pending.scope } : {}) });
       }
       if (form.grant_type === "refresh_token") {
         const was = refresh.get(form.refresh_token);
         refresh.delete(form.refresh_token);
-        if (!was || was.client_id !== id) return json(400, { error: "invalid_grant", error_description: "the refresh token is spent or revoked" });
+        if (!was || was.client_id !== id) return answer(400, { error: "invalid_grant", error_description: "the refresh token is spent or revoked" });
         const set = grant();
         refresh.set(set.refresh_token, was);
-        return json(200, { ...set, ...(was.scope ? { scope: was.scope } : {}) });
+        return answer(200, { ...set, ...(was.scope ? { scope: was.scope } : {}) });
       }
       return json(400, { error: "unsupported_grant_type" });
     }
@@ -104,6 +107,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     revoke: () => (refresh.clear(), access.clear()),
     /** From now on `/token` never answers, as an authorization server that hangs. */
     hang: () => void (hanging = true),
+    /** The next `/token` request is granted (a refresh token is spent) but never answered. */
+    grantUnanswered: () => void (grantedUnanswered = true),
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
     expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),

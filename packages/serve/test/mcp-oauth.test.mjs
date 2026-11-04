@@ -282,3 +282,36 @@ test("a stop never waits on a token refresh: with the authorization server hangi
   assert.ok(Date.now() - at < 5_000, `the stop answered in ${Date.now() - at} ms, not after a refresh's 15 s`);
   assert.equal(as.log.filter((entry) => entry.path === "/token").length, asked, "the stop asked the authorization server nothing");
 });
+
+test("a stop aborts a refresh waiting on its authorization server: it returns within its bound, writes nothing, refuses writes after, and the next start asks for a sign-in again", async (t) => {
+  const key = sealKey();
+  withEnv(t, { AGENTRUN_SEAL_KEY: key });
+  const { api, data } = await serve(t);
+  const { as, mcp } = await fakes(t, { expiresIn: 60 });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  const file = join(data, "mcp-servers.json");
+  const before = readFileSync(file, "utf8");
+
+  // The authorization server rotates the refresh token, then never answers: the token it gave is lost with the stop.
+  as.grantUnanswered();
+  const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
+  const launch = store.headersForRun("docs");
+  for (let i = 0; !as.log.some((entry) => entry.form.grant_type === "refresh_token"); i++) {
+    assert.ok(i < 100, "the refresh reached the authorization server");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const at = Date.now();
+  await store.close(1_000);
+  assert.ok(Date.now() - at < 1_500, `the stop returned in ${Date.now() - at} ms`);
+  await launch;
+  assert.equal(readFileSync(file, "utf8"), before, "nothing written: the token set is as it was");
+  assert.throws(() => store.remove("docs"), (error) => error.code === "unavailable" && /stopping/.test(error.message), "a write after the stop is refused");
+  assert.equal(readFileSync(file, "utf8"), before);
+
+  // The next start refreshes with the refresh token it kept, which the authorization server spent: a sign-in again.
+  const next = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
+  assert.equal(await next.headersForRun("docs"), undefined);
+  const read = await api("GET", "/settings/mcp-servers/docs");
+  assert.equal(read.body.credential, "expired");
+});

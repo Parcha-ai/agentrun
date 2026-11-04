@@ -27,8 +27,8 @@ type Pending = { name: string; url: string; was: string | null; scope?: string; 
 
 const sdk = () => import("@modelcontextprotocol/client");
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
- *  held to REQUEST_MS. */
-const guarded = (input: string | URL | Request, init?: RequestInit) => fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(init?.signal ? [init.signal] : [])]) });
+ *  held to REQUEST_MS, and stopped with `stop` (the server's own stop). */
+const guarded = (stop?: AbortSignal) => (input: string | URL | Request, init?: RequestInit) => fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]) });
 const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : undefined);
 const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from a loopback address
 
@@ -62,7 +62,7 @@ export class McpSignIns {
     let opened: URL | undefined;
     const provider = this.provider(entry, { state, redirect: (to) => void (opened = to) });
     try {
-      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded });
+      await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded() });
     } catch (error) {
       throw new ApiError("upstream_failed", `The sign-in to ${url.origin} did not start: ${(error as Error).message.slice(0, 300)}`);
     }
@@ -82,10 +82,10 @@ export class McpSignIns {
   }
 
   /** The code exchanged (with the verifier and the client the start kept) for the token set to seal. */
-  async finish(entry: Pending, code: string, iss: string | undefined): Promise<TokenSet> {
+  async finish(entry: Pending, code: string, iss: string | undefined, stop?: AbortSignal): Promise<TokenSet> {
     let tokens: OAuthTokens | undefined;
     const provider = this.provider(entry, { saved: (got) => void (tokens = got) });
-    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded });
+    await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop) });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
     const scope = tokens.scope ?? entry.scope;
     return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
@@ -113,13 +113,13 @@ export class McpSignIns {
 }
 
 /** `set` refreshed at its authorization server, the refresh token kept when none new is given. */
-export async function refreshed(set: TokenSet): Promise<TokenSet> {
+export async function refreshed(set: TokenSet, stop?: AbortSignal): Promise<TokenSet> {
   const tokens = await (await sdk()).refreshAuthorization(set.discovery.authorizationServerUrl, {
     ...(set.discovery.authorizationServerMetadata ? { metadata: set.discovery.authorizationServerMetadata } : {}),
     clientInformation: set.client,
     refreshToken: set.tokens.refresh_token!,
     ...(set.resource ? { resource: set.resource } : {}),
-    fetchFn: guarded,
+    fetchFn: guarded(stop),
   });
   const scope = tokens.scope ?? set.tokens.scope;
   const { expires_at: _, ...rest } = set;
