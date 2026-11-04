@@ -16,6 +16,16 @@ export function viewKind(file: RunFile): "markdown" | "text" | "download" {
   return "download";
 }
 
+/** A file in a folder a person rarely means to look at: a dot folder (.git, .pytest_cache, .venv…), Python's
+ *  __pycache__, or node_modules. The Files tab keeps these behind "Show hidden"; a dot FILE the run wrote (.env.example)
+ *  stays listed. */
+export function hiddenFile(path: string): boolean {
+  return path.split("/").slice(0, -1).some((dir) => dir.startsWith(".") || dir === "__pycache__" || dir === "node_modules");
+}
+
+/** What a run that completed with an empty answer reads as, on its Report tab and in its Answer step. */
+export const NO_ANSWER = "The agent finished without writing an answer.";
+
 /** A guard for overlapping async reads: only the newest one begun, and not cancelled since, may land. */
 export function latest() {
   let at = 0;

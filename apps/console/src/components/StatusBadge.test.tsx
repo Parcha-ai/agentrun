@@ -9,6 +9,7 @@ import { failedWith, recorded, runFixture } from "@/fixtures";
 import { verdictOf, type RunGraph } from "@/lib/runGraph";
 import type { Run } from "@/lib/v2";
 import { NO_MESSAGES } from "@/lib/runState";
+import { NO_ANSWER } from "@/lib/viewing";
 
 describe("StatusBadge", () => {
   it("reads a paused workflow run as Paused", () => {
@@ -56,7 +57,7 @@ describe("a recorded run that escalated for review (status completed, with revie
     expect(detail).toContain("Needs review");
     expect(detail).toContain(run.review!.reason);
     expect(detail).toContain("Stopped at request-better-evidence");
-    expect(detail).not.toContain("This run gave no answer.");
+    expect(detail).not.toContain(NO_ANSWER);
   });
   it("a completed run with no review reads as it always did", () => {
     const done = runFixture("run.completed.idle.1").run;
