@@ -56,7 +56,10 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
 }
 
 /** `places` in capabilities: the modes a revision may name, this host's default, and each box. */
-export const placesOf = (registry: readonly BoxOffer[]) => ({ modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxAvailability(registry) });
+export const placesOf = (registry: readonly BoxOffer[]) => ({ modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxAvailability(registry).map(stated) });
+/** A box with its state: what the server set (a Docker box whose image is coming is `preparing`), else `ready` when it
+ *  is available and `unavailable` when not. */
+const stated = ({ state, ...offer }: BoxOffer): BoxOffer => ({ ...offer, state: offer.available ? (state ?? "ready") : "unavailable" });
 
 /** A run's place: its revision's, else this host's default. */
 export const resolvePlace = (revision: Place | undefined): Place => revision ?? { mode: "runner" };

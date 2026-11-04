@@ -14,6 +14,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { boxMounts, mountSource, runBox, runBoxProvider } from "../dist/run-box.js";
 import { writesHeld } from "../dist/workspace.js";
+import { DEFAULT_DOCKER_IMAGE, RECIPE_HASH, RECIPE_LABEL } from "../dist/box-image.js";
 import { startServe } from "../dist/index.js";
 import { client, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -32,6 +33,9 @@ async function fakeDocker(t, vars = {}) {
   const state = join(dir, "state");
   await mkdir(bin);
   await mkdir(state);
+  // Docker has this server's own image, built from its recipe (box-image.test.mjs builds it).
+  await mkdir(join(state, "images"));
+  await writeFile(join(state, "images", `${encodeURIComponent(DEFAULT_DOCKER_IMAGE)}.json`), JSON.stringify({ labels: { [RECIPE_LABEL]: RECIPE_HASH } }));
   await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 });
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker", ...vars });
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
@@ -113,7 +117,7 @@ test("a mount source is refused when it is, or runs through, a link below the da
 test("fake docker: one create per run, with no network, serve's user, work/ alone at its target, the run's labels and the fixed environment as NAME=value; a setting or a request field cannot open the network; destroyed at the run's end", { timeout: 120_000 }, async (t) => {
   const docker = await fakeDocker(t, { AGENTRUN_DOCKER_IMAGE: "registry.example/agentrun-box:1", AGENTRUN_DOCKER_NETWORK: "host", AGENTRUN_BOX_NETWORK: "open", ...PLANTED });
   const { api, data } = await serve(t, { faux: PROBE });
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true });
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true, state: "ready" });
   await boxedAgent(api);
   for (const body of [{ network: "host" }, { place: "sandbox" }, { place: { mode: "sandbox", box: "docker", network: "open" } }]) {
     assert.equal((await api("POST", "/agents/boxed/runs", { input: { content: "hi" }, ...body })).status, 422, JSON.stringify(body));

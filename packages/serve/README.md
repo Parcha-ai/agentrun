@@ -56,7 +56,8 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | --- | --- | --- |
 | `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
-| `--port N` | `7340` | The port. `0` is any free port. |
+| `--port N` | the first free port from `7340` | The port. `0` is any free port. |
+| `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once, beside the memory each run's harness reserves ([capacity](#capacity-and-health)). Over either, a new run is `429 rate_limited`. |
@@ -80,15 +81,18 @@ An agent with a shell, in a Docker container of its own: on a machine with Docke
 a model key. Start the server with the Docker box on:
 
 ```sh
-docker pull debian:bookworm-slim
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
 Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker is ready, so sandbox agents run
-their tools there.` In a second shell, export the two `AGENTRUN_` lines it printed (a later
-start prints where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a
-sandbox agent, run it, watch it, and read the file it wrote:
+their tools there.` The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node and rg,
+about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
+(building the box image (python, git, curl, node, rg)).`, and the log `event=box_image ... state=preparing`, then
+`state=ready` with how long it took; a later start finds it built. A run that needs its box sooner waits for it, with a
+row on its timeline saying so. In a second shell, export the two `AGENTRUN_` lines it printed (a later start prints
+where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a sandbox agent,
+run it, watch it, and read the file it wrote:
 
 ```sh
 H="authorization: Bearer $AGENTRUN_API_KEY"; J='content-type: application/json'
@@ -110,8 +114,8 @@ JS
 AGENTRUN_BOXES=docker node packages/serve/dist/cli.js --faux box.mjs
 ```
 
-The default image has no python or git: [the box's image](#the-boxs-image) says how to pick one that has them. The rest
-is under [Sandbox](#sandbox).
+The box has python 3.12, git, curl, node and rg, and no network: [the box's image](#the-boxs-image) says how to give it
+more. The rest is under [Sandbox](#sandbox).
 
 ## Logs
 
@@ -127,7 +131,9 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
 `wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
-One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
+One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)), and with a Docker box,
+`event=box_image` says whether its image is `ready`, `preparing` (being built or pulled) or `unavailable` and why, again
+when that ends; quiet keeps them too.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -271,7 +277,8 @@ the sandbox place as its `fix`), and a workflow's place is `runner` or none (`42
 its `fix`). In `capabilities.tools`, `bash` is `available: false` with a `reason` (`no box is set up on this server: …`,
 each box's own reason) when no box this server has can run it.
 
-`GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available` and, when not, the `reason`.
+`GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available`, its `state` (`ready`,
+`preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
 `capabilities.places` `x-agentrun-serve: "place/1"`.
@@ -304,8 +311,8 @@ go through `work/` by path.
   `/etc/resolv.conf`, `/etc/hostname` and `/etc/hosts` into it, read-only, so a box's command can read this machine's
   resolver settings (its nameservers and search domains), with no network to use them. Its environment is
   `LANG=C.UTF-8` and `HOME=/tmp` and the image's own: never this server's, so no key or token is in it. It runs as this
-  server's uid:gid, so what it writes in `work/` stays this server's. It starts from `AGENTRUN_DOCKER_IMAGE`
-  ([the box's image](#the-boxs-image)). It has no CPU, memory or process limits yet.
+  server's uid:gid, so what it writes in `work/` stays this server's. It starts from [the box's image](#the-boxs-image).
+  It has no CPU, memory or process limits yet.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
   command's process group in the container. Its answer is its output's last 2,000 lines or 50 KB. Each call is a fresh
   shell in `work/`.
@@ -363,19 +370,31 @@ since nothing binds `work/` there):
 
 ### The box's image
 
-`AGENTRUN_DOCKER_IMAGE` names the image every Docker box starts from, `debian:bookworm-slim` by default: a shell and
-Debian's base tools, with no python, git or compiler. A box has no network, so a run cannot install them; the image has
-to bring them. Pull an image that has what your agents use, then start the server with it:
+A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
+its digest) with git, curl, node (Debian's `nodejs`, no npm), rg (`ripgrep`) and their certificates, about 300 MB. Its
+recipe is `BOX_RECIPE` in `src/box-image.ts`, its base `BOX_BASE` there. The server builds it on first use
+(`docker build`, at most 10 minutes, its context a private directory under `TMPDIR` holding the recipe alone as its
+`Dockerfile`, removed after), tags it with the recipe's hash (`agentrun-box:<12 hex>`) and labels it with the whole hash
+(`agentrun.box-image`), and builds again only when the recipe changes: a start that finds the image with this recipe's
+hash uses it. To move the base, read the tag's index digest again from Docker Hub (the comment beside `BOX_BASE` says
+how) and put it there: the recipe's hash changes, and so does the image's tag, so the next start builds it. The build
+reaches the network, for the base image and apt; a box made from it never does (`--network none`). A build that fails
+leaves the box unavailable with the reason ([Boxes](#boxes)). Images of older recipes stay until you remove them:
+`docker image ls --filter label=agentrun.box-image` lists them all, and `docker image rm agentrun-box:<12 hex>` removes
+one.
+
+A box has no network, so a run cannot install anything; the image has to bring it. For other tools, name another image
+in `AGENTRUN_DOCKER_IMAGE`: the server then pulls it when Docker has none (at most 10 minutes) and builds nothing.
+This image, its build and the wait for it are the Docker box's alone: a Daytona box is made by the server from
+Daytona's own image, and a Daytona run never waits on this one.
 
 ```sh
-docker pull python:3.12-bookworm
 AGENTRUN_DOCKER_IMAGE=python:3.12-bookworm AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
-`python:3.12-bookworm` has python 3.12 with pip, and git. For more, build your own from the default
-(`FROM debian:bookworm-slim`, then `RUN apt-get update && apt-get install -y --no-install-recommends git python3
-ca-certificates`), tag it, and name the tag. An image based on Debian has what a box needs to run commands: `sh`,
-`sleep` and `setsid`, and `bash` for the `bash` tool when there is one (else `sh`). The image's own entrypoint
+`python:3.12-bookworm` adds compilers and the build tools of Debian's `buildpack-deps`. To bring your own, build one
+`FROM` the base you want, tag it, and name the tag. An image based on Debian has what a box needs to run commands:
+`sh`, `sleep` and `setsid`, and `bash` for the `bash` tool when there is one (else `sh`). The image's own entrypoint
 never runs; the box's first process is a `sleep` of its lifetime.
 
 ### In the published image
@@ -406,6 +425,16 @@ group, then restart the server, since the probe runs once. A reason never holds 
 provider's answer.
 
 - `docker`: the `docker` command on PATH, with a daemon that answers `docker version` for this server's user. It needs no key.
+  Then the server asks Docker for [the box's image](#the-boxs-image) (`docker image inspect`). When Docker has it (the
+  default with this recipe's hash), the box is `ready`. When not, the server builds the default, or pulls the image
+  `AGENTRUN_DOCKER_IMAGE` names, once, in the background, for at most 10 minutes. Meanwhile the box is available and
+  `preparing` (`building the box image (python, git, curl, node, rg)`, or `pulling <image>`), and a sandbox run whose
+  first box comes then waits for the image, with one row on its timeline (`Preparing the box image: building it (python,
+  git, curl, node, rg)…`), instead of a first tool call that pulls it silently. A build or pull that fails, or takes longer, makes
+  the box unavailable with the reason (the build could not reach the network, pull its base or install a package, ran
+  out of disk; the registry refused the image, has no such image, could not be reached; or the time ran out) until a
+  restart tries again. A run that was waiting fails its call with that reason, and the next sandbox run is
+  `409 agent_not_runnable`.
 - `daytona`: needs `DAYTONA_API_KEY`. Set `DAYTONA_API_URL` and `DAYTONA_TARGET` when Daytona's defaults do not fit.
   The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
 - `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).

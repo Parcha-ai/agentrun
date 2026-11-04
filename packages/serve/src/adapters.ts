@@ -71,6 +71,7 @@ export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (n
     const version = installed(name);
     return version ? [`${name}@${version}`] : [];
   });
+  // Pinned even after a command that depends on this server: an older one (0.3.1) fetches the server on its own.
   const packages = [...(command ? [command] : []), `@parcha/agentrun-serve@${SERVE_VERSION}`, ...kept, spec];
   const data = env[DATA_ENV];
   const named = data && (command || resolve(data) !== resolve(defaultData(env))) ? ` --data ${shellWord(resolve(data))}` : "";
