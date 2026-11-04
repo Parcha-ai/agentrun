@@ -238,7 +238,7 @@ const MCP_AUTH = {
   description: "Absent: none. A PUT that sends no `token` (no `headers`) keeps the sealed credential, when the type and the URL's origin are unchanged.",
 };
 const MCP_URL = { type: "string", format: "uri", maxLength: 2048, description: "The server's Streamable HTTP endpoint: https, or http on a loopback address of this machine; no user or password." };
-const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way).", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
+const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`.", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
 const MCP_FAILED = {
   "424": { description: "`upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one.", content: { "application/json": { schema: ref("schemas/Error") } } },
 };
