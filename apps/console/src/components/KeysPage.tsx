@@ -157,7 +157,9 @@ function KeyRow({ tool: k, cantStore, again, open, problem, onOpen, onSave, onRe
             {again && <Chip tone="warning">enter again</Chip>}
           </p>
           <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">
-            {k.kind === "model" ? "Model provider" : `Unlocks ${k.unlocks.join(", ")}`} · Harnesses {k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}
+            {k.kind === "model" ? "Model provider" : `Unlocks ${k.unlocks.join(", ")}`}
+            {/* A key no harness reads (one only a decision provider uses) names no harnesses, not an empty list. */}
+            {k.harnesses.length > 0 && ` · Harnesses ${k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}`}
           </p>
           {checkLine(k.label, k.check) && <p className={`mt-1.5 text-[12px] ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
           <ul className="mt-3 space-y-1">

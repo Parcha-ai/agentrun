@@ -1673,10 +1673,13 @@ export function isItemFailure(error: unknown): boolean {
 
 /** The failure a structure reports when several of its branches (a parallel's, a stopping map's items) fail at once: the
  *  first, unless that is an item failure and another is not, whichever came first. An item failure never hides a failure a
- *  collecting map must stop on. A sibling that ended on the structure's own stop (its reason, or an abort) is not one. */
+ *  collecting map must stop on. A sibling that ended on the structure's own stop (its reason, an abort, or a decision its
+ *  provider reports `aborted`, as Jev and OpenRouter report a request cancelled in flight) is not one: a run's own cancel
+ *  still stops a collecting map, which checks its signal first. */
 function reportedFailure(first: unknown, others: unknown[]): unknown {
   if (!isItemFailure(first)) return first;
-  return others.find((error) => error !== first && (error as { name?: unknown } | null)?.name !== "AbortError" && !isItemFailure(error)) ?? first;
+  const stopped = (error: unknown) => (error as { name?: unknown } | null)?.name === "AbortError" || (error instanceof DecisionProviderError && error.code === "aborted");
+  return others.find((error) => error !== first && !stopped(error) && !isItemFailure(error)) ?? first;
 }
 
 /** The label of the step an error failed in, set as the error leaves the innermost step and prefixed by every child
