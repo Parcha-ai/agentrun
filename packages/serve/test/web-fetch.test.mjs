@@ -8,7 +8,7 @@ import { test } from "node:test";
 import * as pages from "../dist/fetch-page.js";
 import * as web from "../dist/web-fetch.js";
 import { fetchFor, PARALLEL_EXTRACT_URL, parallelExtract, webFetch } from "../dist/web-fetch.js";
-import { bookedIn } from "../dist/paid-calls.js";
+import { bookedIn, PARALLEL_EXTRACT_USD } from "../dist/paid-calls.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { TOOLS } from "../dist/tools.js";
@@ -469,3 +469,52 @@ test("a page's links are read in one pass: a page of unclosed `](` takes no long
   const read = await parallelExtract(CANARY, answering(ordinary)).read(PUBLIC);
   assert.deepEqual(read.links, ["https://a.example/x", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/y"]);
 }));
+
+
+/** A call's ledger that keeps what it books: [kind, call, the held or charged USD]. */
+function recording(call) {
+  const rows = [];
+  return { rows, ledger: { call, record: async (kind, data) => void rows.push([kind, data.call, data.heldUsd ?? data.usd]) } };
+}
+const BOOKED = (call) => [["agentrun.tool_started", call, PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", call, PARALLEL_EXTRACT_USD]];
+
+test("a page through Parallel is one booked extract a run, at $0.001: three parts in three calls book it once, in the call that read it, and the parts from what the run read book nothing", async () => {
+  const long = `${"booked ".repeat(8_000)}end`;
+  const { asked, send } = paging(() => ({ text: long }));
+  const extract = parallelExtract(CANARY, send);
+  const held = new Map();
+  const calls = ["c1", "c2", "c3"].map(recording);
+  const parts = [];
+  for (const [n, { ledger }] of calls.entries()) parts.push(await bookedIn(ledger, () => webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, offset: n * 20_000 })));
+  assert.deepEqual(parts.map((page) => page.via), ["parallel", "parallel", "parallel"]);
+  assert.deepEqual(asked, [1_000_001], "one extract");
+  assert.deepEqual(calls.map((call) => call.rows), [BOOKED("c1"), [], []], "booked once, at Parallel's price for one URL, in the first call");
+});
+
+test("two calls for one page at once: one extract, booked once, in the call whose read the other shares; and so when the first call stops before the page is read", async () => {
+  const text = `${"shared ".repeat(3_000)}end`;
+  const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (const stopFirst of [false, true]) {
+    const asked = [];
+    const send = async (_url, init) => {
+      asked.push(JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result);
+      await later(150);
+      return new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Shared", full_content: text }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const extract = parallelExtract(CANARY, send);
+    const held = new Map();
+    const [first, second] = ["c1", "c2"].map(recording);
+    const soon = new AbortController();
+    const [a, b] = await Promise.all([
+      bookedIn(first.ledger, () => webFetch(PUBLIC, { ...network(), parallel: extract, pages: held, ...(stopFirst ? { signal: soon.signal } : {}) })),
+      later(10).then(() => bookedIn(second.ledger, () => webFetch(PUBLIC, { ...network(), parallel: extract, pages: held }))),
+      stopFirst ? later(40).then(() => soon.abort()) : undefined,
+    ]);
+    // The first call's read settles after it returned when it stopped: wait for the read the run keeps.
+    await held.get(PUBLIC);
+    const what = stopFirst ? "the first call stopped" : "both waited";
+    assert.deepEqual([a.ok, b.ok], [!stopFirst, true], what);
+    assert.deepEqual(asked, [1_000_001], `${what}: one extract`);
+    assert.deepEqual([first.rows, second.rows], [BOOKED("c1"), []], `${what}: booked once, in the call that started the read`);
+  }
+});

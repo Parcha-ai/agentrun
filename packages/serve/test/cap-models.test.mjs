@@ -6,10 +6,11 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
-import { bookedIn, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
-import { parallelExtract } from "../dist/web-fetch.js";
+import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
+import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import { webSearch } from "../dist/web-search.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
+import { network } from "./fixtures/fake-network.mjs";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -255,4 +256,39 @@ test("a Parallel search under way holds its fee for the cap: a model request bes
   assert.equal(sent.length, 1, "with the search's hold released at $0, the request fits");
   sent[0].end(0);
   await admitted.result();
+});
+
+
+test("under a cap, a page's one Parallel extract is held as any Parallel request: a model request that fits only without its $0.001 is refused while the read is under way, and the page's later parts hold and ask nothing", async (t) => {
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0015, 0);
+  t.after(() => useSpend(undefined));
+  let arrived, release;
+  const reached = new Promise((resolve) => (arrived = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const asked = [];
+  const text = `${"capped ".repeat(6_000)}end`;
+  const send = async (_url, init) => {
+    asked.push(JSON.parse(init.body).advanced_settings.full_content.max_chars_per_result);
+    arrived();
+    await held;
+    return new Response(JSON.stringify({ results: [{ url: "http://public.example/", title: "Capped", full_content: text }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const records = [];
+  const ledger = { call: "c1", record: async (kind, data) => void records.push([kind, data.heldUsd ?? data.usd]) };
+  const extract = parallelExtract(CANARY, send);
+  const pages = new Map();
+  const net = network();
+  const first = bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages }));
+  await reached;
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "not sent while the extract is under way");
+  assert.match((await request.result()).errorMessage ?? "", /holds \$0\.001 for requests still answering, of its \$0\.0015 cap/);
+  release();
+  assert.equal((await first).via, "parallel");
+  const later = await bookedIn(ledger, () => webFetch("http://public.example/", { ...net, parallel: extract, pages, offset: 20_000 }));
+  assert.deepEqual([later.via, later.offset, asked], ["parallel", 20_000, [1_000_001]], "a later part from what the run read: no request");
+  assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", PARALLEL_EXTRACT_USD]], "held and charged once");
 });
