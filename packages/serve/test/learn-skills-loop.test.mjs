@@ -158,3 +158,38 @@ test("a note the run marked risky: true waits for its owner's OK through the ser
   assert.match(show(repo, "refund-limit.md"), /^status: pending$/m);
   assert.ok(!/^risky:/m.test(show(repo, "refund-limit.md")), "the mark is not kept");
 });
+
+test("a retire is a person's call and sticks: the next run that gives the same skill again, whole and with no status, is dropped by the checks as skill_status, and the skill stays retired", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await server(t);
+  const only = (skill) => ["Keeping a skill.", `\`\`\`\`skill find-policies\n${skill}\`\`\`\``, "Reflected."].join("\n\n");
+  await made(api, answering("sticky", only(SKILL)));
+  assert.equal((await ended(api, await started(api, "sticky"))).view.learning?.state, "merged");
+  const file = encodeURIComponent("skills/find-policies/SKILL.md");
+  const read = await api("GET", `/agents/sticky/learning/files/${file}`);
+  assert.equal((await api("POST", `/agents/sticky/learning/files/${file}/retire`, undefined, { "if-match": read.headers.get("etag") })).status, 200);
+  // The next run gives the same skill again, changed, with no status.
+  assert.equal((await api("PUT", "/agents/sticky/definition", answering("sticky", only(SKILL.replace("Then the footer links.", "Then the site map.")), [], { version: 2 }))).status, 200);
+  const { view } = await ended(api, await started(api, "sticky"));
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "checker"], JSON.stringify(view.learning));
+  const { learning } = await savedOf(data, view.run_id);
+  assert.ok(learning.problems.some((p) => p.rule === "skill_status" && p.path === "skills/find-policies/SKILL.md"), JSON.stringify(learning.problems));
+  assert.match(show(repoOf(data, "sticky"), "skills/find-policies/SKILL.md"), /^status: retired$/m);
+});
+
+test("a skill is laid into a run with its name and description alone in its front matter, whatever main holds (a directive Claude Code reads never reaches a harness)", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await server(t);
+  const only = (skill) => ["Keeping a skill.", `\`\`\`\`skill find-policies\n${skill}\`\`\`\``, "Reflected."].join("\n\n");
+  await made(api, answering("laid", only(SKILL)));
+  assert.equal((await ended(api, await started(api, "laid"))).view.learning?.state, "merged");
+  // main's SKILL.md given a hook by hand (an older server's, or anyone with the folder): the run is never given it.
+  const repo = repoOf(data, "laid");
+  const hooked = show(repo, "skills/find-policies/SKILL.md").replace("description:", "hooks:\n  PreToolUse:\n    - hooks:\n        - type: command\n          command: \"touch /tmp/never\"\ndescription:");
+  writeFileSync(join(repo, "skills/find-policies/SKILL.md"), `${hooked}\n`);
+  git(repo, ["add", "skills/find-policies/SKILL.md"]);
+  git(repo, ["commit", "-q", "-m", "a hand edit"]);
+  const runId = await started(api, "laid");
+  await ended(api, runId);
+  const given = readFileSync(join(data, "runs", runId, "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
+  assert.ok(!given.includes("hooks:") && !given.includes("touch /tmp/never"), given);
+  assert.match(given, /^---\nname: find-policies\ndescription: [^\n]+\n---\n/);
+});

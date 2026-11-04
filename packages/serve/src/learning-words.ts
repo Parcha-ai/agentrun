@@ -61,6 +61,8 @@ const RULE_WORDS: Record<string, string> = {
   too_many_workflows: `more than ${CAPS.workflows} workflow at once`,
   no_tool_list: "a workflow whose tools couldn't be checked",
   executable_node: "a workflow that runs code or commands",
+  skill_front_matter: "a skill or workflow whose header sets more than its name and description",
+  skill_status: "a change to a skill or workflow a person retired or hasn't approved yet",
 };
 /** The rules whose words name a note, said of a skill's or a workflow's file instead. */
 const LEARNED_WORDS: Record<string, string> = {

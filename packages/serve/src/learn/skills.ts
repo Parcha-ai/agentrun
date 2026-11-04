@@ -52,6 +52,32 @@ function frontOf(text: string): { lf: string; end: number; value: (key: string) 
   return { lf, end, value };
 }
 
+/** The keys a SKILL.md's or a draft README's front matter sets, in order (each line at its left edge that names one);
+ *  undefined for a text with no front matter. */
+export function frontKeys(text: string): string[] | undefined {
+  const front = frontOf(text);
+  if (typeof front === "string") return undefined;
+  return front.lf.slice(4, front.end).split("\n").flatMap((line) => /^([^\s#:][^:]*):/.exec(line)?.[1] ?? []).map((key) => key.trim());
+}
+
+/** The front matter keys a learned skill or draft README may hold: what a skill is (its name and when to use it). Claude
+ *  Code reads directives from more (hooks, allowed-tools, context, agent, model, ...): a hook is a shell command its CLI
+ *  runs. `status` is the host's (a held one). */
+export const LEARNED_KEYS: readonly string[] = ["name", "description"];
+
+/** `text`, a learned skill's SKILL.md, as a run is given it: front matter with its name and its description alone,
+ *  written again whatever else its file holds (servedSkill is the one door a learned skill reaches a harness by), then its
+ *  body as it is. A text with no front matter is as it is. */
+export function servedSkill(text: string): string {
+  const front = frontOf(text);
+  if (typeof front === "string") return text;
+  const description = front.value("description") ?? "";
+  // Quoted only where YAML would read it as more than one plain line of text.
+  const plain = /^[^\s\-?:,[\]{}#&*!|>'"%@`][^\n]*$/.test(description) && !/: |\s#|:$/.test(description);
+  const lines = [`name: ${front.value("name") ?? ""}`, `description: ${plain ? description : JSON.stringify(description)}`];
+  return `---\n${lines.join("\n")}\n---\n${front.lf.slice(front.end + 5)}`;
+}
+
 /** Why a `SKILL.md` for the skill `name`, or a draft's `README.md` for the workflow `name`, is out of shape; empty when
  *  it is not. Its front matter names the folder's name and a description. */
 export function skillProblems(text: string, name: string): string[] {
