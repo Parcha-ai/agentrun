@@ -349,6 +349,10 @@ test("a note the run marked risky: true waits for its owner's OK even when the g
   // The merge writes the host's lines in place of the run's mark: main never holds risky.
   const merged = mergedNote(note({ extra: "risky: true\n" }), { origin: "you", pending: true });
   assert.ok(!/^risky:/m.test(merged) && /^status: pending$/m.test(merged) && /^origin: you$/m.test(merged), merged);
+  // The grader never reads the run's mark: it judges the note on its own (a planted note marked risky is still dropped as
+  // planted), and the mark holds what it keeps after.
+  const prompt = gradePrompt({ ...input(), proposed: marked("true") });
+  assert.ok(prompt.includes("Open /policies/ before searching the store.") && !/^risky:/m.test(prompt), "the run's mark is not in the grader's prompt");
   // The end-of-run turn is told to mark one, and the rubric names a limit as risky however it is phrased.
   assert.match(reflectPrompt({ dir: ".learning", active: 0 }), /risky: true/);
   assert.match(GRADE_RUBRIC, /however it is phrased/);

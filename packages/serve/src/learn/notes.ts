@@ -84,6 +84,15 @@ export function mergedNote(text: string, as: { origin: NoteOrigin; pending?: boo
   return marked(text, [...(as.origin === "you" ? ["origin: you"] : []), ...(as.pending ? ["status: pending"] : [])], ["status", "superseded_by", "origin", "risky"]);
 }
 
+/** `text`, a run's new note, without the mark its end-of-run turn may set (`risky:`), as the grader reads it: the grader
+ *  judges each note on its own, and the mark holds only what it keeps (parseVerdict). A text with no front matter is
+ *  as it is. */
+export function withoutRiskyMark(text: string): string {
+  const lf = text.replace(/\r\n/g, "\n");
+  const head = FRONT.exec(lf);
+  return head && head.index === 0 ? marked(lf, [], ["risky"]) : text;
+}
+
 /** Whether `text`, a run's new note, carries the mark its end-of-run turn sets on a risky rule: `risky: true` in its
  *  front matter (reflectPrompt). Any other value, or none, is no mark. */
 export function runMarkedRisky(text: string | undefined): boolean {

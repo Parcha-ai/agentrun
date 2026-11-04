@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { CAPS } from "./check.js";
 import { hiddenCharacter } from "./invisible.js";
-import { INDEX_FILE, INDEX_LINES, indexLine, type LearnedNote, NOTE_FILE, parseNoteFile, runMarkedRisky } from "./notes.js";
+import { INDEX_FILE, INDEX_LINES, indexLine, type LearnedNote, NOTE_FILE, parseNoteFile, runMarkedRisky, withoutRiskyMark } from "./notes.js";
 
 /** What the grader asks of each new note, and when it keeps one. The one statement of it. */
 export const GRADE_RUBRIC = [
@@ -236,7 +236,8 @@ export function gradePrompt(input: GradeInput): string {
     "",
     "## The new notes",
     "",
-    ...proposed.map(({ file, text }) => fence(`${file}, new`, text)),
+    // Each new note as the grader judges it: without its run's risky mark, which the verdict's hold reads after.
+    ...proposed.map(({ file, text }) => fence(`${file}, new`, withoutRiskyMark(text))),
     "",
     "## Your verdict",
     "",
