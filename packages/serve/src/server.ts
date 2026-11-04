@@ -50,7 +50,7 @@ import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
-import { signInCookie, startedHere } from "./mcp-oauth.js";
+import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import type { McpServerSource } from "./mcp-gateway.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -1317,8 +1317,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
     if (found.name === "mcpOAuthCallback") {
       // Its state's start set a cookie in the browser that started it: no other browser finishes that sign-in.
-      if (!startedHere(req.headers.cookie, req.socket.localPort, url.searchParams.get("state"))) throw new ApiError("forbidden", "This sign-in was started in another browser, or its 10 minutes are over: start it again in Settings → MCP servers, in this browser.");
-      return void res.writeHead(302, { location: await mcpServers.oauthCallback(url.searchParams, stopping.signal), "cache-control": "no-store" }).end();
+      const state = url.searchParams.get("state");
+      if (!startedHere(req.headers.cookie, req.socket.localPort, state)) throw new ApiError("forbidden", "This sign-in was started in another browser, or its 10 minutes are over: start it again in Settings → MCP servers, in this browser.");
+      const location = await mcpServers.oauthCallback(url.searchParams, stopping.signal);
+      // Its sign-in is over: its cookie goes.
+      return void res.writeHead(302, { location, "cache-control": "no-store", "set-cookie": signInCookie(req.socket.localPort, state!, overHttps(req), 0) }).end();
     }
     if (found.name === "mcpOAuthClient") return send(res, 200, mcpServers.clientDocument(), { "cache-control": "public, max-age=3600" });
     if (found.name === "getHealth") {
@@ -1614,6 +1617,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "refreshMcpServer":
         return send(res, 200, await mcpServers.refresh(id, stopping.signal));
       case "startMcpOAuth": {
+        // The cookie is set on the address the request came to, and the authorization server sends the browser back
+        // to the callback's: they must be the one origin, or the callback never sees the cookie. The redirect URI
+        // stays that one address (a registered client names it), and a start from another answers where to go.
+        const origin = mcpServers.callbackOrigin;
+        if (ownOrigin(req) !== origin) throw new ApiError("wrong_origin", `This server's sign-in comes back to ${origin}, and finishes only in a browser that started it there: open the console at ${origin}${MCP_SETTINGS_PAGE} and sign in from it.`, { details: { open: `${origin}${MCP_SETTINGS_PAGE}` } });
         const started = await mcpServers.oauthStart(id, await bodyOf(req));
         const state = new URL(started.authorization_url).searchParams.get("state") ?? "";
         return send(res, 200, started, { "set-cookie": signInCookie(req.socket.localPort, state, overHttps(req)) });

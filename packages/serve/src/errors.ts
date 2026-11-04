@@ -41,6 +41,7 @@ export const ERROR_STATUS = {
   not_mcp: 422,
   upstream_failed: 424,
   store_unreadable: 409,
+  wrong_origin: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

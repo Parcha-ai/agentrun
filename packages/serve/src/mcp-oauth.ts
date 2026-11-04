@@ -33,17 +33,19 @@ const sdk = () => import("@modelcontextprotocol/client");
  *  goes to a private address or over plain http (endpointRefusal): its authorization server cannot steer this server's
  *  code, verifier, secret or refresh token to a service on this machine or its network. */
 const guarded = (stop?: AbortSignal, mcpUrl?: string) => async (input: string | URL | Request, init?: RequestInit) => {
+  // Started before the address check: its name lookup is bounded by the same timeout and the server's stop.
+  const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]);
   const url = new URL(input instanceof Request ? input.url : String(input));
-  const why = mcpUrl && !onLoopback(mcpUrl) ? await endpointRefusal(`endpoint ${url.origin}${url.pathname}`, url.href) : undefined;
+  const why = mcpUrl && !onLoopback(mcpUrl) ? await endpointRefusal(`endpoint ${url.origin}${url.pathname}`, url.href, signal) : undefined;
   if (why) throw new Error(why);
-  return fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(stop ? [stop] : []), ...(init?.signal ? [init.signal] : [])]) });
+  return fetch(input, { ...init, redirect: "manual", signal });
 };
 const onLoopback = (url: string) => LOOPBACK.test(new URL(url).hostname);
 
 /** Why `url`, which the authorization server named as its `what`, is refused for an MCP server off loopback: it is on
  *  this machine or a private network, by name or by any address its name resolves to (pi-browser's isPrivateAddress,
  *  the check the agent's own web fetch uses), or it is not https. Undefined when it may be used. */
-async function endpointRefusal(what: string, url: string): Promise<string | undefined> {
+async function endpointRefusal(what: string, url: string, signal: AbortSignal): Promise<string | undefined> {
   let at: URL;
   try {
     at = new URL(url);
@@ -52,34 +54,47 @@ async function endpointRefusal(what: string, url: string): Promise<string | unde
   }
   const { isPrivateAddress } = await import("@parcha/pi-browser");
   const host = at.hostname.replace(/^\[|\]$/g, "");
-  const local = LOOPBACK.test(at.hostname) || (net.isIP(host) ? isPrivateAddress(host) : (await dns.lookup(host, { all: true }).catch(() => [])).some((one) => isPrivateAddress(one.address)));
+  const local = LOOPBACK.test(at.hostname) || (net.isIP(host) ? isPrivateAddress(host) : (await raced(dns.lookup(host, { all: true }), signal).catch((error) => (signal.aborted ? Promise.reject(error) : []))).some((one) => isPrivateAddress(one.address)));
   if (local) return `the authorization server's ${what} is a private address; refused`;
   if (at.protocol !== "https:") return `the authorization server's ${what} is not https; refused`;
   return undefined;
 }
 
+/** `work`, or `signal`'s reason as soon as it aborts: a resolver that never answers holds nothing past it. */
+const raced = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+
 /** Every endpoint discovery found, checked as endpointRefusal does, before any is used. */
 async function discoveryRefusal(state: OAuthDiscoveryState): Promise<string | undefined> {
+  const signal = AbortSignal.timeout(REQUEST_MS);
   const metadata = state.authorizationServerMetadata;
   const named: Array<[string, string | undefined]> = [["address", state.authorizationServerUrl], ["metadata address", state.resourceMetadataUrl], ["authorization endpoint", metadata?.authorization_endpoint], ["token endpoint", metadata?.token_endpoint], ["registration endpoint", metadata?.registration_endpoint]];
   for (const [what, url] of named) {
-    const why = url ? await endpointRefusal(what, url) : undefined;
+    const why = url ? await endpointRefusal(what, url, signal) : undefined;
     if (why) return why;
   }
   return undefined;
 }
 
 const SIGN_IN_COOKIE = "agentrun-oauth";
+const digest = (text: string) => createHash("sha256").update(text).digest();
+/** One cookie per sign-in, named by its state, so two tabs signing in at once do not replace each other's. */
+const cookieName = (port: number | undefined, state: string) => `${SIGN_IN_COOKIE}-${port}-${digest(state).toString("hex").slice(0, 16)}`;
 /** The cookie a start sets in the starting browser, and its callback asks for: the callback runs only in the browser
  *  that started the sign-in. SameSite=Lax, so the authorization server's redirect back (a top-level GET from another
  *  site) carries it, which the console's Strict cookies are not; its path is the callback's alone. */
-export const signInCookie = (port: number | undefined, state: string, https: boolean) =>
-  `${SIGN_IN_COOKIE}-${port}=${state}; HttpOnly; SameSite=Lax; Path=${OAUTH_CALLBACK}; Max-Age=${STATE_MS / 1000}${https ? "; Secure" : ""}`;
+export const signInCookie = (port: number | undefined, state: string, https: boolean, maxAge = STATE_MS / 1000) =>
+  `${cookieName(port, state)}=${maxAge ? state : ""}; HttpOnly; SameSite=Lax; Path=${OAUTH_CALLBACK}; Max-Age=${maxAge}${https ? "; Secure" : ""}`;
 /** Whether the callback's request carries the cookie its state's start set. */
 export const startedHere = (cookies: string | undefined, port: number | undefined, state: string | null): boolean => {
-  const name = `${SIGN_IN_COOKIE}-${port}=`;
-  const digest = (text: string) => createHash("sha256").update(text).digest();
-  return !!state && String(cookies ?? "").split(";").map((part) => part.trim()).some((part) => part.startsWith(name) && timingSafeEqual(digest(part.slice(name.length)), digest(state)));
+  if (!state) return false;
+  const name = `${cookieName(port, state)}=`;
+  return String(cookies ?? "").split(";").map((part) => part.trim()).some((part) => part.startsWith(name) && timingSafeEqual(digest(part.slice(name.length)), digest(state)));
 };
 const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : undefined);
 const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints

@@ -84,6 +84,11 @@ export class McpServers {
     return this.signIns.clientDocument();
   }
 
+  /** The origin the authorization server sends the browser back to: a sign-in starts there, where its cookie is set. */
+  get callbackOrigin(): string {
+    return new URL(this.signIns.base).origin;
+  }
+
   /** At the server's stop, before its data directory's lock goes: every refresh and code exchange under way is aborted
    *  and waited for (at most `boundMs`), and no write is made after. One aborted writes nothing, so the token set stays
    *  as it was; if its authorization server had already rotated the refresh token, the next start's refresh is refused
