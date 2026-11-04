@@ -6,14 +6,33 @@
 // process's script is the read call and "After the cut.": the one answer left belongs to whichever turn runs first.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+// The faux harness in a process a test can hold at the write of a turn's end (TURN_END_ARM, TURN_END_HELD).
+const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
 const ANSWERS = ["final_answer", "text_block"];
 const usageRow = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows.findLast((r) => r.kind === "usage")?.usage;
+
+/** The run's store entries, read once its process lets go of the store; a read that finds it held tries again. */
+function storeEntries(data, runId) {
+  for (let tries = 0; ; tries++) {
+    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    try {
+      return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
+    } catch (error) {
+      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
+    } finally {
+      db.close();
+    }
+  }
+}
+const holderOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid;
+const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 
 /** Waits for `check`, up to `ms`; fails naming `what`. */
 async function until(what, check, ms = 60_000) {
@@ -44,6 +63,58 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.deepEqual(rows.slice(0, followUp).filter((r) => ANSWERS.includes(r.kind)).map((r) => r.summary), [], `the stopped turn went on before the follow-up: ${JSON.stringify(shown)}`);
     // The follow-up's own turn answers it.
     assert.deepEqual(rows.slice(followUp + 1).filter((r) => ANSWERS.includes(r.kind)).map((r) => r.summary), ["After the cut."], `the follow-up's answer: ${JSON.stringify(shown)}`);
+    assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "After the cut.");
+  });
+}
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`${harness}: a turn stopped mid-request whose process died before the turn's end was written: the next process writes that end, interrupted, before the follow-up, which is a turn of its own`, { timeout: 180_000 }, async (t) => {
+    const dir = await scratch(t);
+    const [arm, held, go] = [join(dir, "arm"), join(dir, "held"), join(dir, "go")];
+    withEnv(t, { TURN_END_ARM: arm, TURN_END_HELD: held });
+    const { api, data } = await serve(t, { fauxHarness: CUT });
+    assert.equal((await api("POST", "/agents", agent(`unended-${harness}`, { harness, instructions: `Cut until ${go}.` }))).status, 201);
+    const runId = (await api("POST", `/agents/unended-${harness}/runs`, { input: { content: "hi" } })).body.run_id;
+    await until("the second request is admitted", async () => (await usageRow(api, runId))?.requests === 2);
+    // From here the process holds at the next write of a turn's end: the stopped turn's.
+    await writeFile(arm, "");
+    assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+    let hold = null;
+    await until("the stopped turn reaches the write of its end", async () => (hold = JSON.parse(await readFile(held, "utf8").catch(() => "null"))) !== null);
+    assert.equal(holderOf(data, runId), hold.pid, "the held process is the run's");
+    await writeFile(go, "");
+    process.kill(hold.pid, "SIGKILL");
+    await until("the run's process is gone", () => gone(hold.pid));
+    assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).status, 202);
+    const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+    const shown = rows.map((r) => [r.kind, r.summary]);
+    const followUp = rows.findIndex((r) => r.kind === "user_message" && r.summary === "You: go on");
+    assert.deepEqual(rows.slice(0, followUp).filter((r) => ANSWERS.includes(r.kind)).map((r) => r.summary), [], `the stopped turn went on before the follow-up: ${JSON.stringify(shown)}`);
+    // The run's process lets go of its store once it completes.
+    await until("the run's process is gone", () => { const pid = holderOf(data, runId); return pid === undefined || gone(pid); }, 60_000);
+    const entries = storeEntries(data, runId);
+    const ends = entries.filter((e) => e.kind === "adapter.turn_end").map((e) => e.data?.status);
+    assert.deepEqual(ends, ["interrupted", "completed"], `the stopped turn's end, written by the next process, then the follow-up's: ${JSON.stringify(entries.map((e) => e.kind))}`);
+    const stoppedEnd = entries.findIndex((e) => e.kind === "adapter.turn_end");
+    const followUpEntry = entries.findIndex((e) => e.kind === "pi.user" && JSON.stringify(e.model ?? []).includes("go on"));
+    assert.ok(stoppedEnd >= 0 && followUpEntry > stoppedEnd, `the stopped turn's end comes before the follow-up's message: ${stoppedEnd}, ${followUpEntry}`);
+  });
+
+  test(`${harness}: a turn a drain cut (its process stopped, no stop by the person) still goes on in the next process and ends with its answer`, { timeout: 180_000 }, async (t) => {
+    // The guard for what must not change: only a person's stop settles an open turn; a crash or a drain resumes it.
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, drainTimeout: "1s" });
+    const go = join(await scratch(t), "go");
+    assert.equal((await api("POST", "/agents", agent(`drained-${harness}`, { harness, instructions: `Cut until ${go}.` }))).status, 201);
+    const runId = (await api("POST", `/agents/drained-${harness}/runs`, { input: { content: "hi" } })).body.run_id;
+    await until("the second request is admitted", async () => (await usageRow(api, runId))?.requests === 2);
+    await writeFile(go, "");
+    const pid = holderOf(data, runId);
+    process.kill(pid, "SIGTERM");
+    await until("the drained process is gone", () => gone(pid));
+    const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+    const shown = rows.map((r) => [r.kind, r.summary]);
+    assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: hi"], `no other message: ${JSON.stringify(shown)}`);
+    assert.deepEqual(rows.filter((r) => ANSWERS.includes(r.kind)).map((r) => r.summary), ["After the cut."], `the drained turn went on to its answer: ${JSON.stringify(shown)}`);
     assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "After the cut.");
   });
 }
