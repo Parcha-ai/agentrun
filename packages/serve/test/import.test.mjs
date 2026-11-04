@@ -455,6 +455,80 @@ test("keys in a JSON string a session holds, as Codex keeps a shell's output and
   assert.ok(lines.includes("5 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
 });
 
+test("keys an environment holds and sessions of each harness hold too are each counted once, however each was found: the summary counts the values the import cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [billing, site] = [join(at, "code", "billing"), join(at, "code", "site")];
+  for (const dir of [billing, site]) mkdirSync(dir, { recursive: true });
+  const k = shapedKeys();
+  // As a person's environment holds them, and as their sessions printed or pasted them: Claude Code twice, Codex, pi.
+  const keys = { OPENAI_API_KEY: k.openai, STRIPE_SECRET_KEY: k.stripe, ANTHROPIC_API_KEY: k.anthropic };
+  claudeSession(at, billing, 1, { prompt: "Check the environment.", output: Object.entries(keys).map(([name, value]) => `${name}=${value}`).join("\n") });
+  codexSession(at, site, 2, { prompt: `Run the eval with ${keys.OPENAI_API_KEY}.` });
+  piSession(at, site, 3, { prompt: `Rotate ${keys.ANTHROPIC_API_KEY} today.` });
+  claudeSession(at, site, 4, { prompt: "Log in to Stripe again.", output: `stripe login --api-key ${keys.STRIPE_SECRET_KEY}` });
+  const data = join(root, "agents");
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin", ...keys }, out: (line) => lines.push(line) }), 0);
+    return lines.filter((line) => /removed/.test(line));
+  };
+  assert.deepEqual(await run("--dry-run"), ["3 secrets would be removed"]);
+  assert.deepEqual(await run(), ["3 secrets removed"]);
+  for (const [name, value] of Object.entries(keys)) assert.deepEqual(keptUnder(data).filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}'s value`);
+});
+
+test("this server's own secrets, pasted into sessions, are cut out of what the import keeps and prints, and counted: its webhook signing secret, its two tokens and its sign-in sessions' secret", async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const seal = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = seal.AGENTRUN_SEAL_KEY;
+  // A server that made each of them, the webhook's secret shown once at its first PUT. Closed before the import, as a
+  // person runs one.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true });
+  let open = true;
+  t.after(() => open && server.close());
+  const api = client(server.baseUrl, server.token);
+  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  assert.equal(set.status, 201, JSON.stringify(set.body));
+  await server.close();
+  open = false;
+  const own = {
+    webhook: set.body.secret,
+    token: server.token,
+    door: readFileSync(join(data, ".door-token"), "utf8").trim(),
+    session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
+  };
+  for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}` });
+  codexSession(at, site, 2, { prompt: `cat .door-token says ${own.door}` });
+  piSession(at, site, 3, { prompt: `The session secret is ${own.session}.` });
+  // What was there before the import: the server's own files, which hold them as the server keeps them.
+  const had = new Map(keptUnder(data));
+  const run = async (args, env = { PATH: "/usr/bin", ...seal }) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  // With no seal key, the webhook's secret does not open: the other three are cut all the same.
+  assert.deepEqual((await run(["--dry-run"], { PATH: "/usr/bin" })).filter((l) => /removed/.test(l)), ["3 secrets would be removed"]);
+  const dry = await run(["--dry-run"]);
+  const lines = await run([]);
+  const wrote = keptUnder(data).filter(([path, bytes]) => !had.get(path)?.equals(bytes));
+  assert.ok(wrote.length > 0, "the import wrote");
+  for (const [name, value] of Object.entries(own)) {
+    assert.deepEqual(wrote.filter(([, bytes]) => bytes.includes(value)).map(([path]) => path.slice(data.length + 1)), [], `${name}: in no byte the import wrote`);
+    assert.ok(![...dry, ...lines].some((line) => line.includes(value)), `${name}: in no printed line`);
+  }
+  assert.ok(dry.includes("4 secrets would be removed"), dry.filter((l) => /removed/.test(l)).join(" "));
+  assert.ok(lines.includes("4 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
 test("this repository's own source, imported as a session's output, has nothing cut from it", async (t) => {
   const repo = new URL("../../../", import.meta.url).pathname;
   const files = [];
@@ -687,6 +761,7 @@ test("what the CLI prints is cut with the saved tool keys too: a skipped file na
 test("the README says what an import removes and what it leaves", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
   assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));
+  assert.ok(readme.includes("So are a key-shaped value this server did not make (a `whsec_` secret from another service) and a run's own door token."));
 });
 
 test("a key of the environment's that holds a slash, across a skill's folders, leaves no part of itself in what the import keeps, and the skill stays one skill", async (t) => {

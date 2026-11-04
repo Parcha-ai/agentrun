@@ -62,6 +62,34 @@ const iso = (ms: number) => new Date(ms).toISOString();
 export const signatureOf = (secret: string, id: string, timestamp: string, body: string) =>
   `v1,${createHmac("sha256", Buffer.from(secret.slice("whsec_".length), "base64")).update(`${id}.${timestamp}.${body}`).digest("base64")}`;
 
+/** The webhook as `file` keeps it, if it holds one. */
+function configIn(file: string): Config | undefined {
+  try {
+    const doc = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    return isObject(doc) && doc.v === 1 && typeof doc.url === "string" && typeof doc.secret === "string" ? (doc as unknown as Config) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Its secret, opened under `key`, or why it is not. */
+function opened(key: Buffer | undefined, config: Config): { secret: string } | { signing: Exclude<Signing, "sealed"> } {
+  if (!key) return { signing: "seal_key_missing" };
+  try {
+    return { secret: unseal(key, Buffer.from(config.secret, "base64"), aad).toString("utf8") };
+  } catch {
+    return { signing: "unreadable" };
+  }
+}
+
+/** The signing secret of the webhook data directory `data` keeps, opened with the seal key of `env`; undefined when it
+ *  keeps none, or the key is not there or does not open it. Read for an import, which cuts it out of what it keeps. */
+export function webhookSecretIn(data: string, env: NodeJS.ProcessEnv): string | undefined {
+  const config = configIn(join(data, WEBHOOK_FILE));
+  const open = config && opened(sealKeyOf(env[SEAL_KEY_ENV]), config);
+  return open && "secret" in open ? open.secret : undefined;
+}
+
 export class Webhooks {
   private readonly file: string;
   private readonly outbox: string;
@@ -232,13 +260,7 @@ export class Webhooks {
   }
 
   private config(): Config | undefined {
-    if (this.held) return this.held;
-    try {
-      const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-      return isObject(doc) && doc.v === 1 && typeof doc.url === "string" && typeof doc.secret === "string" ? (doc as unknown as Config) : undefined;
-    } catch {
-      return undefined;
-    }
+    return this.held ?? configIn(this.file);
   }
 
   /** Throws when the write fails: what was held stays held. */
@@ -320,12 +342,7 @@ export class Webhooks {
 
   /** The secret, opened, or why it is not. */
   private secret(config: Config): { secret: string } | { signing: Exclude<Signing, "sealed"> } {
-    if (!this.key) return { signing: "seal_key_missing" };
-    try {
-      return { secret: unseal(this.key, Buffer.from(config.secret, "base64"), aad).toString("utf8") };
-    } catch {
-      return { signing: "unreadable" };
-    }
+    return opened(this.key, config);
   }
 
   private enqueue(id: string, type: MessageType, data: Record<string, unknown>): Message {
