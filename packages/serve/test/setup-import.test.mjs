@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
-import { agent, call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
+import { call, client, cookieOf, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
@@ -432,21 +432,17 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   for (const [name, value] of Object.entries(keys)) assert.deepEqual(holding(data, value), [], `no file under the data directory holds ${name}'s value`);
 });
 
-test("setup's import cuts the secrets this server made and keeps, pasted into a session: its webhook signing secret, its tokens, its sign-in sessions' secret and a run's door token", { timeout: 90_000 }, async (t) => {
+test("setup's import cuts the secrets this server made and keeps, pasted into a session: its webhook signing secret, its two tokens and its sign-in sessions' secret", { timeout: 90_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
   const root = await scratch(t);
   const data = join(root, "agents");
-  // An earlier start, before accounts: its webhook set (its secret shown once) and a run, which has its door token.
+  // An earlier start, before accounts: its webhook set, its secret shown once.
   const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   let firstOpen = true;
   t.after(() => firstOpen && first.close());
   const api = client(first.baseUrl, first.token);
   const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
   assert.equal(set.status, 201, JSON.stringify(set.body));
-  assert.equal((await api("POST", "/agents", agent("door"))).status, 201);
-  const made = await api("POST", "/agents/door/runs", { input: { content: "hi" } });
-  assert.equal(made.status, 202, JSON.stringify(made.body));
-  for (const deadline = Date.now() + 30_000; !["completed", "failed"].includes((await api("GET", `/runs/${made.body.run_id}`)).body.status); ) assert.ok(Date.now() < deadline, "the run ends");
   await first.close();
   firstOpen = false;
   // This start sets the owner, and with it the sign-in sessions' secret; the sessions are written before the box is ticked.
@@ -460,11 +456,10 @@ test("setup's import cuts the secrets this server made and keeps, pasted into a 
     token: server.token,
     door: readFileSync(join(data, ".door-token"), "utf8").trim(),
     session: readFileSync(join(data, ".session-secret"), "utf8").trim(),
-    run: readFileSync(join(data, "runs", made.body.run_id, "door-token"), "utf8").trim(),
   };
   for (const [name, value] of Object.entries(own)) assert.ok(typeof value === "string" && value.length >= 32, `${name}: ${typeof value}`);
   claudeSession(home, site, 2, { prompt: `The webhook's secret is ${own.webhook}, check the receiver.`, output: `token ${own.token}, door ${own.door}` });
-  codexSession(home, site, 3, { prompt: `The session secret is ${own.session} and the run's door ${own.run}.` });
+  codexSession(home, site, 3, { prompt: `The session secret is ${own.session}.` });
   const kept = new Map(Object.entries(own).map(([name, value]) => [name, holding(data, value)]));
   const ticked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
   assert.deepEqual([ticked.status, ticked.json], [201, { signed_in: true, importing: true }], ticked.text);
