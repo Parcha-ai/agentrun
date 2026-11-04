@@ -123,6 +123,9 @@ export interface ModelUsage {
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */
   providerIds?: Record<string, string>;
+  /** A response its client stopped part way, its cost unknown, with the bytes of it the client was sent (the model
+   *  proxy's `stoppedAfterBytes`): the host counts it by what streamed (`Admission.stoppedUsd`), never more than its hold. */
+  stoppedAfterBytes?: number;
 }
 
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be
