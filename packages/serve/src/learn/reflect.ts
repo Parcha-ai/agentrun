@@ -69,6 +69,8 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "",
     "When this run did, to the end, a job this agent will be asked to do again, you may also keep one skill and one",
     "workflow draft for that job. Most runs keep neither. Neither holds this case's data: each is about the job, not the one case.",
+    "Steps the person asks you to follow every time a task comes back are a skill, not a note: keep them as the skill, in",
+    "their words and with the exact output format they gave, and do not repeat them in a note.",
     "",
     `A skill is how to do the job, step by step, as a SKILL.md: front matter with its \`name\` (lowercase letters, digits`,
     "and single dashes) and a `description` of when to use it, then the steps. Open its block with four backticks, so a",
