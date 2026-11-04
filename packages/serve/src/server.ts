@@ -763,8 +763,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     },
     async start(target, input, trigger) {
       const entry = await needAgent(target.agent_id);
-      const run = await startRunOf(entry, { input, max_cost_usd: target.max_cost_usd, ...(target.effort ? { effort: target.effort } : {}) }, { trigger });
+      const run = await startRunOf(entry, { input, max_cost_usd: target.max_cost_usd, ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key } });
       return { run_id: run.id };
+    },
+    async runOf(key) {
+      return (await agents.request(() => agents.store.runOfOrigin(key)))?.runId ?? null;
     },
     async statusOf(runId) {
       const row = await agents.request(() => agents.store.readRun(runId));

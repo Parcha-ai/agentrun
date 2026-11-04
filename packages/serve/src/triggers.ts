@@ -72,6 +72,8 @@ export type TriggerDeps = {
   start(target: Target, input: Json, origin: RunTrigger): Promise<{ run_id: string }>;
   /** A run's status, or null when there is no such run. */
   statusOf(runId: string): Promise<string | null>;
+  /** The run the agent store started under origin `key`, if one: a firing left due by a server that went down mid-start. */
+  runOf(key: string): Promise<string | null>;
   say(fields: Record<string, string | number>): void;
   clock?: TriggerClock;
 };
@@ -329,6 +331,11 @@ export class Triggers {
     try {
       const found = this.find(triggerId, key);
       if (!found || found.firing.status !== "due") return;
+      // Its run already started (the store has its key) is its run, whatever runs now.
+      const prior = await this.deps.runOf(key).then((runId) => ({ runId }), (error: Error) => ({ retry: error }));
+      if (this.closed) return;
+      if ("retry" in prior) return this.retry(triggerId, key, prior.retry);
+      if (prior.runId) return this.settle(triggerId, key, { status: "started", run_id: prior.runId });
       const busy = await this.busy(found.trigger, found.firing).catch((error: Error) => ({ retry: error }));
       if (this.closed) return;
       if (typeof busy === "string") return this.settle(triggerId, key, { status: "skipped", reason: busy });
