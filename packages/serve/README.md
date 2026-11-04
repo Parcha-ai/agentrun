@@ -63,6 +63,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
+| `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. The server keeps its data directory until its runs' processes have exited (up to this and a second), and says so as it stops; a server started on the same `--data` meanwhile waits for it, saying so, then starts. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -1208,13 +1209,26 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 
 - `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
   commit, however `main` moves on.
-- The first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own) go into the run's
-  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/`, to open one
-  when it applies, and that only what the run answers when it is asked at the end is kept. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
-  and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project settings off, so a
-  `.claude/` in the work never loads), and no skill is learned.
-- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh, for the run to read; a
-  superseded or retired note is not.
+- What the agent learned goes into the run's instructions after the agent's, under `# Learned`, so a run reads it
+  whatever its tools: an agent with no `read` tool still follows its notes. Only active notes are served: a note with
+  any other status is never there, whole or by its index line (one a hand edit left in `MEMORY.md` is dropped), and is
+  not counted toward the budget. Each active note is there whole (its
+  `## name (file.md)`, its description, then its text), the one changed last on `main` first (a merge or a person's
+  edit; then by name), while they all fit the server's learning budget (`--learning-budget`, 8000 bytes by default).
+  Past it, the run reads the first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own),
+  then the notes changed last, whole, while they fit what is left; the rest are named only in the index, and an agent
+  with the `read` tool is told they are in `.learning/`, to open one when it applies (one without is not). A line
+  before them says to follow a note when it applies. `# Learned` opens, for every run that learns, notes or none, with
+  what the run is told of learning: that only what it answers when it is asked at the end is kept, never a file it
+  writes, so it tells the person it will keep what they ask it to remember, and that a secret is never kept. A run with
+  nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
+  as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
+  `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
+  settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
+  reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
+  (`learned`), is read as that server gave it.
+- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
+  secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
