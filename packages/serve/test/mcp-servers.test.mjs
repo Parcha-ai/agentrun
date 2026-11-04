@@ -41,6 +41,29 @@ async function started(t, data) {
   t.after(close);
   return { api: client(server.baseUrl, server.token), close };
 }
+/** A 2025-era MCP server answering tools/list in `pages` pages of `perPage` tools, each with `bytes` of description;
+ *  `asked` counts the pages requested. */
+async function paged(t, { pages, perPage, bytes = 10 }) {
+  const asked = { pages: 0 };
+  const url = await plain(t, async (req, res) => {
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const message = JSON.parse(body);
+    if (message.id === undefined) return void res.writeHead(202).end();
+    const reply = (result) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result })); };
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "big", version: "1" } });
+    if (message.method === "tools/list") {
+      asked.pages++;
+      const page = Number(message.params?.cursor ?? 0);
+      const tools = Array.from({ length: perPage }, (_, i) => ({ name: `t${page}_${i}`, description: "x".repeat(bytes), inputSchema: { type: "object" } }));
+      return reply({ tools, ...(page + 1 < pages ? { nextCursor: String(page + 1) } : {}) });
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }));
+  });
+  return { url: `${url}/mcp`, asked };
+}
 /** A loopback port nothing listens on: privileged, so no test process can bind it, and outside fetch's blocked ports.
  *  A port a test frees and then calls can be taken meanwhile by another file's fake, which then logs that call. */
 const CLOSED_PORT = 2;
@@ -119,6 +142,12 @@ test("preview tells a server that wants a credential (bearer or OAuth), one that
   assert.equal(redirected.body.error.fields[0].field, "url");
   assert.equal(redirected.body.error.fields[0].reason, "redirect");
   assert.deepEqual(target.log, [], "a redirect is never followed, so the credential never goes where it points");
+  const garbled = await plain(t, (req, res) => { res.writeHead(302, { location: `http://[not-a-host/${"p".repeat(300)}` }); res.end(); });
+  const unparsed = await preview(`${garbled}/mcp`);
+  assert.equal(unparsed.status, 422, JSON.stringify(unparsed.body));
+  assert.deepEqual([unparsed.body.error.fields[0].field, unparsed.body.error.fields[0].reason], ["url", "redirect"]);
+  assert.match(unparsed.body.error.fields[0].message, /http:\/\/\[not-a-host\/p+/, "names where it points, as sent");
+  assert.ok(!unparsed.body.error.fields[0].message.includes("p".repeat(201)), "cut to 200 characters");
   const leakyHop = await plain(t, (req, res) => { res.writeHead(302, { location: `https://elsewhere.example/mcp?token=${token}` }); res.end(); });
   const leakyRedirect = await preview(`${leakyHop}/mcp`, { type: "bearer", token });
   assert.equal(leakyRedirect.body.error.fields[0].reason, "redirect");
@@ -274,4 +303,41 @@ test("a saved-servers file that does not read is never written over: reads say s
     }
   }
   assert.deepEqual(server.log, [], "a PUT refused for the file contacts nothing");
+});
+
+test("a server's tool snapshot is capped at 500 tools and 1 MiB: past either, 422 in plain words, the listing stops early, and nothing is kept", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api, data } = await serve(t);
+  const many = await paged(t, { pages: 10, perPage: 100 });
+  const tooMany = await api("PUT", "/settings/mcp-servers/many", { url: many.url });
+  assert.equal(tooMany.status, 422, JSON.stringify(tooMany.body));
+  assert.equal(tooMany.body.error.fields[0].reason, "too_many_tools");
+  assert.match(tooMany.body.error.message, /more than 500 tools/);
+  assert.ok(many.asked.pages < 10, `stopped after ${many.asked.pages} of 10 pages`);
+  const big = await paged(t, { pages: 6, perPage: 3, bytes: 100_000 });
+  const tooBig = await api("POST", "/settings/mcp-servers/preview", { url: big.url });
+  assert.equal(tooBig.status, 422, JSON.stringify(tooBig.body).slice(0, 500));
+  assert.equal(tooBig.body.error.fields[0].reason, "tools_too_large");
+  assert.match(tooBig.body.error.message, /more than 1 MiB/);
+  assert.ok(big.asked.pages < 6, `stopped after ${big.asked.pages} of 6 pages`);
+  const fits = await paged(t, { pages: 5, perPage: 100 });
+  const kept = await api("PUT", "/settings/mcp-servers/fits", { url: fits.url });
+  assert.equal(kept.status, 200, "500 tools across pages fit");
+  assert.equal(kept.body.tools.length, 500);
+  assert.deepEqual((await api("GET", "/settings/mcp-servers")).body.servers.map((s) => s.name), ["fits"], "neither refused server was kept");
+  assert.ok(statSync(join(data, "mcp-servers.json")).size < 2 ** 20);
+});
+
+test("names an empty object would inherit are no saved servers: 404 on every route, and no file is written", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api, data } = await serve(t);
+  for (const name of ["constructor", "tostring"]) {
+    assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).status, 404, `GET ${name}`);
+    assert.equal((await api("DELETE", `/settings/mcp-servers/${name}`)).status, 404, `DELETE ${name}`);
+    assert.equal((await api("POST", `/settings/mcp-servers/${name}/refresh`)).status, 404, `refresh ${name}`);
+    assert.equal((await api("POST", "/settings/mcp-servers/preview", { name })).status, 404, `preview ${name}`);
+  }
+  assert.ok(!existsSync(join(data, "mcp-servers.json")), "nothing was written");
+  const headers = await api("POST", "/settings/mcp-servers/preview", { url: (await fake(t)).url, auth: { type: "headers", headers: { constructor: "a-value" } } });
+  assert.equal(headers.status, 200, `a header named constructor is no duplicate: ${JSON.stringify(headers.body)}`);
 });
