@@ -489,8 +489,6 @@ export async function readTurn(runDir: string): Promise<Turn> {
  *  read (learn/secrets.ts PRINT_MAX). */
 const linesShown = (text: string, shown: Shown) => text.split("\n").map(shown.text).join("\n");
 
-/** A note's file an index line links to. */
-const LINKED = /\]\(([^)\s]+)\)/;
 /** Every link's target on an index line: `<…>` or up to a space or `)`. */
 const LINKS = /\]\(\s*(?:<([^>\n]*)>|([^)\s]+))/g;
 
@@ -562,7 +560,8 @@ export function learnedOf(seed: Seed, options: LearnedOptions): string | undefin
   const blocks = notes.map((note) => wholeNote(note, shown));
   // Each part's bytes, and the blank line before it.
   const size = (text: string) => Buffer.byteLength(text) + 2;
-  const named = lines.every((entry) => active.has(LINKED.exec(entry)?.[1] ?? ""));
+  // Each line's first link, in any spelling (`./x.md` is x.md: linkedFiles, as servedIndex reads it), names an active note.
+  const named = lines.every((entry) => active.has(linkedFiles(entry)[0] ?? ""));
   if (named && blocks.reduce((sum, block) => sum + size(block), 0) <= budget) return [WHOLE_INTRO, ...blocks].join("\n\n");
   const shownIndex = lines.map(shown.text).join("\n");
   let left = budget - (shownIndex ? size(shownIndex) : 0);
