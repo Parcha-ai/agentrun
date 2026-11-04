@@ -91,6 +91,11 @@ const abortedCall = (entry: EntryLike) => {
   return Array.isArray(diagnostics) && diagnostics.some((diagnostic) => obj(diagnostic)?.code === "aborted");
 };
 
+/** Written on the root as a run's process opens to go on with a run its last process left unfinished: `after` is `crash`
+ *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
+ *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
+export const RUN_RESUMED = "agentrun.run_resumed";
+
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
   conversationId?: number;
@@ -318,6 +323,19 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
 
+/** The message of a result that is only the harness's diagnostics block (`<harness>`, then `[error] …` lines), as a
+ *  call that threw or named a tool its run does not offer answers: its first error's, else its first line's, without
+ *  the severity. Undefined for any other text, whose own first line says what happened. */
+function diagnosticOf(text: string): string | undefined {
+  const lines = text.trim().split("\n").map((line) => line.trim());
+  if (lines[0] !== "<harness>") return undefined;
+  const end = lines.indexOf("</harness>");
+  const inner = lines.slice(1, end < 0 ? undefined : end).filter(Boolean);
+  const said = inner.map((line) => /^\[(\w+)\]\s*(.*)$/.exec(line)).filter((match): match is RegExpExecArray => match !== null);
+  const first = said.find((match) => match[1] === "error") ?? said[0];
+  return first ? (first[2] ?? "") : (inner[0] ?? "");
+}
+
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const caps = { ...CAPS, ...options.caps };
@@ -368,7 +386,7 @@ function createProjector(options: TimelineOptions) {
   }
 
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
-  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? text)) || "no detail";
+  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
@@ -497,6 +515,10 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+    } else if (entry.kind === RUN_RESUMED) {
+      const data = obj(entry.data);
+      if (typeof data?.at === "number" && Math.abs(data.at) <= 8.64e15) stamp = data.at;
+      add(make("phase", conv, base, { summary: data?.after === "crash" ? "Resumed after a crash" : "Resumed after the server stopped" }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
       const [state, reason, tag] = [str(data?.state), str(data?.reason), str(data?.session)];

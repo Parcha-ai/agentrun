@@ -47,7 +47,7 @@ const bearer = (server) => ({ authorization: `Bearer ${server.token}` });
 async function upload(server, path, bytes, extra = {}) {
   const made = await server.api("POST", "/files", { path, size_bytes: bytes.length, ...extra });
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const sent = await put(server.port, `/v2${made.body.upload.url}`, bytes, { ...bearer(server), "content-type": "application/octet-stream" });
+  const sent = await put(server.port, made.body.upload.url, bytes, { ...bearer(server), "content-type": "application/octet-stream" });
   assert.equal(sent.status, 200, sent.text);
   return sent.json;
 }
@@ -73,9 +73,9 @@ test("reserve, then send the bytes: pending, then ready, binary-safe, kept 0600 
   const { file, upload: where } = made.body;
   assert.match(file.file_id, UUID7, "a UUIDv7, as the store mints agent and run ids");
   assert.deepEqual({ ...file, file_id: undefined, created_at: undefined }, { file_id: undefined, path: "data/blob.bin", size_bytes: bytes.length, content_type: "application/x-test", sha256: null, status: "pending", created_at: undefined, expires_at: null });
-  assert.deepEqual([where.method, where.url], ["PUT", `/files/${file.file_id}`], "relative to the server URL, /v2");
+  assert.deepEqual([where.method, where.url], ["PUT", `/v2/files/${file.file_id}`], "a path from the server's root");
   assert.ok(Date.parse(where.expires_at) > Date.parse(file.created_at));
-  const sent = await put(server.port, `/v2${where.url}`, [bytes.subarray(0, 1000), bytes.subarray(1000)], { ...bearer(server), "content-type": "application/octet-stream" });
+  const sent = await put(server.port, where.url, [bytes.subarray(0, 1000), bytes.subarray(1000)], { ...bearer(server), "content-type": "application/octet-stream" });
   assert.equal(sent.status, 200, sent.text);
   check("File", sent.json);
   assert.deepEqual(sent.json, { ...file, sha256: sha(bytes), status: "ready" });
@@ -158,7 +158,8 @@ test("a PUT is checked against its reservation: over the limit 413, a wrong leng
   // No such file.
   for (const id of ["no-such-file", "0190a0a0-0000-7000-8000-000000000000"]) assert.deepEqual(field(await put(port, `/v2/files/${id}`, hello, bearer(server))), [404, "not_found", undefined]);
   assert.equal((await put(port, at, hello)).status, 401, "a PUT needs the credential");
-  assert.equal((await api("GET", `/files/${made.file_id}`)).status, 405);
+  const kept = await api("GET", `/files/${made.file_id}`);
+  assert.deepEqual([kept.status, kept.body.status], [200, "ready"], "GET reads the file's record");
 });
 
 test("a run's file_ids are copied into its work/inputs/ before it starts, folders kept, never linked, and read through its files", async (t) => {
@@ -298,7 +299,7 @@ test("upload.expires_at is advisory: the answer carries it, as the contract requ
   // A day past the time the answer gave: nothing refuses the bytes.
   mock.timers.enable({ apis: ["Date"], now: Date.parse(where.expires_at) + 86_400_000 });
   t.after(() => mock.timers.reset());
-  const late = await put(server.port, `/v2${where.url}`, Buffer.from("hello"), bearer(server));
+  const late = await put(server.port, where.url, Buffer.from("hello"), bearer(server));
   mock.timers.reset();
   assert.deepEqual([late.status, late.json?.status], [200, "ready"], late.text);
 });
@@ -393,13 +394,14 @@ test("the console's session sends a file's bytes: a PUT to a route marked raw ta
   const pdf = await reserve("doc.pdf", 4);
   assert.equal((await put(server.port, `/v2/files/${pdf.file_id}`, Buffer.from("%PDF"), { cookie, "content-type": "application/pdf", origin: page })).status, 200);
   // A JSON route keeps the JSON rule, a POST and every other PUT included.
-  assert.equal((await call(server.port, { method: "POST", path: "/v2/files", headers: { cookie, origin: page, "content-type": "text/plain" }, body: JSON.stringify({ path: "x.txt", size_bytes: 1 }) })).status, 401, "a non-JSON POST from the page is still no credential");
+  assert.equal((await call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie, origin: page, "content-type": "text/plain" }, body: JSON.stringify(agent("a0")) })).status, 401, "a non-JSON POST to a route not marked raw is still no credential");
   assert.equal((await call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie, origin: page, "content-type": "application/json" }, body: agent("a1") })).status, 201);
   assert.equal((await call(server.port, { method: "PUT", path: "/v2/agents/a1/definition", headers: { cookie, origin: page, "content-type": "text/plain" }, body: JSON.stringify(agent("a1")) })).status, 401, "another PUT takes JSON only");
   // The token is unchanged: any content type, or none, and no Origin.
   const other = (await server.api("POST", "/files", { path: "by-token.bin", size_bytes: 3 })).body.file;
   assert.equal((await put(server.port, `/v2/files/${other.file_id}`, Buffer.from("abc"), bearer(server))).status, 200);
   // The mark: on uploadFile alone, and only a PUT may carry it.
-  assert.deepEqual(ROUTES.filter((r) => r.raw).map((r) => `${r.method} ${r.name}`), ["PUT uploadFile"]);
-  assert.deepEqual([takesBytes("PUT", "/files/x"), takesBytes("POST", "/files/x"), takesBytes("POST", "/files"), takesBytes("PUT", "/agents/x/home"), takesBytes("PUT", "/agents/x/definition")], [true, false, false, false, false]);
+  assert.deepEqual(ROUTES.filter((r) => r.raw).map((r) => `${r.method} ${r.name}`), ["POST createFile", "PUT uploadFile"]);
+  assert.ok(ROUTES.filter((r) => r.raw).every((r) => r.method === "PUT" || r.method === "POST"), "only a PUT or a POST carries the mark");
+  assert.deepEqual([takesBytes("PUT", "/files/x"), takesBytes("POST", "/files/x"), takesBytes("POST", "/files"), takesBytes("GET", "/files"), takesBytes("DELETE", "/files/x"), takesBytes("PUT", "/agents/x/home"), takesBytes("PUT", "/agents/x/definition"), takesBytes("POST", "/agents")], [true, false, true, false, false, false, false, false]);
 });

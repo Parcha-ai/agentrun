@@ -298,3 +298,14 @@ describe("sandbox-only tools", () => {
     expect(sandboxReason(offers[0], undefined)).toBeUndefined();
   });
 });
+
+// Where an agent runs: a new agent's place goes in its first revision, and a tool's reason from the server is kept.
+describe("places in the definition", () => {
+  it("createBody carries the place the form picked, and none when it picked none", () => {
+    expect(createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: ["read", "bash"], place: { mode: "sandbox", box: "docker" } }).definition.place).toEqual({ mode: "sandbox", box: "docker" });
+    expect(createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] }).definition).not.toHaveProperty("place");
+  });
+  it("toolOffers keeps a tool's reason, for a tool the server can't run with nothing missing", () => {
+    expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }]);
+  });
+});

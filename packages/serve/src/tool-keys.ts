@@ -7,7 +7,9 @@
 // value, when it is asked for. One that does not open is never a crash and never a clear fallback: it reads as not
 // set, to be entered again, and the log says why once, naming the file, never a value. The server reads a saved value by
 // name as it reads a launcher's secret (secrets.ts' `secret`), the launcher's winning: a run gets it over its pipe (a
-// decision key on its decision descriptor) at its launch, and capabilities and checks see it once it is saved.
+// decision key on its decision descriptor) at its launch, and capabilities and checks see it once it is saved. A key is
+// checked against its provider before it is kept (key-check.ts): one the provider refuses is never kept, and the file
+// keeps, beside the sealed values, whether each key was accepted or kept not checked, and why (never any of a value).
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +18,7 @@ import { decisionsOf } from "./decisions.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { HARNESSES } from "./harness.js";
+import { checkKey, type KeyCheck } from "./key-check.js";
 import { toolsView } from "./tools.js";
 import { isObject } from "./validate.js";
 
@@ -67,6 +70,17 @@ export const keyOf = (name: string): string | undefined => TOOL_KEYS.find((row) 
 export const UNREADABLE = ["seal_key_missing", "seal_key_changed", "file_unreadable"] as const;
 type Unreadable = (typeof UNREADABLE)[number];
 type Opened = { value: string } | { unreadable: Unreadable };
+/** The file's entries: each field's sealed value by name, and each key's check by id. */
+type Kept = { fields: Record<string, unknown>; checks: Record<string, KeyCheck> };
+
+/** The check a key kept before this server checked keys reads as: none was made. */
+const UNCHECKED: KeyCheck = { state: "not_checked", reason: "Saved before this server checked keys; save it again to check it" };
+/** A check as the file keeps it, else undefined. */
+const keptCheck = (entry: unknown): KeyCheck | undefined =>
+  !isObject(entry) ? undefined
+  : entry.state === "accepted" && typeof entry.at === "string" ? { state: "accepted", at: entry.at }
+  : entry.state === "not_checked" && typeof entry.reason === "string" ? { state: "not_checked", reason: entry.reason, ...(typeof entry.at === "string" ? { at: entry.at } : {}) }
+  : undefined;
 
 /** The seal key `text` gives: 32 bytes in base64 (or base64url), else none. */
 export function sealKeyOf(text: string | undefined): Buffer | undefined {
@@ -79,7 +93,7 @@ const aad = (name: string) => `${FORMAT}|${name}`;
 export class ToolKeys {
   readonly file: string;
   private readonly key: Buffer | undefined;
-  private readonly check: string | undefined;
+  private readonly sealCheck: string | undefined;
   private said = "";
 
   /** `env` is what the server is started with (withSecrets' `"own"`, never a saved key, or each would read as the
@@ -87,24 +101,30 @@ export class ToolKeys {
   constructor(data: string, private readonly env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string>) => void) {
     this.file = join(data, TOOL_KEYS_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
-    this.check = this.key && createHmac("sha256", this.key).update(`agentrun-serve ${FORMAT} key check`).digest("base64url");
+    this.sealCheck = this.key && createHmac("sha256", this.key).update(`agentrun-serve ${FORMAT} key check`).digest("base64url");
     if (env[SEAL_KEY_ENV] !== undefined && !this.key) say({ condition: "seal_key_invalid", name: SEAL_KEY_ENV });
   }
 
-  /** The file's entries by field name, {} with no file; "unreadable" when it does not read as this format. */
-  private kept(): Record<string, unknown> | "unreadable" {
+  /** The file's entries, none with no file; "unreadable" when it does not read as this format. A file from before checks
+   *  has none. */
+  private kept(): Kept | "unreadable" {
     try {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-      return isObject(doc) && doc.v === 1 && isObject(doc.fields) ? { ...doc.fields } : "unreadable";
+      if (!isObject(doc) || doc.v !== 1 || !isObject(doc.fields)) return "unreadable";
+      const checks = Object.entries(isObject(doc.checks) ? doc.checks : {}).flatMap(([id, entry]) => {
+        const check = keptCheck(entry);
+        return check ? [[id, check] as const] : [];
+      });
+      return { fields: { ...doc.fields }, checks: Object.fromEntries(checks) };
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : "unreadable";
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? { fields: {}, checks: {} } : "unreadable";
     }
   }
 
   private open(name: string, entry: unknown): Opened {
     if (!this.key) return { unreadable: "seal_key_missing" };
     if (!isObject(entry) || typeof entry.sealed !== "string" || typeof entry.check !== "string") return { unreadable: "file_unreadable" };
-    if (entry.check !== this.check) return { unreadable: "seal_key_changed" };
+    if (entry.check !== this.sealCheck) return { unreadable: "seal_key_changed" };
     try {
       return { value: unseal(this.key, Buffer.from(entry.sealed, "base64"), aad(name)).toString("utf8") };
     } catch {
@@ -117,7 +137,7 @@ export class ToolKeys {
   value(name: string): string | undefined {
     if (!FIELDS.includes(name)) return undefined;
     const kept = this.kept();
-    const opened = kept !== "unreadable" && kept[name] !== undefined ? this.open(name, kept[name]) : undefined;
+    const opened = kept !== "unreadable" && kept.fields[name] !== undefined ? this.open(name, kept.fields[name]) : undefined;
     return opened && "value" in opened ? opened.value : undefined;
   }
 
@@ -130,22 +150,24 @@ export class ToolKeys {
   }
 
   /** GET: each key's fields, whether set and where from (never a value), what it unlocks of what capabilities shows
-   *  here (a model key: the harnesses `offers` says this server runs), and what to enter again, with why. */
+   *  here (a model key: the harnesses `offers` says this server runs), its check when its key (its first field) is
+   *  stored here (null otherwise: the server's own is not checked here), and what to enter again, with why. */
   view(offers: readonly { id: string; available: boolean }[] = []) {
     const kept = this.kept();
     const again: { name: string; why: Unreadable }[] = [];
     const tools = toolsView(this.env);
     const providers = decisionsOf(this.env);
-    const keys = TOOL_KEYS.map((row) => ({
-      id: row.id, label: row.label, ...rowUnlocks(row, tools, providers, offers),
-      fields: row.fields.map((name) => {
+    const keys = TOOL_KEYS.map((row) => {
+      const fields = row.fields.map((name) => {
         if (this.env[name]) return { name, set: true, source: "server" as const };
-        const opened = kept !== "unreadable" && kept[name] !== undefined ? this.open(name, kept[name]) : undefined;
+        const opened = kept !== "unreadable" && kept.fields[name] !== undefined ? this.open(name, kept.fields[name]) : undefined;
         if (opened && "value" in opened) return { name, set: true, source: "stored" as const };
         if (opened) again.push({ name, why: opened.unreadable });
         return { name, set: false, source: null, ...(opened ? { stored_unreadable: true as const } : {}) };
-      }),
-    }));
+      });
+      const check = fields[0].source === "stored" && kept !== "unreadable" ? (kept.checks[row.id] ?? UNCHECKED) : null;
+      return { id: row.id, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, check };
+    });
     // A file that does not read as a whole names no field: which it held is unknown.
     const reason = kept === "unreadable" ? "file_unreadable" : UNREADABLE.find((why) => again.some((field) => field.why === why));
     const reenter = reason ? { reason, fields: again.map((field) => field.name) } : null;
@@ -155,13 +177,40 @@ export class ToolKeys {
     return { keys, reenter };
   }
 
-  /** PUT: each of `body.values` sealed under the seal key; the key's other fields stay as they are. */
-  save(id: string, body: Record<string, unknown>): void {
+  /** A PUT's check, before save(): the key it sends (its row's first field; Browserbase's project id is no key) checked
+   *  against its provider (key-check.ts), the fetch `fetchFor` gives for the row (undefined: none, so not checked), its
+   *  wait cut by `stop`. The body is held to what save() takes first, so a save that would be refused sends nothing. A
+   *  key the provider refuses is 422 in its words, and nothing is kept; undefined when the body sends no key: the row's
+   *  check stays as it was. */
+  async check(id: string, body: Record<string, unknown>, fetchFor: (id: string) => Promise<typeof fetch | undefined>, stop?: AbortSignal): Promise<KeyCheck | undefined> {
+    const { row, values } = this.admit(id, body);
+    const name = row.fields[0];
+    if (values[name] === undefined) return undefined;
+    const outcome = await checkKey(row, values[name] as string, this.env, await fetchFor(row.id), undefined, stop);
+    if (outcome.state === "refused") throw invalid([{ field: `values.${name}`, reason: "refused_by_provider", message: outcome.message }]);
+    return outcome;
+  }
+
+  /** PUT: each of `body.values` sealed under the seal key, and `check` (check()'s) kept for the key when given; the key's
+   *  other fields stay as they are. A key saved with no check (a caller other than the route) drops the one it had. */
+  save(id: string, body: Record<string, unknown>, check?: KeyCheck): void {
+    const { row, values } = this.admit(id, body);
+    const kept = this.kept();
+    // A file that does not read is replaced: what it held opens nowhere.
+    const { fields, checks }: Kept = kept === "unreadable" ? { fields: {}, checks: {} } : kept;
+    for (const [name, value] of Object.entries(values)) fields[name] = { sealed: seal(this.key!, Buffer.from(value as string, "utf8"), aad(name)).toString("base64"), check: this.sealCheck };
+    if (values[row.fields[0]] !== undefined) delete checks[row.id];
+    if (check) checks[row.id] = check;
+    this.write(fields, checks);
+  }
+
+  /** What a PUT may save: the key's row and the body's values, or 422 (the body), 409 (a field the server's, or no seal
+   *  key). No message holds a value, or any part of one. */
+  private admit(id: string, body: Record<string, unknown>) {
     const row = this.row(id);
     const issues: InputIssue[] = Object.keys(body).filter((key) => key !== "values").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
     const values = isObject(body.values) ? body.values : {};
     if (!Object.keys(values).length) issues.push({ field: "values", reason: body.values === undefined ? "missing" : "wrong_type", message: `values holds one or more of ${row.fields.join(", ")}, by name` });
-    // No message holds a value, or any part of one.
     for (const [name, value] of Object.entries(values)) {
       const field = `values.${name}`;
       if (!(row.fields as readonly string[]).includes(name)) issues.push({ field, reason: "not_allowed", message: `The key ${row.id} has the fields ${row.fields.join(", ")}.` });
@@ -172,22 +221,20 @@ export class ToolKeys {
     if (issues.length) throw invalid(issues);
     this.notServers(Object.keys(values));
     if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no tool key: it never keeps one in the clear.`);
-    const kept = this.kept();
-    // A file that does not read is replaced: what it held opens nowhere.
-    const fields = kept === "unreadable" ? {} : kept;
-    for (const [name, value] of Object.entries(values)) fields[name] = { sealed: seal(this.key, Buffer.from(value as string, "utf8"), aad(name)).toString("base64"), check: this.check };
-    this.write(fields);
+    return { row, values };
   }
 
-  /** DELETE: the key's stored fields gone. Refused only when the server sets every field of it: none is the page's. */
+  /** DELETE: the key's stored fields gone, and its check. Refused only when the server sets every field of it: none is
+   *  the page's. */
   remove(id: string): void {
     const row = this.row(id);
     if (row.fields.every((name) => this.env[name])) this.notServers(row.fields);
     const kept = this.kept();
-    if (kept !== "unreadable" && !row.fields.some((name) => name in kept)) return;
-    const fields = kept === "unreadable" ? {} : kept;
+    if (kept !== "unreadable" && !row.fields.some((name) => name in kept.fields)) return;
+    const { fields, checks }: Kept = kept === "unreadable" ? { fields: {}, checks: {} } : kept;
     for (const name of row.fields) delete fields[name];
-    this.write(fields);
+    delete checks[row.id];
+    this.write(fields, checks);
   }
 
   private row(id: string) {
@@ -203,9 +250,9 @@ export class ToolKeys {
     if (held.length) throw new ApiError("key_set_by_server", `This server is started with ${held.join(" and ")}: change it where the server is started.`, { details: { fields: held } });
   }
 
-  private write(fields: Record<string, unknown>): void {
+  private write(fields: Record<string, unknown>, checks: Record<string, KeyCheck>): void {
     // On disk, the file and then its directory, before the 204: a crash after it neither loses a saved key nor brings
     // back a forgotten one.
-    writeDurableSync(this.file, `${JSON.stringify({ v: 1, fields }, null, 2)}\n`);
+    writeDurableSync(this.file, `${JSON.stringify({ v: 1, fields, checks }, null, 2)}\n`);
   }
 }
