@@ -59,6 +59,8 @@ export type ImportOptions = {
   /** Stops the import between two session files, planned or taken (a server shutting down): what is written stays, and
    *  the next import goes on from there. */
   signal?: AbortSignal;
+  /** Each key secretlint finds, as it finds it: for what the CLI prints, cut with the keys the import cuts. */
+  onKeys?: (keys: readonly string[]) => void;
   /** Read each session file through secretlint for the cut (default). Setup's count sets it false: a count keeps no
    *  transcript, so it reads none, and a server's start never scans a whole history to say how many sessions it has. */
   keys?: boolean;
@@ -202,7 +204,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal, keys: scan = true }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal, keys: scan = true, onKeys }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
   // import's run then goes by the id as kept.
   const idOf = keptId([env, stored ?? {}]);
@@ -298,7 +300,8 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   const counting = secretCut(env, SECRET_NAMES);
   // Every key the import would cut, found first, as the import finds it before it writes anything: then the counts.
   const heldBy = store ? importedIn(store) : undefined;
-  await findKeys(plan, counting.add, counting.text, (listed) => heldBy?.get(`${listed.source}:${listed.id}`) !== undefined, signal);
+  const foundKeys = (keys: readonly string[]) => (counting.add(keys), onKeys?.(keys));
+  await findKeys(plan, foundKeys, counting.text, (listed) => heldBy?.get(`${listed.source}:${listed.id}`) !== undefined, signal);
   // Measured in the import's own order, a record or response counted once across files, each session with its
   // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
   for (const project of plan.projects) {
@@ -843,7 +846,10 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. A run an earlier import made whose
  *  transcript never landed (the process stopped between the two) has it written now. */
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
-  const { text, json, add } = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
+  const cut = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
+  const { text, json } = cut;
+  // Each key found is the import's to cut, and the CLI's to cut out of what it prints.
+  const add = (keys: readonly string[]) => (cut.add(keys), options.onKeys?.(keys));
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
@@ -1047,8 +1053,10 @@ export async function importCommand(
       env,
       stored: keys.values(),
     };
-    // What it prints is cut with the saved keys too, as what it keeps is.
+    // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
+    // keeps is.
     printed.add(Object.values(options.stored ?? {}));
+    options.onKeys = (keys) => printed.add(keys);
     if (values["dry-run"]) {
       // A dry run writes nothing, not even a store: one there already is only read.
       const reader = existsSync(join(dir, STORE_FILE)) ? openStoreReader(dir) : undefined;

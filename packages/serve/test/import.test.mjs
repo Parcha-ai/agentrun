@@ -547,7 +547,9 @@ test("a key found in a project's sessions is cut from its instructions too, wher
   mkdirSync(site, { recursive: true });
   const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
   const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
-  const secret = pick(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+");
+  // Its last character a letter or a digit: secretlint's AWS rule ends the 40 characters at a word boundary, so a secret
+  // that ends in "/" or "+" is one it does not find (a known miss, pinned in its own test).
+  const secret = `${pick(39, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+")}${pick(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")}`;
   // Bare in the project's instructions, no name or id beside it: no rule finds it there.
   writeFileSync(join(site, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
   // Beside its name in a session: secretlint's AWS rule finds it.
@@ -568,7 +570,9 @@ test("a key found in one project's sessions is cut from another project's instru
   for (const dir of [docs, infra]) mkdirSync(dir, { recursive: true });
   const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
   const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
-  const secret = pick(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+");
+  // Its last character a letter or a digit: secretlint's AWS rule ends the 40 characters at a word boundary, so a secret
+  // that ends in "/" or "+" is one it does not find (a known miss, pinned in its own test).
+  const secret = `${pick(39, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+")}${pick(1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")}`;
   // Bare in the first project's instructions; beside its name only in the second project's session.
   writeFileSync(join(docs, "CLAUDE.md"), `Deploy with ${secret} on Fridays.\n`);
   claudeSession(at, docs, 1, { prompt: "Tidy the docs." });
@@ -579,6 +583,37 @@ test("a key found in one project's sessions is cut from another project's instru
   const reader = openStoreReader(data);
   t.after(() => reader.close());
   assert.match(reader.readAgent(agentIdOf(docs)).revisions.find((r) => r.current).body.instructions, /Deploy with \[redacted\] on Fridays\./);
+});
+
+test("what the CLI prints is cut with every key the import finds: a secret beside its name in one project's session is cut where another project's folder name holds it bare", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const pick = (n, set) => Array.from(randomBytes(n), (b) => set[b % set.length]).join("");
+  const id = `${["AK", "IA"].join("")}${pick(16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")}`;
+  const secret = pick(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+  // Bare in the first project's folder name (printed with its path); beside its name only in the second project's session.
+  const [docs, infra] = [join(at, "code", `a-${secret}`), join(at, "code", "b-infra")];
+  for (const dir of [docs, infra]) mkdirSync(dir, { recursive: true });
+  claudeSession(at, docs, 1, { prompt: "Tidy the docs." });
+  claudeSession(at, infra, 2, { prompt: "Show the credentials.", output: `AWS_ACCESS_KEY_ID=${id}\nAWS_SECRET_ACCESS_KEY=${secret}` });
+  const data = join(root, "agents");
+  for (const args of [["--dry-run"], []]) {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    assert.ok(!lines.some((line) => line.includes(secret)), `${args.join(" ") || "import"}: ${lines.filter((line) => line.includes(secret)).join("\n")}`);
+    assert.ok(lines.some((line) => line.includes("a-[redacted]")), lines.join("\n"));
+  }
+});
+
+test("a known miss of secretlint's AWS rule, pinned: an AWS secret whose last character is not a letter or a digit is not found", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  const body = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbC";
+  // secretlint's AWS rule (@secretlint/secretlint-rule-aws, reportAWSSecretAccessKey, in the recommended preset) matches
+  // `([A-Za-z0-9/\+=]{40})${QUOTE}\b`: the trailing \b needs a word character last, so a secret that ends in "/", "+"
+  // or "=" is not found. A later preset that fixes the rule turns this test red: then drop the test and the known miss
+  // in the PR's description.
+  for (const last of ["/", "+", "="]) assert.deepEqual(await secretsIn(`AWS_SECRET_ACCESS_KEY=${body}${last}\nnext`), [], last);
+  assert.deepEqual(await secretsIn(`AWS_SECRET_ACCESS_KEY=${body}a\nnext`), [`${body}a`]);
 });
 
 test("an import's plan reads no subagent file through secretlint: a subagent of a session the import leaves out is never read", async (t) => {
