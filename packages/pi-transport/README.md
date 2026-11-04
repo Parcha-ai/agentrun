@@ -95,7 +95,8 @@ choose the size by naming a snapshot. A box that outlives `maxLifetimeMs` is end
 at about 65 to 70 s for a one-minute lifetime). Daytona's label index trails a create and answers each query shape on
 its own schedule, so `list` always asks Daytona for the `pi-transport` label alone and filters the other labels itself,
 and `create` returns only once that listing shows the box. A listing therefore pages through every box this package
-made in the organization. The default workspace is `/tmp/workspace`. Programs run through the toolbox with their input
+made in the organization. The default workspace is `/tmp/workspace`; one the sandbox's user may not create (below `/run`) is
+made with `sudo -n` and given to that user, and a snapshot without a passwordless sudo fails the create naming the path. Programs run through the toolbox with their input
 and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default sandbox is a container on the host
 kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
 snapshot could not be created in the test organization), so treat it as untested.
@@ -166,9 +167,11 @@ absent is `false`; `network` absent is unknown (a caller that needs `none` or an
 unknown, not none (a caller that must be sure no port is exposed must refuse; `noPortExposed` is true only for a list that is
 empty); `ptraceScope` absent is unknown (do not assume 1 or more); `diskGb` and `startedAt` absent are unknown (a receipt falls back to
 the time the create call answered). Only Modal reports all of them and can restrict a network to an allowlist, expose ports or give
-`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest; local reports `network: "open"`
-and `startedAt`, Daytona `diskGb` and `startedAt`, the Archil exec box `startedAt`, and the three refuse everything but `open` as
-`unsupported`.
+`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest. Daytona takes `network: "none"`
+(`networkBlockAll`) and reports `network: "none"` only once the sandbox's own read says Daytona blocked it; a sandbox it did not block
+(an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. Daytona also
+reports `diskGb` and `startedAt`. Local reports `network: "open"` and `startedAt`, the Archil exec box `startedAt`, and those two
+and Daytona refuse every other network, ports and capabilities as `unsupported`.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`

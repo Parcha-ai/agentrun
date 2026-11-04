@@ -103,6 +103,13 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
 }
 
+/** The requests the owner's password session sends from the page (a write only from this server's own origin, with a
+ *  JSON body), never under the cookie accounts-off mints from the token. */
+const ownerSessions = new WeakSet<IncomingMessage>();
+/** Whether `req` came from the owner's page under their password session (answerPage). A token, whoever holds it, never
+ *  did. */
+export const byOwnerSession = (req: IncomingMessage): boolean => ownerSessions.has(req);
+
 /**
  * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/") and the store's /api/*, and
  * returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
@@ -115,7 +122,12 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
     const bytes = (req.method === "PUT" || req.method === "POST") && server.takesBytes?.(req.method, raw.slice(3)) === true;
-    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) req.headers.authorization = `Bearer ${server.token}`;
+    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && (isJson(req) || bytes)))) {
+      req.headers.authorization = `Bearer ${server.token}`;
+      // The owner's password session (accounts on), never a cookie a token mints: what approving a note asks for, and
+      // what capabilities read to say whether this caller may (byOwnerSession).
+      if (server.owner) ownerSessions.add(req);
+    }
     return false;
   }
   if (raw !== "/" && !raw.startsWith("/assets/") && !raw.startsWith("/api/") && !MOVED.has(raw)) return false;

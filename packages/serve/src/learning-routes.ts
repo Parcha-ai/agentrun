@@ -18,10 +18,10 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire, supersede } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import { agentFolder, changedOrder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
@@ -36,13 +36,15 @@ const LOG_PAGE = 20;
 const PAGE_MAX = 200;
 /** The trailer of a person's commit, as `Run-Id` is a run's merge's. */
 const BY_USER = "Changed-By: user";
+/** The trailer an approval's commit carries beside BY_USER: it came from the owner's password session in the console. */
+const APPROVED_VIA = "Approved-Via: console";
 /** What a retire adds to a note, on top of the note cap a retired note may fill (learn/notes.ts retire). */
 const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string };
-type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
+type Change = { by: { run: string } | { user: true; via?: string }; commit: string; at: string; reason: string; files: string[] };
 /** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
 type Note = LearnedNote & { text: string; oid: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
@@ -139,7 +141,7 @@ const heldAt = async (home: string, repo: string, sha: string, file: string) =>
  *  trailers' lines; the folder's first commit, the host's, is neither. Every commit on main is the host's, so a line
  *  that matches is a trailer. */
 const CHANGES = ["--first-parent", "--extended-regexp", "--grep=^Run-Id: ", "--grep=^Changed-By: user$"];
-const CHANGE_FORMAT = "%x1e%H%x1f%cI%x1f%s%x1f%b%x1f%(trailers:key=Run-Id,valueonly,separator=%x2C)%x1f%(trailers:key=Changed-By,valueonly,separator=%x2C)";
+const CHANGE_FORMAT = "%x1e%H%x1f%cI%x1f%s%x1f%b%x1f%(trailers:key=Run-Id,valueonly,separator=%x2C)%x1f%(trailers:key=Changed-By,valueonly,separator=%x2C)%x1f%(trailers:key=Approved-Via,valueonly,separator=%x2C)";
 
 /** `git log -z --name-only`'s records, each its header (as the format wrote it) and the files it changed. */
 const recordsOf = (out: Buffer) => out.toString("utf8").split("\x1e").slice(1).map((record) => {
@@ -153,9 +155,10 @@ const recordsOf = (out: Buffer) => out.toString("utf8").split("\x1e").slice(1).m
 async function changesFrom(home: string, repo: string, sha: string, offset: number, limit: number): Promise<Change[]> {
   const log: Change[] = [];
   for (const { head, files } of recordsOf(await git(home, repo, ["log", ...CHANGES, `--skip=${offset}`, `--max-count=${limit}`, "-z", "--name-only", `--format=${CHANGE_FORMAT}`, sha]))) {
-    const [commit = "", at = "", subject = "", body = "", run = "", by = ""] = head.split("\x1f");
+    const [commit = "", at = "", subject = "", body = "", run = "", by = "", via = ""] = head.split("\x1f");
     const runId = run.split(",")[0]!.trim();
-    const who = runId ? { run: runId } : by.trim() === "user" ? { user: true as const } : undefined;
+    const approvedVia = via.split(",")[0]!.trim();
+    const who = runId ? { run: runId } : by.trim() === "user" ? { user: true as const, ...(approvedVia ? { via: approvedVia } : {}) } : undefined;
     if (!who || !commit || !Date.parse(at)) continue;
     const paragraphs = body.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
     log.push({ by: who, commit, at: new Date(at).toISOString(), reason: paragraphs.slice(0, -1).join(" ") || subject.replace(/^learning: /, ""), files });
@@ -186,9 +189,7 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
   const key = `${repo}\0${sha}`;
   const known = parsedAt.get(key);
   if (known) return known;
-  const [{ index, notes }, walked] = await Promise.all([readAt(home, repo, sha), git(home, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e", sha])]);
-  const touched = new Map<string, number>();
-  recordsOf(walked).forEach(({ files }, i) => files.forEach((file) => touched.has(file) || touched.set(file, i)));
+  const [{ index, notes }, touched] = await Promise.all([readAt(home, repo, sha), changedOrder(home, repo, sha)]);
   const rank = (note: LearnedNote) => (note.status === "active" ? 0 : 1);
   const parsed = { index, notes: [...notes.values()].sort((a, b) => rank(a) - rank(b) || (touched.get(a.file) ?? Infinity) - (touched.get(b.file) ?? Infinity) || (a.file < b.file ? -1 : 1)) };
   parsedAt.set(key, parsed, 2 * parsed.notes.reduce((size, note) => size + note.text.length + 256, index.length));
@@ -321,14 +322,15 @@ function conditionOf(ifMatch: string | undefined, ifNoneMatch: string | undefine
   return { ...(match?.length ? { match } : {}), absent };
 }
 
-/** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text) or POST .../retire (no body), as a person:
- *  the precondition, then the checks (a retire's, the note's format alone: never its secrets), then one commit on main
- *  in the agent's queue, on the folder agentFolder checked: the note, and MEMORY.md rebuilt from main's notes with it,
- *  its message `learning: <edited|created|retired> by a person: <file>` and a `Changed-By: user` trailer, main moved
+/** PUT /agents/{id}/learning/files/{file} (`body`, the note's whole text), or POST .../retire or .../approve (`approve`;
+ *  no body), as a person: the precondition, then the checks (a retire's and an approve's, the note's format alone: never
+ *  its secrets), then one commit on main in the agent's queue, on the folder agentFolder checked: the note, and MEMORY.md
+ *  rebuilt from main's notes with it, its message `learning: <edited|created|retired|approved> by a person: <file>` and
+ *  a `Changed-By: user` trailer (and `Approved-Via: console` on an approval), main moved
  *  only from the commit it was made on (once more on a main that moved meanwhile), then the checked-out files. A note
  *  the checks refuse is never written to git. A retire of a note that is not active, and an edit that changes nothing,
  *  commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[] }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, true);
   const condition = conditionOf(input.ifMatch, input.ifNoneMatch, input.body !== undefined);
   let given: string | undefined;
@@ -366,8 +368,18 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         const now = parseNoteFile(file, given);
         if (!Array.isArray(was) && was.status === "pending" && !Array.isArray(now) && now.status !== "pending") throw refused([printable({ rule: "status", path: file, detail: "it waits for its owner's OK: an edit keeps status: pending, only an approval makes it active, and a retire takes it out" }, input.refuse)]);
       }
+      // Beside the note itself: what an approve marks of the notes the approved one supersedes.
+      const also = new Map<string, string>();
       const notes = main ? (await readAt(home, repo, main)).notes : new Map<string, Note>();
-      if (text === undefined) {
+      if (text === undefined && input.approve) {
+        const note = parseNoteFile(file, current!.text);
+        if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
+        if (note.status !== "pending") throw new ApiError("bad_request", `The note is not waiting for an OK: it is ${note.status}.`);
+        // Approved, it is active: in the index, and every later run reads it. What it supersedes, and is active still, is
+        // superseded now, as a run's merge marks it.
+        text = approve(current!.text);
+        for (const old of note.supersedes) if (notes.get(old)?.status === "active") also.set(old, supersede(notes.get(old)!.text, file));
+      } else if (text === undefined) {
         const note = parseNoteFile(file, current!.text);
         if (Array.isArray(note)) throw refused(note.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
         // A pending note is retired too: a person who will never approve it takes it out of the folder's waiting list.
@@ -382,11 +394,11 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status line a retire adds` }, input.refuse)]);
       }
       if (current && text === current.text) return { status: 200, file, text, etag: etagOf(current.oid) };
-      const after = [...[...notes.values()].filter((note) => note.file !== file), parseNoteFile(file, text) as LearnedNote];
+      const after = [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];
       const lines = after.filter((note) => note.status === "active").length;
       if (lines > INDEX_LINES) throw refused([{ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so retire a note first` }]);
       const parent = main ?? (await openAgentRepo(home, repo, check));
-      const subject = `learning: ${given === undefined ? "retired" : current ? "edited" : "created"} by a person: ${file}`;
+      const subject = `learning: ${input.approve ? "approved" : given === undefined ? "retired" : current ? "edited" : "created"} by a person: ${file}`;
       const env = { GIT_INDEX_FILE: join(repo, ".git", "person.index") };
       let commit: string;
       let oid: string;
@@ -395,9 +407,13 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
         await git(home, repo, ["read-tree", parent], "", env);
         oid = line(await git(home, repo, ["hash-object", "-w", "--no-filters", "--stdin"], text));
         const index = line(await git(home, repo, ["hash-object", "-w", "--no-filters", "--stdin"], buildIndex(after)));
-        await git(home, repo, ["update-index", "-z", "--index-info"], `100644 ${oid}\t${file}\x00100644 ${index}\t${INDEX_FILE}\x00`, env);
+        let entries = `100644 ${oid}\t${file}\x00100644 ${index}\t${INDEX_FILE}\x00`;
+        for (const [old, marked] of also) entries += `100644 ${line(await git(home, repo, ["hash-object", "-w", "--no-filters", "--stdin"], marked))}\t${old}\x00`;
+        await git(home, repo, ["update-index", "-z", "--index-info"], entries, env);
         const tree = line(await git(home, repo, ["write-tree"], "", env));
-        commit = line(await git(home, repo, ["commit-tree", tree, "-p", parent, "-m", subject, "-m", BY_USER]));
+        // Who approved, and how, in the trailers; the commit's own date is when. Never the note's text.
+        const trailers = input.approve ? `${BY_USER}\n${APPROVED_VIA}` : BY_USER;
+        commit = line(await git(home, repo, ["commit-tree", tree, "-p", parent, "-m", subject, "-m", trailers]));
       } finally {
         await rm(env.GIT_INDEX_FILE, { force: true });
       }

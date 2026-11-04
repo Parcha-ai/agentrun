@@ -3,9 +3,9 @@
 // explicit runner included, since the default is this host's; one that names none keeps none, so a revision written
 // before this field keeps its id. Which boxes this server has is said in capabilities, and a revision whose box it does
 // not have saves with a warning and is refused at run time. A run runs in its revision's place, else this host's
-// default, and keeps the place it resolved to: a run request names none. Runs execute in Docker only, for now: every
-// other box says it does not run yet. A harness's own tools in the box, when they come, are an option of sandbox,
-// never a third mode.
+// default, and keeps the place it resolved to: a run request names none. Runs execute in Docker and in Daytona, for
+// now: every other box says it does not run yet. A harness's own tools in the box, when they come, are an option of
+// sandbox, never a third mode.
 import { join } from "node:path";
 import { BOX_IDS, type BoxId, type BoxOffer } from "./boxes.js";
 import { type InputIssue, sentence } from "./errors.js";
@@ -17,7 +17,7 @@ export const DEFAULT_PLACE_MODE: PlaceMode = "runner";
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: BoxId };
 
 /** The boxes runs execute in so far. */
-export const RUN_BOXES: readonly BoxId[] = ["docker"];
+export const RUN_BOXES: readonly BoxId[] = ["docker", "daytona"];
 
 /** The boxes this server gives runs, from what its registry set up at its start (boxes.ts): a box runs execute in
  *  that the registry has, and no other. */
@@ -69,6 +69,11 @@ export function storedPlace(value: unknown): Place {
 
 /** Where a box binds the run's work/, and where its tools start. */
 export const BOX_WORK = "/run/agentrun/run/work";
+
+/** The boxes that cannot bind a run's work/, being on another machine: its work/ is seeded at the box's making and
+ *  pulled back (run-box.ts). */
+export const REMOTE_BOXES: readonly BoxId[] = ["daytona"];
+export const remotePlace = (place: Place): boolean => place.mode === "sandbox" && REMOTE_BOXES.includes(place.box);
 
 /** The run's work/ as its agent's tools see it: on the runner, `<runDir>/work`; in any box, BOX_WORK. */
 export const agentWorkDir = (runDir: string, place: Place): string => (place.mode === "runner" ? join(runDir, "work") : BOX_WORK);

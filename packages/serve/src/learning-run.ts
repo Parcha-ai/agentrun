@@ -19,14 +19,15 @@ import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } fr
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
-import { readJson, RUN_META } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, type Turn, withAgentGrade } from "./learning.js";
+import { readJson, RUN_META, runDoorToken } from "./files.js";
+import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, type Turn, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { notKept, said, STOPPED } from "./learning-words.js";
 import { ended, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
+import { REFLECT_REQUEST } from "./turns.js";
 
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
  *  after it (its rows are those between), its deadline, and how it ended. */
@@ -41,7 +42,7 @@ export const reflecting = (run: { meta: { reflect?: Reflect } }) => run.meta.ref
 const awaitsPropose = (meta: Partial<Run["meta"]> | null): boolean => meta?.learning?.state === "reflecting" && meta.reflect?.ended === true && meta.reflect.until !== undefined;
 /** The end-of-run turn's request id: the door and pi take one id once, so a turn asked again after a restart is not
  *  asked twice. */
-const reflectId = (runId: string) => `learn-reflect-${runId}`;
+const reflectId = (runId: string) => `${REFLECT_REQUEST}${runId}`;
 /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it. */
 const REFLECT_TIMEOUT_MS = 5 * 60_000;
 /** How often the run's door is asked whether its end-of-run turn has ended. */
@@ -226,7 +227,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "learning" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -283,16 +284,18 @@ export class LearningRuns {
    *  read once whatever the run's setup does, and what comes back pins it in the run once it is made and its input
    *  saved (a server that goes down during the copy leaves no learning saved: onLoad), at `at`: its
    *  learning, `seeded`, or `dropped` as `seed_failed` (a learning fault never refuses a run). Undefined when it does
-   *  not learn. */
+   *  not learn. What the run reads under `# Learned` is its notes within the server's learning budget, told of
+   *  `.learning/` only when its agent has the read tool, and cut of the host's secrets as they are then. */
   async onStart(agentId: string, revision: Revision): Promise<((started: Pick<StartedRun, "runId" | "dir" | "workspace">, at: string) => Promise<Learning>) | undefined> {
     const learns = this.options.learning !== "off" && revision.kind === "agentic" && revision.body.learning === true;
     if (!learns) return undefined;
+    const read = revision.kind === "agentic" && revision.body.tools.includes("read");
     const seeded = await this.seedFor(agentId);
     return async (started, at) => {
       let failed = "failed" in seeded ? seeded.failed : undefined;
       if ("seed" in seeded) {
         try {
-          await pinSeed(started.dir, started.workspace, seeded.seed);
+          await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown() });
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
@@ -390,11 +393,12 @@ export class LearningRuns {
    *  seed where the run took it away, so the follow-up finds the notes its instructions name where they say. A fault
    *  leaves it without. */
   async onReopen(run: Run): Promise<void> {
+    await learningTestHooks.beforeReopen?.(run.dir);
     const dir = join(run.dir, "work", LEARNED_DIR);
     if (!run.meta.reflect || (await lstat(dir).then(() => true, () => false))) return;
     try {
       const pin = await readPin(run.dir);
-      if (pin) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed));
+      if (pin) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed), this.shown());
     } catch (error) {
       warn(run.id, `opens again without its copy of what its agent learned: ${(error as Error).message}`);
     }
@@ -764,7 +768,9 @@ export class LearningRuns {
   /** What a run's learning refuses, and cuts from what it says: the secrets this server holds, wherever its launcher put
    *  them, the keys saved on it, what each launch handed the run, and its own tokens. */
   private refused(run: Run): string[] {
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken];
+    // The run's own door token too: its process holds it, so its notes may.
+    const own = run.doorToken ?? runDoorToken(run.dir);
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

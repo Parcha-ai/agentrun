@@ -5,8 +5,9 @@
 // URL_MAX, is refused here as well. A refusal or a failure is a Page with ok false, never a throw, so an agent reads why
 // and a workflow can branch on it.
 //
-// A page's text comes in parts: about max_chars characters from offset (a Part), counted as the answer holds them, so a
-// part is within its bound whatever the page holds. A part that is not the whole page says so: truncated while more
+// A page is read once (a Read: its first PAGE_READ_MAX_CHARS characters of text, and what is known of the rest), and its
+// text comes in parts of that: about max_chars characters from offset (a Part), counted as the answer holds them, so a
+// part is within its bound whatever the page holds (web_fetch keeps a run's reads, web-fetch.ts). A part that is not the whole page says so: truncated while more
 // follows, with the offset that reads on (next_offset), and the page's whole length (original_chars) where it is known.
 // Every field of a Page is held to a cap (its text, its title, its URL, its links), so one answer is too: serve's
 // host-bounds test holds it to the host's result bound.
@@ -16,12 +17,13 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
- *  `original_chars` the whole text's length in characters, when it is known and this part is not all of it.
- *  `html_chars`, on every part of a page whose HTML readPage cut before it was read: the page's whole length in
- *  characters. Its text, all its parts together, is then the start of the page's, so no part gives original_chars, and
- *  the last part (no truncated: no part follows) still says the page was cut. `converted: "text"` when the text is the
- *  page's plain text, its conversion to markdown having run out of time. */
-export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; offset?: number; next_offset?: number; html_chars?: number; converted?: "text"; links: string[]; refused?: string; error?: string };
+ *  `original_chars` the whole text's length in characters, when it is known and this part is not all of it;
+ *  `beyond_read` on the last part a read reaches of a page that goes on past PAGE_READ_MAX_CHARS; `links_omitted`, with the
+ *  first part, how many of the page's links its caps left out. `html_chars`, on every part of a page whose HTML readPage
+ *  cut before it was read: the page's whole length in characters. Its text, all its parts together, is then the start of
+ *  the page's, so no part gives original_chars, and the last part (no truncated: no part follows) still says the page was
+ *  cut. `converted: "text"` when the text is the page's plain text, its conversion to markdown having run out of time. */
+export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; html_chars?: number; converted?: "text"; links: string[]; links_omitted?: number; refused?: string; error?: string };
 
 /** web_fetch's legacy name: a revision or a call node naming it runs web_fetch under it (tools.ts). */
 export const FETCH_PAGE_TOOL = "fetch_page";
@@ -33,6 +35,10 @@ export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
 export const TEXT_CAP = 50_000;
 export const PAGE_CHARS = 20_000;
 export const MAX_CHARS_MIN = 200;
+/** The most of a page's TEXT web_fetch reads, from either provider: its first million characters (not HTML_READ_CHARS,
+ *  readPage's cut of the HTML before any text is read). A part reads within it, Parallel is never asked for more of a
+ *  page than that and one character (web-fetch.ts), and an offset at or past it is refused. */
+export const PAGE_READ_MAX_CHARS = 1_000_000;
 /** A page's links, with its first part only: at most LINKS_CAP of them, in at most LINKS_CHARS characters of the answer. */
 export const LINKS_CAP = 200;
 export const LINKS_CHARS = 20_000;
@@ -40,9 +46,9 @@ export const TITLE_CAP = 500;
 /** The longest URL fetched: a longer one is refused before anything is sent. */
 export const URL_MAX = 4_096;
 export const TIMEOUT_MS = 30_000;
-/** Where readPage cuts a page's HTML before it reads it, scripts and styles aside: pi-browser's READ_MAX_CHARS, held here
- *  so the tool's words name it without loading pi-browser where nothing is fetched (fetch-page-cut.test holds the two
- *  equal). */
+/** Where readPage cuts a page's HTML before it reads it, scripts and styles aside (not PAGE_READ_MAX_CHARS, the most of
+ *  the text read): pi-browser's READ_MAX_CHARS, held here so the tool's words name it without loading pi-browser where
+ *  nothing is fetched (fetch-page-cut.test holds the two equal). */
 export const HTML_READ_CHARS = 1_000_000;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -55,6 +61,7 @@ export type Part = { offset?: number; maxChars?: number };
 export function partProblem({ offset, maxChars }: Part): string | undefined {
   const shown = (value: unknown) => (typeof value === "number" ? String(value) : String(JSON.stringify(value)).slice(0, 40));
   if (offset !== undefined && !(Number.isInteger(offset) && offset >= 0)) return `offset must be a whole number, 0 or more (it was ${shown(offset)})`;
+  if (offset !== undefined && offset >= PAGE_READ_MAX_CHARS) return `offset must be under ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")}: web_fetch reads a page's first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (it was ${shown(offset)})`;
   if (maxChars !== undefined && !(typeof maxChars === "number" && maxChars >= MAX_CHARS_MIN)) return `max_chars must be ${typeof maxChars === "number" ? "" : "a number, "}at least ${MAX_CHARS_MIN} (it was ${shown(maxChars)})`;
   return undefined;
 }
@@ -86,50 +93,77 @@ export function partEnd(text: string, start: number, budget: number): number {
   return at;
 }
 
-/** The part of a page's `text` an answer holds, and what it says of the rest. `whole`: whether `text` is all of the
- *  page's text, so its length is the page's (a provider that cut it has none to give). */
-export function pageText(text: string, part: Part = {}, whole = true): Pick<Page, "text" | "chars" | "truncated" | "original_chars" | "offset" | "next_offset"> {
+/** A page's text as it is read once: its first PAGE_READ_MAX_CHARS characters (`text`), whether the page's text goes on
+ *  past them (`beyond`), and its whole length where it is known (`length`). */
+export type Text = { text: string; beyond: boolean; length?: number };
+/** `text` as read: `whole` says whether it is all of the page's text, so its length is the page's (a provider that cut
+ *  it, or readPage's cut of its HTML, gives none). The cut at PAGE_READ_MAX_CHARS never splits a surrogate pair: where
+ *  it would, it is one unit short. */
+export function textOf(text: string, whole: boolean): Text {
+  const beyond = text.length > PAGE_READ_MAX_CHARS;
+  const split = (text.charCodeAt(PAGE_READ_MAX_CHARS - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(PAGE_READ_MAX_CHARS) & 0xfc00) === 0xdc00;
+  return { text: beyond ? text.slice(0, PAGE_READ_MAX_CHARS - (split ? 1 : 0)) : text, beyond, ...(whole ? { length: text.length } : {}) };
+}
+
+/** The part of a page's text an answer holds, and what it says of the rest. */
+export function pageText({ text, beyond, length }: Text, part: Part = {}): Pick<Page, "text" | "chars" | "truncated" | "original_chars" | "beyond_read" | "offset" | "next_offset"> {
   const { offset, maxChars } = partOf(part);
   const start = Math.min(offset, text.length);
   const end = partEnd(text, start, maxChars);
   const held = text.slice(start, end);
   const more = end < text.length;
+  // The last part a read reaches of a page that goes on past it.
+  const last = !more && beyond;
   return {
     text: held,
     chars: held.length,
     ...(more ? { truncated: true as const } : {}),
-    ...(whole && (offset > 0 || more) ? { original_chars: text.length } : {}),
+    ...(length !== undefined && (offset > 0 || more || last) ? { original_chars: length } : {}),
+    ...(last ? { beyond_read: true as const } : {}),
     ...(offset > 0 ? { offset } : {}),
     ...(more ? { next_offset: end } : {}),
   };
 }
 
-/** A page's links as an answer holds them: with its first part only, in page order, at most LINKS_CAP of them, each one
- *  that fits in what is left of LINKS_CHARS (as JSON, with its comma). */
-export function linksWithin(links: Iterable<string>, part: Part = {}): string[] {
-  if (partOf(part).offset > 0) return [];
+/** A page's links as its first part holds them: in page order, at most LINKS_CAP of them, each one that fits in what is
+ *  left of LINKS_CHARS (as JSON, with its comma); and how many of them that left out, when any. */
+export function linksWithin(links: Iterable<string>): Pick<Page, "links" | "links_omitted"> {
   const kept: string[] = [];
   let used = 0;
+  let omitted = 0;
   for (const link of links) {
-    if (kept.length === LINKS_CAP) break;
     const cost = JSON.stringify(link).length + 1;
-    if (used + cost > LINKS_CHARS) continue;
+    if (kept.length === LINKS_CAP || used + cost > LINKS_CHARS) {
+      omitted += 1;
+      continue;
+    }
     kept.push(link);
     used += cost;
   }
-  return kept;
+  return { links: kept, ...(omitted ? { links_omitted: omitted } : {}) };
 }
 
-/** The part `options` names of the page at `url`, as a Page. The rest of `options` are the guard's resolver and fetch,
- *  for a test; a signal ends it early. */
-export async function fetchPage(url: unknown, { offset, maxChars, ...options }: Omit<PublicFetchOptions, "maxBytes"> & Part = {}): Promise<Page> {
-  const failed = (fields: Partial<Page> & ({ refused: string } | { error: string })): Page => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], ...fields });
+/** A page read once, before any part of it is taken: its final url, status and title, its Text, the links its first part
+ *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. */
+export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text" } & Text;
+/** A Page that was not read, saying why. */
+export type Unread = Page & { ok: false };
+
+/** The part `part` names of a page read once, as a Page: the links with its first part only. */
+export function partOfRead({ text, beyond, length, links, links_omitted, html_chars, converted, ...page }: Read, part: Part = {}): Page {
+  const first = partOf(part).offset === 0;
+  return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
+}
+
+/** The page at `url`, read once through the guarded direct fetch, or why it was not. The rest of `options` are the
+ *  guard's resolver and fetch, for a test; a signal ends it early. */
+export async function readDirect(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Read | Unread> {
+  const failed = (fields: Partial<Omit<Page, "ok">> & ({ refused: string } | { error: string })): Unread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], ...fields });
   if (typeof url !== "string" || !URL.canParse(url)) return failed({ error: "url is not an absolute URL" });
   if (url.length > URL_MAX) return failed({ error: `url is longer than ${URL_MAX.toLocaleString("en-US")} characters` });
   const { port } = new URL(url);
   if (port && port !== "80" && port !== "443") return failed({ refused: `refused: port ${port} is not 80 or 443` });
   const { BrowserFailureError, publicFetch, readPage } = await import("@parcha/pi-browser");
-  const part = { offset, maxChars };
   try {
     const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
     const answer = await publicFetch(url, { ...options, signal });
@@ -137,11 +171,17 @@ export async function fetchPage(url: unknown, { offset, maxChars, ...options }: 
     // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
     const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
     const page = read ?? { title: "", text: answer.body, links: [] };
-    return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...pageText(page.text, part, !read?.truncated), ...(read?.truncated ? { html_chars: read.html_chars! } : {}), ...(read?.converted === "text" ? { converted: "text" as const } : {}), links: linksWithin(page.links, part) };
+    return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...textOf(page.text, !read?.truncated), ...(read?.truncated ? { html_chars: read.html_chars! } : {}), ...(read?.converted === "text" ? { converted: "text" as const } : {}), ...linksWithin(page.links) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });
     return failed({ error: (error as Error)?.message ?? String(error) });
   }
+}
+
+/** The part `options` names of the page at `url`, as a Page, read through the guarded direct fetch. */
+export async function fetchPage(url: unknown, { offset, maxChars, ...options }: Omit<PublicFetchOptions, "maxBytes"> & Part = {}): Promise<Page> {
+  const read = await readDirect(url, options);
+  return read.ok ? partOfRead(read, { offset, maxChars }) : read;
 }
 
 /** The fetch's resolver and fetch in the run's process: the faux module's under `--faux` with one named, else none. */

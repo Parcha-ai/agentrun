@@ -426,7 +426,7 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
-test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer the earlier one, without waiting for another message", { timeout: 60_000 }, async (t) => {
+test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer that turn's own (none), without waiting for another message", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "answerless", "The second turn answers nothing.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -435,7 +435,7 @@ test("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) en
   // Well inside the 60 s a message-less run sat working/idle before (key-custody probe, run3/run4).
   const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 20_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.map((r) => [r.kind, r.summary])));
-  assert.equal(await answer(api, runId), "Answer 1.", "the earlier answer stands");
+  assert.equal(await answer(api, runId), "", "the turn's own answer: it showed no text, and the earlier turn's is not its");
   assert.deepEqual(usageOf(rows), { usd: 0.003, requests: 3 }, "the follow-up's request counts");
 });
 
@@ -492,7 +492,7 @@ test("pi: a message sent while a turn works is placed at that turn's end and ans
   assert.equal(await answer(api, runId), "Answer 2.");
 });
 
-test("after a follow-up whose turn ends showing nothing, the run's answer is the earlier one whole, past the 2,000 characters its summary keeps, on this server and the next", { timeout: 90_000 }, async (t) => {
+test("a run's answer is whole, past the 2,000 characters its summary keeps, on this server and the next; a follow-up that then shows nothing answers \"\"", { timeout: 90_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
   let closed = false;
@@ -502,14 +502,15 @@ test("after a follow-up whose turn ends showing nothing, the run's answer is the
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(LONG_ANSWER.length > 2_000, true);
   assert.equal(await answer(api, runId), LONG_ANSWER, "the first turn's answer, whole");
-  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
-  await follow(api, runId, ["completed"], { deadlineMs: 20_000 });
-  assert.equal(await answer(api, runId), LONG_ANSWER, "after the turn that showed nothing, still whole: never the summary the store keeps");
   await one.close();
   closed = true;
   const two = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
   t.after(() => two.close());
-  assert.equal(await answer(client(two.baseUrl, two.token), runId), LONG_ANSWER, "and on the next server, read from the run's store");
+  const next = client(two.baseUrl, two.token);
+  assert.equal(await answer(next, runId), LONG_ANSWER, "and on the next server, read from the run's store: never the summary the store keeps");
+  assert.equal((await next("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
+  await follow(next, runId, ["completed"], { deadlineMs: 20_000 });
+  assert.equal(await answer(next, runId), "", "a follow-up that shows nothing answers with its own text, none");
 });
 
 /** Until the run's store holds `n` entries of `kind`. */
@@ -551,7 +552,7 @@ test("a cancel of a turn that has shown nothing reads working, then cancelled: n
   assert.ok(user >= 0 && entries.slice(user + 1).some((e) => e.kind === "agentrun.request_started"), "the case: the request was admitted after the person's message (its start mark is in the store)");
 });
 
-test("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is the earlier answer, never the commentary, on this server and the next", { timeout: 120_000 }, async (t) => {
+test("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is that follow-up's own (empty), never the commentary or the earlier answer, on this server and the next", { timeout: 120_000 }, async (t) => {
   // Review F3: commentary that came with a call is no answer, though it is the run's newest text.
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
@@ -573,12 +574,12 @@ test("pi: after a stopped turn's commentary and a follow-up answered with nothin
   await follow(api, runId, ["input_required"], { deadlineMs: 30_000 });
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.equal(await answer(api, runId), "Report written.", "the earlier answer, not the stopped turn's commentary");
+  assert.equal(await answer(api, runId), "", "the follow-up's own answer, empty: not the stopped turn's commentary, and not the earlier answer");
   await one.close();
   closed = true;
   const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => two.close());
-  assert.equal(await answer(client(two.baseUrl, two.token), runId), "Report written.", "and on the next server, read from the run's store");
+  assert.equal(await answer(client(two.baseUrl, two.token), runId), "", "and on the next server, read from the run's store");
 });
 
 test("a write that names its file by an absolute path in the workspace reads by its name there (hello.md) in the tool rows and the Saved row; a path outside the run's directory stays as given; the call's arguments are kept", { timeout: 60_000 }, async (t) => {
@@ -697,3 +698,28 @@ test("a read refused outside the run names the path it was given, as given, on p
   refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi"));
   assert.ok(refused.every((row) => !JSON.stringify(row).includes("not for the agent")));
 });
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`a ${harness} run cancelled while its host web_search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known`, { timeout: 90_000 }, async (t) => {
+    const calls = join(await scratch(t), "parallel.jsonl");
+    // The faux Parallel answers the search after 2 s, so the cancel lands while the host tool's call is under way.
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:2000" });
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxParallel: FAUX_PARALLEL });
+    assert.equal((await api("POST", "/agents", agent(`stopped-${harness}`, { harness, instructions: "Search the web for widgets delaware and say what you found.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }))).status, 201);
+    const run = await api("POST", `/agents/stopped-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    for (const end = Date.now() + 30_000; !(await readFile(calls, "utf8").catch(() => "")).includes('"path":"/v1/search"'); ) {
+      assert.ok(Date.now() < end, "the search reached Parallel");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status, 202);
+    await follow(api, run.body.run_id, ["cancelled", "failed", "completed"], { deadlineMs: 60_000 });
+    let paid = [];
+    for (const end = Date.now() + 15_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
+      paid = paidOf(data, run.body.run_id);
+      if (paid.some(([kind]) => kind === "agentrun.tool_cost")) break;
+    }
+    assert.deepEqual(paid, [["agentrun.tool_started", "web_search", 0.001], ["agentrun.tool_cost", "web_search", 0.001]], "marked, and settled though its turn was stopped");
+    assert.notEqual((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, null, "the run's cost is known");
+  });
+}

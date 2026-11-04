@@ -17,10 +17,10 @@ export type ToolSettings = Record<string, { provider?: string }>;
  *  none (the server's), and what it resolves to on the agent's harness and model. */
 export type AgentTool = { name: string; provider?: string; provider_from?: "agent" | "server" | "default"; default_provider?: string; resolved?: string };
 
-/** `at_most_usd`: the run's cost bound, when the server knows one. It is set only while `usd` is null because requests
- *  were cut or stopped, each with a worst case, and it is the most the run can have cost. Absent, the cost is unknown with
- *  no bound. */
-export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null; at_most_usd?: number | null };
+/** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null: the sum of every charge whose cost
+ *  is known, and how many charges have none (a request cut, stopped or still pending, a model with no price, a paid call
+ *  charged an unknown amount). `so_far_usd` is never the whole cost and never a ceiling. */
+export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null; so_far_usd?: number; unpriced?: number };
 
 export type Run = {
   run_id: string;

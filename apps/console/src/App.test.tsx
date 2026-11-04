@@ -481,15 +481,16 @@ describe("App, the playground when its agents can't be read", () => {
 // card) shows a bar while capabilities say no model is ready, and it goes by itself once they say ready.
 describe("App, the no-model bar", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const serve = (models: () => Record<string, unknown>, routes = true, atRest: "sealed" | "unavailable" = "sealed") => {
+  // `keys`: how the server keeps tool keys (features.tool_keys): sealed, routes with no seal key, or no key routes at all.
+  const serve = (models: () => Record<string, unknown>, keys: "sealed" | "unavailable" | false = "sealed", stats?: unknown) => {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(routes ? { tool_keys: { routes: true, at_rest: atRest } } : {}) }, models: models() });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(keys ? { tool_keys: { routes: true, at_rest: keys } } : {}) }, models: models() });
       if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
-      if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
+      if (path === "/v2/stats") return stats ? json(200, stats) : json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
@@ -546,7 +547,7 @@ describe("App, the no-model bar", () => {
   });
 
   it("says to set a key and restart, with no Settings link, where the server has key routes but no seal key to keep one", async () => {
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, "unavailable");
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable");
     const host = await mount("#/runs");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
@@ -564,7 +565,7 @@ describe("App, the no-model bar", () => {
     });
 
   it("names the server's default model and says to set its provider's key and restart where the server can't keep a key", async () => {
-    serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }), true, "unavailable");
+    serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }), "unavailable");
     const host = await mount("#/runs");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. This server's default model is anthropic/claude-sonnet-5-5: set its provider's key where AgentRun starts, and restart.");
@@ -581,7 +582,7 @@ describe("App, the no-model bar", () => {
   });
 
   it("says only to name the gateway's model in AGENT_MODEL, with no Settings link, on a gateway server that can't keep a key", async () => {
-    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), true, "unavailable");
+    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), "unavailable");
     const host = await mount("#/runs");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart.");
@@ -628,6 +629,57 @@ describe("App, the no-model bar", () => {
     await act(async () => { hold!(json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } }, models: { source: "providers", default: null, ready: false, needs: "key" } })); });
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect(bar(host)).toBeNull();
+  });
+
+  // QA: the first screen's start-here step told the person to restart with AGENT_MODEL and reload, under a key card
+  // that saves a key with no restart. Where the server keeps keys it points at the card; where it keeps none, the env.
+  it("points the first screen's model step at the key card above where the server keeps keys, and keeps the env text where it keeps none", async () => {
+    const step = (host: HTMLElement) => host.querySelector('section[aria-label="Start here"]');
+    // Nothing of the owner's has run yet, so the first screen shows the start-here panel.
+    const fresh = { agents: 0, runs: { total: 0, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 0 }, archived: { agents: 0, runs: 0 }, analytics: { ...ANALYTICS, by_source: [] } };
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "sealed", fresh);
+    const keys = await mount("");
+    await until(() => !!step(keys)?.textContent?.includes("Add a model key"));
+    expect(keys.querySelector('section[aria-label="Model key"]')).not.toBeNull();
+    expect(step(keys)?.textContent).toContain("Add a model key in the card above, and the templates here run in one click.");
+    expect(step(keys)?.textContent).not.toContain("AGENT_MODEL");
+    expect(step(keys)?.textContent).not.toContain("reload");
+    act(() => root!.unmount()); root = undefined;
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false, fresh);
+    const none = await mount("");
+    await until(() => !!step(none)?.textContent?.includes("Add a model key"));
+    expect(step(none)?.textContent).toContain("AGENT_MODEL");
+    expect(step(none)?.textContent).toContain("Then reload this page");
+    expect(step(none)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
+    // Key routes but no seal key: the server refuses every save (no_sealing_key), so the card can't take one.
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable", fresh);
+    const unsealed = await mount("");
+    await until(() => !!step(unsealed)?.textContent?.includes("Add a model key"));
+    expect(step(unsealed)?.textContent).toContain("AGENT_MODEL");
+    expect(step(unsealed)?.textContent).toContain("Then reload this page");
+    expect(step(unsealed)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
+    // A gateway with no AGENT_MODEL: a provider's key saved in the card names no gateway model, so the env text stays.
+    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), "sealed", fresh);
+    const gateway = await mount("");
+    await until(() => !!step(gateway)?.textContent?.includes("Add a model key"));
+    expect(step(gateway)?.textContent).toContain("AGENT_MODEL_BASE_URL");
+    expect(step(gateway)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
+    // AGENT_MODEL names a default whose provider's key the card may not offer: the step keeps the env text.
+    serve(() => ({ source: "providers", default: "deepseek/deepseek-v4-pro", ready: false, needs: "key" }), "sealed", fresh);
+    const named = await mount("");
+    await until(() => !!step(named)?.textContent?.includes("Add a model key"));
+    expect(step(named)?.textContent).toContain("AGENT_MODEL");
+    expect(step(named)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
+    // AGENT_MODEL is the problem, which the card says no key fixes: the step keeps the env text.
+    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), "sealed", fresh);
+    const model = await mount("");
+    await until(() => !!step(model)?.textContent?.includes("Add a model key"));
+    expect(step(model)?.textContent).toContain("AGENT_MODEL");
+    expect(step(model)?.textContent).not.toContain("card above");
   });
 
   it("shows nothing while a model is ready", async () => {

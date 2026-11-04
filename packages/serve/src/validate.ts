@@ -28,6 +28,10 @@ const SKILL_FILE = "/SKILL.md";
 
 const issue = (field: string, reason: string, message: string, fix?: string): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });
 
+/** A body's fields that `allowed` does not name, each as the 422's not_allowed issue. */
+export const unknownFields = (body: object, allowed: readonly string[]): InputIssue[] =>
+  Object.keys(body).filter((key) => !allowed.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+
 function names(value: unknown, field: string, out: InputIssue[]): void {
   if (!Array.isArray(value)) return void out.push(issue(field, "wrong_type", `${field} is not a list of names`));
   if (!value.every((name) => typeof name === "string" && name !== "")) out.push(issue(field, "wrong_type", `${field} holds an item that is not a non-empty string`));

@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, scratch, serve, withEnv } from "./support.mjs";
+import { learningTestHooks } from "../dist/learning.js";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const TABLES = note("Prefers tables", "The user reads results as tables");
@@ -236,6 +237,28 @@ test("a turn that adds nothing is dropped as empty, and the run's answer stands"
   assert.equal(git(repoOf(data, "idle"), ["rev-list", "--count", "main"]), "1");
 });
 
+test("a note that holds the run's own door token is refused as secret_value: no git object and nothing the run shows holds it", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  const go = join(await scratch(t), "go");
+  await made(api, learner("doorman", { instructions: `Answer once ${go} exists.` }));
+  const runId = await started(api, "doorman");
+  // The token the run's own door takes, which its process holds, asked to be kept as a person (or the run) could ask.
+  for (let i = 0; !existsSync(join(data, "runs", runId, "door-token")); i++) {
+    assert.ok(i < 600, "the run is launched");
+    await sleep(50);
+  }
+  const token = readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: `Remember for next time: The door takes ${token}` });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  writeFileSync(go, "");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "checker");
+  const { learning } = await savedOf(data, runId);
+  assert.ok(learning.problems.some((problem) => problem.rule === "secret_value" && problem.path === "remembered.md"), JSON.stringify(learning.problems));
+  assert.ok(!objects(repoOf(data, "doorman")).includes(token), "no git object holds the token");
+  assert.ok(!JSON.stringify(learning).includes(token), "the run's learning view does not hold it");
+});
+
 test("nothing the run put in its copy of the folder is read: links planted there, to a file or a folder, and a note written there, while the turn holds; only the turn's answer merges, and the links' target's text is nowhere", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const outside = await scratch(t);
@@ -361,4 +384,28 @@ test("under the launcher's custody, a note that holds the model key it handed ov
   const shown = JSON.stringify([view, rows, (await api("GET", "/runs")).body, learning]);
   assert.ok(!shown.includes(key), "the key is nowhere the run is shown");
   await stop();
+});
+
+test("a second message to a run that learns, sent while the first one opens it again, waits for that opening: it is never sent before the run's notes are laid again in its work", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("twice", { plan: [["fine.md", note("Fine", "A rule the run learned")]] }));
+  const runId = await started(api, "twice");
+  settled((await ended(api, runId)).view, (await ended(api, runId)).rows, "merged");
+  // The first message opens the run again, and is held inside that opening (where its notes are laid again).
+  let entered, release;
+  const inside = new Promise((resolve) => (entered = resolve));
+  const gate = new Promise((resolve) => (release = resolve));
+  learningTestHooks.beforeReopen = async () => { entered(); await gate; };
+  t.after(() => { delete learningTestHooks.beforeReopen; release(); });
+  const first = api("POST", `/runs/${runId}/messages`, { content: "One more thing." });
+  await inside;
+  // A second message meanwhile: it waits for the opening, so it has no answer while the opening is held.
+  let second = null;
+  const sent = api("POST", `/runs/${runId}/messages`, { content: "And another." }).then((r) => (second = r));
+  await sleep(1500);
+  assert.equal(second, null, "the second message was taken before the run's opening ended");
+  release();
+  const [a, b] = await Promise.all([first, sent]);
+  assert.deepEqual([a.status, b.status], [202, 202], JSON.stringify([a.body, b.body]));
+  await ended(api, runId);
 });
