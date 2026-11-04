@@ -82,11 +82,12 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
       onClick={(e) => { if (pressedOutside.current && releasedOutside.current && e.target === e.currentTarget) onClose(); pressedOutside.current = releasedOutside.current = false; }}
       className="m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-foreground backdrop:bg-black/60 md:p-8">
       <div className="mx-auto flex h-full w-full max-w-5xl flex-col border bg-background">
-        <header className="flex items-center gap-3 border-b px-4 py-2.5">
+        {/* On a phone the toggle takes a row of its own under the rest, so Copy and Download stay on screen. */}
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2.5">
           <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close"><X aria-hidden /></Button>
           <FileText className="size-4 text-muted-foreground" aria-hidden />
           <span className="min-w-0 flex-1 truncate font-mono text-[13px]">{file.path}</span>
-          {kind !== "download" && <ViewToggle view={view} onView={setView} />}
+          {kind !== "download" && <div className="order-last basis-full sm:order-none sm:basis-auto"><ViewToggle view={view} onView={setView} /></div>}
           <Button size="sm" disabled={text === null} onClick={async () => { if (text !== null) { await navigator.clipboard?.writeText(text); setCopied(true); } }}><Copy aria-hidden /> {copied ? "Copied" : "Copy"}</Button>
           <Button size="sm" disabled={text === null} onClick={download}><Download aria-hidden /> Download</Button>
         </header>
