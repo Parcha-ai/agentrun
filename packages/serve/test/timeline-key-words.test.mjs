@@ -85,7 +85,7 @@ test("pi: a gateway that refuses its key (401): the Timeline row says what the r
 // tier on OpenAI and the strong tier on Anthropic, a strong node's 401 must not read as OpenAI refusing OPENAI_API_KEY:
 // the row keeps the provider's own words (no loopback address) rather than name a key that may be the wrong one.
 test("a workflow whose tiers send different keys: a node's 401 keeps its own words on the Timeline, never another tier's key", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: "not-a-secret-openai-key", ANTHROPIC_API_KEY: "not-a-secret-anthropic-key" }, [...NAMES, "AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: `not-a-secret-${"openai-key"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic-key"}` }, [...NAMES, "AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
   const { api } = await serve(t);
   const flow = answerFlow("Fail with a refused key.");
   flow.root.steps[0].tier = "strong";
@@ -127,4 +127,36 @@ test("a refused key's plain words carry no loopback address either: a gateway th
   assert.equal(run.error?.message, words, JSON.stringify(run.error));
   for (const row of errorRows(timeline.rows)) assert.deepEqual([row.summary, row.text], [words, words], JSON.stringify(row));
   assert.ok(!JSON.stringify(timeline).includes("localhost:8000") && !JSON.stringify(run).includes("localhost:8000"), "no loopback address anywhere");
+});
+
+// A held key's value never reaches a person through a run's error, whatever the run's kind and whatever the error: its
+// served text replaces every held secret's value with [redacted] (key-refusal.ts' one redaction rule), as a refused
+// key's plain words always did. The faux model's provider echoes the value the test holds as OPENAI_API_KEY.
+const ECHOED = `not-a-secret-${"echoed-key-0123"}`;
+
+test("a workflow node's 401 that echoes a held key: the Timeline and the run say [redacted], never the key", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: ECHOED }, NAMES);
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", flowAgent("echoes", answerFlow("Fail echoing a held key.")))).status, 201);
+  const started = await api("POST", "/agents/echoes/runs", { input: { question: "x" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["failed"], { deadlineMs: 50_000 });
+  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  const timeline = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body;
+  assert.ok(!JSON.stringify(timeline).includes(ECHOED), JSON.stringify(errorRows(timeline.rows)));
+  assert.ok(!JSON.stringify(run).includes(ECHOED), JSON.stringify(run.error));
+  assert.ok(errorRows(timeline.rows).some((row) => row.text?.includes("Key [redacted] is not valid")), JSON.stringify(errorRows(timeline.rows)));
+});
+
+test("an agentic run's error that is no 401 but echoes a held key: the Timeline and the run's error say [redacted]", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: ECHOED }, NAMES);
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("echoes-too"))).status, 201);
+  const started = await api("POST", "/agents/echoes-too/runs", { input: { content: "Fail echoing a held key." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["failed"], { deadlineMs: 50_000 });
+  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  const timeline = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body;
+  assert.ok(!JSON.stringify(timeline).includes(ECHOED), JSON.stringify(errorRows(timeline.rows)));
+  assert.equal(run.error?.message, '500 {"message":"Key [redacted] is not valid"}', JSON.stringify(run.error));
 });

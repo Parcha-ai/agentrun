@@ -29,6 +29,8 @@ export default function reply(context, faux) {
     // and a program it starts.
     // "..., once <file> exists." holds it until the test has made that file.
     const canary = JSON.stringify(context);
+    // A node whose provider echoed the key it was sent (timeline-key-words.test.mjs holds that value as a key).
+    if (canary.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '401 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
     if (canary.includes("Report the canary")) {
@@ -192,6 +194,8 @@ export default function reply(context, faux) {
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
   // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
   if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
+  // A provider error that is no 401 but echoes the key it was sent.
+  if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
   // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
   if (first.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
