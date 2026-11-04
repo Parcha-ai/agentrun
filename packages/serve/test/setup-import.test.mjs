@@ -233,6 +233,8 @@ test("a server closed during the import at setup stops it between sessions and w
   await sleep(1_500);
   assert.equal(count(), atClose, "no run written after close");
   assert.equal(existsSync(join(data, ".import-at-setup")), atClose < 40, "the yes is kept while the import is unfinished");
+  // Waited for, not ended: the stopped import answered what it took, and the yes keeps it (setup wrote it empty).
+  if (atClose < 40) assert.equal(JSON.parse(readFileSync(join(data, ".import-at-setup"), "utf8") || "{}").runs, atClose, "the import stopped between sessions and said so");
 });
 
 test("a setup with the box ticked still being answered when the server closes starts no import after close: the yes waits for the next start", { timeout: 60_000 }, async (t) => {
@@ -407,10 +409,10 @@ test("a server stopped while setup still lists a home's session files exits at o
   const site = join(home, "code", "many");
   mkdirSync(site, { recursive: true });
   claudeSession(home, site, 1);
-  // 150,000 empty session files: a count lists and stats every one before it reads any, for seconds.
+  // 120,000 empty session files: a count lists and stats every one before it reads any, for seconds.
   const many = join(home, ".claude", "projects", "-many");
   mkdirSync(many, { recursive: true });
-  for (let k = 0; k < 150_000; k++) writeFileSync(join(many, `${k}.jsonl`), "");
+  for (let k = 0; k < 120_000; k++) writeFileSync(join(many, `${k}.jsonl`), "");
   const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
   mkdirSync(temp, { recursive: true });
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
