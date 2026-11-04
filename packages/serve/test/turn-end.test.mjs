@@ -148,6 +148,35 @@ test("pi's input submissions: open while queued or placed, closed by their settl
   assert.deepEqual([reflect.open, reflect.end()], [0, undefined], "the end-of-run turn's message is the server's");
 });
 
+// A reconnect's snapshot (the door's `inputs`): the ledger reads it as the run's whole state, where an event batch carries
+// only changes. Read through `snapshot` where the ledger has it, else as this server read it before (its inputs noted
+// as submissions).
+const snapshot = (turns, inputs) => (typeof turns.snapshot === "function" ? turns.snapshot(inputs) : turns.note([], inputs));
+
+test("a message read open before a reconnect, missing from the snapshot under a later settled one, settled while the stream was down", () => {
+  // A read open (placed); the server's event stream drops; A and the B queued behind it both finish meanwhile. The
+  // snapshot keeps the newest settled input, every one after it and every earlier one not settled yet: B alone.
+  const turns = new Turns();
+  turns.note([user(3, "first")], [{ id: 2, conversationId: 1, type: "input", status: "placed", entry: 3, requestId: "first-r1" }], undefined, 1_000);
+  assert.equal(turns.open, 1, "A is open");
+  snapshot(turns, [{ id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 8, requestId: "next-r1", answer_text: "Answer B." }]);
+  assert.deepEqual([turns.open, answerOf(turns)], [0, "Answer B."], "the run ends on B's answer");
+});
+
+test("a follow-up queued before a steer that settled stays open: the snapshot still holds it, and only an earlier input missing from it is settled", () => {
+  // F, a follow-up, queued while A ran; S, a steer sent after it, settled inside A's turn. F is still to run.
+  const turns = new Turns();
+  const f = { id: 3, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" };
+  turns.note([], [{ id: 2, conversationId: 1, type: "input", status: "placed", entry: 4, requestId: "first-r1" }, f], undefined, 1_000);
+  const s = { id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 8, requestId: "steer-r1", answer_text: "Steered." };
+  // An event batch, changes only: S settled. Nothing else is read into it.
+  turns.note([], [s]);
+  assert.equal(turns.end(), undefined, "F and A open: the run is not over");
+  // The snapshot on a reconnect: A settled (missing, under S), F still queued (held), S settled.
+  snapshot(turns, [f, s]);
+  assert.deepEqual([turns.open, turns.end()], [1, undefined], "F stays open: the run does not end mid-turn");
+});
+
 test("a working turn's last progress: when its message was taken, then each entry since; none once every message is closed", () => {
   const turns = new Turns();
   turns.note([message(1, "a")], [], undefined, 1_000);
