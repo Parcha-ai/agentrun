@@ -571,6 +571,37 @@ test("a call an earlier process left open is interrupted in its place: the answe
   placed(rest(timelineOf(entries, { settled: true })));
 });
 
+test("a result stored before its call (a harness that wrote it first) reads as that call's: right after it, with its label, once, and the call never reads interrupted", () => {
+  // Two calls in one answer; the first one's result was stored before the answer that holds both.
+  const entries = [
+    user("Write the files.", 0),
+    result("w1", "write", "Successfully wrote a.md", 1),
+    assistant([call("w1", "write", { path: "a.md", content: "alpha" }), call("w2", "write", { path: "b.md", content: "beta" })], 2),
+    result("w2", "write", "Successfully wrote b.md", 3),
+    assistant([{ type: "text", text: "Wrote both." }], 4),
+  ];
+  const placed = (rows) => {
+    const shown = JSON.stringify(rows.map((r) => [r.id, r.kind, r.summary]));
+    assert.deepEqual(rows.filter((r) => r.id.includes(":interrupted:")), [], `no call reads interrupted: ${shown}`);
+    for (const [id, file] of [["w1", "a.md"], ["w2", "b.md"]]) {
+      const use = rows.findIndex((r) => r.kind === "tool_use" && r.tool_use_id === id);
+      const results = rows.filter((r) => r.kind === "tool_result" && r.tool_use_id === id);
+      assert.equal(results.length, 1, `${id}: one result: ${shown}`);
+      assert.ok(use >= 0 && rows.indexOf(results[0]) === use + 1, `${id}: its result right after its call: ${shown}`);
+      assert.match(results[0].summary, new RegExp(file.replace(".", "\\.")), `${id}: its result names ${file}: ${shown}`);
+      assert.equal(results[0].tool_status, "success", shown);
+    }
+    assert.equal(rows.filter((r) => r.kind !== "usage" && r.kind !== "phase").at(-1).kind, "final_answer", shown);
+  };
+  // Stored: the settled read.
+  placed(timelineOf(entries, { settled: true }));
+  // Live: the same store as a snapshot, then a turn that starts and ends.
+  const reducer = timelineReducer({ conversationId: 1 });
+  reducer.apply([{ type: "snapshot", entries }, { type: "run_start", inputs: [] }]);
+  reducer.apply([{ type: "run_end", inputs: [] }]);
+  placed(reducer.rows());
+});
+
 test("waits: a retry, a poll and a queue are live rows that clear", () => {
   const reducer = timelineReducer({ conversationId: 1, now: () => 1_000 });
   const rows = (events) => summaries(reducer.apply(events).rows);
@@ -659,6 +690,27 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   assert.equal(results[2].summary, "Ran `curl -s 'http://localhost:8080/v1?key=\u2026' | head` failed: refused https://z.example/e?auth=\u2026 by the server");
   const all = JSON.stringify(rows.filter((row) => row.kind !== "user_message"));
   for (const secret of ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "SECRET6", "frag-secret", userinfo("pw")]) assert.ok(!all.includes(secret), `a row holds ${secret}`);
+});
+
+test("a failed call answered only by the harness's diagnostics block is summarized by its error, not by the block's tag", () => {
+  const rows = timelineOf([
+    assistant([
+      call("a", "bash", { command: "true" }),
+      call("b", "bash", { command: "ls" }),
+      call("c", "read", { path: "a.md" }),
+      call("d", "bash", { command: "make" }),
+    ], 0),
+    result("a", "bash", "<harness>\n[error] Tool bash is not available\n</harness>", 1, { isError: true }),
+    result("b", "bash", "<harness>\n[warning] Output truncated: 3 lines, 9 bytes dropped\n[error] Tool call blocked: refused by the permission gate\n</harness>", 1, { isError: true }),
+    result("c", "read", "<harness>\n[error]\n</harness>", 1, { isError: true }),
+    result("d", "bash", "make: *** No rule to make target\n<harness>\n[error] Command exited with code 2\n</harness>", 1, { isError: true }),
+  ]);
+  const summary = (id) => rows.find((row) => row.tool_use_id === id && row.kind === "tool_result").summary;
+  assert.equal(summary("a"), "Ran `true` failed: Tool bash is not available");
+  assert.equal(summary("b"), "Ran `ls` failed: Tool call blocked: refused by the permission gate", "the error, before any warning");
+  assert.equal(summary("c"), "Read a.md failed: no detail");
+  assert.equal(summary("d"), "Ran `make` failed: make: *** No rule to make target", "a result with output keeps its first line");
+  assert.equal(rows.find((row) => row.tool_use_id === "a" && row.kind === "tool_result").tool_result_preview, "<harness>\n[error] Tool bash is not available\n</harness>", "the preview is the result as it is");
 });
 
 test("a saved file's phase row carries its path", () => {
@@ -806,4 +858,17 @@ test("web_search reads as a search, in the past tense: the query scrubbed and cu
   const [first] = text(rows).split("\n");
   assert.match(first, /^\S+\s+Searched the web 3 times: "acme anvils", "see https:\/\/x\.example\/a\?token=… for d\.\.\."\s+3 ok$/);
   assert.equal(foldLabel("web_search", [{ input: "a", output: null }]), 'Searched the web 1 times: "a"');
+});
+
+test("a run's process that opened again after the last one ended unfinished is a row of its own, from its entry: after a crash, or after the server stopped", () => {
+  const time = (s) => Date.UTC(2026, 9, 15, 20, 14, 0) + s * 1000;
+  const resumed = (after, s) => ({ kind: "agentrun.run_resumed", id: 900 + s, conversationId: 1, data: { generation: 2, after, at: time(s) } });
+  const entries = [user("hi", 0), assistant([{ type: "text", text: "a" }], 1), resumed("crash", 5), assistant([{ type: "text", text: "b" }], 6), resumed("server_stop", 9)];
+  const rows = timelineOf(entries);
+  const marks = (list) => list.filter((r) => r.kind === "phase").map((r) => [r.summary, r.timestamp]);
+  assert.deepEqual(marks(rows), [["Resumed after a crash", new Date(time(5)).toISOString()], ["Resumed after the server stopped", new Date(time(9)).toISOString()]], "each at the time its process opened");
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.02, requests: 2 }, "a mark is no request");
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "snapshot", entries }]);
+  assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
 });

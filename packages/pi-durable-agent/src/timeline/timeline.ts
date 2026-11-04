@@ -91,6 +91,11 @@ const abortedCall = (entry: EntryLike) => {
   return Array.isArray(diagnostics) && diagnostics.some((diagnostic) => obj(diagnostic)?.code === "aborted");
 };
 
+/** Written on the root as a run's process opens to go on with a run its last process left unfinished: `after` is `crash`
+ *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
+ *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
+export const RUN_RESUMED = "agentrun.run_resumed";
+
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
   conversationId?: number;
@@ -318,6 +323,19 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
 
+/** The message of a result that is only the harness's diagnostics block (`<harness>`, then `[error] …` lines), as a
+ *  call that threw or named a tool its run does not offer answers: its first error's, else its first line's, without
+ *  the severity. Undefined for any other text, whose own first line says what happened. */
+function diagnosticOf(text: string): string | undefined {
+  const lines = text.trim().split("\n").map((line) => line.trim());
+  if (lines[0] !== "<harness>") return undefined;
+  const end = lines.indexOf("</harness>");
+  const inner = lines.slice(1, end < 0 ? undefined : end).filter(Boolean);
+  const said = inner.map((line) => /^\[(\w+)\]\s*(.*)$/.exec(line)).filter((match): match is RegExpExecArray => match !== null);
+  const first = said.find((match) => match[1] === "error") ?? said[0];
+  return first ? (first[2] ?? "") : (inner[0] ?? "");
+}
+
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
   const caps = { ...CAPS, ...options.caps };
@@ -330,6 +348,9 @@ function createProjector(options: TimelineOptions) {
   const label = (tool: string, args: Obj, result?: ToolResultView) => labelOf(tool, shown(args), result, options.labels);
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
+  // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
+  // `conversation:id`: the call, when it comes, takes its result and is done.
+  const early = new Map<string, { row: TimelineEvent; view: ToolResultView }>();
   const previous = new Map<number, string>();
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
@@ -368,7 +389,7 @@ function createProjector(options: TimelineOptions) {
   }
 
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
-  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? text)) || "no detail";
+  const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...fields });
@@ -449,8 +470,20 @@ function createProjector(options: TimelineOptions) {
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
           }
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
-          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
+          const before = early.get(`${conv}:${id}`);
+          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: before !== undefined });
           add(use);
+          // Its result came first: it is this call's, so it reads with the call's label and sits right after it.
+          if (before) {
+            early.delete(`${conv}:${id}`);
+            const named = label(name, args, before.view);
+            use.summary = clean(named, caps.summary);
+            const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view);
+            Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
+            rows.splice(rows.indexOf(before.row), 1);
+            rows.splice(rows.indexOf(use) + 1, 0, before.row);
+            touch(before.row);
+          }
         });
       }
     } else if (entry.kind === "pi.tool-result" && message) {
@@ -471,7 +504,9 @@ function createProjector(options: TimelineOptions) {
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      add(resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view));
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view);
+      if (!call && id) early.set(`${conv}:${id}`, { row, view });
+      add(row);
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
@@ -497,6 +532,10 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+    } else if (entry.kind === RUN_RESUMED) {
+      const data = obj(entry.data);
+      if (typeof data?.at === "number" && Math.abs(data.at) <= 8.64e15) stamp = data.at;
+      add(make("phase", conv, base, { summary: data?.after === "crash" ? "Resumed after a crash" : "Resumed after the server stopped" }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
       const [state, reason, tag] = [str(data?.state), str(data?.reason), str(data?.session)];
@@ -611,10 +650,14 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
   // pairs them.
   const calls = new Map<string, { name: string; called: string; done: boolean }>();
+  // Results stored before their call, by `conversation:id`: each counts once its call comes, under its name and rule.
+  const early = new Map<string, { named: string | undefined; result: { text: string; isError: boolean }; place: number }>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
-  const order = new Map<string, number>();
-  const see = (name: string) => void (order.has(name) || order.set(name, order.size));
+  const order = new Map<string, [number, number]>();
+  // Each record's place: a tool's place is the record that first named it, though it counts later.
+  let at = 0;
+  const see = (name: string, place = at) => void (order.has(name) || order.set(name, [place, order.size]));
   const tally = (name: string, failed: boolean) => {
     see(name);
     const tool = tools.get(name) ?? { calls: 0, errors: 0 };
@@ -623,6 +666,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     tools.set(name, tool);
   };
   for (const entry of records) {
+    at += 1;
     const conv = entry.conversationId ?? 0;
     if (entry.id !== undefined) {
       if (seen.has(`${conv}:${entry.id}`)) continue;
@@ -635,21 +679,38 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
         const [id, name] = [str(block.id), str(block.name)];
         if (block.type !== "toolCall" || !id || !name) continue;
         const key = metricName(name);
-        calls.set(`${conv}:${id}`, { name: key, called: name, done: false });
+        // Its result came first: it counts now, once, under this call's name and by this call's tool's rule.
+        const before = early.get(`${conv}:${id}`);
+        early.delete(`${conv}:${id}`);
+        calls.set(`${conv}:${id}`, { name: key, called: name, done: before !== undefined });
         see(key);
+        if (before) tally(key, callFailed(name, before.result));
       }
     } else if (entry.kind === "pi.tool-result" && message) {
-      const call = calls.get(`${conv}:${str(message.toolCallId) ?? ""}`);
-      if (call) call.done = true;
+      const id = str(message.toolCallId);
+      const call = calls.get(`${conv}:${id ?? ""}`);
       const named = str(message.toolName);
+      const result = { text: textOf(message), isError: message.isError === true };
+      // A result before its call waits for it, to count under its name and by its rule.
+      if (!call && id) {
+        early.set(`${conv}:${id}`, { named, result, place: at });
+        continue;
+      }
+      if (call) call.done = true;
       // Failed as the call's row reads it (callFailed): an error, or a result its tool reads as failed (a refused fetch).
       const called = call?.called ?? named ?? "";
-      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, { text: textOf(message), isError: message.isError === true }));
+      tally(call?.name ?? (named ? metricName(named) : METRIC_NAMES.unnamedTool), callFailed(called, result));
     }
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
+  // A result whose call never came counts by its own name, as any result without a call does.
+  for (const { named, result, place } of early.values()) {
+    const name = named ? metricName(named) : METRIC_NAMES.unnamedTool;
+    see(name, place);
+    tally(name, callFailed(named ?? "", result));
+  }
   for (const row of decisions) meter.decide(row);
-  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
+  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)![0] - order.get(b)![0] || order.get(a)![1] - order.get(b)![1]));
   return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
 }
 

@@ -3,7 +3,7 @@
 // pi's own cap holds them, so neither can pass the cap with the other.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capBefore, NATIVE_SEARCH_ALLOWANCE_TOKENS } from "../dist/cap.js";
+import { capBefore, NATIVE_SEARCH_ALLOWANCE_TOKENS, paidCall, useSpend } from "../dist/cap.js";
 import { nativeOptions } from "../dist/adapters.js";
 import { withOverCap } from "../dist/runs.js";
 
@@ -17,6 +17,23 @@ test("a request in flight holds its worst case: a second one sent beside it is r
   assert.equal(cap.beforeRequest({ spentUsd: 0.3, inFlight: [], inputTokensMax: 0 }), undefined, "once the first answered, its own cost is what counts");
   assert.match(cap.beforeRequest({ spentUsd: 0.5, inFlight: [], inputTokensMax: 0 })?.refuse ?? "", /^spend_cap_reached: /, "spent and a request's worst case past the cap");
   assert.match(cap.beforeRequest({ spentUsd: null, inFlight: [], inputTokensMax: 0 })?.refuse ?? "", /spent is unknown/);
+});
+
+test("a paid call under way holds what it is held at here too: a request that fits only without it is refused, and goes once the call's charge is in", async (t) => {
+  const cap = await capBefore(1, model);
+  // The run's spend as the harness gives it to a paid call (harness-app.ts), and monid's run held at a $0.6 quote.
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const call = { sent: false };
+  const answer = new Promise((resolve) => (call.settle = resolve));
+  const paid = paidCall("monid_run", () => ((call.sent = true), answer), (charged) => charged, { usd: 0.6, basis: "the price monid_inspect quoted" });
+  t.after(() => call.settle(0));
+  while (!call.sent) await new Promise((resolve) => setImmediate(resolve));
+  assert.match(cap.beforeRequest({ spentUsd: 0, inFlight: [], inputTokensMax: 0 })?.refuse ?? "", /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.600000, and with \$0\.600000 spent or in flight the run would pass its cap of \$1: the run is out of budget\.$/, "a request beside the paid call would pass the cap with it");
+  call.settle(0.1);
+  assert.deepEqual(await paid, { result: 0.1 });
+  assert.equal(cap.beforeRequest({ spentUsd: spent, inFlight: [], inputTokensMax: 0 }), undefined, "once its $0.1 charge is in, the request goes");
 });
 
 // $1 per million input tokens, a cache write at $2, and no output price: a request's worst case is its input bound alone.
