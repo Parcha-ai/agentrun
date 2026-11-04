@@ -163,7 +163,7 @@ const TOOL_KEYS_VIEW = closed({
     items: closed({
       id: { enum: TOOL_KEYS.map((row) => row.id) }, kind: { enum: ["tool", "model"], description: "`tool`: it unlocks tools, and reaches only the runs that name one; `model`: a model provider's key, which every run gets, and which gives the default model when the host names none (`capabilities.models`)." }, label: { type: "string" },
       unlocks: { type: "array", items: { type: "string" }, description: "What the key unlocks on this server: tools capabilities' `tools` lists, and `decisions.<id>` for a provider its `workflows.decisions.providers` lists. Empty when the key unlocks nothing this server binds." },
-      harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tools in `unlocks`: the union of their `harnesses` in capabilities' `tools`. A `model` key's: pi and the provider's own harness, of those capabilities' `harnesses` say this server runs." },
+      harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tools in `unlocks`: the union of their `harnesses` in capabilities' `tools`. A `model` key's: pi and the provider's own harness (OpenRouter's, all three), of those capabilities' `harnesses` say this server runs or would run once the key is set: one unavailable only for want of a model key is listed before the key is saved." },
       fields: {
         type: "array",
         items: {
