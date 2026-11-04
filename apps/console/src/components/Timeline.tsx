@@ -2,7 +2,7 @@ import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, Loa
 import { useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
-import { type Step, steps } from "@/lib/timeline";
+import { rowDetail, rowFailed, type Step, steps } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
 
@@ -35,9 +35,9 @@ function Row({ step, last }: { step: Step; last: boolean }) {
   const [open, setOpen] = useState(false);
   const running = row.kind === "tool_use" && row.tool_status === "running";
   const Icon = running ? LoaderCircle : ICON[row.kind] ?? Flag;
-  const detail = step.above ? null : step.detail ?? (row.kind === "tool_use" ? row.tool_input_preview : row.kind === "tool_result" ? row.tool_result_preview : row.text);
+  const detail = step.above ? null : step.detail ?? rowDetail(row);
   const interrupted = row.tool_status === "interrupted";
-  const failed = row.tool_status === "failed" || interrupted || row.kind === "error";
+  const failed = rowFailed(row) || interrupted;
   const missing = row.tool_status === "missing";
   return (
     <li className="relative flex gap-3">

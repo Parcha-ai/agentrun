@@ -18,10 +18,11 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, redactSecrets, retire, secretShapes, valueMatcher } from "./learn/index.js";
+import { buildIndex, CAPS, checkNote, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, retire } from "./learn/index.js";
 import { ApiError, invalid } from "./errors.js";
 import { homeOf, readJson } from "./files.js";
-import { agentFolder, checkOut, git, line, mainOf, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, withAgentRepo } from "./learning.js";
+import { agentFolder, checkOut, detailShown, git, line, mainOf, notesView, openAgentRepo, PROPOSAL, readBlobs, readFolder, readPin, secretsShown, type Shown, withAgentRepo } from "./learning.js";
+import type { Impact } from "./learning-run.js";
 import type { Run } from "./runs.js";
 import { isObject } from "./validate.js";
 
@@ -40,23 +41,12 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
-type NoteView = { file: string; name: string; description: string; type: string; status: string; superseded_by: string | null; text: string };
+type NoteView = { file: string; name: string; description: string; type: string; status: string; superseded_by: string | null; text: string; etag: string };
 type Change = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
-type Note = LearnedNote & { text: string };
+/** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
+type Note = LearnedNote & { text: string; oid: string };
 export type Counts = { merged: number; dropped: Record<string, number>; in_progress: number };
-/** What a text or a name that leaves shows of the host's secrets now: none (secretsShown). */
-export type Shown = { text: (text: string) => string; name: (name: string) => string; holds: (text: string) => boolean };
-/** What a name holding a secret reads: learn/secrets.ts redactSecrets' mark, the name's whole, never a part of it. */
-const REDACTED = "[redacted]";
-
-/** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
- *  learn/secrets.ts redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
- *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. */
-export function secretsShown(values: readonly string[]): Shown {
-  const matches = valueMatcher(values);
-  const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
-  return { holds, text: (text) => (holds(text) ? redactSecrets(text, values) : text), name: (name) => (holds(name) ? REDACTED : name) };
-}
+export { secretsShown, type Shown } from "./learning.js";
 
 /** The few values last kept, by key, oldest dropped first: at most `entries` of them, `bytes` in all by their sizes. */
 class Recent<T> {
@@ -129,9 +119,9 @@ async function textsOf(home: string, repo: string, entries: Map<string, string>)
 async function readAt(home: string, repo: string, sha: string): Promise<{ index: string; notes: Map<string, Note> }> {
   const texts = await textsOf(home, repo, await entriesAt(home, repo, sha));
   const notes = new Map<string, Note>();
-  for (const [file, { text }] of texts) {
+  for (const [file, { oid, text }] of texts) {
     const note = file === INDEX_FILE ? [] : parseNoteFile(file, text);
-    if (!Array.isArray(note)) notes.set(file, { ...note, text });
+    if (!Array.isArray(note)) notes.set(file, { ...note, text, oid });
   }
   return { index: texts.get(INDEX_FILE)?.text ?? "", notes };
 }
@@ -205,8 +195,9 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
   return parsed;
 }
 
-/** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole. */
-const noteView = ({ file, name, description, type, status, superseded_by, text }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text) });
+/** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
+ *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows. */
+const noteView = ({ file, name, description, type, status, superseded_by, text, oid }: Note, shown: Shown): NoteView => ({ file: shown.name(file), name: shown.text(name), description: shown.text(description), type, status, superseded_by: superseded_by === null ? null : shown.name(superseded_by), text: shown.text(text), etag: etagOf(oid) });
 
 const cursorOf = (sha: string, offset: number) => Buffer.from(`${sha}.${offset}`).toString("base64url");
 /** A page of `all`, from `offset`, at most `limit`, each shown by `view` (so only the page's are cut of secrets). */
@@ -225,14 +216,15 @@ async function pageRequest(home: string, repo: string, query: URLSearchParams, f
   return { limit, at: { sha: named[1]!, offset: Number(named[2]) } };
 }
 
-/** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and the runs' counts; an
- *  agent with no folder (its learning never on) has an empty one. */
-export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts) {
+/** GET /agents/{id}/learning: main, its index, the first page of its notes and of its log, and how the agent's runs
+ *  fared and what learning changed for them (`counts`, `impact`: learning-run.ts, from the runs' rows and the learning
+ *  ledger); an agent with no folder (its learning never on) has an empty one. */
+export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact) {
   const { home, repo } = await placeOf(data, agentId);
   const sha = await mainOf(home, repo);
-  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts };
+  if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, log: EMPTY, counts, impact };
   const [{ index, notes }, log] = await Promise.all([notesAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
-  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts };
+  return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => noteView(note, shown)), log, counts, impact };
 }
 
 /** GET /agents/{id}/learning/notes?cursor=&limit=&status=: a page of the notes, ordered as the view's, from what the
@@ -360,6 +352,12 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
       const notNote = "The folder's file by this name on main is no note (not a regular UTF-8 file of at most 1 MiB), and a person's write never replaces it.";
       if (condition.match && !(current && condition.match.includes(etagOf(current.oid)))) throw new ApiError("precondition_failed", current ? "The note changed since it was read (a run's merge, or another edit): read it again." : held ? notNote : "There is no such note on main: create it with If-None-Match: *.");
       if (condition.absent && held) throw new ApiError("precondition_failed", current ? "The folder has a note by this name: read it, then edit it with If-Match." : notNote);
+      // A note whose text holds one of the host's secrets as they are now (a value made secret after it was written) is
+      // read cut of it, under its own ETag: an edit of what was shown would write the cut over the hidden text. Only a
+      // retire reaches it.
+      if (given !== undefined && current && secretsShown(input.refuse).holds(current.text)) {
+        throw refused([{ rule: "secret_value", path: file, detail: "This note holds a value the server now keeps secret, so its text was shown with that value hidden, and saving would replace the hidden text. Retire it and write a new note instead." }]);
+      }
       let text = given;
       if (text === undefined) {
         const note = parseNoteFile(file, current!.text);
@@ -409,14 +407,17 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
   });
 }
 
-/** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn. */
+/** GET /runs/{id}/learning: the run's learning whole, or null for a run that does not learn: its detail cut of the
+ *  host's secrets now, and the notes it read and learned as its view shows them (learning.ts notesView). */
 export async function runLearning(run: Run, shown: Shown, secrets: readonly string[]) {
   const learning = run.meta.learning;
   if (!learning) return null;
   const pin = await readPin(run.dir).catch(() => undefined);
-  const { state, reason, detail, at, verdict, problems, merged, cost_usd, tokens } = learning;
+  const { state, reason, at, verdict, problems, merged, cost_usd, tokens } = learning;
   return {
-    run: run.id, state, reason, detail, at,
+    run: run.id, state, reason, detail: detailShown(learning, shown), at,
+    // Once it settled (a run that runs again for a follow-up is still reading).
+    ...notesView(learning, shown, run.settled),
     seed: pin?.seed ?? null,
     merged: merged ?? null,
     // The grader's, with its item for each new note: a name holding one of the host's secrets reads [redacted], and

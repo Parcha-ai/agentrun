@@ -75,6 +75,10 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   const runId = await started(api, "replacer");
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "merged");
+  // What it learned, and what that replaced, on its learning block and in the agent's list.
+  const learned = [{ file: "refunds-v2.md", name: "Refunds path", supersedes: ["refunds.md"] }];
+  assert.deepEqual(view.learning.learned, learned);
+  assert.deepEqual((await api("GET", "/agents/replacer/runs")).body.runs.find((run) => run.run_id === runId).learning.learned, learned);
   assert.equal(git(repo, ["show", "main:refunds-v2.md"]), NEW.trimEnd());
   assert.equal(git(repo, ["show", "main:refunds.md"]), note("Refunds path", "Refunds live under /help/", "Refunds live under /help/.\n", "status: superseded\nsuperseded_by: refunds-v2.md\n").trimEnd());
   assert.equal(`${git(repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds-v2.md) — Refunds live under /policies/refunds\n");
@@ -95,6 +99,7 @@ test("a note a person corrects while a grade that supersedes it is under way is 
   held.release();
   const { view, rows } = await ended(held.api, held.runId);
   settled(view, rows, "dropped", "checker");
+  assert.equal(view.learning.detail, "Not kept: a note it would replace is gone or was changed since.", "said as a person reads it");
   const problems = [{ rule: "supersedes", path: "refunds-v2.md", detail: "refunds.md changed after the grade read it" }];
   assert.deepEqual((await savedOf(held.data, held.runId)).learning.problems, problems);
   assert.deepEqual((await held.api("GET", `/runs/${held.runId}/learning`)).body.problems, problems);
@@ -140,7 +145,7 @@ test("two runs at once that add different notes both merge, and the index has bo
   const states = ends.map(({ view }) => `${view.learning.state}/${view.learning.reason}`).sort();
   assert.deepEqual(states, ["dropped/checker", "merged/null"]);
   const lost = ends.find(({ view }) => view.learning.state === "dropped");
-  assert.match(lost.view.learning.detail, /exists/);
+  assert.equal(lost.view.learning.detail, "Not kept: the agent's notes changed while this run ran (a note under a name already taken).");
   assert.deepEqual((await savedOf(data, lost.view.run_id)).learning.problems, [{ rule: "exists", path: "gamma.md", detail: "the folder has a note by this name" }]);
   assert.equal(mergesOf(repo, lost.view.run_id).length, 0);
 });
@@ -212,7 +217,7 @@ test("a turn that adds nothing is dropped as empty, and the run's answer stands"
   const { view, rows } = await ended(api, runId);
   assert.equal(view.result.final_answer, "Job answer.");
   settled(view, rows, "dropped", "empty");
-  assert.equal(view.learning.detail, "The end-of-run turn added no note.");
+  assert.equal(view.learning.detail, "Nothing new to remember from this run.");
   assert.equal(git(repoOf(data, "idle"), ["rev-list", "--count", "main"]), "1");
 });
 

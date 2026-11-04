@@ -6,6 +6,10 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
+import { bookedIn, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
+import { parallelExtract } from "../dist/web-fetch.js";
+import { webSearch } from "../dist/web-search.js";
+import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -217,4 +221,38 @@ test("a tool's own request adds its hosted tool's allowance to its input bound a
     requests[0]?.end(0.001);
     if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   }
+});
+
+test("a Parallel search under way holds its fee for the cap: a model request beside it that fits only without it is refused, and goes once the search answered and charged nothing", async (t) => {
+  // A request's worst case is $0.001 (1,000 output tokens at $1 a million), and a fast search is held at its $0.001: a
+  // $0.0015 cap holds one of the two, never both, whichever branch, tool round or harness each comes from.
+  const mode = process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH;
+  process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = "422";
+  t.after(() => (mode === undefined ? delete process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH : (process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = mode)));
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0015, 0);
+  t.after(() => useSpend(undefined));
+  // The search reaches Parallel and is held there until released.
+  let arrived, release;
+  const reached = new Promise((resolve) => (arrived = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const send = async (url, init) => (arrived(), await held, fakeParallel(url, init));
+  const records = [];
+  const ledger = { call: "c1", record: async (kind, data) => void records.push([kind, data.heldUsd ?? data.usd]) };
+  const search = bookedIn(ledger, () => webSearch({ query: "widgets", n: 2 }, parallelExtract(CANARY, send)));
+  await reached;
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "not sent while the search is under way");
+  // The refusal counts the search's fee as held (#1539's words, as main's paid-call hold test reads them).
+  assert.equal((await request.result()).errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.001 for requests still answering, of its $0.0015 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.01 to run it.");
+  // Parallel refused the search (422): it charged nothing, and its hold is gone.
+  release();
+  assert.deepEqual(await search, { error: "Parallel's search answered 422" });
+  assert.deepEqual(records, [["agentrun.tool_started", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", 0]]);
+  const admitted = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "with the search's hold released at $0, the request fits");
+  sent[0].end(0);
+  await admitted.result();
 });
