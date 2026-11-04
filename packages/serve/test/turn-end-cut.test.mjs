@@ -5,13 +5,16 @@
 // waits for the person (input_required), never claiming "". The kill comes at a write the process holds open
 // (faux-harness-turn-end-cut.mjs), never after a wait. The faux claude-agent harness, no network.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
+import { DatabaseSync } from "node:sqlite";
 import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const CUT = new URL("./fixtures/faux-harness-turn-end-cut.mjs", import.meta.url).pathname;
+const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
 const TERMINAL = ["completed", "failed", "cancelled"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -139,3 +142,49 @@ test("a follow-up still queued behind an answerless turn whose end was written, 
     assert.ok(!hold.since.slice(hold.since.lastIndexOf("adapter.turn_end")).includes("pi.user"), `the follow-up's entry not written: ${hold.since.join(", ")}`);
   });
 });
+
+/** The run's store entries, read once its process lets go of the store; a read that finds it held tries again. */
+function storeEntries(data, runId) {
+  for (let tries = 0; ; tries++) {
+    const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    try {
+      return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
+    } catch (error) {
+      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
+    } finally {
+      db.close();
+    }
+  }
+}
+const holderOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder?.pid;
+const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`${harness}: a turn whose answer is on the root, its process killed before the turn's end, recovered with no new text, answers with that saved answer`, { timeout: 180_000 }, async (t) => {
+    // The answer is written (the next request's start writes it); the turn holds with no request open; the process is
+    // killed. The next one recovers the open turn, which ends with a request that shows nothing: the turn's answer is the
+    // one already on the root, never "".
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+    const dir = await scratch(t);
+    const [go, held] = [join(dir, "go"), join(dir, "held")];
+    assert.equal((await api("POST", "/agents", agent(`saved-${harness}`, { harness, instructions: `Answer, then hold until ${go} (signal ${held}), then end showing nothing.` }))).status, 201);
+    const runId = (await api("POST", `/agents/saved-${harness}/runs`, { input: { content: "hi" } })).body.run_id;
+    for (const end = Date.now() + 55_000; ; await sleep(50)) {
+      const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+      if (rows.some((r) => r.kind === "final_answer" && r.text === "Saved answer.") && (await readFile(held).then(() => true, () => false))) break;
+      assert.ok(Date.now() < end, "the answer's row is in and the turn holds");
+    }
+    const pid = holderOf(data, runId);
+    process.kill(pid, "SIGKILL");
+    for (const end = Date.now() + 30_000; !gone(pid); await sleep(50)) assert.ok(Date.now() < end, "the run's process is gone");
+    await writeFile(go, "");
+    const { last } = await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+    assert.equal(last.status, "completed");
+    assert.equal(await answer(api, runId), "Saved answer.", "the recovered turn's answer is the one on the root, never \"\"");
+    for (const end = Date.now() + 60_000; ; await sleep(100)) { const now = holderOf(data, runId); if (now === undefined || gone(now)) break; assert.ok(Date.now() < end, "the run's process lets go of its store"); }
+    const entries = storeEntries(data, runId);
+    const answerEntry = entries.find((e) => e.kind === "pi.assistant" && JSON.stringify(e.model ?? []).includes("Saved answer."));
+    const ends = entries.filter((e) => e.kind === "adapter.turn_end");
+    assert.deepEqual(ends.map((e) => [e.data?.status, e.data?.answer]), [["completed", answerEntry?.id]], `the turn's end names the saved answer's entry: ${JSON.stringify(ends.map((e) => e.data))}`);
+  });
+}

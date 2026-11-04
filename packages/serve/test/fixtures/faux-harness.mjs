@@ -80,6 +80,11 @@ export function script(spec) {
   // while the turn works; the second request's entry waits for the turn's end.
   const answered = /Answer, then hold the turn(?: after a request at \$(\S+))? \(signal (\S+)\)\./.exec(text);
   if (answered) return [{ say: "Done.", usd: 0.001 }, { say: "", usd: answered[1] === undefined ? 0.001 : Number(answered[1]) }, hangSignalled(answered[2])];
+  // An answer, then one more request that says nothing (its start writes the answer's entry), then the turn holds with
+  // no request open until the file exists, writing the signal when it reaches the hold; then it ends with a request that
+  // shows nothing. A process killed in the hold leaves the answer on the root and the turn open: the next one recovers it.
+  const saved = /Answer, then hold until (\S+) \(signal (\S+)\), then end showing nothing\./.exec(text);
+  if (saved) return [{ say: "Saved answer.", usd: 0.001 }, { say: "", usd: 0.001 }, ...(existsSync(saved[1]) ? [] : [hangSignalled(saved[2])]), { end: true, usd: 0.001 }];
   // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
   // text): the turn ends with no answer row after the person's message. The first, after an answer past the store's
   // 2,000-character summary, which the run reads whole.
