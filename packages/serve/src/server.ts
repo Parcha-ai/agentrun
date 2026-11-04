@@ -276,6 +276,7 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "deleteHomeFile" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
+  { method: "PATCH", pattern: /^\/runs\/([^/]+)$/, name: "raiseRunCap" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
@@ -1416,6 +1417,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
         });
         return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "raiseRunCap": {
+        const run = await needRun(id);
+        const body = await bodyOf(req);
+        const extra = unknownFields(body, ["max_cost_usd"]);
+        if (extra.length) throw invalid(extra);
+        const cap = body.max_cost_usd;
+        if (!(typeof cap === "number" && Number.isFinite(cap) && cap > 0)) throw invalid([{ field: "max_cost_usd", reason: cap === undefined ? "missing" : "wrong_type", message: "max_cost_usd is a number above 0" }]);
+        if (run.kind === "workflow") throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here, so it has no cap to raise." }]);
+        const now = run.meta.max_cost_usd;
+        if (now === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
+        if (!(cap > now)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's $${now}.` }]);
+        const { resumed, messageId, note } = await runs.raiseCap(run, cap);
+        const { status, state } = statusOf(run);
+        return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
       }
       case "stopRun": {
         const run = await needRun(id);

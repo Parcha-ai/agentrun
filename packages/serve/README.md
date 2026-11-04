@@ -1576,6 +1576,15 @@ releases the run), so a paused run holds no place; a server started again reads 
 paused run is `409 budget_reached`; a stop does nothing more, and a cancel ends it `cancelled`. Only a refusal for room
 pauses a run: one no cap fixes (above) ends it `failed`, as does a cost found past the cap after a response.
 
+`PATCH /runs/{run_id}` with `{max_cost_usd}` raises the cap, and only raises it: the new cap is above the run's own
+(`422` otherwise, and for a run with no cap or a workflow run; `409 not_continuable` for an ended run). The run's
+serve.json keeps it, with each raise in `cap_raised`, so its next process opens under it, as does a server started again.
+A run paused at its cap goes on: once its process has been let go, the server sends it one follow-up turn, "The cap was
+raised to $2; continue the task.", which runs under the new cap; the answer is `{run_id, max_cost_usd, resumed: true,
+message_id, status, state}`. A working run's live process keeps the cap it was opened with until its next one, and the
+answer's `note` says so. Should the follow-up not go (no place for its process), the run waits for a message instead,
+`input_required` and `idle`, and takes one under the new cap.
+
 A request carrying a native web search tool reads pages into its input that its body does not hold (the provider bills
 them as input): under a cap its input bound is its body's plus an allowance. Claude's own search, an explicit `native`
 pick, does not run under a cap: each search has a per-use fee the cap cannot reserve yet, so a capped claude-agent run

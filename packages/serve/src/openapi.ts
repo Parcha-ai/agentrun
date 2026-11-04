@@ -716,6 +716,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "200": json(VALIDATED, "The workflow's issues and warnings; ok when it has no issue."), ...errors(400, 401, 415, 422, 429, 500) },
     },
   },
+  "/runs/{run_id}": {
+    patch: {
+      operationId: "raiseRunCap", tags: ["runs"], summary: "Raise a run's spend cap",
+      description: "Raises `max_cost_usd` of an agentic run that named one; only a raise: the new cap is above the run's own (422 otherwise, and for a run with no cap or a workflow run). The run's serve.json keeps it, so its next process and a server started again run under it. A run paused at its cap (`pending.kind` budget) goes on: once its process has been let go, the server sends it one follow-up turn, \"The cap was raised to $X; continue the task.\", which runs under the new cap (`resumed` true, its `message_id`). A run working keeps the cap its process was opened with until its next process (`note` says so). 409 not_continuable for an ended run.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["max_cost_usd"], properties: { max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "The new cap, above the run's own." } } } } } },
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["run_id", "max_cost_usd", "resumed", "status", "state"], properties: {
+          run_id: { type: "string" }, max_cost_usd: { type: "number" }, resumed: { type: "boolean", description: "A run paused at its cap was sent its follow-up turn." },
+          message_id: { type: "string", description: "That follow-up's id, when `resumed`." }, note: { type: "string", description: "Said when the run's live process keeps its old cap until its next process." },
+          status: ref("schemas/RunStatus"), state: ref("schemas/RunState"),
+        } }, "The run, its cap raised."),
+        ...errors(401, 404, 409, 422, 429, 500),
+      },
+      "x-agentrun-serve": "cappause/1",
+    },
+  },
   "/runs/{run_id}/pause": {
     post: {
       operationId: "pauseRun", tags: ["runs"], summary: "Pause a workflow run",
