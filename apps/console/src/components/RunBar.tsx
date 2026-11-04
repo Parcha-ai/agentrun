@@ -27,10 +27,11 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
   const boxed = placeOf(agent.definition.place);
   const inBox = !workflow && boxed?.mode === "sandbox" ? boxed.box : undefined;
   const [onServer, setOnServer] = useState(false);
-  const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
   const keys = useMemo(() => keeper(), []);
-  const attachments = useAttachments({ upload, remove: v2.deleteUpload, limits });
+  const [sending, setSending] = useState(false);
+  // The files hold still while a start that names them is under way.
+  const attachments = useAttachments({ upload, remove: v2.deleteUpload, limits, frozen: sending });
   const built = startBody(agent.kind, { text, effort, onServer: !!inBox && onServer, fileIds: attachments.fileIds });
   const send = async (id: string, body: Parameters<Client["startRun"]>[1], key: string): Promise<Sent> => {
     try {
@@ -53,7 +54,8 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
     const r = await submitStart(keys, agent.agent_id, built.body, send);
     if (!mounted.current) return;
     setSending(false);
-    if (r.runId) go(`#/runs/${encodeURIComponent(r.runId)}`);
+    // The run has its own copies: the page forgets the files before it goes, so leaving never deletes them.
+    if (r.runId) { attachments.clear(); go(`#/runs/${encodeURIComponent(r.runId)}`); }
     else setProblem(r.problem ?? { message: `The server answered ${r.status}.` });
   };
   // A 422 names its fields; each one whose message says more than the refusal's is listed under it.

@@ -78,7 +78,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
-  const attachments = useAttachments({ upload, remove: removeUpload, limits });
+  const attachments = useAttachments({ upload, remove: removeUpload, limits, frozen: sending });
   const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, onServer: !!inBox && onServer, fileIds: attachments.fileIds });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
@@ -115,7 +115,13 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
             <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
             {view === "json" ? (
-              <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
+              <>
+                <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
+                {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
+                <Label name="file_ids" note="Empty names none.">
+                  <FilePicker attachments={attachments} limits={limits} />
+                </Label>
+              </>
             ) : (
               <>
                 <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
@@ -154,7 +160,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           </div>
           <footer className="flex items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
             <span className="text-[12px] text-muted-foreground">Sends a real request to this server.</span>
-            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
           </footer>
         </section>
         <section className="flex min-h-0 flex-col">
