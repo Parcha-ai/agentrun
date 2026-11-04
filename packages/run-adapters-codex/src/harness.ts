@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 010-repair-without-a-note, 011-web-search-live, 012-cut-off-safe-call, 014-content-filter
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 010-repair-without-a-note, 011-web-search-live, 012-cut-off-safe-call
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -446,9 +446,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       onCap: (cap) => {
         if (cap !== 'concurrency') capped = cap;
       },
-      // A provider's content filter stopping an answer fails the turn at once, in the model proxy's words, so Codex
-      // never asks for the refused answer again.
-      onFiltered: (message) => ctx.halt?.(new Error(message)),
       // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
       ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`codex gateway: ${message}`, fields) } : {}),
     });

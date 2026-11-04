@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search, 016-mcp-output-tokens, 017-key-refused, 018-content-filter
+// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search, 016-mcp-output-tokens, 017-key-refused
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -457,9 +457,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         },
         // A refused key fails the turn at the provider's first 401, in the words the CLI would end on after its retries.
         onKeyRefused: (detail) => ctx.halt?.(new Error(`Failed to authenticate. API Error: 401${detail ? ` ${detail}` : ''}`)),
-        // A provider's content filter stopping an answer fails the turn at once, in the model proxy's words, so the CLI
-        // never asks for the refused answer again.
-        onFiltered: (message) => ctx.halt?.(new Error(message)),
         // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
         ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-agent gateway: ${message}`, fields) } : {}),
       });

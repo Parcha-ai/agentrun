@@ -8,5 +8,8 @@ another model." Before, it ended `run_failed` with the provider's jargon ("Respo
 provider's own words stay on the Timeline's error row. On pi the run reads pi-ai's words for the stop on each API. On
 claude-agent and codex the session's model proxy reads the provider's stop (Anthropic's `refusal`, an OpenAI answer
 `incomplete` for `content_filter`) and the harness ends the turn at once: the CLI no longer asks for the refused answer
-again, turn after turn. The kernel exports `CONTENT_FILTERED`, the text such a turn ends with, and a provider policy may
-say a stop through `filtered`; the model proxy tells the harness through `onFiltered`.
+again, turn after turn. Only the turn's own answer request ends it: a side call the CLI makes beside the turn (one
+without the session's tools) that the provider stops is logged and left to the CLI. The refused request is booked at
+the usage its end reports. The kernel exports `CONTENT_FILTERED`, the text such a turn ends with; a provider policy may
+say a stop through `filtered` and a side call through `answers`, and the model proxy tells its machine through
+`onFiltered`.

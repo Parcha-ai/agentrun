@@ -337,6 +337,15 @@ export function anthropicFiltered(text: string): boolean {
   return stop === "refusal";
 }
 
+/** Whether a Messages body (as `apply` kept it) is the turn's answer request: it offers the model one of the session's
+ *  tools. The CLI's side calls (a title, a summary, a web search's own request) offer none of them; in a session with no
+ *  tools no request can be told from one, so each is the turn's. */
+export function anthropicAnswers(body: Record<string, unknown>, options: Pick<AnthropicPolicyOptions, "tools" | "builtins">): boolean {
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
+  if (allowed.size === 0) return true;
+  return Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && typeof tool.name === "string" && allowed.has(tool.name));
+}
+
 /** The Claude Agent CLI's provider policy for one session. */
 /** The image blocks in `value`, at any depth (a tool's result holds them). */
 function imagesIn(value: unknown): number {
@@ -385,5 +394,6 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     limitOutput: limitAnthropicOutput,
     usageOf: anthropicUsage,
     filtered: anthropicFiltered,
+    answers: (body) => anthropicAnswers(body, options),
   };
 }

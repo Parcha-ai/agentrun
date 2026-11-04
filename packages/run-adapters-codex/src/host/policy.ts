@@ -244,38 +244,76 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
   }
 }
 
-/** The usage a Responses answer reports at its end (`endValue`), or undefined, an unknown cost, when it reports none. */
 /**
  * Whether the provider stopped the answer on its content filter: the stream's terminal event (or a whole body) is an
  * `incomplete` response whose `incomplete_details.reason` is `content_filter`. Read by parsing each `data:` line on its
  * own, as endValue reads the usage, never by matching text; an answer cut at its output limit (`max_output_tokens`) is not one.
+ *
+ * The terminal event carries the whole response (its output, encrypted reasoning included), so its line can be longer
+ * than the proxy keeps of an answer; then the proxy's start of that line is read. The response's fields come in a fixed
+ * order, `id`, `object`, `created_at`, `status`, `background`, `error`, `incomplete_details`, then `instructions`, the
+ * tools and the output, so `incomplete_details` is near the line's start; it is read only on a line the SSE
+ * `event: response.incomplete` names, as the first `"incomplete_details":{` after `"response":{` (one JSON object).
  */
-export function filtered(text: string): boolean {
+export function filtered(text: string, lineStarts: readonly string[] = []): boolean {
+  let end = terminalResponse(text.split("\n"), false);
+  if (end === undefined) {
+    const whole = text.trimStart();
+    if (whole.startsWith("{")) {
+      try {
+        const body = JSON.parse(whole) as unknown;
+        if (isPlain(body) && body.object === "response") end = body;
+      } catch {}
+    }
+  }
+  end ??= terminalResponse(lineStarts, true);
+  return isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "content_filter";
+}
+
+/** The response of the last terminal event in `lines` (`filtered`), each `data:` line parsed on its own; with `starts`,
+ *  the lines are kept starts, and one the SSE `event: response.incomplete` names is read from its start. */
+function terminalResponse(lines: readonly string[], starts: boolean): unknown {
   let end: unknown;
-  for (const line of text.split("\n")) {
+  let named = false;
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      named = line.slice(6).trim() === "response.incomplete";
+      continue;
+    }
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
+    const incomplete = named;
+    named = false;
     if (!data.startsWith("{")) continue;
     try {
       const event: unknown = JSON.parse(data);
       if (isPlain(event) && typeof event.type === "string" && PAID_END.has(event.type)) end = event.response;
     } catch {
-      continue; // a line the window cut
+      // A line the window cut (skipped), or a kept start the event's name says is the stop's.
+      if (starts && incomplete) end = startOfResponse(data) ?? end;
     }
   }
-  if (end === undefined) {
-    const whole = text.trimStart();
-    if (!whole.startsWith("{")) return false;
-    try {
-      const body = JSON.parse(whole) as unknown;
-      if (isPlain(body) && body.object === "response") end = body;
-    } catch {
-      return false;
-    }
-  }
-  return isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "content_filter";
+  return end;
 }
 
+/** The status and `incomplete_details` of the response a `response.incomplete` event's line starts with (`filtered`), or
+ *  undefined when the line's kept start does not hold them. */
+function startOfResponse(data: string): Record<string, unknown> | undefined {
+  const response = data.indexOf('"response":{');
+  if (response < 0) return undefined;
+  const mark = '"incomplete_details":{';
+  const at = data.indexOf(mark, response);
+  if (at < 0) return undefined;
+  const json = objectAt(data, at + mark.length - 1);
+  if (json === undefined) return undefined;
+  try {
+    return { status: "incomplete", incomplete_details: JSON.parse(json) as unknown };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The usage a Responses answer reports at its end (`endValue`), or undefined, an unknown cost, when it reports none. */
 export function usageOf(text: string): ProxyUsage | undefined {
   return usageFrom(endValue(text, "usage"));
 }
