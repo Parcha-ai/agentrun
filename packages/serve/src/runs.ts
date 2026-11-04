@@ -31,7 +31,7 @@ import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decision
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, KEY_MODEL_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
+import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
@@ -1382,10 +1382,10 @@ export class Runs {
     // key the run holds, then this), so a host's setting the harness can run still wins; and one it cannot (AGENT_MODEL
     // on Anthropic's model, for codex) no longer leaves the run with none. pi and codex choose through the gateway
     // (chooseModel); claude-agent never does, and holds the key its route sends, which gives its default.
-    delete env[KEY_MODEL_ENV];
+    delete env[DEFAULT_MODEL_ENV];
     const harness = run.tooling?.harness ?? DEFAULT_HARNESS;
-    const keyModel = run.tooling && !run.tooling.model && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
-    if (keyModel) env[KEY_MODEL_ENV] = keyModel;
+    const defaultModel = run.tooling && !run.tooling.model && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
+    if (defaultModel) env[DEFAULT_MODEL_ENV] = defaultModel;
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are

@@ -24,8 +24,9 @@ export const FAUX_UPSTREAM_ENV = "AGENTRUN_SERVE_FAUX_UPSTREAM";
 export const EFFORT_ENV = "AGENTRUN_SERVE_EFFORT";
 /** The model the server's keys give a run that names none (hostModel at the run's launch, from every key the server
  *  holds), passed to its child as its effort is: behind a gateway the run holds the gateway's key alone, never the key
- *  that names its default (runs.ts). */
-export const KEY_MODEL_ENV = "AGENTRUN_SERVE_KEY_MODEL";
+ *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment (pi-durable-disk's
+ *  secret-name rule): a harness's log keeps it (adapters.ts harnessLog). */
+export const DEFAULT_MODEL_ENV = "AGENTRUN_SERVE_DEFAULT_MODEL";
 export const MODEL_PROVIDER = "agent-model";
 export const EFFORTS = ["low", "medium", "high"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -94,12 +95,12 @@ export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string)
 /** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
  *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
  *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on, else, in a run's
- *  process that holds none of those keys, the one the server's keys gave it (KEY_MODEL_ENV). Undefined when none is:
+ *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV). Undefined when none is:
  *  the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
   for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
   const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness));
-  return row ? rowModel(row, harness) : env[KEY_MODEL_ENV] || undefined;
+  return row ? rowModel(row, harness) : env[DEFAULT_MODEL_ENV] || undefined;
 }
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";

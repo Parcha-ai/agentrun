@@ -166,10 +166,10 @@ test("past the 1 MiB a failed run's message is looked for in, the last whole har
 // not a secret: a harness's log line naming it keeps it, and so does a failed run's message made of that line
 // (lastLogLine). Under a key-shaped name, harnessLog cut it out as one: "model [redacted] not found".
 test("a harness's log line, and a failed run's message made of it, name the server's default model: its variable is no secret's", async (t) => {
-  const { KEY_MODEL_ENV } = await import("../dist/model.js");
+  const { DEFAULT_MODEL_ENV } = await import("../dist/model.js");
   const model = "openai/gpt-6.1-sol";
   const lines = [];
-  const log = harnessLog("codex", { [KEY_MODEL_ENV]: model, AGENT_MODEL_API_KEY: "not-a-secret-gateway-key" }, (line) => lines.push(line));
+  const log = harnessLog("codex", { [DEFAULT_MODEL_ENV]: model, AGENT_MODEL_API_KEY: "not-a-secret-gateway-key" }, (line) => lines.push(line));
   log(`codex: model ${model} not found`, { status: 404 });
   assert.equal(lines.length, 1);
   assert.ok(lines[0].includes(model), `the line names the model: ${lines[0]}`);
