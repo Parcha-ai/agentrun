@@ -1,4 +1,4 @@
-import { BookOpen, ChevronDown, Pencil, Plus, Sparkles, TriangleAlert, User } from "lucide-react";
+import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -10,6 +10,7 @@ import { markdown, runLabel, when } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
   APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
+  counted, type LearnedItem, learnedItems,
 } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -73,9 +74,13 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
   const waiting = all.filter(isPending);
-  // Whether this caller approves from the console, read once a note waits: until the server says so, no Approve.
+  // The skills and the workflows it learned (a newer server's), each listed whole.
+  const skills = learnedItems(view?.skills);
+  const workflows = learnedItems(view?.workflows);
+  // Whether this caller approves from the console, read once a note, a skill or a workflow waits: until the server
+  // says so, no Approve.
   const [approves, setApproves] = useState<Approval | undefined>(undefined);
-  const anyWaiting = waiting.length > 0;
+  const anyWaiting = waiting.length > 0 || [...skills, ...workflows].some((x) => x.status === "pending");
   useEffect(() => {
     if (!anyWaiting || approves !== undefined) return;
     let live = true;
@@ -115,7 +120,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   const stale = error ? <RefreshFailed error={error} onRetry={read} /> : null;
 
   const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
-  if (!all.length && !adding) return (
+  if (!all.length && !skills.length && !workflows.length && !adding) return (
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
@@ -141,6 +146,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
       )}
       {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-[12px] text-muted-foreground">{IMPACT_LATER}</p>}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
           <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
             <div className="min-w-0 flex-1">
@@ -163,6 +169,23 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           {later.cursor && <div className="flex justify-center"><Button size="sm" onClick={more}>Load more notes</Button></div>}
           {earlier.length > 0 && <Earlier notes={earlier} all={all} from={from} focus={focus} />}
         </section>
+        {(["skill", "workflow"] as const).map((kind) => {
+          const items = kind === "skill" ? skills : workflows;
+          if (!items.length) return null;
+          const title = kind === "skill" ? "Skills it learned" : "Workflows it learned";
+          return (
+            <section key={kind} className="min-w-0 space-y-3" aria-label={title}>
+              <div>
+                <h2 className="text-lg font-semibold">{title}</h2>
+                <p className="mt-0.5 text-[13px] text-muted-foreground">{kind === "skill" ? `${counted(items.length, "skill")}: how to do a job it does again, given to every later run once active.` : `${counted(items.length, "workflow")}: a job it does again, as steps a later run can call.`}</p>
+              </div>
+              <ul className="space-y-3">
+                {items.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
+              </ul>
+            </section>
+          );
+        })}
+        </div>
         <aside className="min-w-0 space-y-6" aria-label="About learning">
           <Panel title="Learning">{switchRow(false)}</Panel>
           <NotKept runs={runs} />
@@ -384,6 +407,77 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
         {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {usedOf ? `${usedIn} of the latest ${usedOf} runs` : runsWord(usedIn)}</span>}
       </footer>}
       {retiring && <RetireConfirm note={note} v2={v2} agentId={agentId} onDone={(ok) => { setRetiring(false); if (ok) onChanged(); }} />}
+    </article>
+  );
+}
+
+/** A skill or a workflow the agent learned: its name, what it is for, the run that kept it, whether it waits for the
+ *  owner's OK (Approve where this caller approves, on the version listed: a skill's SKILL.md, a workflow's README), and
+ *  its text, read when it is opened. A run changes it; a person approves it, never edits or retires it here. */
+function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+  // The version of the text shown: a skill is approved on it, never on a newer one the list holds (its etag).
+  const [shown, setShown] = useState<string | null>(null);
+  const [readError, setReadError] = useState<unknown>(null);
+  const [approving, setApproving] = useState(false);
+  const [said, setSaid] = useState<ReactNode>(null);
+  const waits = item.status === "pending";
+  const load = async () => {
+    setReadError(null);
+    setText(null);
+    setShown(null);
+    try { const read = await v2.readNote(agentId, item.file); setText(read.note); setShown(read.etag); } catch (e) { setReadError(e ?? new Error("unknown")); }
+  };
+  const show = async () => {
+    if (open) return setOpen(false);
+    setOpen(true);
+    if (text === null) await load();
+  };
+  // The list moved to another version: a text shown of the old one goes, and an open card reads the new one.
+  useEffect(() => {
+    if (text === null && shown === null) return;
+    if (open) void load();
+    else { setText(null); setShown(null); }
+  }, [item.etag]); // eslint-disable-line react-hooks/exhaustive-deps
+  const approve = async () => {
+    setApproving(true); setSaid(null);
+    try {
+      await v2.approveNote(agentId, kind === "workflow" && item.readme ? item.readme : item.file, kind === "skill" && open && shown ? shown : item.etag);
+      onChanged();
+    } catch (e) {
+      setApproving(false);
+      setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? <p className="text-[12px] text-destructive-text" role="alert">{`${CHANGED} Reload the tab to see the newest version.`}</p> : <ProblemCard problem={failed(e, `the ${kind}`, `The ${kind} was not approved.`)} className="" />);
+    }
+  };
+  const label = `the ${kind} ${item.name}`;
+  return (
+    <article aria-label={item.name} className="border bg-card/40">
+      <header className="flex flex-col gap-x-3 gap-y-1 px-5 pt-4 sm:flex-row sm:items-start">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="min-w-0 break-words font-mono text-[14px] font-semibold leading-snug">{item.name}</h3>
+            {waits && <Chip tone="warning"><Hourglass className="size-3" aria-hidden />Waits for your OK</Chip>}
+          </div>
+          {item.description && <p className="mt-1 text-[13px] text-muted-foreground">{item.description}</p>}
+          {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{approves === "password" ? APPROVE_SIGN_IN : APPROVE_LATER}</p>}
+        </div>
+        <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
+          {waits && !readOnly && approves === "yes" && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${item.name}`}>{approving ? "Approving" : "Approve"}</Button>}
+          <Button size="sm" variant="ghost" onClick={() => void show()} aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} ${label}`}><ChevronDown className={cn("transition-transform", open && "rotate-180")} aria-hidden />{open ? "Hide" : "Show"}</Button>
+        </div>
+      </header>
+      {said && <div className="px-5 pt-3">{said}</div>}
+      {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
+        : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
+        : kind === "skill" ? <Body text={bodyOf(text)} />
+        : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-[12px]">{text}</pre>)}
+      <footer className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-[11px] text-muted-foreground">
+        {item.run && <span className="flex min-w-0 items-center gap-1.5"><span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap"><Sparkles className="size-3 shrink-0 text-primary" aria-hidden />Learned in</span>
+          <a href={`#/runs/${encodeURIComponent(item.run)}`} className="min-w-0 truncate text-foreground/80 underline-offset-2 hover:text-foreground hover:underline" title={runTitle(runs, item.run)}>{shortTitle(runTitle(runs, item.run))}</a>
+        </span>}
+        <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
+      </footer>
     </article>
   );
 }

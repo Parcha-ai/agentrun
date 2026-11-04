@@ -1335,11 +1335,23 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
   as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
   `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
-  settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
+  settings off, so a `.claude/` in the work never loads). The pin keeps the section the run
   reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
   (`learned`), is read as that server gave it.
 - `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
   secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
+- The skills the agent wrote, each a folder `skills/<name>/` on `main` with its `SKILL.md`, join the revision's own:
+  each is copied, every file of it, into the run's `work/.agents/skills/<name>/`, and the run gets it as it gets the
+  revision's (pi and codex read each `SKILL.md` in their prompt, claude-agent loads the ones its adapter takes through
+  its Skill tool). A skill named like one of the revision's is the revision's, and only an active skill is served: one
+  whose `SKILL.md` front matter says `status: pending` (held for its owner's OK), or any status but `active`, is not.
+  The learned ones get 256 KiB, every file of each together, and never more than the revision's skills leave of the 1
+  MiB an adapter takes of a run's skills in all, so they never push the revision's back into the prompt: the one
+  changed last on `main` first, each whole while it fits. One that does not fit, or holds one of the server's secrets,
+  is left out. The pin names the files of the ones laid (`skills`) and the ones left out (`skills_left_out`), and a
+  follow-up gets them laid again, fresh, whatever the run wrote over them; one the work no longer holds whole when the
+  run's process starts is left out of what its harness gets, and the run goes on. A skill whose name or files are out
+  of shape is not read, and a symbolic link or a submodule at `skills/` or anywhere under it is a learning fault.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
