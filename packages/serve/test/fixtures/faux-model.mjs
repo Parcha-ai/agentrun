@@ -119,6 +119,14 @@ export default function reply(context, faux) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
     return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 2 }), { stopReason: "toolUse" }) : faux.message(`Found: ${textOf(context.messages.at(-1))}`);
   }
+  // Quotes a key read from a file the test names (so the prompt never holds it): in its thinking, in its text (base64),
+  // in a tool call's arguments, then in its answer (timeline-redact-all.test.mjs holds that value as a key).
+  const quote = /^Quote the key in (\S+)$/.exec(first);
+  if (quote) {
+    const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
+    if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
+    return faux.message(`Done with ${key}.`);
+  }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
