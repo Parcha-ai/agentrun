@@ -14,7 +14,10 @@ test("the faux session settles a turn its interrupt left open: ended interrupted
   let inside;
   const reached = new Promise((resolve) => { inside = resolve; });
   const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
-  const adapter = fauxAdapter({ script: () => [{ call: 'wait' }, { say: 'the next turn' }, { end: true }] });
+  // The first process's turn holds at the stop: its call is cut, and nothing after it runs (faux answers a cut call as an
+  // error and would go on). A later process's script goes on to the next turn's answer.
+  let stopped = false;
+  const adapter = fauxAdapter({ script: () => [{ call: 'wait' }, ...(stopped ? [{ say: 'the next turn' }, { end: true }] : [{ hang: true }])] });
   const spec = { key: SESSION, label: 'stop', system: [], tools: [wait], context: 'fresh' };
   const open = async () => adapter.open(spec, { writer: await store.open(SESSION), models, signal: new AbortController().signal, onEvent: () => {} });
 
@@ -25,6 +28,7 @@ test("the faux session settles a turn its interrupt left open: ended interrupted
   await first.interrupt();
   assert.equal((await ending).status, 'interrupted');
   await first.close();
+  stopped = true;
 
   const next = await open();
   assert.equal(next.state, 'open_turn', 'the interrupted turn is open to the next process');
