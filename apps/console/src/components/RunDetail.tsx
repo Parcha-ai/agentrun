@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/Composer";
-import { NeedsYou } from "@/components/NeedsYou";
+import { BudgetPaused, NeedsYou } from "@/components/NeedsYou";
 import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
@@ -41,7 +41,10 @@ type Tab = "graph" | "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
-  const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
+  const budget = run.pending?.kind === "budget" ? run.pending : null;
+  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);
@@ -84,13 +87,13 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-2 text-[14px]">{run.review.reason}</p>
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
-          {view.needsYou && <NeedsYou waiting={waiting} />}
+          {view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
           {tab === "report" && <RunResult run={run} rows={rows} />}
           {tab === "report" && !run.result && !view.final && <Working title="Writing the answer" note="The answer appears here when the run finishes. Follow it on the timeline." spin={view.live} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
-          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={view.needsYou ? waiting?.id : undefined} />}
+          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={view.needsYou && !budget ? waiting?.id : undefined} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
         </div>

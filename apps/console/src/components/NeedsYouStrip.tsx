@@ -5,7 +5,8 @@ import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
-import type { Run } from "@/lib/v2";
+import { capWords } from "@/components/NeedsYou";
+import type { BudgetPending, Run } from "@/lib/v2";
 
 export type NeedsYouProps = {
   /** Runs waiting on a person's answer (`input_required`, with their `pending` question). */
@@ -49,7 +50,7 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onRun
       {problem && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
       {asking.length > 0 && (
         <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          {asking.map((r) => <Question key={`${r.run_id}:${r.pending?.asked_at ?? ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
+          {asking.map((r) => <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : (r.pending?.at ?? "")}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
         </ul>
       )}
       {groups.length > 0 && (
@@ -71,8 +72,28 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onRun
   );
 }
 
-function Question({ run, agentName, at, onAnswer }: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
-  const question = run.pending?.question ?? "";
+function Question(props: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
+  // A run paused at its spend cap is no question: it says why, and takes no answer until its cap is raised.
+  return props.run.pending?.kind === "budget" ? <Paused run={props.run} pending={props.run.pending} agentName={props.agentName} /> : <Asked {...props} />;
+}
+
+function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending; agentName: string }) {
+  return (
+    <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5 p-4">
+      <p className="flex min-w-0 items-center gap-2 text-[13px]">
+        <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
+        <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
+        <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{run.title}</a>
+      </p>
+      <p className="caps mt-2 text-[11px] text-warning-text">Paused at its {capWords(pending.cap_usd)} spend cap</p>
+      <p className="mt-1 text-[15px] leading-snug">{pending.said}</p>
+      <p className="mt-3 font-mono text-[12px] text-muted-foreground"><a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
+    </li>
+  );
+}
+
+function Asked({ run, agentName, at, onAnswer }: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
+  const question = run.pending?.kind === "question" ? run.pending.question : "";
   const choices = choicesOf(question);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -93,7 +114,7 @@ function Question({ run, agentName, at, onAnswer }: { run: Run; agentName: strin
         <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
         <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
         <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{run.title}</a>
-        {run.pending?.asked_at && <span className="ml-auto shrink-0 font-mono text-[12px] text-muted-foreground">asked {ago(run.pending.asked_at, at)} ago</span>}
+        {run.pending?.kind === "question" && run.pending.asked_at && <span className="ml-auto shrink-0 font-mono text-[12px] text-muted-foreground">asked {ago(run.pending.asked_at, at)} ago</span>}
       </p>
       <p className="mt-2 text-[16px] leading-snug">{question}</p>
       {sent ? (
