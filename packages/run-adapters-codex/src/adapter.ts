@@ -15,7 +15,7 @@ import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblem
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { NativeJournal, recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
@@ -276,9 +276,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           await ready();
           // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
           // and the next turn carries no recovery of this one. Nothing is sent.
-          const journal = new NativeJournal(drive);
-          journal.message({ type: "turn", status: "interrupted" });
-          await journal.flush();
+          await settleTurn(drive);
           state = "idle";
         },
         async turnEnd() {
