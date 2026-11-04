@@ -1,6 +1,6 @@
 // A run's effort is its model's thinking level (model.ts thinkingOf) and a short note on how to work, added right after
 // the agent's instructions on every harness (app.ts): one table, one note for each effort. A run with no effort gets no
-// note, and its thinking level is the host's.
+// note, and thinks at its agent revision's own thinking level, else the host's default.
 import { EFFORTS, type Effort } from "./model.js";
 
 /** The note each effort adds after the agent's instructions. */
