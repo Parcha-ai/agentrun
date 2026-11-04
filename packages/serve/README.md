@@ -665,8 +665,9 @@ browser out, and the next visit sets a new one. The token works for scripts and 
 A browser's writes must come from the server's own origin. Serve the image on another address or port behind a proxy, and
 set `AGENTRUN_PUBLIC_URL` to the address people open. Behind a proxy every sign-in comes from the proxy's address, so the
 limit is one for everyone: ten wrong tries in 15 minutes, from anyone, keep the owner out until the window passes (the
-token still works for scripts meanwhile). Serve it over https where you can: on plain http a browser sends the session
-cookie to every server on the same host name, whatever its port, so another app on that host could read it.
+token still works for scripts meanwhile). Use HTTPS and a dedicated hostname whose services share the same trust
+boundary. Cookies are shared across ports on a hostname, including HTTPS ports; `Secure` and `HttpOnly` do not provide
+port isolation. Keep the backend listener private and configure the proxy to overwrite forwarded protocol headers.
 
 ## A run's life
 

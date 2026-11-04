@@ -19,8 +19,21 @@ export function assertBundledPackage(name) {
 }
 
 const PRIVATE_BROWSER = /(?:\b(?:descope|posthog)\b|(?:grep\.ai|parcha\.dev|code\.run|northflank\.com)\b|\/grep\/agentrun\b|\/api\/v2\/control\b)/i;
+const BROWSER_CREDENTIALS = [
+  ["private key", /-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----/],
+  ["provider token", /\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{60,255}|sk-(?:proj-|ant-api\d{2}-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/],
+  ["signed token", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{16,}\b/],
+  ["authenticated URL", /[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>/:]+:[^\s"'`<>/@]+@/i],
+];
+
 export function assertBrowserText(text, name) {
-  if (PRIVATE_BROWSER.test(text)) throw new Error(`Console private integration in ${name}`);
+  const asset = BROWSER_CREDENTIALS.some(([, candidate]) => candidate.test(name)) ? "[redacted asset name]" : name;
+  if (PRIVATE_BROWSER.test(text)) throw new Error(`Console private integration in ${asset}`);
+  for (const [kind, pattern] of BROWSER_CREDENTIALS) {
+    if (pattern.test(text)) {
+      throw new Error(`Console credential-shaped ${kind} in ${asset}`);
+    }
+  }
 }
 
 /** An installed package containing a bundled module, including a scoped package. */
@@ -67,8 +80,8 @@ export function consoleBoundary() {
         }
         if (item.type === 'chunk') {
           assertBrowserText(item.code, item.fileName);
-        } else if (/\.(?:html|css|js|json)$/.test(item.fileName)) {
-          assertBrowserText(String(item.source), item.fileName);
+        } else if (/\.(?:html|css|js|json|txt|svg|map)$/.test(item.fileName)) {
+          assertBrowserText(typeof item.source === "string" ? item.source : Buffer.from(item.source).toString("utf8"), item.fileName);
         }
       }
       // Font assets come from CSS, so Rollup's JavaScript module inventory can omit their package roots.
@@ -76,9 +89,13 @@ export function consoleBoundary() {
         if (name.startsWith('@fontsource/')) roots.add(join(app, 'node_modules', name));
       }
       for (const root of roots) assertBundledLicense(root);
-      this.emitFile({ type: 'asset', fileName: NOTICES_FILE, source: noticesFor([...roots]).text });
+      const notices = noticesFor([...roots]).text;
+      assertBrowserText(notices, NOTICES_FILE);
+      this.emitFile({ type: 'asset', fileName: NOTICES_FILE, source: notices });
       const files = [...new Set([...Object.keys(bundle), NOTICES_FILE])].filter((name) => !name.endsWith('.map')).sort();
-      this.emitFile({ type: 'asset', fileName: 'asset-manifest.json', source: JSON.stringify({ files }, null, 2) + '\n' });
+      const manifest = JSON.stringify({ files }, null, 2) + '\n';
+      assertBrowserText(manifest, 'asset-manifest.json');
+      this.emitFile({ type: 'asset', fileName: 'asset-manifest.json', source: manifest });
     },
   };
 }

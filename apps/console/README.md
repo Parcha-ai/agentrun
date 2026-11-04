@@ -39,6 +39,8 @@ const client = createClient({ base: "/v2" });
 
 The host supplies its own authenticated session, workspace and explicit optional extension routes. Change `session.id`, `session.generation` or the server identity when the identity or authority changes. A protected 401 invalidates the provider and removes its private children. The standalone `AgentRunApp` keeps local-owner setup/sign-in independent from a host's identity policy.
 
+The embedding host must set a Content Security Policy and security headers before mounting the console. Use the native server policy as the baseline: scripts and connections from reviewed origins only, no inline scripts, images limited to the same origin and `data:`/`blob:`, no embedding by other origins, no referrers and `nosniff`. Sanitizing Markdown does not prevent external image requests; the host image policy also applies to model output. Serve the console on a dedicated hostname within one trust boundary.
+
 React is external to the library bundle; use the React version declared by the package. The library has no Tailwind or shadcn runtime dependency. The standalone source uses a build-time utility stylesheet generator; consumers load the emitted CSS and need no utility framework configuration.
 
 ## Client and contract
@@ -63,6 +65,6 @@ npm test
 npm run build
 ```
 
-The build checks a reviewed runtime dependency allowlist and rejects private integrations in emitted code. Each build emits exact assets and `THIRD-PARTY-NOTICES.txt` for bundled code and fonts. The native server serves only the asset manifest and keeps its strict CSP, same-origin JSON mutation checks and API error responses. The repository source export inventories the console's separate lockfile as well as native packages.
+The build checks a reviewed runtime dependency allowlist and rejects private integrations and common credential formats in emitted text, notices and manifests. Rejected content is identified by asset and credential kind without printing the matched value. These checks supplement source/history secret scanning; arbitrary or encoded secrets require separate review. Keep credentials in server runtime configuration, outside browser bundles, `VITE_` variables and build arguments. Each build emits exact assets and `THIRD-PARTY-NOTICES.txt` for bundled code and fonts. The native server serves only the asset manifest and keeps its strict CSP, same-origin JSON mutation checks and API error responses. The repository source export inventories the console's separate lockfile as well as native packages.
 
 See [console architecture](../../docs/console-architecture.md), the [server reference](../../packages/serve/README.md) and [live QA contract](../../docs/AUTOQA.md).

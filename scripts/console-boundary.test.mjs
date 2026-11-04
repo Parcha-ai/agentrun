@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { assertBrowserText, assertBundledPackage, assertConsoleDependencies, consoleBoundary } from '../apps/console/build-boundary.mjs';
 
-test('the browser boundary refuses private integrations in dependencies and emitted assets', () => {
+test('the browser boundary refuses private integrations and credential-shaped emitted assets', () => {
   assert.doesNotThrow(() => assertConsoleDependencies({ dependencies: { react: '18.3.1', clsx: '2.1.1' } }));
   assert.throws(() => assertConsoleDependencies({ dependencies: { '@descope/react-sdk': '1.0.0' } }), /unreviewed/);
   assert.doesNotThrow(() => assertBundledPackage('scheduler'));
@@ -13,7 +13,25 @@ test('the browser boundary refuses private integrations in dependencies and emit
   for (const text of ['fetch("https://' + ['grep', 'ai'].join('.') + '/api")', 'posthog.capture("event")', 'https://docs.' + ['parcha', 'dev'].join('.')]) {
     assert.throws(() => assertBrowserText(text, 'assets/app.js'), /private integration/);
   }
-  assert.doesNotThrow(() => assertBrowserText('fetch("/v2/agents")', 'assets/app.js'));
+  for (const text of [
+    '-----BEGIN ' + 'PRIVATE KEY-----',
+    '-----BEGIN RSA ' + 'PRIVATE KEY-----',
+    'ghp_' + 'a'.repeat(36),
+    'github_pat_' + 'b'.repeat(70),
+    'sk-proj-' + 'c'.repeat(60),
+    'sk-ant-api03-' + 'd'.repeat(60),
+    'xoxb-' + '1234567890-'.repeat(3),
+    'AKIA' + 'A'.repeat(16),
+    ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJzeW50aGV0aWMifQ', 'e'.repeat(32)].join('.'),
+    'https://' + 'synthetic-user:synthetic-password@example.invalid/api',
+  ]) {
+    assert.throws(() => assertBrowserText(text, 'assets/app.js'), (error) => /credential-shaped/.test(error.message) && !error.message.includes(text));
+    assert.throws(() => assertBrowserText(text, `assets/${text}.js`), (error) => /credential-shaped/.test(error.message) && error.message.includes('[redacted asset name]') && !error.message.includes(text));
+    assert.throws(() => assertBrowserText('posthog', `assets/${text}.js`), (error) => /private integration/.test(error.message) && error.message.includes('[redacted asset name]') && !error.message.includes(text));
+  }
+  for (const text of ['fetch("/v2/agents")', 'Bearer ${process.env.AGENTRUN_TOKEN}', 'provider/model', 'https://example.invalid/v2']) {
+    assert.doesNotThrow(() => assertBrowserText(text, 'assets/app.js'));
+  }
 });
 
 test('the guarded bundle refuses nonproduction console modules and emits canonical notices once in its public manifest', async (t) => {
@@ -39,6 +57,16 @@ test('the guarded bundle refuses nonproduction console modules and emits canonic
     assert.throws(() => plugin.generateBundle.call({ emitFile: (item) => emitted.push(item) }, {}, {
       'assets/index.js': { type: 'chunk', fileName: 'assets/index.js', code: '', moduleIds: [join(root, file)] },
     }), /Nonproduction console module/);
+  }
+  for (const item of [
+    { type: 'chunk', fileName: 'assets/index.js', code: 'const token = "' + 'ghp_' + 'a'.repeat(36) + '";', moduleIds: [] },
+    { type: 'asset', fileName: 'assets/config.json', source: JSON.stringify({ key: 'sk-proj-' + 'b'.repeat(60) }) },
+    { type: 'asset', fileName: 'assets/binary-text.json', source: new TextEncoder().encode(JSON.stringify({ key: 'ghp_' + 'c'.repeat(36) })) },
+    { type: 'asset', fileName: 'assets/note.svg', source: '<svg><text>' + '-----BEGIN ' + 'PRIVATE KEY-----' + '</text></svg>' },
+  ]) {
+    assert.throws(() => plugin.generateBundle.call({ emitFile: (asset) => emitted.push(asset) }, {}, {
+      [item.fileName]: item,
+    }), /credential-shaped/);
   }
   assert.equal(emitted.length, 0);
   plugin.generateBundle.call({ emitFile: (file) => emitted.push(file) }, {}, {

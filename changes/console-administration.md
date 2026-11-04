@@ -25,3 +25,7 @@ Application choices, run-state filters and API playground selectors use dark men
 Console reads keep pending data distinct from empty results. Navigation and pagination ignore stale responses, activity lists deduplicate runs, and pinned Playground routes retain their requested agent. Editor validation follows current tool grants and revision identity; unsupported history actions stay hidden. Failed sends and clipboard operations preserve usable controls and report their failure. Start and message submissions reject duplicate in-flight actions while retaining retry drafts and request identity. Workflow outputs retain valid false, zero and empty-string values. Agent fields have accessible names, and input composition does not submit a message.
 
 Local owner sessions label their global sign-out explicitly. Production builds reject console fixture, sample, mock, story and test modules.
+
+Console builds reject common credential formats in emitted assets, notices and manifests without echoing matched values. Embedding guidance requires a restrictive host CSP, runtime-only secret configuration and a dedicated hostname.
+
+The console updates its sanitizer and build/test dependencies to patched releases, including a scoped Storybook documentation dependency override. Native URI parsing and transport test tooling receive compatible patch updates.

@@ -21,7 +21,7 @@ The browser console is inventoried from its separate lockfile, including its dis
 - **@anthropic-ai/claude-agent-sdk@0.3.286:** SEE LICENSE IN README.md — License expression needs release-owner review.
 - **@fontsource/jetbrains-mono@5.1.1:** OFL-1.1 — License expression needs release-owner review.
 - **@fontsource/schibsted-grotesk@5.1.1:** OFL-1.1 — License expression needs release-owner review.
-- **dompurify@3.2.3:** (MPL-2.0 OR Apache-2.0) — License expression needs release-owner review.
+- **dompurify@3.4.17:** (MPL-2.0 OR Apache-2.0) — License expression needs release-owner review.
 
 AgentRun's own license is declared in its package manifests, separately from this third-party inventory. This table records package metadata, not an approval to redistribute. The release owner must confirm source rights, inspect applicable license texts, and preserve required notices.
 
@@ -185,7 +185,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | dom-serializer | 2.0.0 | MIT | harness, pi-browser, serve | no | 1 |
 | domelementtype | 2.3.0 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
 | domhandler | 5.0.3 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
-| dompurify | 3.2.3 | (MPL-2.0 OR Apache-2.0) | console | no | 1 |
+| dompurify | 3.4.17 | (MPL-2.0 OR Apache-2.0) | console | no | 1 |
 | domutils | 3.2.2 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
 | dunder-proto | 1.0.1 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
 | ecdsa-sig-formatter | 1.0.11 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
@@ -210,7 +210,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | fast-sha256 | 1.3.0 | Unlicense | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
 | fast-string-truncated-width | 3.0.3 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | fast-string-width | 3.0.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| fast-uri | 3.1.8 | BSD-3-Clause | run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| fast-uri | 3.1.9 | BSD-3-Clause | run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
 | fast-wrap-ansi | 0.2.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | fast-xml-builder | 1.3.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | fast-xml-parser | 5.11.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
