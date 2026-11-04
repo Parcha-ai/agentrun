@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
 import { foldSession, openDrive, pendingSubmissions } from '@parcha/agentrun-kernel/kernel';
-import { NativeJournal, toolBridge, transcriptOf } from '@parcha/agentrun-kernel/process';
+import { NativeJournal, placeSubmissions, settleTurn, toolBridge, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { CODEX_INSTALL, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
@@ -672,4 +672,28 @@ test("an interrupt that lands while send() is still recording the prompt: the se
   // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.
   assert.equal(modelSaw.length, 1, `one turn, the follow-up's: ${JSON.stringify(modelSaw)}`);
   assert.match(modelSaw[0], /go[\s\S]*and now\?/, "the follow-up's turn has the stopped prompt, before the follow-up");
+});
+
+test("a crash after the follow-up that carries a stopped prompt was placed, before Codex recorded it: the recovery sends the stopped prompt, then the follow-up", async () => {
+  const spec = { key: 'step:carry-crash', label: 'carry', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  // The first process: the prompt is stopped before it was placed (settled, withdrawn with its carry), the follow-up is
+  // placed, and the process dies before Codex records it.
+  const drive = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await settleTurn(drive);
+  await drive.submit({ id: 's2', kind: 'followUp', text: 'Go on.' });
+  await placeSubmissions(drive, drive.pending());
+
+  const { adapter: next, provider: model } = adapter([]);
+  const b = await next.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn', 'setup: the follow-up\'s turn is open to the next process');
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  // What the model was asked: the stand-in says what it is sent back as an echo, through the provider.
+  const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
+  assert.equal(modelSaw.length, 1, `one turn, the recovered one: ${JSON.stringify(modelSaw)}`);
+  assert.match(modelSaw[0], /Write five files\.[\s\S]*stopped before any work on it began[\s\S]*Go on\./, "the recovery has the stopped prompt, its line, then the follow-up");
 });

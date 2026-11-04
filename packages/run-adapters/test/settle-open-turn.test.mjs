@@ -106,3 +106,17 @@ test('several stopped prompts are carried in order into the next one; a stopped 
   await drive.submit({ id: 'd', kind: 'followUp', text: 'Third.' });
   assert.deepEqual(drive.pending().map((s) => s.text), [`First.\n\nSecond.\n\n${STOPPED_MANY}\n\nThird.`]);
 });
+
+test("a follow-up placed with a carry holds the carried text in the session's state, for every reader of a placed submission (a crash's recovery)", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await processKit.settleTurn(drive);
+  await drive.submit({ id: 's2', kind: 'followUp', text: 'Go on.' });
+  await processKit.placeSubmissions(drive, drive.pending());
+  // The process dies before the harness's CLI records the follow-up: the next one reads it from the session's state.
+  const state = (await openOn(store)).state();
+  const placed = state.submissions.filter((s) => state.placed.has(s.id)).map((s) => s.text);
+  const note = processKit.recoveryNote(state, { prompts: true });
+  assert.deepEqual([placed, note?.text.includes(`> Write five files.`)], [[`Write five files.\n\n${STOPPED_ONE}\n\nGo on.`], true]);
+});
