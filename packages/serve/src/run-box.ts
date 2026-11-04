@@ -360,16 +360,15 @@ const markOf = async (runDir: string): Promise<SyncMark | undefined> => {
 const keepMark = (runDir: string, mark: SyncMark) => writeDurable(join(runDir, BOX_SYNC_FILE), `${JSON.stringify(mark)}\n`);
 
 /** The server's side of a remote box: run `run`'s box, found by its label or made, with its work/ seeded once (its mark
- *  says so); its id, whether it was made now, and, when the provider could not keep the host list `allow` names, why
- *  (`noList`, its refusal's code). A box is made with that list, or with no network when `allow` is `none`; a create the
- *  provider refuses for its list (NO_LIST) is made again with no network, never open. A found box whose network is more
+ *  says so); its id, and whether it was made now. A box is made with the host list `allow` names, or with no network when
+ *  it is `none`; a create the provider refuses for its list (NO_LIST) is said to `onNoList` at once, with its refusal's
+ *  code (so a closed box or a seed that then fails leaves it said), and made again with no network, never open. A found box whose network is more
  *  than asked (open, unknown, or a list when `none` was asked) is destroyed and made again; one with no network is kept.
  *  A box whose seed fails is destroyed, and the call fails. */
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>, allow: readonly string[] | "none" = "none"): Promise<{ id: string; made: boolean; noList?: string }> {
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>, allow: readonly string[] | "none" = "none", onNoList?: (code: string) => void): Promise<{ id: string; made: boolean }> {
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
-  let noList: string | undefined;
   const network = box?.facts().network;
   if (box && network !== "none" && network !== asked) {
     await destroyRunBoxes(boxes, run.id, context);
@@ -378,8 +377,8 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
   if (!box) {
     let created = await boxes.create(remoteSpec(run.id, allow), context);
     if (!created.ok && asked === "allowlist" && NO_LIST.has(created.error.code)) {
-      noList = created.error.code;
       asked = "none";
+      onNoList?.(created.error.code);
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
       created = await boxes.create(remoteSpec(run.id, "none"), context);
     }
@@ -404,7 +403,7 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     }
     await keepMark(run.dir, { box: box.id, mark: seeded.value.mark });
   }
-  return { id: box.id, made, ...(noList ? { noList } : {}) };
+  return { id: box.id, made };
 }
 
 /** What a pull of a remote box brought back; undefined when the run has no box (none made, or it is gone). */

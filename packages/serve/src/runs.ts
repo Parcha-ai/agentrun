@@ -1135,14 +1135,13 @@ export class Runs {
     if (!run || !boxes || !this.servesBox(id)) return Promise.reject(new Error(`no run ${id} of this server is in a remote box`));
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
-      .then(() => ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none")))
-      .then((box) => {
-        if (box.noList && this.remoteAllow !== "none") {
+      .then(() =>
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none"), (code) => {
+          if (this.remoteAllow === "none") return;
           this.remoteAllow = "none";
-          this.options.onNoBoxList?.(box.noList);
-        }
-        return box;
-      })
+          this.options.onNoBoxList?.(code);
+        }),
+      )
       .finally(() => void (run.boxing = undefined));
     return run.boxing;
   }
