@@ -12,6 +12,8 @@ import { claudeModel } from "../dist/adapters.js";
 import { chooseModel, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
+import { fileURLToPath } from "node:url";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SEAL_KEY", ...MODEL_KEYS.map((row) => row.field)];
 /** A throwaway value: none is a real key. */
@@ -192,3 +194,29 @@ test("a model key saved with no restart: a server with none says no model runs a
   assert.equal((await api("DELETE", "/settings/tool-keys/openai")).status, 204);
   assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: null, default: null, strong: null, ready: false, needs: "key" }, "deleted, none again");
 });
+
+// Greptile's P1 on #1470 ("Codex loses its default"): behind a gateway, with AGENT_MODEL naming a model codex cannot run
+// (Anthropic's) and OpenAI's key on the server, the server picks codex's default from OpenAI's key. The run's process holds
+// only the gateway's key, skips AGENT_MODEL as codex's hostModel does, and must still be told that default
+// (AGENTRUN_SERVE_KEY_MODEL), or it finds none: "No model yet". pi can run AGENT_MODEL behind a gateway, so it keeps it.
+const CODEX_FAKE = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
+const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [CODEX_FAKE], env: { FAKE_CODEX_MODEL: "remote" } }) };
+for (const [harness, model] of [["codex", "openai/gpt-6.1-sol"], ["pi", "anthropic/claude-sonnet-5-5"]]) {
+  test(`behind a gateway, with AGENT_MODEL on a model codex cannot run and OpenAI's key on the server, a ${harness} agent naming no model runs on ${model}, on the gateway's key alone`, { timeout: 90_000 }, async (t) => {
+    const gw = await startFauxGateway({ text: "42" });
+    t.after(() => gw.close());
+    const gateway = made();
+    const openai = made();
+    withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: gateway, AGENT_MODEL: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: openai, ...CODEX_STAND_IN }, [...MODEL_VARS, ...Object.keys(CODEX_STAND_IN)]);
+    const { api } = await serve(t, { faux: undefined });
+    assert.equal((await api("POST", "/agents", agent(`${harness}-default`, harness === "pi" ? {} : { harness }))).status, 201);
+    const started = await api("POST", `/agents/${harness}-default/runs`, { input: { content: "What is six times seven?" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const { last } = await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+    assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${started.body.run_id}`)).body.error));
+    const sent = gw.requests.filter((r) => r.method === "POST");
+    assert.ok(sent.length > 0 && sent.every((r) => r.body?.model === model), `the gateway is asked for ${model}: ${JSON.stringify(sent.map((r) => r.body?.model))}`);
+    assert.ok(sent.every((r) => r.headers.authorization === `Bearer ${gateway}`), "on the gateway's key");
+    assert.ok(!JSON.stringify(sent).includes(openai), "OpenAI's key is in no request");
+  });
+}
