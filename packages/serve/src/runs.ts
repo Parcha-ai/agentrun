@@ -42,7 +42,7 @@ import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { keyRefusal, redacted, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { keyRefusal, redacted, redactedAnswer, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
@@ -908,6 +908,17 @@ export class Runs {
    *  no loopback address. */
   private shown(run: Run, text: string): string {
     return withoutLoopback(redacted(text, this.refusedValues(run)));
+  }
+
+  /** A run's answer as serve serves it: no held secret, never cut (redactedAnswer). Loopback addresses stay: an answer is
+   *  the model's own words, and a local address there can be what the person asked about. */
+  private servedAnswer(run: Run, text: string | null): string | null {
+    return text ? redactedAnswer(text, this.refusedValues(run)) : text;
+  }
+
+  /** A workflow run's output as serve serves it: each string in it as servedAnswer, its shape kept. */
+  private servedOutput(run: Run, output: unknown): unknown {
+    return redactedOutput(output, this.refusedValues(run));
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -2237,7 +2248,8 @@ export class Runs {
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
       ended_at: endedAt,
-      result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
+      // An answer is served with no held secret in it, whole (key-refusal.ts redactedAnswer); the stored one stays as written.
+      result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       pending: status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null,
