@@ -1,8 +1,9 @@
 import { KeyRound } from "lucide-react";
 
 /** The first step when no harness here has a model to run: how to give the server one. Mission Control's start-here
- *  panel shows it in place of its templates. `keyCard`: the model-key card (ModelKeyCard) is on screen above it, where
- *  a key saved needs no restart, so the step points there; otherwise it says what to set where the server starts. */
+ *  panel shows it in place of its templates. `keyCard`: the model-key card (ModelKeyCard) above it can save a key (the
+ *  server keeps keys sealed), with no restart, so the step points there; otherwise it says what to set where the server
+ *  starts. */
 export function ModelStep({ keyCard = false }: { keyCard?: boolean }) {
   const env = "font-mono text-[12px] text-foreground";
   return (
