@@ -8,6 +8,7 @@ import { test } from "node:test";
 import * as pages from "../dist/fetch-page.js";
 import * as web from "../dist/web-fetch.js";
 import { fetchFor, PARALLEL_EXTRACT_URL, parallelExtract, webFetch } from "../dist/web-fetch.js";
+import { bookedIn } from "../dist/paid-calls.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
@@ -30,7 +31,11 @@ function parallel(mode = "") {
 
 const withoutText = ({ text, ...rest }) => rest;
 
-test("with a key, a public page is read through Parallel's extract: via parallel, sent once as Parallel documents it, nothing dialled", async (t) => {
+/** Runs a test as a tool call does: inside a call its requests to Parallel are booked under, as paid-calls.ts requires
+ *  (a request outside one is refused unsent). */
+const inCall = (fn) => (t) => bookedIn({ call: "test-call", record: async () => undefined }, () => fn(t));
+
+test("with a key, a public page is read through Parallel's extract: via parallel, sent once as Parallel documents it, nothing dialled", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const net = network();
@@ -39,16 +44,16 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   assert.match(page.text, /^# Read by Parallel\n\nThe page at http:\/\/public\.example\//);
   assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 20_001 } } } }], "one character past the page's text it reads (20,000 by default), so a page Parallel cut shows as cut");
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
-});
+}));
 
-test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, and end at the one that closes the link", async () => {
+test("a page's links keep the parentheses a URL holds in pairs, a wiki title's, and end at the one that closes the link", inCall(async () => {
   const full_content = "See [the function](https://en.wikipedia.org/wiki/Function_(mathematics)) and [the other page](https://other.example/y#top).";
   const send = async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   const page = await parallelExtract(CANARY, send).read(PUBLIC);
   assert.deepEqual(page.links, ["https://en.wikipedia.org/wiki/Function_(mathematics)", "https://other.example/y"]);
-});
+}));
 
-test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", async (t) => {
+test("a guard check whose lookup never answers does not pass within its bound: nothing goes to Parallel, the direct fetch answers", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const net = network();
@@ -64,9 +69,9 @@ test("a guard check whose lookup never answers does not pass within its bound: n
   assert.deepEqual([page.ok, page.title, page.via], [true, "Public page", "direct"], JSON.stringify(withoutText(page)));
   assert.deepEqual(sent, [], "Parallel was sent nothing");
   assert.equal(lookups, 2);
-});
+}));
 
-test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to the guarded direct fetch: via direct, saying why, Parallel still tried next time", async (t) => {
+test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to the guarded direct fetch: via direct, saying why, Parallel still tried next time", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const why = { errors: "listed the URL in errors", 500: "answered 500", 503: "answered 503", throws: "timed out" };
   for (const mode of ["errors", "500", "503", "throws"]) {
@@ -80,9 +85,9 @@ test("the URL in Parallel's errors, a 5xx, or a request that fails falls back to
     assert.equal(sent.length, mode === "throws" ? 0 : 1, mode);
     assert.equal(extract.live(), true, `${mode} is not the key refused`);
   }
-});
+}));
 
-test("a URL the guard refuses is never sent to Parallel: refused as fetch_page refuses it, via direct", async (t) => {
+test("a URL the guard refuses is never sent to Parallel: refused as fetch_page refuses it, via direct", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const extract = parallelExtract(CANARY, send);
@@ -101,9 +106,9 @@ test("a URL the guard refuses is never sent to Parallel: refused as fetch_page r
   }
   assert.equal((await webFetch("not a url", { ...network(), parallel: extract })).error, "url is not an absolute URL");
   assert.deepEqual(sent, [], "Parallel was sent none of them");
-});
+}));
 
-test("a 401 or 403 stops Parallel for the rest of the run: the next read goes straight to the direct fetch", async (t) => {
+test("a 401 or 403 stops Parallel for the rest of the run: the next read goes straight to the direct fetch", inCall(async (t) => {
   withEnv(t, {}, [MODE]);
   for (const [key, mode] of [["not-a-secret", ""], [CANARY, "403"]]) {
     const { sent, send } = parallel(mode);
@@ -113,7 +118,7 @@ test("a 401 or 403 stops Parallel for the rest of the run: the next read goes st
     assert.equal(sent.length, 1, `${mode || "401"}: Parallel was asked once`);
     assert.equal(extract.live(), false);
   }
-});
+}));
 
 /** The server's environment for test `t`: Parallel's key when `key`, and files for the fake Parallel's calls and the
  *  network's dials, whose lines each answer gives back. */
@@ -227,7 +232,7 @@ test("at the minimum, a page whose parts end before a quote, a line break, a bac
   assert.equal(parts.join(""), body, "the whole page, no repeats, no gaps");
 });
 
-test("through Parallel a page is read in parts too: Parallel is asked for one character past the part, and the page's whole length is known only when it gave less", async () => {
+test("through Parallel a page is read in parts too: Parallel is asked for one character past the part, and the page's whole length is known only when it gave less", inCall(async () => {
   const long = `${"forty-two ".repeat(7_000)}end`;
   const asked = [];
   const send = async (_url, init) => {
@@ -242,7 +247,7 @@ test("through Parallel a page is read in parts too: Parallel is asked for one ch
   const last = await webFetch(PUBLIC, { ...network(), parallel: extract, offset: 60_000, maxChars: 20_000 });
   assert.deepEqual([last.text, last.chars, last.offset, "truncated" in last, last.original_chars], [long.slice(60_000), 10_003, 60_000, false, 70_003], "less than it was asked for: its length is known");
   assert.deepEqual(asked, [20_001, 80_001]);
-});
+}));
 
 test("a page's links come with its first part only, at most 200 of them in 20,000 characters; a URL longer than 4,096 characters is refused before anything is fetched", async () => {
   const links = Array.from({ length: 400 }, (_, i) => `<a href="https://l.example/${i}/${"q".repeat(i === 3 ? 30_000 : 80)}">${i}</a>`).join(" ");

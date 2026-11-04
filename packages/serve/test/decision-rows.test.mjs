@@ -2,12 +2,16 @@
 // adds to the run's usage row.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { CAPS } from "@parcha/pi-durable-agent/timeline";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
+import { soFarOf } from "../dist/runs.js";
 
 const receipt = (over = {}) => ({
   id: "d1", at: "2026-10-29T23:00:00.000Z", node: "document_checks", kind: "judge", request: { index: 0, count: 1 }, status: "answered",
   answers: { is_coi: { type: "noul", noul: 0.97 }, internally_consistent: { type: "noul", noul: 0.09 } }, cost_usd: 0.004, ...over,
 });
+/** Userinfo is built at run time, so no credential-shaped URL sits in the source (as pi-durable-agent's timeline tests do). */
+const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
 const usageRow = (usd, requests) => ({ id: "1:usage", timestamp: "2026-10-29T23:00:05.000Z", created_at: "2026-10-29T23:00:05.000Z", kind: "usage", summary: "Cost so far", agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, usage: { usd, requests } });
 
 test("a judge row names its node and provider, then each answer with the probability of what it said", () => {
@@ -47,13 +51,77 @@ test("a decision's cost joins the run's usage row; one unknown makes the total u
   assert.deepEqual(known.at(-1).usage, { usd: 0.016, requests: 3 });
   assert.deepEqual(known.map((row) => row.kind), ["decision", "decision", "usage"]);
   const unknown = withDecisions([usageRow(0.01, 1)], [receipt(), receipt({ id: "d2", cost_usd: null })]);
-  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 3 });
+  assert.deepEqual(unknown.at(-1).usage, { usd: null, requests: 3, so_far_usd: 0.014, unpriced: 1 }, "unknown, and what is known so far: the model requests' and the priced decision's");
   assert.equal(decisionRows([receipt({ cost_usd: null })])[0].usage.usd, null, "a decision whose cost is unknown says so on its row");
   assert.deepEqual(withDecisions([usageRow(0.01, 1)], []), [usageRow(0.01, 1)], "no decisions: the rows as they were");
+});
+
+test("a workflow whose model request was cut says on its usage row what it cost so far and how many charges have no price, its decisions' among them", () => {
+  const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
+  const row = withDecisions([cut], [receipt({ id: "d1", cost_usd: 0.004 }), receipt({ id: "d2", at: "2026-10-29T23:00:01.000Z", cost_usd: null })]).at(-1);
+  assert.deepEqual(row.usage, { usd: null, requests: 4, so_far_usd: 0.014, unpriced: 2 }, "the model row's known 0.01 and the priced decision's 0.004; the cut request and the unpriced decision");
+  assert.equal(row.summary, "Cost so far: $0.0140 known, 2 not priced, over 2 model requests and 2 decisions");
+  assert.deepEqual(withDecisions([usageRow(0.01, 1)], [receipt({ cost_usd: 0.004 })]).at(-1).usage, { usd: 0.014, requests: 2 }, "every cost known: neither field");
+});
+
+test("a workflow whose decisions could not be read says plain unknown on the run: no figure so far that leaves its decisions out", () => {
+  const cut = { ...usageRow(null, 2), usage: { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 } };
+  assert.equal(soFarOf([cut], null), undefined, "its decisions unreadable: how much they cost, and how many, no one knows");
+  assert.deepEqual(soFarOf([cut], { known: 0.004, unpriced: 1 }), { so_far_usd: 0.014, unpriced: 2 }, "read: the known part, and each charge with no price");
+  assert.deepEqual(soFarOf([cut]), { so_far_usd: 0.01, unpriced: 1 }, "a run with no decisions: its model requests' alone");
+  assert.deepEqual(withDecisions([cut], null).at(-1).usage, { usd: null, requests: 2 }, "and its usage row says unknown, as main's does");
 });
 
 test("decision rows sit among the run's rows by time, the usage row last", () => {
   const at = (id, timestamp) => ({ ...usageRow(0, 0), id, kind: "text_block", timestamp, usage: undefined });
   const rows = withDecisions([at("a", "2026-10-29T22:59:00.000Z"), at("b", "2026-10-29T23:01:00.000Z"), usageRow(0.01, 1)], [receipt()]);
   assert.deepEqual(rows.map((row) => row.id), ["a", "decision:d1:0", "b", "1:usage"]);
+});
+
+test("a decision row's URLs keep their origin, path and query keys, as every timeline row's do: no query value, fragment or credentials", () => {
+  const signed = `https://${userinfo("PASSWORD")}@files.example.com/report.pdf?X-Amz-Signature=SIGNED-2&X-Amz-Expires=300#page=2`;
+  assert.equal(new URL(signed).password, "PASSWORD", "the receipt's source URL carries credentials");
+  const rows = decisionRows([
+    receipt({ provider: "parallel", answers: { source: { type: "choice", choice: "https://files.example.com/a.pdf?sig=SIGNED-1", confidence: 0.8 } }, evidence: [
+      { url: signed, title: "Report", excerpts: [], scope: "call" },
+    ] }),
+    receipt({ id: "d2", status: "failed", answers: {}, error: "fetch https://api.example.com/v1/check?key=SIGNED-3 failed" }),
+  ]);
+  assert.equal(rows[0].summary, "document_checks (parallel): source https://files.example.com/a.pdf?sig=… 0.80");
+  assert.equal(rows[0].text, "Report https://files.example.com/report.pdf?X-Amz-Signature=…&X-Amz-Expires=…");
+  assert.equal(rows[1].text, "fetch https://api.example.com/v1/check?key=… failed");
+  for (const secret of ["SIGNED-1", "SIGNED-2", "SIGNED-3", "PASSWORD", "page=2"]) assert.ok(!JSON.stringify(rows).includes(secret), `no row holds ${secret}`);
+});
+
+test("a decision row is cut to the timeline's caps: a batched sift's summary at CAPS.summary, its sources at CAPS.text", () => {
+  const answers = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`item_${i}`, { type: "noul", noul: 0.9 }]));
+  const evidence = Array.from({ length: 100 }, (_, i) => ({ url: `https://example.org/filing/${i}`, title: `Filing ${i}`, excerpts: [], scope: "call" }));
+  const [row] = decisionRows([receipt({ kind: "sift", node: "sift_docs", answers, evidence })]);
+  assert.equal(row.summary.length, CAPS.summary, "every answer of the batch would be far longer");
+  assert.ok(row.summary.startsWith("sift_docs: item_0 yes 0.90 · item_1 yes 0.90 · ") && row.summary.endsWith("..."), row.summary);
+  assert.equal(row.text.length, CAPS.text, "every source would be far longer");
+  assert.ok(row.text.startsWith("Filing 0 https://example.org/filing/0\nFiling 1 https://example.org/filing/1\n") && row.text.endsWith("..."), row.text);
+});
+
+test("a decision stored before its status was kept reads its outcome from its rule and error: answered with a rule and no error, failed otherwise", () => {
+  const old = (over) => {
+    const { status: _status, ...row } = receipt(over);
+    return row;
+  };
+  const [answered, failed] = decisionRows([old({ rule: { kind: "judge" } }), old({ id: "d2", rule: null, answers: {}, error: "the judge's answers were rejected" })]);
+  assert.equal(answered.summary, "document_checks: is_coi yes 0.97 · internally_consistent no 0.91");
+  assert.equal(failed.summary, "document_checks: failed");
+  assert.equal(failed.text, "the judge's answers were rejected");
+  const route = (over) => decisionRows([old({ kind: "route", node: "triage", answers: { branch: { type: "choice", choice: "accept", confidence: 0.95 } }, ...over })])[0].summary;
+  assert.equal(route({ rule: { kind: "route", unsure: { gte: 0.9, branch: "review" } }, action: { branch: "accept", taken: "accept", unsure: false } }), "route: accept", "an old route keeps the branch it took");
+  assert.equal(route({ rule: null, action: null, error: "the provider timed out" }), "triage: route failed");
+});
+
+test("decisions that could not be read leave the usage row's total unknown, never the model nodes' alone, and every other row as it was", () => {
+  const text = { ...usageRow(0, 0), id: "a", kind: "text_block", timestamp: "2026-10-29T22:59:00.000Z", usage: undefined };
+  const rows = withDecisions([text, usageRow(0.01, 1)], null);
+  assert.deepEqual(rows.map((row) => row.id), ["a", "1:usage"]);
+  assert.deepEqual(rows.at(-1).usage, { usd: null, requests: 1 });
+  assert.match(rows.at(-1).summary, /^Cost so far: unknown over 1 model request\b/);
+  assert.deepEqual(withDecisions([text], null), [text], "no usage row: no total is shown, so none to mark");
 });

@@ -1,0 +1,111 @@
+// A web tool's request to Parallel (its search, web-search.ts; its extract, web-fetch.ts), booked as monid.run's call
+// is (monid.ts): under the run's cap by cap.ts' rule for a paid call (what the run has spent and holds, plus the
+// request's price, within the cap; never on an unknown spend), else refused unsent in the cap's words; marked in the
+// run's store before it is sent (TOOL_STARTED, held at its price) and settled after (TOOL_COST, what it charged). A
+// charge is the run's cost, a line of its own on its timeline and /usage's `tools` meter. Every request goes through
+// the run's one Parallel client's `post` (web-fetch.ts), which books it here by the endpoint it asks.
+// Parallel's answers report what they used as SKU counts, never an amount, so each request is booked at Parallel's
+// published price, an estimate: its price on a 2xx; nothing on a 4xx other than a 408 (Parallel refused it before any
+// work); and its price on a 408, a 5xx or a request that failed or was stopped after it was sent, which Parallel may
+// have billed, as the decision provider books Parallel's (@parcha/agentrun-decisions).
+// A request with no call to book it under, or to an endpoint with no price here, is never sent: it fails closed.
+// The call a request is booked under (its id, and how a record is written to the run's store) is set around the call:
+// around a tool's execute by `booking`, where the web tools are bound (tools.ts, host-tools.ts), and around a workflow
+// call node's effect by `bookedIn`, with the ledger the workflow's runner gives it (app.ts). The client deep inside a
+// tool books without the call passed down to it.
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { Context } from "@earendil-works/chord";
+import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
+import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { paidCall } from "./cap.js";
+
+/** Parallel's published prices (https://docs.parallel.ai/getting-started/pricing, read 2026-11-03): a `fast` search
+ *  $1 per 1,000 requests for up to 10 results, each further result $1 per 1,000; an extract $1 per 1,000 URLs. */
+export const PARALLEL_SEARCH_USD = 0.001;
+export const PARALLEL_SEARCH_RESULT_USD = 0.001;
+export const PARALLEL_SEARCH_INCLUDED = 10;
+export const PARALLEL_EXTRACT_USD = 0.001;
+
+/** One paid request: `name` in the cap's refusal, `tool` and `by` on its records, `usd` its price, `basis` why. */
+export type Fee = { name: string; tool: string; by: string; usd: number; basis: string };
+
+/** In whole millionths of a dollar, so a sum of prices is the price. */
+const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
+
+/** A fast search for `n` results: $0.001, and $0.001 for each past the 10 it includes. */
+export const parallelSearchFee = (n: number): Fee => {
+  const more = Math.max(0, n - PARALLEL_SEARCH_INCLUDED);
+  return { name: "Parallel's search", tool: "web_search", by: "parallel", usd: usd(PARALLEL_SEARCH_USD + PARALLEL_SEARCH_RESULT_USD * more), basis: more ? `Parallel's list price for a fast search of ${n} results` : "Parallel's list price for a fast search" };
+};
+/** An extract of `urls` URLs (the web tools ask one at a time). */
+export const parallelExtractFee = (urls = 1): Fee => ({ name: "Parallel's extract", tool: "web_fetch", by: "parallel", usd: usd(PARALLEL_EXTRACT_USD * urls), basis: urls === 1 ? "Parallel's list price for one URL" : `Parallel's list price for ${urls} URLs` });
+
+/** The fee of a request to Parallel's `url` with `body`: its search's, by the results it asks for (10 by default), or its
+ *  extract's, by the URLs; undefined for an endpoint the web tools do not ask. */
+export function parallelFeeOf(url: string, body: unknown): Fee | undefined {
+  const path = URL.parse(url)?.pathname;
+  const asked = (body ?? {}) as { advanced_settings?: { max_results?: unknown }; urls?: unknown };
+  if (path === "/v1/search") return parallelSearchFee(typeof asked.advanced_settings?.max_results === "number" ? asked.advanced_settings.max_results : PARALLEL_SEARCH_INCLUDED);
+  if (path === "/v1/extract") return parallelExtractFee(Array.isArray(asked.urls) ? Math.max(1, asked.urls.length) : 1);
+  return undefined;
+}
+
+/** A paid request the run's cap refused, or whose mark could not be written: nothing was sent. Its message is the
+ *  refusal, in the cap's words. */
+export class PaidRefused extends Error {
+  override readonly name = "PaidRefused";
+}
+
+/** Where a paid request is booked: the call it is booked under, and one record written to the run's root, where its
+ *  spend is read on every harness (cap.ts, harness-app.ts). */
+export type Ledger = { call: string; record(kind: string, data: Record<string, string | number | null>): Promise<void> };
+const ledgers = new AsyncLocalStorage<Ledger>();
+
+/** The ledger of a tool call: its id, and its commits to the run's store. */
+const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context) });
+
+/** `tool` with each call's paid requests booked under it: its execute runs with the call's ledger set. */
+export function booking<T extends ToolRegistration>(tool: T): T {
+  return { ...tool, execute: (args: never, api: ToolExecutionApi, context: Context) => ledgers.run(ledgerOf(api, context), () => tool.execute(args, api as never, context)) } as T;
+}
+
+/** `work` with its paid requests booked in `ledger` (a workflow call node's); with none, booked nowhere. */
+export const bookedIn = <T>(ledger: Ledger | undefined, work: () => Promise<T>): Promise<T> => (ledger ? ledgers.run(ledger, work) : work());
+
+/** Whether Parallel may have billed a request it answered `status`: a 2xx, a 408 or a 5xx; never another 4xx. */
+const billed = (status: number) => (status >= 200 && status < 300) || status === 408 || status >= 500;
+
+type Sent = { response: Response } | { thrown: unknown } | { unmarked: string };
+
+/** `send`, one request to a paid provider at `fee`, under the run's cap and booked under the call it runs in: its
+ *  response; it throws PaidRefused, in the cap's words, when the cap does not hold its price (or the run's spend is
+ *  unknown), when no call is set to book it under, or when its mark could not be written, and then nothing is sent. A request that throws throws, settled at its
+ *  price. */
+export async function paidRequest(fee: Fee, send: () => Promise<Response>): Promise<Response> {
+  const ledger = ledgers.getStore();
+  if (!ledger) throw new PaidRefused(`${fee.name} was not sent: this request has no call to book it under`);
+  const label = { tool: fee.tool, charged_by: fee.by, call: ledger.call };
+  const chargeOf = (sent: Sent) => ("unmarked" in sent ? undefined : "thrown" in sent || billed(sent.response.status) ? fee.usd : 0);
+  const sent = async (): Promise<Sent> => {
+    try {
+      await ledger.record(TOOL_STARTED, { ...label, heldUsd: fee.usd });
+    } catch (error) {
+      return { unmarked: `${fee.name} was not sent: its mark could not be written (${String((error as Error)?.message ?? error).slice(0, 200)})` };
+    }
+    let outcome: Sent;
+    try {
+      outcome = { response: await send() };
+    } catch (thrown) {
+      outcome = { thrown };
+    }
+    // Settled at what it may have charged, even when this cannot be written: the request was sent.
+    await ledger.record(TOOL_COST, { ...label, usd: chargeOf(outcome) ?? null }).catch(() => undefined);
+    return outcome;
+  };
+  const paid = await paidCall(fee.name, sent, chargeOf, { usd: fee.usd, basis: fee.basis });
+  if ("refused" in paid) throw new PaidRefused(paid.refused);
+  const outcome = paid.result;
+  if ("unmarked" in outcome) throw new PaidRefused(outcome.unmarked);
+  if ("thrown" in outcome) throw outcome.thrown;
+  return outcome.response;
+}

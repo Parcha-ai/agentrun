@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/agents/release-notes/learning"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent": "release-notes",
+    "main": null,
+    "index": "",
+    "notes": {
+      "items": [],
+      "total": 0,
+      "next_cursor": null
+    },
+    "log": {
+      "items": [],
+      "total": 0,
+      "next_cursor": null
+    },
+    "counts": {
+      "merged": 0,
+      "dropped": {},
+      "in_progress": 0
+    },
+    "impact": null
+  }
+}
