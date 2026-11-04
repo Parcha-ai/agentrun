@@ -227,3 +227,22 @@ test("a run: its launch refreshes a token near expiry and the call goes with the
   assert.match(said, /sign in again in Settings → MCP servers/);
   assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "expired");
 });
+
+test("a token given with no expiry is taken to last an hour: a launch after that refreshes it", async (t) => {
+  const key = sealKey();
+  withEnv(t, { AGENTRUN_SEAL_KEY: key });
+  const { api, data } = await serve(t);
+  const { as, mcp } = await fakes(t, { expiresIn: null });
+  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.oauth.expires_at, undefined);
+  const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
+  const refreshes = () => as.log.filter((entry) => entry.form.grant_type === "refresh_token").length;
+  await store.headersForRun("docs");
+  assert.equal(refreshes(), 0, "fresh: not refreshed");
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 56 * 60_000 });
+  const headers = await store.headersForRun("docs");
+  t.mock.timers.reset();
+  assert.equal(refreshes(), 1, "within the margin of an hour: refreshed");
+  assert.ok(as.accepts(headers.authorization));
+});

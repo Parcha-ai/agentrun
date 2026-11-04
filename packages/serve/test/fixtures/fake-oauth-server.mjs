@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 const made = (prefix) => `${prefix}-${randomBytes(16).toString("hex")}`;
 
 /** `cimd`: it says it takes client metadata documents. `clients`: pre-registered `{client_id: client_secret}`.
- *  `expiresIn`: seconds an access token lives. */
+ *  `expiresIn`: seconds an access token lives; null, it says none. */
 export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600 } = {}) {
   const log = [];
   const registered = new Map(Object.entries(clients).map(([id, secret]) => [id, { secret, redirect_uris: undefined }]));
@@ -63,7 +63,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       const client = registered.get(id);
       if (client?.secret !== undefined && client.secret !== secret) return json(401, { error: "invalid_client" });
       const grant = () => {
-        const set = { access_token: made("access"), refresh_token: made("refresh"), token_type: "Bearer", expires_in: expiresIn };
+        const set = { access_token: made("access"), refresh_token: made("refresh"), token_type: "Bearer", ...(expiresIn === null ? {} : { expires_in: expiresIn }) };
         access.add(set.access_token);
         issued.push(set.access_token, set.refresh_token);
         return set;

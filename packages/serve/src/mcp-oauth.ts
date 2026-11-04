@@ -22,7 +22,7 @@ const REQUEST_MS = 15_000;
 
 export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 /** What is sealed: the tokens and all a refresh needs. */
-export type TokenSet = { tokens: OAuthTokens; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
+export type TokenSet = { tokens: OAuthTokens; obtained_at: string; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
 type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
 
 const sdk = () => import("@modelcontextprotocol/client");
@@ -88,7 +88,7 @@ export class McpSignIns {
     await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
     const scope = tokens.scope ?? entry.scope;
-    return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
+    return { tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}), client: entry.client, kind: entry.kind, discovery: entry.discovery, ...(entry.resource ? { resource: entry.resource } : {}) };
   }
 
   private provider(entry: Pending, hooks: { state?: string; redirect?: (url: URL) => void; saved?: (tokens: OAuthTokens) => void }): OAuthClientProvider {
@@ -123,7 +123,7 @@ export async function refreshed(set: TokenSet): Promise<TokenSet> {
   });
   const scope = tokens.scope ?? set.tokens.scope;
   const { expires_at: _, ...rest } = set;
-  return { ...rest, tokens: { ...tokens, ...(scope ? { scope } : {}) }, ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}) };
+  return { ...rest, tokens: { ...tokens, ...(scope ? { scope } : {}) }, obtained_at: new Date().toISOString(), ...(expiresAt(tokens) ? { expires_at: expiresAt(tokens) } : {}) };
 }
 
 /** Whether a refresh failed because the authorization server said no (revoked, expired, client gone), not for want of

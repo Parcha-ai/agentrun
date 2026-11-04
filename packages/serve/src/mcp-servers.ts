@@ -21,6 +21,8 @@ export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth"] as const;
 /** A run's launch refreshes an OAuth access token that expires within this. */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
+/** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
+const UNKNOWN_EXPIRY_MS = 60 * 60_000;
 const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 const REQUEST_MS = 15_000;
 const PREVIEW_MS = 30_000;
@@ -109,7 +111,10 @@ export class McpServers {
       if (!was || was.auth.type !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
       if (new URL(was.url).origin !== url.origin) throw invalid([credentialMissing(auth.type, `The address moved from ${new URL(was.url).origin} to ${url.origin}: send the credential again, so a saved one never goes to another origin.`)]);
       await this.freshen(name);
-      headers = this.opened(name, this.need(name), credentialMissing(auth.type, "").field);
+      // Read again after the refresh's wait: a sign-in to another URL that landed meanwhile is never sent here.
+      const now = this.need(name);
+      if (saving(now) !== saving(was)) throw new ApiError("unavailable", `The server ${name} was signed in to, saved or forgotten meanwhile: save it again.`);
+      headers = this.opened(name, now, credentialMissing(auth.type, "").field);
     }
     const listed = await listServer(url, headers ?? {}, this.version, stop);
     const now = new Date().toISOString();
@@ -212,10 +217,12 @@ export class McpServers {
     if (kept?.auth.type !== "oauth" || kept.auth.oauth?.expired) return Promise.resolve();
     const opened = this.open(name, kept);
     const set = "set" in opened ? opened.set : undefined;
-    if (!set?.expires_at || Date.parse(set.expires_at) - Date.now() > margin) return Promise.resolve();
+    // An access token whose expiry was not given is taken to last UNKNOWN_EXPIRY_MS from when it was obtained.
+    const due = set?.expires_at ? Date.parse(set.expires_at) : set?.obtained_at ? Date.parse(set.obtained_at) + UNKNOWN_EXPIRY_MS : undefined;
+    if (!set || due === undefined || due - Date.now() > margin) return Promise.resolve();
     const run = (async () => {
       let next: TokenSet | undefined;
-      let no = !set.tokens.refresh_token && Date.parse(set.expires_at!) <= Date.now();
+      let no = !set.tokens.refresh_token && !!set.expires_at && Date.parse(set.expires_at) <= Date.now();
       if (set.tokens.refresh_token) {
         try {
           next = await refreshed(set);

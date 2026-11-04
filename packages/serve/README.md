@@ -875,7 +875,7 @@ plain `http` address and port it listens on.
 Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at, scopes, client}`, where `client` is
 `pre-registered`, `metadata-document` or `dynamic`; never a token. A `PUT` with `auth: {type: "oauth"}` keeps the token
 set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
-(one refresh at a time per server, so a rotating refresh token is spent once) and hands the run the access token
+(one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
 alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
 and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
 refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it.
