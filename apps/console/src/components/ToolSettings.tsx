@@ -19,9 +19,10 @@ export function ToolTable({ label, rows, settings, fallbackOf, resolvesOf, issue
   busy?: boolean;
   onChange: (next: ToolSettings) => void;
 }) {
-  // Wider than a phone (375 px): the table scrolls in its own box, as MissionAnalytics' tables do, never the page.
+  // Wider than a phone (375 px): the table scrolls in its own box, as MissionAnalytics' tables do, never the page. The box
+  // is positioned so the header's sr-only "Reset" (absolute) is placed in it, not past it on the page.
   return (
-    <div className="overflow-x-auto">
+    <div className="relative overflow-x-auto">
       <table aria-label={label} className="w-full border text-left">
         <thead><tr className="border-b">{["Tool", "Provider", "Resolves to"].map((c) => <th key={c} className="caps px-3 py-2 text-[11px] font-semibold text-muted-foreground">{c}</th>)}<th><span className="sr-only">Reset</span></th></tr></thead>
         <tbody>
