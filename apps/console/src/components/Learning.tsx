@@ -98,8 +98,9 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   useEffect(() => {
     if (view && missing && later.cursor && later.error === undefined && later.pages < MORE_PAGES) more();
   }, [view, missing, later.cursor, later.pages]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A note whose source is past the changes read: the next changes are read until every note's is known, or they end.
-  const unknown = all.some((x) => !from.has(x.file));
+  // A note whose source is past the changes read, or a retired skill's or draft's retirement (its status file's latest
+  // change): the next changes are read until every one is known, or they end.
+  const unknown = all.some((x) => !from.has(x.file)) || [...skills, ...workflows].some((x) => x.status === "retired" && !from.get(statusFile(x))?.edited);
   useEffect(() => {
     if (!view || !unknown || !olderLog.cursor || olderLog.pages >= MORE_PAGES) return;
     const n = asked.current;
