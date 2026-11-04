@@ -22,6 +22,8 @@
 //   mirrors a new session, before any turn.
 // FAKE_OPENCODE_DROP_BUSY=1: the event stream ends as the first turn starts, before its busy status is said, and a new one
 //   is answered at once: the turn's busy status reaches no one, and its later events reach the new stream.
+// FAKE_OPENCODE_SLOW_START=<ms>: the first prompt is taken, then the event stream ends and the turn starts <ms> later: a
+//   stream opened again meanwhile finds the session idle, the prompt recorded, and no answer yet.
 // FAKE_OPENCODE_IGNORE_ABORT=1: `POST /session/:id/abort` answers 200 and the turn goes on: OpenCode does not end it.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
@@ -37,6 +39,7 @@ const exitAfter = process.env.FAKE_OPENCODE_EXIT_AFTER_CALL;
 let stalls = Number(process.env.FAKE_OPENCODE_STALL_EVENTS ?? 0);
 let dropInTurn = process.env.FAKE_OPENCODE_DROP_EVENTS_IN_TURN === "1";
 let dropBusy = process.env.FAKE_OPENCODE_DROP_BUSY === "1";
+let slowStart = Number(process.env.FAKE_OPENCODE_SLOW_START ?? 0);
 const goneAfter = Number(process.env.FAKE_OPENCODE_EVENTS_GONE ?? 0);
 let goneOpened = false;
 let goneWaited = false;
@@ -305,7 +308,16 @@ const server = createServer(async (req, res) => {
         for (const p of body.parts ?? []) record(sid, "message.part.updated", { sessionID: sid, part: { id: id("prt"), sessionID: sid, messageID: user.id, type: "text", text: p.text }, time: Date.now() });
       }
       note({ prompt: user.id, system: body.system ?? null });
-      void loop(sid, user);
+      if (slowStart) {
+        const ms = slowStart;
+        slowStart = 0;
+        for (const res of [...subscribers]) {
+          subscribers.delete(res);
+          res.end();
+        }
+        note({ dropped: "/event", before: "the turn starts" });
+        setTimeout(() => void loop(sid, user), ms);
+      } else void loop(sid, user);
       return json(res, 204);
     }
   }

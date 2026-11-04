@@ -576,3 +576,16 @@ test("OpenCode's process holds no session key in its environment: the config, wi
   assert.deepEqual({ content: named("OPENCODE_CONFIG_CONTENT") !== undefined, file: typeof file === "string" }, { content: false, file: true }, "the config is a file OPENCODE_CONFIG names, not the environment's");
   assert.equal(mode, 0o600, "only OpenCode's user reads it");
 });
+
+test("a stream opened again after OpenCode took the prompt but before its turn started does not end the turn: it ends with OpenCode's answer", { timeout: 60_000 }, async () => {
+  // The stream ends as the prompt is taken, and the turn starts 1.5 s later: the reopened stream finds OpenCode idle,
+  // the prompt recorded, and no answer yet.
+  const { adapter: a, provider: p } = adapter([{ text: "Done." }], { standInEnv: { FAKE_OPENCODE_SLOW_START: "1500" } });
+  const s = await session(a, memorySessionStore(), spec([]));
+  await s.session.send("go");
+  const ended = await Promise.race([s.session.turnEnd(), sleep(15_000).then(() => "no end within 15 s")]);
+  const asked = p.seen.length;
+  const said = s.events.filter((e) => e.type === "text").map((e) => e.delta).join("");
+  await s.session.close();
+  assert.deepEqual({ ended, asked, said }, { ended: { status: "completed" }, asked: 1, said: "Done." }, "the turn ends once OpenCode has answered it");
+});
