@@ -25,8 +25,10 @@ export function completer(models: Models, pick: (tier: string | undefined) => { 
     if (system !== undefined && typeof system !== "string") throw new Error("llm: system is a string");
     if (maxTokens !== undefined && (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 64_000)) throw new Error("llm: maxTokens is an integer from 1 to 64000");
     if (tier !== undefined && !["fast", "default", "strong"].includes(tier as string)) throw new Error("llm: tier is fast, default or strong");
-    const ref = pick(tier as string | undefined) ?? pick(undefined);
-    if (!ref) throw new Error("llm: this run has no model");
+    // Only a call that names no tier gets the default: a tier the run has no model for is refused, never answered by
+    // another tier's model.
+    const ref = pick(tier as string | undefined);
+    if (!ref) throw new Error(tier === undefined ? "llm: this run has no model" : `llm: tier ${tier as string} has no model in this run`);
     const model = models.getModel(ref.provider, ref.modelId) as { cost?: { input: number; output: number } } | undefined;
     if (!model) throw new Error(`llm: the model ${ref.provider}/${ref.modelId} is not known here`);
     const context = { ...(system ? { systemPrompt: system } : {}), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] };
