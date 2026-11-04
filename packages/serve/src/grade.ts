@@ -20,13 +20,13 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { buildIndex, INDEX_FILE, type IndexEntry, type LearnedNote, mergedNote, mergeProblems, type NoteText, parseNoteFile, type Problem, supersede, supersededBy, type Verdict } from "./learn/index.js";
 import type { PageJudge } from "@parcha/pi-browser";
-import { claudeModel, claudeProvider } from "./adapters.js";
+import { claudeModel, claudeProvider, codexModel, codexProvider } from "./adapters.js";
 import { FAUX_JEV_ENV, fauxFetch, jevKey } from "./decisions.js";
 import { homeOf } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { agentFolder, checkOut, git, line, mainOf, NO_TOKENS, type Proposal, readBlobs, type Tokens, withAgentRepo } from "./learning.js";
 import { type Complete, completer } from "./llm.js";
-import { runModels, thinkingOf } from "./model.js";
+import { type ModelRef, openRouterOnly, runModels, thinkingOf } from "./model.js";
 
 /** How long one note's screen and the grader may take (the grader's unless the server names another), and the most the
  *  grader may write. */
@@ -181,6 +181,13 @@ async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost
     const catalog = builtinModels({ authContext: graderAuth(sent) }) as unknown as PiModels;
     const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: sent.origin } : found);
     chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: { provider: "anthropic", modelId: sent.modelId } };
+  } else if (agent.harness === "codex" && !env[FAUX_HARNESS_ENV] && openRouterOnly("codex", env)) {
+    // codex on OpenRouter alone: the grade goes where the run's requests go, OpenRouter with its key, on the model the run
+    // runs (codexModel, then the id codexProvider sends), through pi-ai's openrouter provider. The revision's own name
+    // (openai/<model>) would ask for an OpenAI key, which this route never needs.
+    const choice = await codexModel(env, agent.model);
+    if ("why" in choice) throw new Error(choice.why);
+    chosen = await runModels(env, `openrouter/${codexProvider(env, choice.model as ModelRef).modelId}`);
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
   const { model } = chosen;
