@@ -431,7 +431,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const open = (attempt = 0) => openDrive({ writer, signal: io.signal, live, attempt });
       let drive = await open();
       const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+      // A turn is open while the session holds input no turn placed, or a turn with no end (its recovery note).
+      const holdsTurn = (folded: typeof initial) => Boolean(recoveryNote(folded)) || pendingSubmissions(folded).length > 0;
+      let state: AdapterSession["state"] = holdsTurn(initial)
         ? "open_turn"
         : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
 
@@ -505,6 +507,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             if (drainMs > 0) await calls.idle(drainMs);
             drive.halt?.(new SessionHalt("interrupted"));
             await running?.catch(() => {});
+            // The turn it stopped is still open in the session (an interrupt writes no end, and a prompt it stopped before
+            // the harness placed it is still pending): open_turn, so a host that is done with it settles it here.
+            if (holdsTurn(drive.state())) state = "open_turn";
           } finally {
             // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
             calls.clear();
