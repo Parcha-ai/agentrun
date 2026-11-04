@@ -8,3 +8,5 @@ export { findClaudeExecutable as claudeAgentExecutable } from "./binary.js";
 export { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, CLAUDE_WEB_SEARCH_USD, OWN_TOOL_PREFIX, thinks } from "./host/policy.js";
 export type { AnthropicPolicyOptions, AnthropicUsage } from "./host/policy.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
+export { listedTools, MCP_OUTPUT_TOKENS, RESULT_SIZE_KEY, toolServer } from "./host/tool-server.js";
+export type { ServedTool } from "./host/tool-server.js";

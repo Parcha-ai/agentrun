@@ -195,3 +195,46 @@ describe("Settings → Tools, a Retry's read and a save", () => {
     expect(row().querySelector("select")!.value).toBe("parallel");
   });
 });
+
+describe("Settings → Tools, a settings read that fails once the page shows them", () => {
+  const stale = () => toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "parallel", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
+  async function shown() {
+    let reads = 0;
+    const state = { fail: false };
+    const v2 = {
+      toolSettings: async () => { reads++; if (state.fail) throw new Error("connection reset"); return { web_search: { provider: "off" } }; },
+      saveToolSettings: async (b: ToolSettings) => b,
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    // The settings land, but the capabilities still name the old provider: the row offers Retry.
+    act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale(), onSaved: () => {}, onOpen: async () => true } as never)));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    const row = () => host.querySelector('tr[data-tool="web_search"]')!;
+    const alert = () => [...host.querySelectorAll('[role="alert"]')].find((a) => /could not be read/.test(a.textContent ?? ""));
+    const click = async (within: Element, label: RegExp) => { await act(async () => { [...within.querySelectorAll("button")].find((b) => label.test(b.textContent ?? ""))!.click(); }); await settle(); };
+    // The row's Retry, with the settings read failing.
+    state.fail = true;
+    await click(row(), /Retry/);
+    return { host, row, alert, click, settle, state, reads: () => reads };
+  }
+  it("says so beside the table it keeps, with Try again, which reads again; once a read lands, the words go", async () => {
+    const page = await shown();
+    expect(page.reads()).toBe(2);
+    expect(page.alert()?.textContent).toContain("The tool settings could not be read again: network: connection reset");
+    expect(page.row().querySelector("select")!.value).toBe("off");
+    page.state.fail = false;
+    await page.click(page.alert()!, /Try again/);
+    expect(page.reads()).toBe(3);
+    expect(page.alert()).toBeUndefined();
+  });
+  it("a save after that failed read is the newest settings: the words go", async () => {
+    const page = await shown();
+    expect(page.alert()).toBeDefined();
+    await act(async () => { const s = page.row().querySelector("select")!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "parallel"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await page.settle();
+    expect(page.row().querySelector("select")!.value).toBe("parallel");
+    expect(page.alert()).toBeUndefined();
+  });
+});
