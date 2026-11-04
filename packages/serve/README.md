@@ -822,7 +822,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `instructions` and every tool `tools/list` gives, all pages, each with its name, title, description, `input_schema`,
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
-value}}` (up to 8). `oauth` is refused for now (`422`, reason `not_yet`). `url` is `https`, or `http` on loopback.
+value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
+`url` is `https`, or `http` on loopback.
 
 What can go wrong, told apart:
 
@@ -852,6 +853,32 @@ annotations differ. `DELETE .../{name}` forgets the server and its credential. A
 another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
 route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
 says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
+
+### Signing in with OAuth
+
+A server whose preview answers `details.auth: "oauth"` is signed in to by this server, which keeps the tokens: the
+agent's machine never sees one. `POST /v2/settings/mcp-servers/{name}/oauth/start` with `{url, scopes?, client_id?,
+client_secret?}` answers `{authorization_url}`, the page the owner opens. It runs the official MCP SDK's OAuth: the
+server's protected-resource metadata (RFC 9728), then its authorization server's (RFC 8414); PKCE S256; the server's URL
+as the RFC 8707 `resource`. The client is, in this order, the `client_id` (and `client_secret`) you give; else this
+server's client metadata document, `GET /v2/settings/mcp-servers/oauth/client.json`, when this server's address
+(`AGENTRUN_PUBLIC_URL`) is public `https` and the authorization server takes one; else dynamic client registration.
+
+The authorization server sends the browser back to `GET /v2/settings/mcp-servers/oauth/callback`, which takes no token:
+its `state` is random, bound to the server's name, used once and good for 10 minutes (else `400`), and the PKCE verifier
+never left this server. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
+does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
+`sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback,
+`http://127.0.0.1:<port>/v2/settings/mcp-servers/oauth/callback`.
+
+Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at, scopes, client}`, where `client` is
+`pre-registered`, `metadata-document` or `dynamic`; never a token. A `PUT` with `auth: {type: "oauth"}` keeps the token
+set. Refresh tokens never leave this server: a run's launch refreshes an access token that expires within 5 minutes
+(one refresh at a time per server, so a rotating refresh token is spent once) and hands the run the access token
+alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
+and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
+refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it.
 
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `node
 test/fixtures/fake-mcp-server.mjs [--legacy] [--token T]` prints its URL; it serves `add`, `slow_write`, `delete_thing`
@@ -935,7 +962,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
-| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
+| `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
