@@ -16,12 +16,16 @@ export type TurnEnd = { status: "answered" | "asked" | "failed" | "interrupted";
 /** The request id prefix of a run's end-of-run turn (learning-run.ts): the server's message, never the person's. */
 export const REFLECT_REQUEST = "learn-reflect-";
 
-type Message = { key: string; order: number; end?: TurnEnd; sent?: true; status?: unknown };
+/** `order`: when the run took it (a bridge message's MESSAGE entry, a pi input's submission id); `placed`: a pi input's
+ *  entry in the transcript, the order its turn ran in (pi places a steer before a follow-up queued ahead of it). */
+type Message = { key: string; order: number; placed?: number; end?: TurnEnd; sent?: true; status?: unknown };
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
 /** An answer's whole text: its text blocks, as a run's answer has always read. */
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Obj).text ?? "")).join("\n").trim() : "";
+
+const later = (a: Message, b: Message): boolean => (a.placed !== undefined && b.placed !== undefined ? a.placed > b.placed : a.order > b.order);
 
 export class Turns {
   readonly #messages = new Map<string, Message>();
@@ -124,6 +128,7 @@ export class Turns {
       return;
     }
     const message = known ?? this.#take(key, now, value.id);
+    if (typeof value.entry === "number") message.placed = value.entry;
     if (message.end) return;
     // Only a move of its status is its turn's progress: a reconnect's snapshot carries the same record again.
     const moved = message.status !== value.status;
@@ -148,9 +153,10 @@ export class Turns {
     return message;
   }
 
+  /** The message whose turn ran last: by where pi placed each input when both were placed, else by when the run took it. */
   #newest(): Message | undefined {
     let newest: Message | undefined;
-    for (const message of this.#messages.values()) if (!newest || message.order > newest.order) newest = message;
+    for (const message of this.#messages.values()) if (!newest || later(message, newest)) newest = message;
     return newest;
   }
 
