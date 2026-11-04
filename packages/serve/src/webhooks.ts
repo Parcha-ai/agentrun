@@ -82,12 +82,12 @@ function opened(key: Buffer | undefined, config: Config): { secret: string } | {
   }
 }
 
-/** The signing secret of the webhook data directory `data` keeps, opened with the seal key of `env`; undefined when it
- *  keeps none, or the key is not there or does not open it. Read for an import, which cuts it out of what it keeps. */
-export function webhookSecretIn(data: string, env: NodeJS.ProcessEnv): string | undefined {
+/** The signing secret of the webhook data directory `data` keeps, opened with the seal key of `env`, or why it does not
+ *  open (no seal key, or one it was not sealed under); undefined when it keeps none. Read for an import, which cuts it
+ *  out of what it keeps. */
+export function webhookSecretIn(data: string, env: NodeJS.ProcessEnv): ReturnType<typeof opened> | undefined {
   const config = configIn(join(data, WEBHOOK_FILE));
-  const open = config && opened(sealKeyOf(env[SEAL_KEY_ENV]), config);
-  return open && "secret" in open ? open.secret : undefined;
+  return config && opened(sealKeyOf(env[SEAL_KEY_ENV]), config);
 }
 
 export class Webhooks {

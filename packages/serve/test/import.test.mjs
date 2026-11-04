@@ -529,6 +529,71 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   assert.ok(lines.includes("4 secrets removed"), lines.filter((l) => /removed/.test(l)).join(" "));
 });
 
+test("an import that cannot open this server's webhook secret (no seal key, or another one) says so once, its dry run too, and imports all the same; with the key it says nothing", async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const key = randomBytes(32).toString("base64");
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = key;
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let open = true;
+  t.after(() => open && server.close());
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  await server.close();
+  open = false;
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1);
+  const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
+  const said = (seal, ...args) => {
+    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, ...(seal ? { AGENTRUN_SEAL_KEY: seal } : {}) }, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    return ran.stderr.split("\n").filter((line) => line.includes("event=webhook_secret"));
+  };
+  for (const [seal, condition] of [[undefined, "seal_key_missing"], [randomBytes(32).toString("base64"), "unreadable"]])
+    for (const args of [["--dry-run"], []]) {
+      const lines = said(seal, ...args);
+      assert.equal(lines.length, 1, `${condition} ${args}: ${lines.join("\n")}`);
+      assert.equal(lines[0].replace(/at=\S+ /, ""), `agentrun-serve import: event=webhook_secret condition=${condition} name=AGENTRUN_SEAL_KEY file=${join(data, "webhook.json")} effect="this server's webhook secret cannot be read, so the import does not cut it"`);
+    }
+  for (const args of [["--dry-run"], []]) assert.deepEqual(said(key, ...args), [], "with the key it opens, nothing is said");
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.equal(reader.listRuns().length, 1, "imported all the same");
+});
+
+test("what an import says on stderr goes through the cut its other lines do: a data directory whose path holds a key prints it as [redacted], once", async (t) => {
+  const root = await scratch(t);
+  // A key of the environment's, in the data directory's path, as a folder named after one would hold it.
+  const value = `not-a-secret-${randomBytes(12).toString("hex")}`;
+  const data = join(root, `agents-${value}`);
+  const before = process.env.AGENTRUN_SEAL_KEY;
+  t.after(() => (before === undefined ? delete process.env.AGENTRUN_SEAL_KEY : (process.env.AGENTRUN_SEAL_KEY = before)));
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let open = true;
+  t.after(() => open && server.close());
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  await server.close();
+  open = false;
+  const at = join(root, "home");
+  const site = join(at, "code", "hooks");
+  mkdirSync(site, { recursive: true });
+  claudeSession(at, site, 1);
+  const { AGENTRUN_SEAL_KEY: _, ...inherited } = process.env;
+  // No seal key: the webhook's secret does not open, and the line naming its file is said.
+  for (const args of [["--dry-run"], []]) {
+    const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all", ...args], { env: { ...inherited, HOME: at, OPENAI_API_KEY: value }, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.ok(![ran.stdout, ran.stderr].some((text) => text.includes(value)), `${args}: the key is printed`);
+    const lines = ran.stderr.split("\n").filter((line) => line.includes("event=webhook_secret"));
+    assert.equal(lines.length, 1, `${args}: ${ran.stderr}`);
+    assert.ok(lines[0].includes(`file=${join(root, "agents-[redacted]", "webhook.json")}`), lines[0]);
+  }
+});
+
 test("this repository's own source, imported as a session's output, has nothing cut from it", async (t) => {
   const repo = new URL("../../../", import.meta.url).pathname;
   const files = [];
