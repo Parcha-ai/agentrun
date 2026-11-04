@@ -96,7 +96,9 @@ test("a codex run whose cap can't cover one request's least is refused before an
 test("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
   const { api, standIn, data } = await codexServe(t, gw);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex"), { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test" });
+  // How many fit at once is this host's memory (admission.test.mjs).
+  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  assert.deepEqual(offer, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test", run_memory_mib: 192 });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   // Mid-turn, with the gateway holding its answer: Codex's process and its rights.

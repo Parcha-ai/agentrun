@@ -55,6 +55,8 @@ switch (args[0]) {
         i++;
       } else if (args[i] === "--workdir") container.workdir = args[++i];
       else if (args[i] === "--network") container.HostConfig.NetworkMode = args[++i];
+      else if (args[i] === "--cap-drop") (container.HostConfig.CapDrop ??= []).push(args[++i]);
+      else if (args[i] === "--security-opt") (container.HostConfig.SecurityOpt ??= []).push(args[++i]);
       else if (args[i] === "--user") container.Config.User = args[++i];
     }
     container.Config.Env = container.env;

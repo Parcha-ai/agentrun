@@ -7,6 +7,7 @@ export { toolSchemaProblems } from "./schema-check.js";
 export { READ_SKILL_FILE, readSkillFileTool, skillProblems } from "./skill-files.js";
 export type { HostSkill, SkillFileList } from "./skill-files.js";
 export type { HarnessRunReason } from "./errors.js";
+export { HOST_RESULT_MAX_CHARS } from "./types.js";
 export type {
   AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, HarnessEvent, HostTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage,
   NodeRequest, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,

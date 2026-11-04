@@ -169,7 +169,8 @@ test("the environment names the box's paths: one outside work/ is refused, a mis
   assert.deepEqual(await files.absolutePath("a.txt", BACKGROUND_CONTEXT), { ok: true, value: `${WORK}/a.txt` });
   assert.equal(files.cwd, WORK);
   const outside = await files.readTextFile("/etc/hostname", BACKGROUND_CONTEXT);
-  assert.equal(outside.error.message, `/etc/hostname: outside the workspace ${WORK}`);
+  // The confinement's typed refusal, naming no path: the tools name it by the path the call gave (asGivenRefusals).
+  assert.deepEqual([outside.error.name, outside.error.reason, outside.error.message], ["PathOutsideWorkError", "outside_work", "outside the workspace"]);
   const missing = await files.readTextFile("missing.md", BACKGROUND_CONTEXT);
   assert.deepEqual([missing.error.code, missing.error.message], ["not_found", `ENOENT: no such file or directory, open '${WORK}/missing.md'`]);
   assert.deepEqual(await files.exists("missing.md", BACKGROUND_CONTEXT), { ok: true, value: false });
