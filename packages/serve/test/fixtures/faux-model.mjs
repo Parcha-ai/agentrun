@@ -29,6 +29,11 @@ export default function reply(context, faux) {
     // and a program it starts.
     // "..., once <file> exists." holds it until the test has made that file.
     const canary = JSON.stringify(context);
+    // A node that says which decision keys its process was handed on their descriptor: names only, never a value.
+    if (canary.includes("Report the decision keys")) {
+      if (answered) return faux.message("Submitted.");
+      return import(new URL("../../dist/decisions.js", import.meta.url).href).then(({ handedKeys }) => faux.message(faux.toolCall("submit", { names: Object.keys(handedKeys(process.env)).sort() }), { stopReason: "toolUse" }));
+    }
     if (canary.includes("Report the canary")) {
       if (answered) return faux.message("Submitted.");
       const gate = /Report the canary once (\S+?) exists\./.exec(canary)?.[1];

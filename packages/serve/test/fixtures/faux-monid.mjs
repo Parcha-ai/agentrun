@@ -1,5 +1,6 @@
 // Under `faux` only (startServe's `fauxMonid`): the fetch the monid tools send through, in place of monid's API (the tests'
-// fake). It answers only the tests' key (KEY, or the one AGENTRUN_TEST_FAUX_MONID_KEY names), files one line per call
+// fake). It answers only the tests' key (KEY, or the one whose SHA-256 AGENTRUN_TEST_FAUX_MONID_ACCEPTS holds: a digest, so
+// no key is in the run's environment, and a name the key rule leaves there), files one line per call
 // (with the process that made it, and a digest of the key it came on) in the file AGENTRUN_TEST_FAUX_MONID_CALLS names,
 // and keeps each call in `calls` for a test that calls it in its own process. Its
 // endpoints, by path: /person/enrich answers at once; /tweets answers 202 and completes on its second read; /slow never
@@ -32,7 +33,9 @@ export default async function fakeMonid(url, init = {}) {
   const method = init.method ?? "GET";
   const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
   const bearer = new Headers(init.headers).get("authorization") ?? "";
-  const authorized = [KEY, process.env.AGENTRUN_TEST_FAUX_MONID_KEY].some((key) => key && bearer === `Bearer ${key}`);
+  const given = bearer.replace(/^Bearer /, "");
+  const accepts = process.env.AGENTRUN_TEST_FAUX_MONID_ACCEPTS;
+  const authorized = bearer === `Bearer ${KEY}` || (Boolean(accepts) && bearer.startsWith("Bearer ") && createHash("sha256").update(given).digest("hex") === accepts);
   const key = createHash("sha256").update(bearer.replace(/^Bearer /, "")).digest("hex").slice(0, 16);
   calls.push({ method, path, body, authorized });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key })}\n`);

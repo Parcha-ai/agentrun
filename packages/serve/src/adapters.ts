@@ -12,6 +12,8 @@ import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
+import { keyShaped } from "./secret-cut.js";
+import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
@@ -92,9 +94,6 @@ export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
  *  is never taken from one (runs.ts lastLogLine). */
 export const HARNESS_LOG_EVENT = "harness";
 
-/** Names whose values are secrets: no line of the run's log carries one. */
-const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
-
 /**
  * A harness's log, into the run's log: the run process's stderr, which serve opens on the run's process.log. One JSON
  * line per call, as pi-durable-disk writes them (`{at, event, message, ...}`). A request's path loses its query string,
@@ -105,7 +104,7 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
   // Every own name, enumerable or not: an environment object may hold a key it does not list.
   const secrets = Object.getOwnPropertyNames(env)
     .map((name) => [name, env[name]] as const)
-    .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
+    .filter(([name, value]) => keyShaped(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string);
   const cut = (text: string) => secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
   // Every string is cut before it is serialized, field names included: JSON escapes a quote or a backslash, and a
@@ -212,6 +211,17 @@ export function gatewayBase(setting: string, value: string): string {
   if (path.split("/").some((segment) => /^(\.|%2e){1,2}$/i.test(segment))) throw wrong("has a . or .. path segment");
   if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) throw wrong(`is ${url.protocol.replace(/:$/, "")}, not https`);
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
+}
+
+/** The model key a run on `harness` (claude-agent or codex) of `model` (the revision's; none, the host's default for the
+ *  harness) takes: the one its requests carry on the route its provider below takes, as key-refusal.ts' runKeyOf names
+ *  it. codex: the gateway's when AGENT_MODEL_BASE_URL is set, else OpenAI's, or OpenRouter's on OpenRouter's route;
+ *  claude-agent: Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike, or OpenRouter's on OpenRouter's route.
+ *  None for pi, whose keys are its models' (model.ts' modelKeys). */
+export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?: string): string[] {
+  if (harness !== "codex" && harness !== "claude-agent") return [];
+  const key = runKeyOf(env, harness, model);
+  return key ? [key.field] : [];
 }
 
 /** OpenRouter's API: its Anthropic Messages endpoint (`<base>/v1/messages`) and its Responses API (`<base>/v1/responses`)

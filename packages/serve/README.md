@@ -450,7 +450,13 @@ know). Where the models come from:
   as the gateway does not say whose model answers. A run's `max_cost_usd` therefore now stops a gateway run on such a model with
   `spend_cap_reached`; at $0 it never did.
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-  ...), and its catalog prices the run. The `AGENT_MODEL` variables are then `provider/model-id` too.
+  `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, Bedrock's `AWS_*` keys, ...), and its catalog prices the run. The `AGENT_MODEL`
+  variables are then `provider/model-id` too. The launcher holds every key pi-ai reads, as it holds the rest, and a run's
+  process is handed a model key only when its model needs it: a pi run its model's provider's (a run on Gemini
+  `GEMINI_API_KEY`, one on `openrouter/...` `OPENROUTER_API_KEY`; a workflow each of its tiers'), or `AGENT_MODEL_API_KEY`
+  through the gateway; a codex run `OPENAI_API_KEY`, or `AGENT_MODEL_API_KEY` through the gateway; a claude-agent run
+  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's decision nodes get their providers' keys on a descriptor of
+  their own, whatever its model, and only those ([Safety](#safety)).
 
 A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
 it starts:
@@ -1041,9 +1047,9 @@ typed answers and their probabilities.
   sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
-  server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
-  run's process, and Parallel's alone to an agentic run whose `web_fetch` or `web_search` resolves to Parallel, once, by name, on an
-  inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
+  server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands a run's process those it
+  needs ([Safety](#safety)), a workflow's decision providers' and Parallel's where its `web_fetch` or `web_search`
+  resolves to Parallel, once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
   launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
   closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
   environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
@@ -1507,8 +1513,12 @@ carries no cost at all, as from a provider that does not price the model. The te
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
   it removed. Known key formats are removed. Other secrets in your session history, like passwords in config files, are
   imported as they are.
-- The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`) are never in a run's environment or files: a workflow run's
-  process gets them on a pipe of their own, for its decision providers alone ([decision workflows](#decision-workflows)).
+- The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
+  a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
+  providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev
+  or none, Parallel's for a node that names Parallel or for a `web_fetch` or `web_search` that resolves to Parallel
+  ([search and fetch](#search-and-fetch)), OpenRouter's for a node that names OpenRouter. A run that needs none gets no
+  pipe.
 - `web_fetch`'s direct fetch dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
@@ -1523,11 +1533,31 @@ carries no cost at all, as from a provider that does not price the model. The te
   CSP allows this origin only.
 - Each run's door listens on loopback and takes only that run's own door token (`DIR/runs/<id>/door-token`, 0600, made
   at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
-- A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
-  server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
-  the boxes' keys either ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool the key unlocks
-  (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's tools are those its model and call nodes
-  name), read from the revision at each launch, a relaunch or a resume after a restart included.
+- A run's process gets the server's environment (the `AGENT_MODEL` variables among it) without the server's token or any
+  key: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, no variable whose value is the token, and no variable named like a key
+  (one of its `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`, `PAT`,
+  `CREDENTIAL`, `CREDENTIALS` or `DSN`, or its last is `PWD` after another: `SERVICE_KEY`, `GITHUB_TOKEN_RO`, `DB_PASS`,
+  `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
+  pi-durable-disk's (`@parcha/pi-durable-disk/secret-name`), which an import's cut and a harness's log take too. The keys it
+  needs come over its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
+  revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's
+  tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
+  from the revision at each launch, a relaunch or a resume after a restart included.
+- A variable named like a key that is not on the launcher's list (`capabilities.secrets.names`) is left out of every
+  run's environment, but the launcher does not take it out of the server's: it stays in the server's own environment
+  (`/proc/<pid>/environ`), which any process of the same user can read. Set only the keys the server needs where it
+  starts.
+- A credential a provider's SDK finds through a variable named like a key is not supported for runs: no run's
+  environment holds the variable, and the SDK reads it from there alone. For Amazon Bedrock that is a web identity token
+  file (`AWS_WEB_IDENTITY_TOKEN_FILE`) and a container role (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`,
+  `AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` or its `_FILE`); for Vertex,
+  `GOOGLE_APPLICATION_CREDENTIALS`; for Anthropic's workload federation, `ANTHROPIC_IDENTITY_TOKEN_FILE`. Bedrock's access
+  keys or bearer token (held, and handed to a run on Bedrock), an `AWS_PROFILE`, `GOOGLE_CLOUD_API_KEY` or the default
+  application credentials file work. A credential file a provider reads by path (`AWS_PROFILE`'s `~/.aws` files, the
+  default application credentials) is the host's: a run's process reads it for its model, and its file tools cannot.
+- `TYPESAFE_API_KEY` is a decision key, handed to a workflow run's decision providers on a pipe of their own and never
+  with a run's other secrets, so a pi run on a `typesafe/` model does not get it: its process finds no key for that
+  model, and the run fails.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
@@ -1543,6 +1573,25 @@ carries no cost at all, as from a provider that does not price the model. The te
   backslash or a NUL is `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404` (a write or a delete in a home through one, `403`). Every
   answer is `nosniff`, and HTML carries a CSP with `sandbox` and `default-src 'none'`.
+- The launcher hands the server every secret on its list that is set over one pipe, which holds 4,096 bytes for sure
+  before the server reads it: each set secret costs its name, its value and two bytes. Past that it refuses to start,
+  saying `the secrets come to N bytes, more than the 4096 a pipe is sure to hold`, and starts nothing. A long value adds up
+  fast (an AWS session token is often over 1,000 bytes): set only the keys the server needs where it starts.
+
+### Known gaps
+
+- The provider keys are checked against pi-ai when this package is tested, not derived when the server starts: the
+  launcher's list and `PROVIDER_KEYS` match the pi-ai this package is tested with (its peer range is `*`, as Pi's
+  package guidance asks). The drift test fails, naming the provider and the key, on a pi-ai that reads a key neither
+  names. A pi-ai installed past that test that reads a key neither
+  names would leave it in the server's environment and out of every run's, and a run on that provider would fail at
+  its start for want of the key.
+- The cut is by name alone. A variable named like no key whose value is one reaches a run's environment and is not cut
+  from what an import or a harness's log keeps: a URL with a user and password in it (`DATABASE_URL`, `HTTPS_PROXY`),
+  headers that carry a token (`OTEL_EXPORTER_OTLP_HEADERS`), or a held key's
+  value under another name.
+- The 4,096-byte pipe limit stays until the launcher writes the pipe from a background subshell that blocks until the
+  server has read it.
 
 ## Test
 

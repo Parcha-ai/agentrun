@@ -14,7 +14,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
+import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
@@ -27,11 +27,11 @@ import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/swee
 import { rowPaths } from "./workspace-paths.js";
 import { ASK_TOOL, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD_ENV, decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
+import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
@@ -474,22 +474,59 @@ const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEA
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };
 /** The fields a run gets only when its revision names what they unlock: a `tool` key's. Any other kind's (a model key's)
- *  reach every run, as the rest of RUN_SECRETS does. */
+ *  is the model's to need, as every model key is. */
 const scopedOf = (rows: readonly KeyRow[]): readonly string[] => rows.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
-/** What a run whose revision was not read is handed: no tool key. */
-const NO_TOOL_KEYS = RUN_SECRETS.filter((name) => !scopedOf(TOOL_KEYS).includes(name));
+/** The model keys: every key of pi-ai's providers (model.ts' PROVIDER_KEYS) and the gateway's. A run gets those its model
+ *  needs and no other (secretsFor). A workflow's decision keys, OpenRouter's among them, go on its decision descriptor
+ *  (decisions.ts), whatever its model. */
+const MODEL_KEYS: readonly string[] = [...new Set([...Object.values(PROVIDER_KEYS).flat(), GATEWAY_KEY_ENV])];
+/** What a run whose revision was not read is handed: no tool key, and no model key. */
+const NO_TOOL_KEYS = RUN_SECRETS.filter((name) => !scopedOf(TOOL_KEYS).includes(name) && !MODEL_KEYS.includes(name));
 
-/** The secrets a run of `revision` is handed over its pipe: RUN_SECRETS but each field of a `tool` row of `rows`
- *  (TOOL_KEYS) that unlocks none of the tools the run binds, named as its process binds them (app.ts): an agentic
- *  revision's `tools`, a workflow's on its model nodes and its `call` nodes. A model key, or any other secret that is
- *  no tool key's field, goes to every run. */
-export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = TOOL_KEYS): Promise<string[]> {
+/** What of a revision decides the secrets its runs are handed, none of it a key, read once per revision (a revision
+ *  never changes): its harness, the model it names, the tools it binds (named as its process binds them, app.ts: an
+ *  agentic revision's `tools`, a workflow's on its model nodes and its `call` nodes), a workflow's tiers (those its model
+ *  nodes and `llm` calls run on), and its decision providers (decisions.ts' decisionKeysFor: a workflow's decision
+ *  nodes', providersNamed, Jev for a node that names none; an agentic revision's, none). Names only: no instruction and
+ *  no skill. */
+export type RunNeeds = { harness: string; model?: string; tools: readonly string[]; tiers?: readonly Tier[]; decisionProviders: readonly string[] };
+
+/** `revision`'s RunNeeds. */
+export async function needsOf(revision: Revision): Promise<RunNeeds> {
   const workflow = revision.kind === "workflow" ? revision.body.workflow : undefined;
-  const bound = workflow && workflowTools(workflowNodes(workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(workflow)));
-  const named = new Set(bound ? [...bound.nodes, ...bound.calls] : (revision.body.tools ?? []));
+  const nodes = workflow ? workflowNodes(workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(workflow)) : undefined;
+  const bound = nodes && workflowTools(nodes);
+  return {
+    harness: revision.body.harness ?? DEFAULT_HARNESS,
+    ...(revision.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}),
+    tools: bound ? [...bound.nodes, ...bound.calls] : [...(revision.body.tools ?? [])],
+    ...(nodes ? { tiers: llmTiers(nodes, nodeTiers(nodes)) } : {}),
+    decisionProviders: nodes ? providersNamed(nodes) : [],
+  };
+}
+
+/** The secrets a run of `needs` is handed over its pipe, by the keys `env` holds now: RUN_SECRETS but each field of a
+ *  `tool` row of `rows` (TOOL_KEYS) that unlocks none of the tools the run binds; and but each model key its model does
+ *  not need, from the host's model settings and the keys in `env`: a pi run's, its models' providers' keys or the
+ *  gateway's (model.ts' modelKeys: its own model, or the host's of each tier it runs); codex's and claude-agent's, the
+ *  one key their route sends for the revision's model (adapters.ts' harnessModelKeys). Read at each launch, so a key
+ *  saved with no restart counts at the next. */
+export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly KeyRow[] = TOOL_KEYS): string[] {
+  const named = new Set(needs.tools);
   const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
   const scoped = scopedOf(rows);
-  return RUN_SECRETS.filter((name) => !scoped.includes(name) || unlocked.has(name));
+  const model = new Set(needs.harness !== DEFAULT_HARNESS ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));
+  return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || model.has(name)));
+}
+
+/** The secrets a run of `revision` is handed with the keys `env` holds (needsOf, then keysFor). */
+export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = TOOL_KEYS, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  return keysFor(await needsOf(revision), env, rows);
+}
+/** The decision providers a run of `revision` needs keys for (needsOf). Its web tools' need, Parallel's where one
+ *  resolves to Parallel, is its tool plane's (tool-plane.ts' handsParallel), read at each launch. */
+export async function decisionProvidersFor(revision: Revision): Promise<readonly string[]> {
+  return (await needsOf(revision)).decisionProviders;
 }
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
@@ -568,9 +605,9 @@ export class Runs {
   private readonly runs = new Map<string, Run>();
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
   private readonly workflows = new Map<string, unknown>();
-  /** The secrets each revision's runs are handed (secretsFor), by revision id: read before a launch, from the revision
-   *  the run is pinned to, never from a request. */
-  private readonly secrets = new Map<string, readonly string[]>();
+  /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
+   *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
+  private readonly needs = new Map<string, RunNeeds>();
   /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
   private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
@@ -1218,7 +1255,7 @@ export class Runs {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
-    await this.pinSecrets(run);
+    await this.pinNeeds(run);
     // And for its files, which its start copies before it launches it: within the time left.
     const copying = run.preparing;
     if (copying) {
@@ -1309,21 +1346,27 @@ export class Runs {
     }
   }
 
-  /** Reads the secrets runs of `run`'s revision are handed (secretsFor), once per revision: from `given` (a start's, read
-   *  from the store), else from the agent store, waiting out a busy one as a run's end does. */
-  private async pinSecrets(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
-    if (this.secrets.has(run.revision)) return;
+  /** Reads what decides the secrets runs of `run`'s revision are handed (needsOf), once per revision: from `given` (a
+   *  start's, read from the store), else from the agent store, waiting out a busy one as a run's end does. */
+  private async pinNeeds(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
+    if (this.needs.has(run.revision)) return;
     const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
-    this.secrets.set(run.revision, await secretsFor(revision));
+    this.needs.set(run.revision, await needsOf(revision));
   }
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
-    // reads its revision's first (pinSecrets); one that did not hands no tool key.
-    const secrets = handover(this.secrets.get(run.revision) ?? NO_TOOL_KEYS, this.options.storedKeys);
+    // reads its revision's needs first (pinNeeds); one that did not hands no tool key. Which keys, from the keys this
+    // server holds now (its launcher's and the saved ones, never its environment, which under the launcher holds none),
+    // in this same turn as the handover, so a key saved with no restart counts at the next launch, and none can change
+    // in between.
+    const served = withSecrets(process.env, "all", this.options.storedKeys);
+    const needs = this.needs.get(run.revision);
+    const handed = needs ? keysFor(needs, served) : NO_TOOL_KEYS;
+    const secrets = handover(handed, this.options.storedKeys);
     // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
-    this.learning.onLaunch(run, this.secrets.get(run.revision) ?? NO_TOOL_KEYS);
+    this.learning.onLaunch(run, handed);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
@@ -1337,13 +1380,22 @@ export class Runs {
     void this.saveMeta(run).catch((error: Error) => warn(run.id, `what its process thinks at is not saved: ${error.message}`));
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // A run on the host's default (its revision names no model) gets the model the server picks for its harness, never
+    // the key that gave it: behind a gateway its process holds the gateway's key alone (keysFor) and could not tell. It is
+    // the run's last choice (model.ts hostModel: the tier's variable, then AGENT_MODEL where the harness runs it, then a
+    // key the run holds, then this), so a host's setting the harness can run still wins; and one it cannot (AGENT_MODEL
+    // on Anthropic's model, for codex) no longer leaves the run with none. pi and codex choose through the gateway
+    // (chooseModel); claude-agent never does, and holds the key its route sends, which gives its default.
+    delete env[DEFAULT_MODEL_ENV];
+    const harness = run.tooling?.harness ?? DEFAULT_HARNESS;
+    const defaultModel = run.tooling && !run.tooling.model && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
+    if (defaultModel) env[DEFAULT_MODEL_ENV] = defaultModel;
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
     // in the serve.json its start writes (start); resolving here is for a run made before that. A description with no secret
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
-    const served = withSecrets(process.env, "all", this.options.storedKeys);
     const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
@@ -1352,13 +1404,14 @@ export class Runs {
     delete env[TOOL_PLANE_ENV];
     if (Object.keys(plane).length) env[TOOL_PLANE_ENV] = JSON.stringify(plane);
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
-    // out every secret): a workflow run's process gets them once on an inherited pipe, by name, for its decision
-    // providers (decisions.ts), and an agentic run's process Parallel's alone when one of its capabilities resolves to
-    // Parallel. A web tool reaches Parallel only where its own capability resolves there.
+    // out every secret): a run's process gets those it needs once on an inherited pipe, by name: its decision
+    // providers' (decisionProvidersFor), and Parallel's where one of its web tools resolves to Parallel (its plane,
+    // handsParallel). A web tool reaches Parallel only where its own capability resolves there. A run that needs none
+    // gets no pipe at all, and one whose revision was not read gets none.
     delete env[DECISION_KEY_FD_ENV];
     // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
-    const offered = decisionKeysOf(served);
-    const decisionKeys = run.kind === "workflow" ? offered : handsParallel(plane) && offered[PARALLEL_KEY_ENV] ? { [PARALLEL_KEY_ENV]: offered[PARALLEL_KEY_ENV] } : {};
+    const providers = needs?.decisionProviders;
+    const decisionKeys = providers ? decisionKeysFor(served, { providers, parallelWeb: handsParallel(plane) }) : {};
     const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
@@ -1504,7 +1557,7 @@ export class Runs {
       // smaller one): that run fails with why.
       const never = neverFits(run.harness, this.memory);
       if (!never && run.relaunches < MAX_RELAUNCHES) {
-        await this.pinSecrets(run);
+        await this.pinNeeds(run);
         return this.relaunch(run);
       }
       run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
@@ -1764,7 +1817,7 @@ export class Runs {
     }
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
     // Before the run is known here, so nothing launches it first.
-    await this.pinSecrets(run, revision);
+    await this.pinNeeds(run, revision);
     this.runs.set(run.id, run);
     // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
     this.show(run);
@@ -1880,7 +1933,7 @@ export class Runs {
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
   private async reopen(run: Run): Promise<void> {
     await this.sweepOnce();
-    await this.pinSecrets(run);
+    await this.pinNeeds(run);
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
