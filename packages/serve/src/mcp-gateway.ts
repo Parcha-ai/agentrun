@@ -39,8 +39,9 @@ export const MCP_NAME = /^mcp:([a-z][a-z0-9-]{0,31})\/([A-Za-z0-9_-]{1,64})$/;
 export const MCP_CLIP = 60_000;
 /** The most of one upstream answer read. */
 export const MAX_RESPONSE = 4 * 1024 * 1024;
-/** The longest one upstream call may take. */
+/** The longest one upstream call may take, and its first connection. */
 export const CALL_MS = 120_000;
+export const CONNECT_MS = 30_000;
 
 /** Each pinned server: its URL then, the granted tools as it listed them, and the prices its owner declared for them. */
 export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number> }>;
@@ -60,17 +61,19 @@ export const mcpNameOf = (name: string): { server: string; tool: string } | unde
   return match ? { server: match[1]!, tool: match[2]! } : undefined;
 };
 
-/** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. */
+/** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. Keyed by server name
+ *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. */
 export function mcpPinOf(names: readonly string[], source: McpServerSource): McpPin {
-  const pin: McpPin = {};
+  const pin: McpPin = Object.create(null);
   for (const name of names) {
     const parsed = mcpNameOf(name);
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
     if (!parsed || !saved || !tool) continue;
-    const pinned = (pin[parsed.server] ??= { url: saved.url, tools: [] });
+    if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };
+    const pinned = pin[parsed.server]!;
     pinned.tools.push(tool);
-    const price = saved.prices?.[tool.name];
+    const price = saved.prices && Object.hasOwn(saved.prices, tool.name) ? saved.prices[tool.name] : undefined;
     if (price !== undefined) (pinned.prices ??= {})[tool.name] = price;
   }
   return pin;
@@ -79,7 +82,7 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
 /** What a launch hands the run for its pin: each pinned server's URL now, with its headers only when it has not moved. A
  *  server no longer saved is absent. */
 export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCredentials {
-  const out: McpCredentials = {};
+  const out: McpCredentials = Object.create(null);
   for (const [name, pinned] of Object.entries(pin)) {
     const saved = source.server(name);
     if (!saved) continue;
@@ -91,8 +94,19 @@ export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCrede
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** `text` with every credential value in it replaced: an upstream error that echoes a header never shows it. */
-const scrub = (text: string, values: readonly string[]) => values.reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
+/** `text` with every credential value in it replaced, with or without its `Bearer `: an upstream answer or error that
+ *  echoes a header never shows it to the model, the harness or the run's files. */
+const scrub = (text: string, headers: Record<string, string>) =>
+  Object.values(headers).flatMap((value) => [value, value.replace(/^Bearer\s+/i, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length >= 8 ? out.split(value).join("[redacted]") : out), text);
+
+/** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
+const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
+  new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
 
 export interface McpGatewayOptions {
   pin: McpPin;
@@ -116,6 +130,8 @@ export type McpGateway = Omit<SessionMcp, "call"> & { call(server: string, tool:
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
   const clients = new Map<string, Promise<Upstream>>();
+  const pins = new Map(Object.entries(options.pin));
+  const credentials = new Map(Object.entries(options.credentials));
   /** Each server's last HTTP status, which tells a refused credential from another failure. */
   const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
@@ -147,7 +163,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       upstream = (async () => {
         const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
         const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {} });
-        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(headers, status) as never }));
+        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(headers, status) as never }), { timeout: CONNECT_MS });
         return client as unknown as Upstream;
       })();
       clients.set(server, upstream);
@@ -159,17 +175,17 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** The model's text of `result`: its text blocks joined, its structured content when it has no text; past MCP_CLIP, or
    *  with blocks that are not text, the whole result is filed under work/evidence/mcp/<server>/ and the text says where. */
-  const textOf = async (server: string, tool: string, result: Record<string, unknown>): Promise<string> => {
+  const textOf = async (server: string, tool: string, result: Record<string, unknown>, headers: Record<string, string>): Promise<string> => {
     const blocks = Array.isArray(result.content) ? (result.content as { type?: unknown; text?: unknown }[]) : [];
     const texts = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string);
-    let text = texts.join("\n\n");
-    if (!text && result.structuredContent !== undefined) text = JSON.stringify(result.structuredContent);
+    let text = scrub(texts.join("\n\n"), headers);
+    if (!text && result.structuredContent !== undefined) text = scrub(JSON.stringify(result.structuredContent), headers);
     const other = blocks.length - texts.length;
     if (text.length <= MCP_CLIP && other === 0) return text;
     const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
     const head = text.length > MCP_CLIP ? `${text.slice(0, MCP_CLIP)}\n[cut at ${MCP_CLIP} of ${text.length} characters; ` : `${text}\n[${other} block${other > 1 ? "s" : ""} that ${other > 1 ? "are" : "is"} not text; `;
     try {
-      await writeInWork(options.work(), ["evidence", "mcp", server], name, JSON.stringify(result)).catch(async (error: NodeJS.ErrnoException) => {
+      await writeInWork(options.work(), ["evidence", "mcp", server], name, scrub(JSON.stringify(result), headers)).catch(async (error: NodeJS.ErrnoException) => {
         if (error.code !== "EEXIST" || !(await lstat(join(options.work(), "evidence", "mcp", server, name)).then((held) => held.isFile(), () => false))) throw error;
       });
     } catch (error) {
@@ -181,18 +197,17 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** The call itself, to a server whose address is the pinned one. A gate's decision or a paid call's hold goes around
    *  it, in `call` below: the one place every harness's call passes before anything is sent. */
   const forward = async (server: string, url: string, headers: Record<string, string>, tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult> => {
-    const values = Object.values(headers);
     try {
-      const upstream = await connect(server, url, headers);
+      const upstream = await until(connect(server, url, headers), signal);
       const result = (await upstream.callTool({ name: tool, arguments: args }, { signal, timeout: CALL_MS })) as Record<string, unknown>;
-      return said(await textOf(server, tool, result), result.isError === true);
+      return said(await textOf(server, tool, result, headers), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
       const status = statuses.get(server)?.last;
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential; update it in Settings → MCP servers.`, true);
-      const why = scrub(String((error as Error)?.message ?? error), values).slice(0, 300);
+      const why = scrub(String((error as Error)?.message ?? error), headers).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
     }
   };
@@ -202,9 +217,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
 
   /** Why `tool` of `server` cannot be sent now, or undefined. */
   const unsendable = (server: string, tool: string): string | undefined => {
-    const pinned = options.pin[server];
+    const pinned = pins.get(server);
     if (!pinned?.tools.some((t) => t.name === tool)) return `${tool} is not a tool of the MCP server ${server} in this run.`;
-    const now = options.credentials[server];
+    const now = credentials.get(server);
     if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
     if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
     return undefined;
@@ -214,12 +229,12 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const sent = async (server: string, tool: string, args: Record<string, unknown>, callId: string, signal: AbortSignal): Promise<McpCallResult> => {
     const why = unsendable(server, tool);
     if (why) return said(why, true);
-    const { url, prices } = options.pin[server]!;
-    const call = () => forward(server, url, options.credentials[server]!.headers ?? {}, tool, args, signal);
+    const { url, prices } = pins.get(server)!;
+    const call = () => forward(server, url, credentials.get(server)!.headers ?? {}, tool, args, signal);
     const name = mcpToolName(server, tool);
     const label = { tool: name, charged_by: server, call: callId };
     const commit = options.commit?.();
-    const price = prices?.[tool];
+    const price = prices && Object.hasOwn(prices, tool) ? prices[tool] : undefined;
     if (price === undefined) {
       const result = await call();
       if (commit) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
@@ -251,7 +266,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   });
 
   return {
-    servers: Object.entries(options.pin).map(([name, pinned]) => ({ name, tools: pinned.tools })),
+    servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
     async call(server, tool, args, { signal, callId, park: given }) {
       const why = unsendable(server, tool);
       if (why) return said(why, true);

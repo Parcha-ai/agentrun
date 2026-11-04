@@ -89,3 +89,15 @@ test('a client that disconnects, or cancels, aborts its call; a cancel of a call
   assert.equal(calls[1].signal.aborted, true, 'the cancel reached the call');
   assert.equal((await send(p.url, { body: { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 2 } } })).status, 202, 'a cancel for a finished id is ignored');
 });
+
+test("a server and a tool named like an object's own properties are served like any other", async (t) => {
+  const tool = { ...ADD, name: "toString" };
+  const mcp = { servers: [{ name: "constructor", tools: [tool] }], call: async (server, name) => ({ content: [{ type: "text", text: `${server}/${name}` }] }) };
+  const p = await startModelProxy({ policy, model: 'm', origin: 'https://provider.invalid', credential: () => 'c', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, mcp: mcpRoute(mcp) }, KEY);
+  t.after(() => p.close());
+  assert.deepEqual(JSON.parse((await send(p.url, { path: '/mcp/constructor', body: rpc('tools/list') })).text).result.tools.map((t) => t.name), ['toString']);
+  assert.deepEqual(messagesOf((await send(p.url, { path: '/mcp/constructor', body: rpc('tools/call', { name: 'toString', arguments: {} }) })).text).at(-1).result.content[0].text, 'constructor/toString');
+  assert.equal(JSON.parse((await send(p.url, { path: '/mcp/constructor', accept: 'application/json', body: rpc('tools/call', { name: 'hasOwnProperty', arguments: {} }) })).text).result.isError, true);
+  const { p: other } = await proxy(t, async () => ({ content: [] }));
+  assert.equal((await send(other.url, { path: '/mcp/constructor', body: rpc('tools/list') })).status, 404, 'a session without that server has none of that name');
+});

@@ -415,8 +415,9 @@ async function connectMcp(q: McpQuery, machine: SessionMachine, names: readonly 
   const entry = (name: string) => ({ type: 'http', url: `${machine.modelUrl}/mcp/${name}`, headers: { authorization: `Bearer ${machine.modelKey}` }, timeout: Math.floor(timeoutMs), alwaysLoad: true });
   const set = await q.setMcpServers({ ...own, ...Object.fromEntries(names.map((name) => [name, entry(name)])) });
   const status = new Map((await q.mcpServerStatus()).map((server) => [server.name, server]));
-  const failed = names.filter((name) => set.errors?.[name] !== undefined || status.get(name)?.status !== 'connected');
-  if (failed.length) throw new Error(`the MCP server${failed.length > 1 ? 's' : ''} ${failed.join(', ')} did not connect: ${failed.map((name) => set.errors?.[name] ?? status.get(name)?.error ?? status.get(name)?.status ?? 'no status').join('; ').slice(0, 300)}`);
+  const error = (name: string) => (set.errors && Object.hasOwn(set.errors, name) ? set.errors[name] : undefined);
+  const failed = names.filter((name) => error(name) !== undefined || status.get(name)?.status !== 'connected');
+  if (failed.length) throw new Error(`the MCP server${failed.length > 1 ? 's' : ''} ${failed.join(', ')} did not connect: ${failed.map((name) => error(name) ?? status.get(name)?.error ?? status.get(name)?.status ?? 'no status').join('; ').slice(0, 300)}`);
 }
 
 export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harness {
