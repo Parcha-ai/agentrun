@@ -178,7 +178,8 @@ export function codeMode(deps: CodeModeDeps) {
           const again = tool?.replay === "never" ? recovered.get(callKey(tool.name, p.arguments))?.shift() : undefined;
           if (again) {
             deps.log("codex: answered a never call from the log: it completed before the interruption", { callId, tool: again.tool });
-            return { contentItems: [{ type: "inputText", text: `Recorded earlier in this turn, not run again: ${again.text}` }], success: true };
+            // Held to the host's bound as the bridge holds a call's result (`boundResult`): the log keeps the result whole.
+            return { contentItems: [{ type: "inputText", text: boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text }], success: true };
           }
           if (NESTED_CALL.test(callId)) {
             if (tool?.replay === "never" && !ctx.isMemoized(toolKey(callId)) && !(await admit(callId))) return declined;
