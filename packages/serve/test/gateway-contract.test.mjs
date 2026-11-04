@@ -199,7 +199,9 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
     const gw = await gateway(t);
     withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
     const { api } = await serve(t, { faux: undefined });
-    assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness), { id: harness, available: true, steer: false, default_model: model });
+    // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
+    const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === harness);
+    assert.deepEqual(offer, { id: harness, available: true, steer: false, default_model: model, run_memory_mib: { "claude-agent": 288, codex: 192 }[harness] });
     assert.deepEqual(gw.requests, [], "no request reached the loopback gateway");
   });
 }
@@ -210,7 +212,8 @@ const PI_OR_DEFAULT = "openrouter/openai/gpt-6-sol";
 test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet (tl-tools)" }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);
   const { api } = await serve(t, { faux: undefined });
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi"), { id: "pi", available: true, steer: true, default_model: PI_OR_DEFAULT });
+  const { max_concurrent_runs, ...pi } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi");
+  assert.deepEqual(pi, { id: "pi", available: true, steer: true, default_model: PI_OR_DEFAULT, run_memory_mib: 128 });
   const { runModels } = await import("../dist/model.js");
   const { models, model } = await runModels({ OPENROUTER_API_KEY: OR_KEY }, undefined);
   assert.equal(`${model.provider}/${model.modelId}`, PI_OR_DEFAULT);

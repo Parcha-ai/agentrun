@@ -173,10 +173,11 @@ test("or-6: a server with only OPENROUTER_API_KEY runs every harness, each with 
   withEnv(t, { ...ONLY, AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }) }, SOURCES);
   const { api } = await serve(t, { faux: undefined });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;
-  const row = (id) => harnesses.find((h) => h.id === id);
-  assert.deepEqual(row("pi"), { id: "pi", available: true, steer: true, default_model: "openrouter/openai/gpt-6-sol" });
-  assert.deepEqual(row("claude-agent"), { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5.5" });
-  assert.deepEqual(row("codex"), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6-sol" });
+  // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
+  const row = (id) => { const { max_concurrent_runs, ...offer } = harnesses.find((h) => h.id === id); return offer; };
+  assert.deepEqual(row("pi"), { id: "pi", available: true, steer: true, default_model: "openrouter/openai/gpt-6-sol", run_memory_mib: 128 });
+  assert.deepEqual(row("claude-agent"), { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5.5", run_memory_mib: 288 });
+  assert.deepEqual(row("codex"), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6-sol", run_memory_mib: 192 });
   for (const [id, definition] of [
     ["claude", { harness: "claude-agent", model: "anthropic/claude-sonnet-5.5" }],
     ["claude-default", { harness: "claude-agent" }],
