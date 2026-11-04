@@ -33,7 +33,8 @@ test("capabilities: on OPENROUTER_API_KEY alone codex's web_search resolves to k
   const view = (env, settings = {}) => explainsView(env, settings).web_search;
   const or = view({ OPENROUTER_API_KEY: fake("or") });
   assert.equal(or.resolves.codex, "exa-keyless", or.why.codex);
-  assert.doesNotMatch(or.why.codex, /Codex's own search/);
+  assert.notEqual(or.why.codex, "Codex's own search", "capabilities no longer claim Codex's own search");
+  assert.match(or.why.codex, /OpenRouter.*not run.*keyless/, or.why.codex);
   assert.equal(view({ OPENROUTER_API_KEY: fake("or"), PARALLEL_API_KEY: fake("parallel") }).resolves.codex, "parallel");
   const native = view({ OPENROUTER_API_KEY: fake("or") }, { web_search: { provider: "native" } });
   assert.equal(native.resolves.codex, "unavailable: no native search for codex on OpenRouter");
