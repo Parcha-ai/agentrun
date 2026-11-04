@@ -27,9 +27,26 @@ const formsOf = (value) => [value, ...["base64", "base64url", "hex"].map((code) 
 /** A seal key's forms: its base64 text, its bytes, and those as hex and base64url. */
 const keyForms = (key) => [key, Buffer.from(key, "base64"), ...["hex", "base64url"].map((code) => Buffer.from(key, "base64").toString(code))];
 const holdsNone = (bytes, forms, where) => { for (const form of forms) assert.ok(!Buffer.from(bytes).includes(form), `${where} holds a key (${String(form).length} long)`); };
-/** Whether the harness `offer` (capabilities') runs here once `field`, a model key, is set: it runs now, or it is refused
- *  for want of a key that names `field`. */
-const runsOnKey = (offer, field) => offer.available || new RegExp(`^${offer.id} needs [^.]*\\b${field}\\b`).test(offer.reason ?? "");
+const MiB = 2 ** 20;
+/** The settings a harness's offer is made from, cleared where a test sets its own. */
+const HARNESS_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE"];
+/** This process's container limit read as `mib` until the test ends (host.ts' hostMemory reads it), as admission.test.mjs
+ *  stands one in: whether a harness's one run fits is the host's memory, so each test here names it. */
+function withMemory(t, mib) {
+  const was = process.constrainedMemory;
+  process.constrainedMemory = () => mib * MiB;
+  t.after(() => void (process.constrainedMemory = was));
+}
+/** Room for one run of every harness (claude-agent's, the largest, needs 416 MiB with the server's own). */
+const ROOMY_MIB = 4096;
+/** A codex stand-in (no binary check, nothing is run), as AGENTRUN_SERVE_CODEX_STANDIN takes it. */
+async function codexStandIn(t) {
+  const file = join(await scratch(t), "codex");
+  writeFileSync(file, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  return JSON.stringify({ command: file });
+}
+/** A model row's harnesses with every harness installed, room for each, and no model key: its own (model.ts' MODEL_KEYS). */
+const OWN = Object.fromEntries(TOOL_KEYS.filter((row) => row.kind === "model").map((row) => [row.id, [...row.harnesses]]));
 const fieldsOf = (view) => Object.fromEntries(view.keys.flatMap((key) => key.fields.map(({ name, ...field }) => [name, field])));
 const STORED = { set: true, source: "stored" };
 const UNSET = { set: false, source: null };
@@ -45,7 +62,8 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   const umask = process.umask(0o022);
   t.after(() => process.umask(umask));
   const key = sealKey();
-  withEnv(t, { AGENTRUN_SEAL_KEY: key }, KEYS);
+  withEnv(t, { AGENTRUN_SEAL_KEY: key, AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
+  withMemory(t, ROOMY_MIB);
   const { api, data } = await serve(t);
   const values = { PARALLEL_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() };
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: values.PARALLEL_API_KEY } })).status, 204);
@@ -54,17 +72,15 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   const listed = await api("GET", "/settings/tool-keys");
   assert.equal(listed.status, 200);
   assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
-  // A model key's harnesses: pi and its provider's own, of those this server runs or would run on the key.
-  const offers = (await api("GET", "/capabilities")).body.harnesses;
-  const on = (field, ids) => ids.filter((id) => runsOnKey(offers.find((offer) => offer.id === id), field));
+  // A model key's harnesses: pi and its provider's own, every one installed and with room here, none saved yet.
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.kind, k.unlocks, k.harnesses]), [
     ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
     ["monid", "tool", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
     ["browserbase", "tool", ["browser"], ["pi"]],
     ["typesafe", "tool", ["decisions.jev"], []],
-    ["anthropic", "model", [], on("ANTHROPIC_API_KEY", ["pi", "claude-agent"])],
-    ["openai", "model", [], on("OPENAI_API_KEY", ["pi", "codex"])],
-    ["openrouter", "model", [], on("OPENROUTER_API_KEY", ["pi", "claude-agent", "codex"])],
+    ["anthropic", "model", [], ["pi", "claude-agent"]],
+    ["openai", "model", [], ["pi", "codex"]],
+    ["openrouter", "model", [], ["pi", "claude-agent", "codex"]],
   ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
@@ -89,7 +105,8 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
 test("each key unlocks only what capabilities bind, a tool or a decision provider, and runs on the union of those tools' harnesses; a name bound later shows with no edit to the key table", async (t) => {
   for (const [label, env] of [["no key set", {}], ["every key set", { PARALLEL_API_KEY: made(), MONID_API_KEY: made(), BROWSERBASE_API_KEY: made(), BROWSERBASE_PROJECT_ID: made() }]]) {
     await t.test(label, async (st) => {
-      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...env }, KEYS);
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(st), ...env }, [...KEYS, ...HARNESS_VARS]);
+      withMemory(st, ROOMY_MIB);
       const { api } = await serve(st);
       const caps = (await api("GET", "/capabilities")).body;
       const view = (await api("GET", "/settings/tool-keys")).body;
@@ -98,10 +115,8 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
       assert.deepEqual(view.keys.map((key) => key.id), TOOL_KEYS.map((row) => row.id), "every key lists, one that unlocks nothing too");
       for (const [i, key] of view.keys.entries()) {
         assert.deepEqual(key.unlocks, TOOL_KEYS[i].unlocks.filter((name) => bound.has(name)), `${key.id}: its names capabilities bind, and only those`);
-        // A model key unlocks no tool: its harnesses are pi and its provider's own, of those this server runs or would
-        // run on the key.
-        const onKey = (id) => runsOnKey(caps.harnesses.find((offer) => offer.id === id), TOOL_KEYS[i].fields[0]);
-        const run = new Set(TOOL_KEYS[i].kind === "tool" ? key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []) : TOOL_KEYS[i].harnesses.filter(onKey));
+        // A model key unlocks no tool: its harnesses are pi and its provider's own, each installed and with room here.
+        const run = new Set(TOOL_KEYS[i].kind === "tool" ? key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []) : OWN[key.id]);
         assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks, or that run on its model key`);
       }
       for (const tool of caps.tools) if (tool.key !== undefined) assert.ok(view.keys.find((key) => key.id === tool.key)?.unlocks.includes(tool.name), `${tool.name} names the key ${tool.key}, which unlocks it`);
@@ -124,22 +139,25 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
   assert.deepEqual(rowUnlocks(model("openrouter"), later, [], [{ id: "pi", available: true }, { id: "claude-agent", available: false }, { id: "codex", available: false }]).harnesses, ["pi"], "unavailable for another reason (not installed): left out");
 });
 
-test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all three, Anthropic's pi and claude-agent; one not installed is left out", { timeout: 180_000 }, async (t) => {
-  const dir = await scratch(t);
-  // A stand-in for codex (no binary check, nothing is run), and a path where nothing is installed.
-  const standIn = join(dir, "codex");
-  writeFileSync(standIn, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-  const nothing = join(dir, "nothing");
+test("before any model key is saved, a model key's row names every harness the key runs that this server could run: OpenRouter's all three, Anthropic's pi and claude-agent; one not installed, one that does not fit and one the key alone does not fix are left out", { timeout: 180_000 }, async (t) => {
+  const standIn = await codexStandIn(t);
+  // A path where nothing is installed.
+  const nothing = join(await scratch(t), "nothing");
   const cases = [
-    ["claude-agent installed, codex stood in", { AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: standIn }) }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "codex"], openrouter: ["pi", "claude-agent", "codex"] }],
-    ["claude-agent not installed", { AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: standIn }), AGENTRUN_CLAUDE_AGENT_EXECUTABLE: nothing }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
-    ["codex not installed", { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi"], openrouter: ["pi", "claude-agent"] }],
+    ["claude-agent installed, codex stood in", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, OWN],
+    ["claude-agent not installed", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, AGENTRUN_CLAUDE_AGENT_EXECUTABLE: nothing }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    ["codex not installed", ROOMY_MIB, { CODEX_BIN: nothing }, { anthropic: ["pi", "claude-agent"], openai: ["pi"], openrouter: ["pi", "claude-agent"] }],
+    // 384 MiB holds the server's 128 and one codex run (192), never a claude-agent run (288): no key would run it.
+    ["a host too small for a claude-agent run", 384, { AGENTRUN_SERVE_CODEX_STANDIN: standIn }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
     // An endpoint the host names for claude-agent takes Anthropic's key alone, never OpenRouter's.
-    ["claude-agent on the host's endpoint", { AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: standIn }), ANTHROPIC_BASE_URL: "https://gateway.invalid" }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    ["claude-agent on the host's endpoint", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "https://gateway.invalid" }, { anthropic: ["pi", "claude-agent"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
+    // An endpoint claude-agent refuses (plain http to another machine): its key alone would not run it.
+    ["claude-agent on an endpoint it refuses", ROOMY_MIB, { AGENTRUN_SERVE_CODEX_STANDIN: standIn, ANTHROPIC_BASE_URL: "http://gateway.example" }, { anthropic: ["pi"], openai: ["pi", "codex"], openrouter: ["pi", "codex"] }],
   ];
-  for (const [label, vars, rows] of cases) {
+  for (const [label, mib, vars, rows] of cases) {
     await t.test(label, async (st) => {
-      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...vars }, [...KEYS, "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "CODEX_BIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_CLAUDE_AGENT_EXECUTABLE"]);
+      withEnv(st, { AGENTRUN_SEAL_KEY: sealKey(), ...vars }, [...KEYS, ...HARNESS_VARS]);
+      withMemory(st, mib);
       const { api } = await serve(st);
       const caps = (await api("GET", "/capabilities")).body;
       const offers = Object.fromEntries(caps.harnesses.map((offer) => [offer.id, offer]));
