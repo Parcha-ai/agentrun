@@ -95,6 +95,10 @@ for (const harness of ["claude-agent", "codex"]) {
     const entries = storeEntries(data, runId);
     const ends = entries.filter((e) => e.kind === "adapter.turn_end").map((e) => e.data?.status);
     assert.deepEqual(ends, ["interrupted", "completed"], `the stopped turn's end, written by the next process, then the follow-up's: ${JSON.stringify(entries.map((e) => e.kind))}`);
+    // Each end names the message its turn took (turns.ts): the stopped turn's, the run's first message.
+    const messages = entries.filter((e) => e.kind === "adapter.message").map((e) => e.data?.id);
+    const named = entries.filter((e) => e.kind === "adapter.turn_end").map((e) => e.data?.message);
+    assert.deepEqual(named, messages, `the stopped turn's end names its message, and the follow-up's its own: ${JSON.stringify(named)} for ${JSON.stringify(messages)}`);
     const stoppedEnd = entries.findIndex((e) => e.kind === "adapter.turn_end");
     const followUpEntry = entries.findIndex((e) => e.kind === "pi.user" && JSON.stringify(e.model ?? []).includes("go on"));
     assert.ok(stoppedEnd >= 0 && followUpEntry > stoppedEnd, `the stopped turn's end comes before the follow-up's message: ${stoppedEnd}, ${followUpEntry}`);

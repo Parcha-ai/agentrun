@@ -33,7 +33,7 @@ import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
-import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
 import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -43,12 +43,12 @@ export const BOOKED = "adapter.request";
 export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
-/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop
- *  (turn-end.ts, which runs.ts reads them from). */
+/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
 export { MESSAGE, MESSAGE_END } from "./turn-end.js";
-/** A turn's end on the root (turn-end.ts), with the session's own outcome (`completed`, `interrupted`, `failed`): written
- *  once its answer, its costs and any error are, before the door says the run is idle. The only record that a turn which
- *  took the person's message is over: a request without content is written alike whether it ended the turn or not. */
+/** A turn's end on the root (turn-end.ts): the message it took, the session's own outcome (`completed`, `interrupted`,
+ *  `failed`) and the turn's answer, in the commit of the turn's last entries (its answer, its costs, any error). The only
+ *  record that a turn which took the person's message is over: a request without content is written alike whether it
+ *  ended the turn or not. */
 export { TURN_END } from "./turn-end.js";
 
 type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
@@ -190,6 +190,11 @@ export function adapterRun(
   // The current request's content, and the requests whose cost is in but whose entry is not written yet.
   let text = "";
   let calls: ToolCall[] = [];
+  // The turn's answer entry so far (its last request with text and no call), the MESSAGE its turn took, and whether the
+  // instance is stopping (a drain, a fence, a park: no one's stop, so the turn it cuts gets no end and is resumed).
+  let answer: number | undefined;
+  let taking: string | undefined;
+  let draining = false;
   const costed: Pending[] = [];
   const written = new Set<number>();
   // The request the harness asked last, and the requests whose answer has an entry (taken as its write begins).
@@ -220,26 +225,31 @@ export function adapterRun(
   const commit = <T>(change: (tx: Tx) => Promise<T>) => run!.harness.commit(change, context);
 
   /** A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
-   *  own, so the run's spend counts it, once; any other is a duplicate. */
-  const priceLate = async (late: Pending) => {
+   *  own (one of `writes`, the flush's commit), so the run's spend counts it, once; any other is a duplicate. */
+  const priceLate = (late: Pending, writes: ((tx: Tx) => Promise<unknown>)[]) => {
     if (!unpriced.has(late.request) || priced.has(late.request)) return;
     const tokens = tokensOf(late.usage);
-    await commit(async (tx) => {
-      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } });
-    });
+    writes.push((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } }));
     priced.add(late.request);
   };
   const writtenAt = () => costed.findIndex((c) => written.has(c.request));
 
   /** Writes what the current request has: its entry with the content so far and the oldest cost not yet written.
-   *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost. */
-  const flush = (final = false): Promise<void> =>
+   *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost.
+   *  Everything a flush writes is one commit, and `end` (a turn's end: its error and TURN_END) is the last of it, so a
+   *  turn's end is in the commit of its last entries. The bookkeeping goes first: a commit the store refuses ends the
+   *  process, and the next open reads the root again. */
+  const flush = (final = false, end?: (tx: Tx) => Promise<unknown>): Promise<void> =>
     later(async () => {
+      const writes: ((tx: Tx) => Promise<unknown>)[] = [];
+      const commitAll = async () => {
+        if (end) writes.push(end);
+        if (writes.length) await commit(async (tx) => { for (const write of writes) await write(tx); });
+      };
       // Each cost for a request already written, wherever it sits: a response is booked when its stream closes, so a
       // late cost can come in after a later request's.
-      for (let at = writtenAt(); at >= 0; at = writtenAt()) await priceLate(costed.splice(at, 1)[0]!);
-      if (!text && !calls.length && !costed.length) return;
-      if (!costed.length && !final) return;
+      for (let at = writtenAt(); at >= 0; at = writtenAt()) priceLate(costed.splice(at, 1)[0]!, writes);
+      if ((!text && !calls.length && !costed.length) || (!costed.length && !final)) return commitAll();
       const request = costed.shift();
       const content = { text, calls };
       text = "";
@@ -250,8 +260,10 @@ export function adapterRun(
       if (unbooked !== undefined) open.delete(unbooked);
       const marked = request?.request ?? unbooked;
       if (marked !== undefined) answered.add(marked);
-      await commit(async (tx) => {
-        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
+      writes.push(async (tx) => {
+        const entry = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, marked === undefined ? undefined : models.get(marked), request, content.text, content.calls) as never] });
+        // The turn's answer so far: its last request with text and no call.
+        if (content.text && !content.calls.length) answer = entry.id as number;
         // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
         if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
@@ -264,17 +276,18 @@ export function adapterRun(
       while (costed.length) {
         const next = costed.shift()!;
         if (written.has(next.request)) {
-          await priceLate(next);
+          priceLate(next, writes);
           continue;
         }
         answered.add(next.request);
-        await commit(async (tx) => {
+        writes.push(async (tx) => {
           await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
           await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
         });
         written.add(next.request);
         priced.add(next.request);
       }
+      await commitAll();
     });
 
   const onModel = (event: ModelPortEvent) => {
@@ -354,6 +367,7 @@ export function adapterRun(
   /** The person's message: the session's new turn, then its entry and its end on the root. */
   const sendOf = (message: Message) => async () => {
     await message.recorded;
+    taking = message.id;
     await session!.send(message.content);
     await later(() =>
       commit(async (tx) => {
@@ -365,13 +379,16 @@ export function adapterRun(
 
   /** Turns until nothing waits: the turn, then each message that waited for it, as one busy period on the door (as a pi
    *  run's follow-ups are), so the server never reads the run idle, and done, while an accepted message is unanswered. A
-   *  message that arrives meanwhile waits its place. */
-  const runTurns = (first: () => Promise<void>) => {
+   *  message that arrives meanwhile waits its place. `carried`: the first turn's answer so far, when it is a turn an
+   *  earlier process left open and this one recovers (its answer already on the root); a new message's turn starts with
+   *  none. */
+  const runTurns = (first: () => Promise<void>, carried?: number) => {
     turn = (async () => {
       emit?.({ type: "run_start" });
-      for (let start: (() => Promise<void>) | undefined = first; start; ) {
+      for (let start: (() => Promise<void>) | undefined = first, carry = carried; start; carry = undefined) {
         let failed: string | undefined;
         let status: TurnStatus = "failed";
+        answer = carry;
         try {
           await start();
           const end = await session!.turnEnd();
@@ -391,27 +408,37 @@ export function adapterRun(
           }
           // The last request's cost, booked once the proxy has answered: waited for, so the answer is written with it.
           await bookings(BOOKING_WAIT_MS);
-          await flush(true);
-          await writing;
-          // A turn that failed ends the run on its error, as a pi run's does: the cap's refusal, a cost the booking could
-          // not write, or the harness's own failure.
+          // A turn that failed (the cap's refusal, a cost the booking could not write, or the harness's own failure) writes
+          // its error and ends failed. The run's status is its last turn's end (turns.ts): with no message waiting, the run
+          // fails on this error, as a pi run does; a message waiting behind it is still sent, and when that turn completes,
+          // the run completes with its answer, this failure kept in the timeline.
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           const unsent = refused !== undefined && capRefused;
           refused = undefined;
           capRefused = false;
-          if (why !== undefined) {
-            await commit(async (tx) => {
+          const pending = open.size > 0;
+          // The turn's end, in the commit of its last entries (flush's one commit): the run's end is read from it alone
+          // (turns.ts). A turn the instance's own stop cut gets none: the next open resumes it.
+          const cut = draining && why === undefined && status === "interrupted";
+          await flush(true, cut ? undefined : async (tx) => {
+            if (why !== undefined) {
+              // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
               if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true } });
               await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
-            });
-          }
+            }
+            const data: TurnEndData = {
+              key: spec.key, ...(taking === undefined ? {} : { message: taking }), status: why === undefined ? status : "failed",
+              answer: why === undefined && status === "completed" ? (answer ?? null) : null, ...(why === undefined ? {} : { error: why }), cost: pending ? "pending" : "booked",
+            };
+            await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data });
+          });
+          await writing;
           // A cost that came in while this turn ended, after its flush: written now, while the run still reads busy, so a
           // message that comes in meanwhile waits its place below and goes on as the next turn of this busy period.
           if (costed.length) await flush().catch(() => undefined);
-          // Last, and before run_end: a live server reads the turn over no later than it reads the run idle.
-          await commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status: why === undefined ? status : "failed" } })));
         }
-        const next = queue.shift();
+        // Stopping: the messages still waiting are sent by the next open, which finds them with no end.
+        const next = draining ? undefined : queue.shift();
         start = next === undefined ? undefined : sendOf(next);
       }
       // Nothing from here to run_end waits: a message that comes in once the run reads idle starts the next busy period,
@@ -442,6 +469,14 @@ export function adapterRun(
     },
     async abort(ctx: DoorContext) {
       if (!attached) emit = ctx.emit;
+      // The instance stopping (a drain, a fence, a park) is no one's stop: the turn it cuts gets no end and the next open
+      // resumes it, and the messages waiting stay, for the next open to send.
+      if (ctx.reason === "stop") {
+        draining = true;
+        if (!turn) return "idle";
+        await session?.interrupt();
+        return "aborted";
+      }
       const dropped = queue.splice(0);
       if (dropped.length) {
         await Promise.all(dropped.map((message) => message.recorded));
@@ -466,9 +501,10 @@ export function adapterRun(
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
       const accepted = new Map<string, Message>();
       const paid: { kind: string; data?: unknown }[] = [];
-      // The turn that took the last message sent, while the root has no end for it (runTurns writes the end last, in a
-      // commit of its own): whether the bridge wrote that turn's error.
-      let unended: { failed: boolean } | undefined;
+      // The turn that took the last message sent, while the root has no end for it (a process died before the commit of
+      // its last entries, or its own stop cut it): the message, whether the bridge wrote that turn's error, and its answer
+      // so far (its newest request with text and no call).
+      let unended: { message: string; failed: boolean; answer: number | null } | undefined;
       // The person's messages on the root: the newest one's entry id, and how many, for the run's stop record.
       let lastUser: number | undefined;
       let users = 0;
@@ -479,6 +515,7 @@ export function adapterRun(
           if (entry.kind === TOOL_COST || entry.kind === TOOL_STARTED) paid.push(entry);
           const message = (entry as { model?: { api?: unknown; stopReason?: unknown; role?: unknown }[] }).model?.[0];
           if (unended && message?.api === ADAPTER_API && message.stopReason === "error") unended.failed = true;
+          if (unended && message?.api === ADAPTER_API && message.stopReason === "stop" && textOf((message as { content?: unknown }).content)) unended.answer = entry.id as number;
           if (message?.role === "user") {
             users += 1;
             lastUser = Number(entry.id);
@@ -491,7 +528,7 @@ export function adapterRun(
           else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
           else if (entry.kind === MESSAGE_END && typeof data.id === "string") {
             accepted.delete(data.id);
-            if (data.sent === true) unended = { failed: false };
+            if (data.sent === true) unended = { message: data.id, failed: false, answer: null };
           } else if (entry.kind === TURN_END) unended = undefined;
         }
         if (page.next === undefined) break;
@@ -550,19 +587,24 @@ export function adapterRun(
       // An adapter written before settleOpenTurn has none: its stopped turn is recovered, as before.
       if (session.state === "open_turn" && stopped && typeof session.settleOpenTurn === "function") await session.settleOpenTurn();
       // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
-      // what this open wrote and before any new turn, so the message the turn took reads answered (runs.ts noteAnswer).
-      // A turn the person stopped reads interrupted, from the stop record: settled by this open, or by an earlier one that
-      // died before it wrote this end. Otherwise the session says only that the turn is over: completed, or failed when the
-      // bridge wrote its error.
-      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (stopped ? "interrupted" : unended.failed ? "failed" : "completed") : undefined;
-      const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status } }))));
+      // what this open wrote and before any new turn. A turn the person stopped reads interrupted, from the stop record:
+      // settled by this open, or by an earlier one that died before it wrote this end. Otherwise the session says only that
+      // the turn is over; how it ended is what the root holds of it: failed when the bridge wrote its error, completed when
+      // its answer (a request with text and no call) is there. With neither, the turn is not known to have completed: it
+      // ends interrupted, and the run waits for the person (turns.ts), never answered "". The end names the message the
+      // turn took, as every turn end does.
+      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (stopped ? "interrupted" : unended.failed ? "failed" : unended.answer !== null ? "completed" : "interrupted") : undefined;
+      const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, message: unended!.message, status, answer: status === "completed" ? unended!.answer : null } satisfies TurnEndData }))));
+      // A turn the session holds open is the last message's, resumed now.
+      if (session.state === "open_turn" && unended) taking = unended.message;
       queue.push(...accepted.values());
       // With nothing waiting, that end is the run's: written while the door is idle. A message accepted and never sent
       // still waits, and a server started anew counts none: the door is busy (run_start) before that end goes out, and
       // the message's turn follows in the same busy period, so no server reads the run done before it answers.
       if (restored && !queue.length) await restore(restored);
       openedDone();
-      if (session.state === "open_turn") runTurns(() => session!.recover());
+      // Its answer so far is the root's, which a recovery that streams no new text keeps as the turn's.
+      if (session.state === "open_turn") runTurns(() => session!.recover(), unended?.answer ?? undefined);
       else if (queue.length) {
         const next = sendOf(queue.shift()!);
         runTurns(restored ? async () => (await restore(restored), await next()) : next);

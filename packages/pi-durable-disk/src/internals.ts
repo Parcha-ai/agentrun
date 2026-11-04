@@ -4,6 +4,10 @@
 export { createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, unmountClaim } from "./claim.ts";
 export { LABEL_FLEET, LABEL_RUN, sandboxName, sandboxStatus, sweepSandboxes } from "./hosts/daytona.ts";
 export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
+// The rule a door's snapshot of a run's inputs starts at, for a host that reads the snapshot (agentrun-serve's ledger),
+// and the snapshot itself, so a host's tests read the inputs a door would send.
+export { newestSettledInput, snapshotInputs } from "./serve.ts";
+export type { InputRecord } from "./serve.ts";
 // The workspace confinement, for a host that reads a run's files itself (agentrun-serve), and its process-wide TEST seam
 // (confineTestHooks: runs after a path is checked and before it is opened; tests only, never a production hook).
 export { Confinement, confineHooks as confineTestHooks } from "./confine.ts";

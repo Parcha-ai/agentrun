@@ -39,7 +39,7 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
-import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
+import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
@@ -199,8 +199,8 @@ export type Run = {
   log: RowLog;
   /** The run's rows as they come in (before the log names them), with each `ask_person` answer's waiting row. */
   rows: TimelineEvent[];
-  /** The whole text of the run's newest assistant message: a row's text is cut at 2000 characters, an answer is not. */
-  answerText?: string;
+  /** The person's messages the run took, and how each one's turn ended (turns.ts): its end is read from them. */
+  turns: Turns;
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
@@ -216,12 +216,6 @@ export type Run = {
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
-  /** Whether, in the run's entries, an answer that ended its request (stopReason "stop") comes after the person's newest
-   *  message: the turn that took the message answered it, though perhaps with nothing it shows (noteAnswer). */
-  answeredMessage?: boolean;
-  /** The messages a claude-agent or codex run's door accepted and has not sent yet, by id (MESSAGE with no MESSAGE_END in
-   *  its entries, noteAnswer): each still waits for its turn, also when this server started after it was accepted. */
-  waiting?: Set<string>;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
@@ -309,51 +303,24 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
-/** Notes the whole text of the newest assistant message in `entries` (pi's stored entries), and the newest entry. The
- *  end-of-run turn's are never the run's answer: each is noted by its entry in `turnText`, whole. */
-function noteAnswer(run: Run, entries: readonly unknown[]): void {
+/** Notes the messages the run's turns took and how each turn ended, from `entries` (its root's), `submissions` (pi's
+ *  input submissions) and a reconnect's `snapshot` of them (the door's `inputs`, the run's whole state of them), and the
+ *  newest entry (learning-run.ts reads it). The end-of-run learning turn's entries are no turn of the run's: none of
+ *  them, its TURN_END and its settlement included, opens, closes or answers one of the run's messages. */
+function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly unknown[] = [], snapshot?: readonly unknown[]): void {
   for (const value of entries) {
-    const entry = isObject(value) && typeof value.id === "number" ? value.id : undefined;
-    if (entry !== undefined) run.lastEntry = Math.max(run.lastEntry ?? 0, entry);
-    // The end-of-run turn's entries are never the run's answer, nor a message it waits on: each assistant message's
-    // whole text is noted in `turnText`, by entry.
-    if (entry !== undefined && reflects(run.meta.reflect, entry)) {
-      if (isObject(value) && value.kind === "pi.assistant" && Array.isArray(value.model) && isObject(value.model[0])) {
-        const content = value.model[0].content;
-        (run.turnText ??= new Map()).set(entry, typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "");
-      }
-      continue;
+    if (!isObject(value) || typeof value.id !== "number") continue;
+    run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
+    // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
+    // (learning-run.ts). The ledger skips them; this is their only reader here.
+    if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
+      const content = value.model[0].content;
+      (run.turnText ??= new Map()).set(value.id, typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "");
     }
-    if (!isObject(value) || typeof value.kind !== "string") continue;
-    // A message a claude-agent or codex run accepted, and its end (harness-app.ts): one with no end still waits.
-    if (value.kind === MESSAGE || value.kind === MESSAGE_END) {
-      const id = isObject(value.data) && typeof value.data.id === "string" ? value.data.id : undefined;
-      if (id !== undefined && value.kind === MESSAGE) (run.waiting ??= new Set()).add(id);
-      else if (id !== undefined) run.waiting?.delete(id);
-      continue;
-    }
-    // The person's message, as the timeline shows one (a user entry: pi's, or a host's own kind), or their sign-in: no
-    // answer has followed it yet.
-    const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
-    if (value.kind === "agent.handover" || (first?.role === "user" && (value.kind === "pi.user" || !value.kind.startsWith("pi.")))) run.answeredMessage = false;
-    // A claude-agent or codex turn's end (harness-app.ts): its turn took the message and answered it, if it completed.
-    if (value.kind === TURN_END) {
-      if (isObject(value.data) && value.data.status === "completed") run.answeredMessage = true;
-      continue;
-    }
-    if (value.kind !== "pi.assistant" || !first) continue;
-    // An answer, as the timeline shows one (timeline.ts): a request that ended without an error or an abort and called no
-    // tool, whatever else stopped it (its length, max output tokens, too). Never commentary that came with a call.
-    if (first.stopReason === "error" || first.stopReason === "aborted") continue;
-    if (Array.isArray(first.content) && first.content.some((block) => isObject(block) && block.type === "toolCall")) continue;
-    // pi's own stop answer ends its turn (one commit with the run's end). The bridge's entries (api "agentrun-adapter")
-    // never say so: a request without content is written alike whether it is a cost, a cut, an interruption or an answer.
-    if (first.stopReason === "stop" && first.api !== ADAPTER_API) run.answeredMessage = true;
-    // The answer's text: an answer's, never commentary that came with a call.
-    const content = first.content;
-    const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
-    if (text) run.answerText = text;
   }
+  const reflect = (id: number) => reflects(run.meta.reflect, id);
+  run.turns.note(entries, submissions, reflect);
+  if (snapshot) run.turns.snapshot(snapshot, reflect);
 }
 
 /** Read only on a run's `rows`, which hold no QUIET row (take). */
@@ -367,7 +334,9 @@ const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
-const answerOf = (rows: readonly TimelineEvent[]) => {
+/** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
+ *  last meaningful row is its answer when that row is one, a final answer's or a text row's. */
+const importAnswerOf = (rows: readonly TimelineEvent[]) => {
   const last = meaningful(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
 };
@@ -412,8 +381,23 @@ const soFarOfMeta = (meta: Partial<RunMeta> | null | undefined): SoFar | undefin
   const kept = meta?.cost_so_far;
   return kept && typeof kept.so_far_usd === "number" && Number.isFinite(kept.so_far_usd) && Number.isInteger(kept.unpriced) && kept.unpriced > 0 ? { so_far_usd: kept.so_far_usd, unpriced: kept.unpriced } : undefined;
 };
-/** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
-const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
+/** The whole text of the run's newest answer with text, paid for: an assistant message's, else its newest answer row's. */
+const lastAnswer = (run: Run) => run.turns.newestText ?? run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
+/** A row's store entry, from its id (`<conversation>:<entry>[:...]`). */
+const entryOfRow = (id: string) => Number(id.split(":")[1]);
+/** The answer of a run that completed: the whole text of the entry its turn's end names, "" when that turn showed no text,
+ *  never an earlier turn's. Without such an end (a run still working, a workflow, a store an older server wrote): the
+ *  newest answer it gave, whole (lastAnswer); an import's, its last row's when that row is its answer. */
+function answerOfRun(run: Run): string | null {
+  const end = run.turns.end();
+  if (end?.status === "answered") {
+    if (end.answer === null) return "";
+    // The entry's row when its text was not read here: a final answer's, or a text row's (a stop at the length limit).
+    return run.turns.text(end.answer) ?? run.rows.findLast((r) => (r.kind === "final_answer" || r.kind === "text_block") && entryOfRow(r.id) === end.answer)?.text ?? "";
+  }
+  const imported = run.imported ? importAnswerOf(run.rows) : undefined;
+  return lastAnswer(run) ?? imported?.text ?? imported?.summary ?? null;
+}
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
 // A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
@@ -461,6 +445,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (!run.rows.length) return { status: "queued", state: "working" };
   if (stopped(run)) return { status: "input_required", state: "idle" };
   if (!users) return { status: "queued", state: "working" };
+  // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
+  // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
+  if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -705,11 +692,19 @@ export class Runs {
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else {
+      // A cancel a server took and could not carry back before it went: its mark is written first (cancel()), so it is
+      // the run's end, as it was from its 202 on, whatever the turn it cut reads.
+      if (run.kind === "agentic" && existsSync(join(dir, RUN_CANCELLED))) {
+        run.cancel = true;
+        run.finishing = "cancelled";
+      }
       const adopted = record && this.doorOf(record) ? record : null;
       if (adopted) {
         // A server that died between saving a stop and its abort reaching the run leaves the turn working.
         run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
         this.adoptProcess(run, adopted);
+        // Its cancel's SIGTERM may never have gone: it is let go now, its turn aborted first.
+        if (run.cancel) void this.abortTurn(run).then(() => this.terminate(run));
       }
       // One a server left in its end-of-run turn finishes with its job's outcome, and its turn, when its process lives,
       // is asked again (learning-run.ts).
@@ -722,7 +717,7 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, harness: string, tooling?: Tooling, revision?: Revision): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [], harness,
-      working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at, turns: new Turns(),
       ...(tooling ? { tooling } : {}),
     };
   }
@@ -765,12 +760,18 @@ export class Runs {
     if (!(await stat(file).catch(() => null))) return;
     const { DatabaseSync } = await import("node:sqlite");
     const read: Array<{ conversation: number; entry: Json }> = [];
+    const submissions: Json[] = [];
     const db = new DatabaseSync(file, { readOnly: true });
     try {
       const rows = run.kind === "workflow" || atEnd
         ? db.prepare("SELECT conversation_id, record FROM entries ORDER BY id").iterate()
         : db.prepare("SELECT conversation_id, record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
       for (const row of rows as Iterable<{ conversation_id: number; record: string }>) read.push({ conversation: Number(row.conversation_id), entry: JSON.parse(String(row.record)) as Json });
+      // pi's settlements of the person's messages, the root's (turns.ts): its turns' ends.
+      if (run.kind === "agentic") {
+        const inputs = db.prepare("SELECT record FROM submissions WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").all() as { record: string }[];
+        for (const row of inputs) submissions.push(JSON.parse(String(row.record)) as Json);
+      }
     } finally {
       db.close();
     }
@@ -786,7 +787,7 @@ export class Runs {
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
-    noteAnswer(run, entries);
+    noteTurns(run, entries, submissions);
     this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir) }));
   }
 
@@ -817,8 +818,11 @@ export class Runs {
     return Boolean(run.child || run.orphan);
   }
 
-  /** How an agentic run ends, from its rows: over its cap, a model error, or an answer. Undefined while it works, or
-   *  when it stopped, waits or parked. A workflow run ends when its workflow does. */
+  /** How an agentic run ends: over its cap, or as the turn of the person's newest message ended (turns.ts), once every
+   *  message the run took has had its turn. Undefined while one is open, or when the run stopped, waits, or its turn
+   *  ended interrupted (the run then waits for the person), or while its records name no message (a live process of an
+   *  older server: the run's next process writes its turn's end as it opens). Never from the order of its rows, or from
+   *  when its door said idle. A workflow run ends when its workflow does. */
   private decide(run: Run): { outcome: Status; error?: RunError; abort?: boolean } | undefined {
     if (run.kind === "workflow") return undefined;
     // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote, a cost over the cap too): nothing
@@ -827,23 +831,18 @@ export class Runs {
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
-    if (run.working || run.submitted > 0) return undefined;
-    // A message accepted and not sent yet waits for its turn: a server started after it counts none submitted, and a turn's
-    // end before it is no end of the run (harness-app.ts writes a turn's end, then sends the next message).
-    if (run.waiting?.size) return undefined;
-    const last = meaningful(run.rows);
+    if (run.submitted > 0) return undefined;
+    if (run.turns.open > 0 || stopped(run)) return undefined;
+    const end = run.turns.end();
+    if (end?.status === "answered") return { outcome: "completed" };
+    if (end?.status !== "failed") return undefined;
+    const message = end.error ?? "The run failed.";
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     // Its code is `spend_cap_reached: `, or with a note after it (`spend_cap_reached (out of budget): `, cap.ts); the message is
     // the words after it.
-    const capped = last?.kind === "error" ? CAP_REFUSAL_PREFIX.exec(last.text ?? "") : null;
-    if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last!.text!.slice(capped[0].length), retryable: false } };
-    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: this.plainKey(run, last.text ?? undefined) ?? last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    if (stopped(run)) return undefined;
-    // Its newest row is the answer; or the person's message, which an answer that ended its request follows in the entries
-    // (the Claude CLI's /compact: a summary request, no text): its turn took it and is over, and the earlier answer stands.
-    // From the entries' own order, never from when the door said idle.
-    if (answerOf(run.rows) || (last?.kind === "user_message" && run.answeredMessage === true)) return { outcome: "completed" };
-    return undefined;
+    const capped = CAP_REFUSAL_PREFIX.exec(message);
+    if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: message.slice(capped[0].length), retryable: false } };
+    return { outcome: "failed", error: { code: "run_failed", message: this.plainKey(run, message) ?? message, retryable: false } };
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
@@ -1169,7 +1168,8 @@ export class Runs {
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
     const reducer = timelineReducer({ path: rowPaths(run.dir) });
-    const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(run), accept: "text/event-stream" } });
+    // `inputs=1`: the snapshot carries pi's newest input submissions, the settlements its turns end on (turns.ts).
+    const up = await fetch(new URL(`/events?inputs=1&skip=${encodeURIComponent(REFLECT_REQUEST)}`, door), { signal, headers: { ...this.headers(run), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1194,7 +1194,11 @@ export class Runs {
         const events = event === "snapshot" ? [value as Json] : event === "events" && Array.isArray(value) ? (value as Json[]) : [];
         if (event === "snapshot") run.working = Boolean((value as Json).run);
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
-        noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
+        // The settlements of pi's turns: each a submission event in the commit of its turn's last entry, and the door's
+        // snapshot of them on a (re)connect (pi-durable-disk's `inputs`), read as their whole state.
+        const submissions = events.flatMap((e) => (e.type === "submission" && e.record !== undefined ? [e.record] : []));
+        const inputs = events.find((e) => e.type === "snapshot" && Array.isArray(e.inputs))?.inputs as unknown[] | undefined;
+        noteTurns(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])), submissions, inputs);
         reducer.apply(events as never);
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
         // as the settled read counts it, never one in flight.
@@ -1559,13 +1563,12 @@ export class Runs {
     await this.dropBox(run, true);
     // Its end-of-run turn closed, and what the turn wrote set aside before the run reads ended (learning-run.ts).
     await this.learning.beforeSettle(run, outcome);
-    const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     // An unknown cost keeps what it cost so far beside it, for the list row read from the store.
     const soFar = cost === null && !run.imported ? soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) : undefined;
     if (soFar) run.meta.cost_so_far = soFar;
     else delete run.meta.cost_so_far;
-    const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
+    const line = summary ?? (outcome === "completed" ? answerOfRun(run) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
     // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.
@@ -1841,6 +1844,8 @@ export class Runs {
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
+    // A cancelled run takes no message, whether or not its end is written yet.
+    if (run.cancel) throw this.finished(run);
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -1985,14 +1990,20 @@ export class Runs {
     return true;
   }
 
-  /** Record the cancel and signal the run; it is `cancelled` once its process has exited and it is carried back. */
+  /** Record the cancel and signal the run. An agentic run reads `cancelled` from here on (the first end a run comes to is
+   *  its last: nothing its turn writes later moves it), and is carried back so once its process has exited; a workflow
+   *  run reads it once it is carried back, with how its workflow stopped. */
   async cancel(run: Run): Promise<boolean> {
     // As stop: already terminal, and no cancel mark is written.
     if (run.imported) return false;
-    // Finishing is already ending with its outcome (an answer, a failure, the cap): a cancel now would turn a run that
-    // answered into a cancelled one, since the settle reads the cancel first.
+    // Finishing is already ending with its outcome (an answer, a failure, the cap): a run's first end is its last.
     if (run.outcome || run.finishing) return false;
     run.cancel = true;
+    if (run.kind === "agentic") {
+      run.finishing = "cancelled";
+      run.endedAt = new Date().toISOString();
+      this.mark(run);
+    }
     // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
     await writeWhole(join(run.dir, RUN_CANCELLED), "").catch((error: Error) => warn(run.id, `its cancel mark is not written: ${error.message}`));
     if (this.live(run)) {
@@ -2101,11 +2112,11 @@ export class Runs {
     // After the read: the run may have moved on while it waited, and every field below is of this one moment.
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
-    const answer = answerOf(run.rows);
-    // A run that ended on the person's message, which its turn answered with nothing it shows (decide()), answered with its
-    // newest answer: the whole text (answerText, read from the entries again on a later server), never the line the store
-    // keeps, which is cut.
-    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : status === "completed" ? (lastAnswer(run) ?? row?.summary ?? null) : (row?.summary ?? null);
+    // The whole text of the answer the run's turn ended on (answerOfRun), never the line the store keeps, which is cut;
+    // the store's line only for a run whose rows are not read (an import's).
+    const finalAnswer = run.kind === "workflow" ? null : (answerOfRun(run) ?? row?.summary ?? null);
+    // When the turn of a message still open last wrote: a run working shows it is moving, or not.
+    const progress = TERMINAL.has(status) || run.kind === "workflow" ? undefined : run.turns.progressAt();
     // A run its cap stopped keeps the answer it paid for.
     const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
     const endedAt = TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null;
@@ -2134,6 +2145,7 @@ export class Runs {
       // The notes it read once it settled: while it runs, or runs again for a follow-up, they are still being read.
       learning: this.learning.view(run.meta.learning, TERMINAL.has(status) && run.settled),
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
+      last_progress_at: progress === undefined ? null : new Date(progress).toISOString(),
     };
   }
 

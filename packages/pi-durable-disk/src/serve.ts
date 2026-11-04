@@ -165,7 +165,46 @@ async function answerOf(conversation: Conversation, entry: EntryId, context: Con
   return { entry, text };
 }
 
+/** An answer's whole text, as a reader of the run's answer reads it: its text blocks, joined by newlines, trimmed. */
+const answerTextOf = (record: { model?: readonly unknown[] } | undefined): string =>
+  ((record?.model?.[0] as { role?: string; content?: unknown } | undefined)?.content as { type?: string; text?: string }[] | undefined ?? [])
+    .flatMap((b) => (b && b.type === "text" ? [String(b.text ?? "")] : [])).join("\n").trim();
+
+/** Whether an entry is an assistant message that asked for tools. */
+const callsOf = (record: { model?: readonly unknown[] } | undefined): boolean =>
+  (((record?.model?.[0] as { content?: unknown } | undefined)?.content as { type?: string }[] | undefined) ?? []).some((b) => b?.type === "toolCall");
+
 /** Start listening; requests are answered once `attach` hands over the open run. */
+/** An input submission as a snapshot's rule reads it: a door's record, or one a host read from a snapshot. */
+export type InputRecord = { readonly status: string; readonly entry?: unknown; readonly requestId?: unknown };
+
+/** The index, in a conversation's input submissions in id order, of the newest one settled on an entry (done, or
+ *  unanswered after it was placed) whose request id does not begin with `skip` (a host's own turns, as agentrun-serve's
+ *  end-of-run learning turn), else -1. Newest is the one placed last, by its entry: pi places a steer at the running
+ *  turn's tool boundary and a follow-up only at its end, so a follow-up queued before a later steer runs after it, with
+ *  the lower id. Two whose entries are not both numbers go by id. The one rule a door's snapshot (snapshotInputs) and a
+ *  host that reads it choose the snapshot's newest settled input by. */
+export function newestSettledInput(records: readonly InputRecord[], skip?: string): number {
+  let newest = -1;
+  records.forEach((record, at) => {
+    const own = skip === undefined || typeof record.requestId !== "string" || !record.requestId.startsWith(skip);
+    if (!own || (record.status !== "done" && record.status !== "unanswered") || record.entry === undefined) return;
+    const best = newest < 0 ? undefined : records[newest]!.entry;
+    if (best === undefined || typeof record.entry !== "number" || typeof best !== "number" || record.entry > best) newest = at;
+  });
+  return newest;
+}
+
+/** The inputs a door's snapshot carries, from a conversation's input submissions in id order: the newest one settled
+ *  (done, or unanswered after it was placed), every one after it, and every one before it not settled yet (queued or
+ *  placed: a steer settles ahead of a follow-up queued before it, which is still to run). So an input a reader holds
+ *  open that is missing here, from before the newest settled one, is settled. */
+export function snapshotInputs<T extends InputRecord>(records: readonly T[], skip?: string): T[] {
+  const newest = newestSettledInput(records, skip);
+  if (newest < 0) return [...records];
+  return [...records.slice(0, newest).filter((record) => record.status === "queued" || record.status === "placed"), ...records.slice(newest)];
+}
+
 export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   const base = options.context ?? BACKGROUND_CONTEXT;
   const bind = options.host ?? "127.0.0.1";
@@ -265,6 +304,30 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     };
   }
 
+  /** The conversation's input submissions a snapshot carries (snapshotInputs: from its newest settled one on, and every
+   *  earlier one not settled yet), oldest first, a `done` one with its answer's whole text (`answer_text`) and whether
+   *  that answer asked for tools (`answer_calls`, a tool ended the turn): pi-durable settles a person's message in the
+   *  commit of its turn's last entry, so a reader that comes in now knows which messages are still open, that one it
+   *  holds open and finds missing is settled, and how the newest one's turn ended. */
+  async function inputsOf(conversationId: ConversationId, context: Context, skip?: string): Promise<unknown[]> {
+    const storage = run!.store.storage;
+    // In id order (an older pi-durable scans no other way).
+    const inputs: Extract<SubmissionRecord, { type: "input" }>[] = [];
+    for (let cursor: unknown; ; ) {
+      const page = await storage.scanSubmissions({ conversationId }, 100, cursor as never, context);
+      for (const record of page.items) if (record.type === "input") inputs.push(record);
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    const out: unknown[] = [];
+    for (const record of snapshotInputs(inputs, skip)) {
+      const answer = record.status === "done" ? (await storage.entry(record.answer, context))?.entry : undefined;
+      // A done one with its answer's text, and whether that answer asked for tools (a tool ended the turn).
+      out.push(record.status === "done" ? { ...record, answer_text: answerTextOf(answer), answer_calls: callsOf(answer) } : record);
+    }
+    return out;
+  }
+
   async function events(req: IncomingMessage, res: ServerResponse, url: URL, context: Context): Promise<void> {
     const raw = url.searchParams.get("conversationId");
     const conversation = await conversationOf(raw === null ? undefined : optionalId(Number(raw), "conversationId"), context);
@@ -275,7 +338,10 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     // A door hook's turn is the root conversation's run: its run events go out as they are emitted. A batch is written
     // in the microtasks after its commit, before the code that awaited the commit goes on, so the order holds.
     const hook = door && conversation.id === ROOT_CONVERSATION_ID ? door : undefined;
-    write("snapshot", hook ? { ...stream.snapshot, run: hook.busy() ? { inputs: [] } : undefined } : stream.snapshot);
+    // pi's turns record their ends as the settlements of the person's messages, which the snapshot does not hold: a reader
+    // that asks (`inputs=1`) gets the root's newest ones with it.
+    const inputs = !hook && url.searchParams.get("inputs") === "1" && conversation.id === ROOT_CONVERSATION_ID ? await inputsOf(conversation.id, context, url.searchParams.get("skip") ?? undefined).catch(() => undefined) : undefined;
+    write("snapshot", hook ? { ...stream.snapshot, run: hook.busy() ? { inputs: [] } : undefined } : { ...stream.snapshot, ...(inputs ? { inputs } : {}) });
     const unwatch = hook?.watch((event) => write("events", [event]));
     stream.start(async (batch) => write("events", batch));
     req.once("close", () => void stream.stop());
