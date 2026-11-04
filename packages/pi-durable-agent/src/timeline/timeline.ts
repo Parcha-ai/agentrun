@@ -115,6 +115,9 @@ export type TimelineOptions = {
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
    *  to its workspace. The entries, the call's arguments and its input preview, are not changed. Default: as given. */
   path?: (path: string) => string;
+  /** What an error row says, made safe by the host before the row is cut (its secrets taken out): applied to an error
+   *  row's summary and text whole, so a cut never falls inside what it takes out. Default: as given. */
+  redact?: (text: string) => string;
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -348,6 +351,9 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
+ *  neither keeps part of what the whole text's redaction takes out. */
+const redactOf = (options: TimelineOptions) => (text: string): string => (options.redact ? options.redact(text) : text);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
 
 /** What a host's spend cap limited a request's output to (its start mark's `clamp`): the tokens, what was left of the
@@ -381,6 +387,7 @@ function diagnosticOf(text: string): string | undefined {
 
 /** One place turns entries into rows, whether they come from a released store or from live events. */
 function createProjector(options: TimelineOptions) {
+  const redactedWhy = redactOf(options);
   const caps = { ...CAPS, ...options.caps };
   /** A call's arguments as its rows name them: its file path as the host names it (`options.path`). */
   const shown = (args: Obj): Obj => {
@@ -428,6 +435,10 @@ function createProjector(options: TimelineOptions) {
     };
     const parent = fields.parent_tool_use_id ?? children.get(conv);
     if (parent !== undefined) row.parent_tool_use_id = parent;
+    if (kind === "error" && options.redact) {
+      if (row.summary !== null) row.summary = options.redact(row.summary);
+      if (row.text !== null) row.text = options.redact(row.text);
+    }
     if (row.summary !== null) row.summary = clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
@@ -488,7 +499,7 @@ function createProjector(options: TimelineOptions) {
     } else if (metered === "refusal" && message) {
       // A request the run's cap refused, never sent: no request. Its text is the error as written (a host reads its code
       // from it), its summary the cap's own words, after the code ("Not sent: ...").
-      const why = str(message.errorMessage) ?? "spend_cap_reached: Not sent: the run's spend cap refused the request.";
+      const why = redactedWhy(str(message.errorMessage) ?? "spend_cap_reached: Not sent: the run's spend cap refused the request.");
       const words = why.replace(/^spend_cap_reached(?: \([^)]*\))?: /, "");
       add(make("error", conv, base, { summary: firstLine(words.startsWith("Not sent:") ? words : `Not sent: ${words}`), text: why }));
     } else if (metered === "charge") {
@@ -503,7 +514,7 @@ function createProjector(options: TimelineOptions) {
       const round = metered === "continued" && answers.has(conv) ? answers.get(conv) : entry.id;
       if (metered === "answer") answers.set(conv, entry.id);
       if (message.stopReason === "error") {
-        const why = str(message.errorMessage) ?? "unknown error";
+        const why = redactedWhy(str(message.errorMessage) ?? "unknown error");
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
@@ -807,6 +818,7 @@ const modelName = (agent: unknown): string | undefined => {
 
 /** Live rows from `watchEvents` batches. Committed entries go through the same projector `timelineOf` uses. */
 export function timelineReducer(options: TimelineOptions = {}) {
+  const redactedWhy = redactOf(options);
   // Ids of live rows: events made them, and they go when they end (timelineReducer's isLive).
   const liveIds = new Set<string>();
   const now = options.now ?? Date.now;
@@ -959,7 +971,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
         }
         case "task_failed":
           wait("poll", undefined);
-          live("error", `${conv()}:task:${String(event.taskId)}`, `Task failed: ${firstLine(str(event.message) ?? "")}`, { text: str(event.message) ?? null });
+          { const why = str(event.message) === undefined ? undefined : redactedWhy(str(event.message)!); live("error", `${conv()}:task:${String(event.taskId)}`, `Task failed: ${firstLine(why ?? "")}`, { text: why ?? null }); }
           break;
         case "compaction_start":
           live("phase", `${conv()}:compaction:${String(event.taskId)}`, "Summarizing older context");
@@ -967,7 +979,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
         case "compaction_end": {
           del(`${conv()}:compaction:${String(event.taskId)}`);
           const failed = str(event.error);
-          if (failed) live("error", `${conv()}:compaction:${String(event.taskId)}:error`, `Compaction failed: ${firstLine(failed)}`, { text: failed });
+          if (failed) { const why = redactedWhy(failed); live("error", `${conv()}:compaction:${String(event.taskId)}:error`, `Compaction failed: ${firstLine(why)}`, { text: why }); }
           break;
         }
         case "tool_execution_update": {

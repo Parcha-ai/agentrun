@@ -67,6 +67,9 @@ export function script(spec) {
   if (page) return [{ call: page[2] ?? "fetch_page", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   const query = /Search the web for (.+?) and say what you found\./.exec(text)?.[1];
   if (query) return [{ call: "web_search", args: { query, n: 3 }, usd: 0.001 }, { say: "Searched.", usd: 0.001 }];
+  // The turn fails on its first request with the line's text, as a harness passes on a provider's error: `Fail with: <text>`.
+  const failWith = /^Fail with: (.*)$/m.exec(text)?.[1];
+  if (failWith) return [{ fail: failWith }];
   // Calls each tool the line lists, in order, then says so: `Box calls: [{"call": "bash", "args": {...}}, ...]`. `{work}`
   // in a call names the run's work directory on this machine, the harness's cwd (from AGENTRUN_TEST_DATA, the data root).
   const boxed = /^Box calls: (\[.*\])$/m.exec(text)?.[1];

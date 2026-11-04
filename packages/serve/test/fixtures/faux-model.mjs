@@ -13,6 +13,9 @@ const untilExists = async (file) => {
   while (!(await access(file).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
 };
 
+/** The key timeline-key-words.test.mjs holds, which the provider errors above echo. */
+const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
+
 export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
@@ -29,6 +32,10 @@ export default function reply(context, faux) {
     // and a program it starts.
     // "..., once <file> exists." holds it until the test has made that file.
     const canary = JSON.stringify(context);
+    // A node whose provider echoed the key it was sent (timeline-key-words.test.mjs holds that value as a key).
+    if (canary.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '401 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
+    // A node whose model request a provider refused (401), in pi-ai's words.
+    if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
     // A node that says which decision keys its process was handed on their descriptor: names only, never a value.
     if (canary.includes("Report the decision keys")) {
       if (answered) return faux.message("Submitted.");
@@ -195,6 +202,19 @@ export default function reply(context, faux) {
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
   // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
   if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
+  // A provider error long enough to be cut on its Timeline row, echoing the key it was sent across the summary's cut (its
+  // 497 characters, after "Model request failed: ") and the text's (1997), 20 of its characters before each; and one that echoes the key base64-encoded (timeline-key-words.test.mjs holds
+  // CUT_KEY as a key).
+  if (first.includes("Fail across the cut")) return faux.message("", { stopReason: "error", errorMessage: `${"a".repeat(455)}${CUT_KEY}${"b".repeat(1977 - 455 - CUT_KEY.length)}${CUT_KEY} end` });
+  // The key echoed on line after line, far past what a Timeline row shows.
+  if (first.includes("Fail repeating a held key")) return faux.message("", { stopReason: "error", errorMessage: `${CUT_KEY}\n`.repeat(200) });
+  // The key echoed with a line break in its middle, as a provider that wraps long lines would.
+  if (first.includes("Fail with a wrapped key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${CUT_KEY.slice(0, 18)}\n${CUT_KEY.slice(18)} is not valid"}` });
+  if (first.includes("Fail echoing an encoded key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${Buffer.from(CUT_KEY).toString("base64")} is not valid"}` });
+  // A provider error that is no 401 but echoes the key it was sent.
+  if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
+  // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
+  if (first.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
   // A final stop of the model's own with no text (turn-record.test.mjs): one empty text block (and an empty thinking
   // block), only a thinking block, or no content at all; as
   // the first answer, or as a follow-up's after an answer with text.
