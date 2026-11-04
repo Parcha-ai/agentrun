@@ -762,7 +762,7 @@ export class Runs {
     // the words after it.
     const capped = CAP_REFUSAL_PREFIX.exec(message);
     if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: message.slice(capped[0].length), retryable: false } };
-    return { outcome: "failed", error: { code: "run_failed", message, retryable: false } };
+    return { outcome: "failed", error: { code: "run_failed", message: this.plainKey(run, message) ?? message, retryable: false } };
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
