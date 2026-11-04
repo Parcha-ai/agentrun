@@ -642,6 +642,8 @@ export class Runs {
   /** The runs' learning (learning-run.ts): a step this file calls as a run starts, ends, settles, opens again and is
    *  recovered, handed what it moves of a run. */
   readonly learning: LearningRuns;
+  /** When this server took the data root (one server a root): a run started since is its own, never one to recover. */
+  private readonly bootedAt = new Date().toISOString();
   constructor(private readonly options: RunsOptions) {
     this.learning = new LearningRuns(options, {
       held: (id) => this.runs.get(id),
@@ -1205,7 +1207,8 @@ export class Runs {
     // The learning a server left between steps, picked up once every running run is read (learning-run.ts).
     const recoverLearning = this.learning.recover();
     await this.sweepOnce();
-    const rows = await this.options.agents.request(() => this.store.listRuns());
+    // Only what an earlier server left: a store slow to answer here must not hand back a run a create is setting up now.
+    const rows = (await this.options.agents.request(() => this.store.listRuns())).filter((row) => row.startedAt < this.bootedAt);
     for (const row of rows) {
       if (row.state !== "running" || row.importedFrom) continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
