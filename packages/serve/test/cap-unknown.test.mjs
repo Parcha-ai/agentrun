@@ -414,7 +414,7 @@ test("the spend a reopened run reads is the full amount, never the timeline's to
   assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.0000004 of its \$0\.0010002 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
 });
 
-test("pi under a cap: a request stopped before its end counts at the worst case the cap held for it, which it hands its marks; the next goes while that leaves room, and is refused once it does not", async () => {
+test("pi under a cap: a request stopped before its end whose stream and the 1,024-token allowance pass its limit counts at the worst case the cap held for it, which it hands its marks; the next goes while that leaves room, and is refused once it does not", async () => {
   const options = [];
   const { models, sent } = fakeModels();
   const record = (send) => (model, ctx, opts) => (options.push(opts?.[HELD_USD]), send(model, ctx, opts));
@@ -422,7 +422,8 @@ test("pi under a cap: a request stopped before its end counts at the worst case 
   for (const turn of [0, 1]) {
     const request = capped.streamSimple(outputOnly, context);
     assert.equal(sent.length, turn + 1, `request ${turn + 1} goes: $${turn * 0.001} spent and $0.001 held fit $0.0025`);
-    // Stopped, its stream reporting no usage, as the Responses API's does: it counts at $0.001 all the same.
+    // Stopped, its stream reporting no usage, as the Responses API's does: its 2 bytes and 1,024 tokens pass the 1,000 it
+    // was sent with, so it counts at its $0.001.
     sent[turn].end({ total: 0, stopReason: "aborted" });
     await request.result();
     await settle();
@@ -605,7 +606,7 @@ async function stopped(api, id, cap) {
 /** One request's worst case on the faux model: 16,384 output tokens at $100 a million. */
 const FAUX_WORST = 16_384 * 100 / 1e6;
 
-test("a capped pi run stopped mid-answer goes on while its cap allows: in its process, and in the process a later message opens, the stopped request counts at the worst case held for it", async (t) => {
+test("a capped pi run stopped mid-answer goes on while its cap allows: in its process, and in the process a later message opens, the stopped request counts what it streamed and the 1,024-token allowance", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const runId = await stopped(api, "stopped");
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
@@ -616,7 +617,8 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   assert.deepEqual([stoppedUsage?.usd, stoppedUsage?.requests, stoppedUsage?.unpriced], [null, 2, 1], "the stopped request is booked: counted, at an unknown cost, the one charge with no price");
   assert.ok(stoppedUsage.so_far_usd > 0 && stoppedUsage.so_far_usd === run.cost.so_far_usd, `the follow-up's known cost so far, as the run says: ${JSON.stringify([stoppedUsage, run.cost])}`);
   const spent = spentIn(storeFileOf(data, runId));
-  assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the store says what the cap counts: the held worst case and the answer since, $${spent}`);
+  // Stopped before it streamed anything, on the faux model's free input: 1,024 tokens at $100 a million, and the answer since.
+  assert.ok(Math.abs(spent - (1_024 * 100 / 1e6 + run.cost.so_far_usd)) < 1e-6, `the store says what the cap counts: the stop's $0.1024 and the answer since, $${spent}`);
   // Completed, the run's process is gone: the next message opens a new one, which reads its spend from the store.
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and again" })).body.mode, "follow_up");
   run = await finished(api, runId);
@@ -624,15 +626,15 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   assert.equal(run.cost.usd, null);
 });
 
-test("a capped pi run stopped mid-answer, when what the cap held for the stopped request leaves no room for another request's least: the next request is refused with the cap's message, and the run's cost shows unknown, never $0", async (t) => {
-  // $1.70 holds one request's worst case of about $1.64, and leaves $0.06 after it: not another's least, 1,024 tokens at
-  // $0.0001.
+test("a capped pi run stopped mid-answer, when what the stopped request counts leaves no room for another request's least: the next request is refused with the cap's message, and the run's cost shows unknown, never $0", async (t) => {
+  // $0.15: the request is clamped to what $0.15 buys; stopped before it streamed anything, it counts its 1,024-token
+  // allowance, $0.1024, and leaves $0.0476: not another's least, 1,024 tokens at $0.0001.
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
-  const runId = await stopped(api, "tight", 1.7);
+  const runId = await stopped(api, "tight", 0.15);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
   const run = await finished(api, runId);
   assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
+  assert.match(run.error.message, /^Not sent: the run has spent \$0\.1024 of its \$0\.15 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.2\d to run it\.$/);
   assert.equal(run.cost.usd, null, "the refusal never balances the stopped request: unknown, not $0");
 });
 
