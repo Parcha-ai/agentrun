@@ -26,6 +26,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
+import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -39,7 +40,7 @@ import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
-import { SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
@@ -260,6 +261,14 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
@@ -473,6 +482,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
+  /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
+   *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
+  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken];
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
@@ -1408,6 +1420,37 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         recompose();
         return send(res, 200, withDefaults(settings.get()));
       }
+      // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
+      // they are now; a write as the definition's: an archived agent's too.
+      case "getAgentLearning": {
+        await needAgent(id);
+        const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
+        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger.
+        const { runs: _, ...counts } = await runs.learning.counts(rows, { agent: id });
+        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts));
+      }
+      case "listLearningNotes":
+      case "listLearningLog":
+        await needAgent(id);
+        return send(res, 200, await (found.name === "listLearningNotes" ? learningNotes : learningLog)(data, id, url.searchParams, secretsShown(learningSecrets())));
+      case "readLearningFile":
+        await needAgent(id);
+        return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
+      case "writeLearningFile":
+      case "retireLearningFile": {
+        await needAgent(id);
+        const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
+        const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets() });
+        // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
+        const shown = secretsShown(learningSecrets());
+        const located = written.status === 201 && shown.name(written.file) === written.file;
+        return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
+      }
+      case "getRunLearning":
+        return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets()));
+      case "getRunLearningDiff":
+        return send(res, 200, await runDiff(data, await needRun(id), secretsShown(learningSecrets())));
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
