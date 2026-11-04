@@ -56,6 +56,28 @@ describe("RunDetail's Report tab before an answer", () => {
     expect(shown).not.toContain("reply below");
   });
 
+  it("a run that waits on something this console doesn't know yet says it waits for you, never for an answer below or that it stopped", () => {
+    // A kind of `pending` a newer server may send (here "budget"): only its kind is read, nothing else of it.
+    for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
+      const f = runFixture(name);
+      const run = { ...f.run, state, pending: { kind: "budget" } } as unknown as Run;
+      const shown = report(run, f.page.rows);
+      expect(shown, name).not.toContain(WRITING);
+      expect(shown, name).toContain("Waiting for you");
+      expect(shown, name).toContain("The run continues once you give it what it waits on.");
+      expect(shown, name).not.toContain("Waiting for your answer");
+      expect(shown, name).not.toContain("reply below");
+      expect(shown, name).not.toContain("Stopped before it wrote an answer.");
+    }
+  });
+
+  it("a question the server names as one (pending.kind question) reads as a question", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const shown = report({ ...f.run, pending: { kind: "question", question: "Which currency are these amounts in: USD or EUR?", asked_at: f.run.created_at } }, f.page.rows);
+    expect(shown).toContain("Waiting for your answer");
+    expect(shown).toContain("The run continues when you reply below.");
+  });
+
   it("a stopped run says it stopped before it wrote an answer, and that a message continues it", () => {
     const f = runFixture("run.input_required.idle.1");
     const shown = report(f.run, f.page.rows);
