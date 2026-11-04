@@ -125,25 +125,30 @@ test("demo: --open opens the console's address in the browser where there is a d
     chmodSync(join(fake, name), 0o755);
   }
   const path = `${fake}:${process.env.PATH}`;
+  // The opener's whole line: the stub's `>>` makes the file before its printf writes, so the file existing is not enough.
+  const handedLine = async () => {
+    for (const end = Date.now() + 15_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 50))) {
+      const text = existsSync(opened) ? readFileSync(opened, "utf8") : "";
+      if (text.endsWith("\n")) return text;
+    }
+    return existsSync(opened) ? readFileSync(opened, "utf8") : "";
+  };
   const { base } = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0" });
-  for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(readFileSync(opened, "utf8"), `${base}/\n`);
+  assert.equal(await handedLine(), `${base}/\n`);
   rmSync(opened);
   // Accounts off, on a fresh store: the banner prints its sign-in link, but the opener's arguments (any process's to read)
   // and the browser's history get the page alone.
   const store = join(fake, "store");
   const made = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", AGENTRUN_ACCOUNTS: "0" }, store);
-  for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  const handed = await handedLine();
   assert.match(/^Open (\S+)/m.exec(made.out)?.[1] ?? "", /^http:\/\/127\.0\.0\.1:\d+\/\?token=[\w%.-]+$/, made.out);
-  const handed = existsSync(opened) ? readFileSync(opened, "utf8") : "";
   assert.doesNotMatch(handed, /token=/, "no token in the opener's arguments");
   assert.equal(handed, `${made.base}/\n`);
   rmSync(opened);
   await made.stop();
   // The same store started again: the token is not printed, so the browser gets the plain address, never a placeholder.
   const kept = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", AGENTRUN_ACCOUNTS: "0" }, store);
-  for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(existsSync(opened) && readFileSync(opened, "utf8"), `${kept.base}/\n`);
+  assert.equal(await handedLine(), `${kept.base}/\n`);
   rmSync(opened);
   await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", CI: "1" });
   await serve(t, ["--port", "0"], { PATH: path, DISPLAY: ":0" });
