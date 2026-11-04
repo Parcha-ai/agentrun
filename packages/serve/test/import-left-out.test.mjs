@@ -116,10 +116,16 @@ test("a key in a deleted folder's session, or in the folder's name, is in no byt
   // Tokens of formats secretlint's rules find, made here and random: no environment holds them.
   const pick = (n) => Array.from(randomBytes(n), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62]).join("");
   const github = () => `${["gh", "p"].join("")}_${pick(36)}`;
-  const k = { folder: github(), prompt: github(), slack: [["xo", "xb"].join(""), pick(12).replace(/\D/g, "1"), pick(13).replace(/\D/g, "2"), pick(24)].join("-") };
-  // A worktree deleted since its session: its folder named after a token, the session's text holding two more.
+  const k = { aws: pick(40), folder: github(), prompt: github(), slack: [["xo", "xb"].join(""), pick(12).replace(/\D/g, "1"), pick(13).replace(/\D/g, "2"), pick(24)].join("-") };
+  // A worktree deleted since its session: its folder named after a token, the session's text holding three more. A live
+  // project the import writes first holds one of them bare, which no rule finds alone: known only from the deleted
+  // folder's session, so found before anything is written.
   const gone = join(at, "worktrees", `rotate-${k.folder}`);
-  claudeSession(at, gone, 31, { prompt: `Rotate ${k.prompt} today.`, output: `SLACK=${k.slack}` });
+  claudeSession(at, gone, 31, { prompt: `Rotate ${k.prompt} today.`, output: `SLACK=${k.slack}\n${["AWS", "SECRET", "ACCESS", "KEY"].join("_")}=${k.aws}` });
+  const live = join(at, "code", "billing-api");
+  mkdirSync(live, { recursive: true });
+  writeFileSync(join(live, "CLAUDE.md"), `The old deploy key: ${k.aws}\n`);
+  claudeSession(at, live, 32);
   const data = join(root, "agents");
   const run = async (...args) => {
     const lines = [];
@@ -136,6 +142,6 @@ test("a key in a deleted folder's session, or in the folder's name, is in no byt
   const kept = readdirSync(data, { recursive: true, withFileTypes: true }).map((entry) => [join(entry.parentPath, entry.name), entry.isFile() ? readFileSync(join(entry.parentPath, entry.name)) : Buffer.alloc(0)]);
   for (const [kind, value] of Object.entries(k)) for (const [path, bytes] of kept) assert.ok(!path.includes(value) && !bytes.includes(value), `${kind} in ${path.slice(data.length + 1)}`);
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
-  assert.ok(dry.includes("3 secrets would be removed"), dry.filter((line) => /removed/.test(line)).join(" "));
-  assert.ok(lines.includes("3 secrets removed"), lines.filter((line) => /removed/.test(line)).join(" "));
+  assert.ok(dry.includes("4 secrets would be removed"), dry.filter((line) => /removed/.test(line)).join(" "));
+  assert.ok(lines.includes("4 secrets removed"), lines.filter((line) => /removed/.test(line)).join(" "));
 });

@@ -406,9 +406,12 @@ test("an import cuts every key secretlint finds though no environment holds it, 
     assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
     return lines;
   };
-  // --verbose: the file by file lines, the skipped one among them, are printed.
-  const dry = await run("--dry-run", "--verbose");
-  const lines = await run("--verbose");
+  // The default output (its left-out counts and reasons among it), then --verbose's file by file lines, the skipped one
+  // among them: the import's again, with nothing new to take.
+  const dry = await run("--dry-run");
+  const dryVerbose = await run("--dry-run", "--verbose");
+  const lines = await run();
+  const verbose = await run("--verbose");
   const values = { ...k, pem: k.pem.lines };
   const kinds = Object.keys(values).length;
   // Every byte the import kept, and every name under the data directory.
@@ -420,8 +423,9 @@ test("an import cuts every key secretlint finds though no environment holds it, 
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
   assert.ok(dry.includes(`${kinds} secrets would be removed`), `the dry run counts what the import removes: ${dry.filter((l) => /removed/.test(l))}`);
   // Nothing it printed names a key: the skipped file's name is cut where it is printed.
-  for (const [kind, value] of [...Object.entries(values).flatMap(([kind, v]) => (Array.isArray(v) ? v : [v]).map((x) => [kind, x])), ["skipped file", unnamed]]) assert.ok(![...dry, ...lines].some((l) => l.includes(value)), `${kind} printed`);
-  assert.ok(lines.some((l) => l.startsWith("skipped ") && l.includes("[redacted].jsonl")), "the skipped line, its name cut");
+  for (const [kind, value] of [...Object.entries(values).flatMap(([kind, v]) => (Array.isArray(v) ? v : [v]).map((x) => [kind, x])), ["skipped file", unnamed]]) assert.ok(![...dry, ...dryVerbose, ...lines, ...verbose].some((l) => l.includes(value)), `${kind} printed`);
+  assert.ok([dry, lines].every((out) => out.some((l) => l.startsWith("left out: "))), "the default output counts what it left out");
+  assert.ok([dryVerbose, verbose].every((out) => out.some((l) => l.startsWith("skipped ") && l.includes("[redacted].jsonl"))), "the skipped line, its name cut");
   // Each is counted once, however many places held it (the private key one of them).
   assert.ok(lines.includes(`${kinds} secrets removed`), `the import says it removed ${kinds}: ${lines.filter((l) => /removed/.test(l))}`);
   const reader = openStoreReader(data);
@@ -670,9 +674,13 @@ test("what the CLI prints is cut with the saved tool keys too: a skipped file na
   const data = join(root, "agents");
   mkdirSync(data, { recursive: true });
   new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
+  // The default output (its left-out counts and reasons), then --verbose, which names the skipped file.
+  const quiet = [];
   const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => quiet.push(line) }), 0);
   assert.equal(await importCommand(["--data", data, "--all", "--verbose"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => lines.push(line) }), 0);
-  assert.ok(!lines.some((line) => line.includes(saved)), lines.join("\n"));
+  assert.ok(![...quiet, ...lines].some((line) => line.includes(saved)), [...quiet, ...lines].join("\n"));
+  assert.ok(quiet.some((line) => line.startsWith("left out: ")), quiet.join("\n"));
   assert.ok(lines.some((line) => line.startsWith("skipped ") && line.includes("[redacted].jsonl")), lines.join("\n"));
 });
 
