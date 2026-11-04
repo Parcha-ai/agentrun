@@ -128,6 +128,9 @@ type RunMeta = {
   learning?: Learning;
   /** The run's end-of-run turn, saved before it is asked. */
   reflect?: Reflect;
+  /** A run whose cost was unknown when it ended: the sum of its charges whose cost is known, and how many have none
+   *  (costsofar/1), as its view said then, so a list row read from the store says it too. */
+  cost_so_far?: SoFar;
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -212,6 +215,8 @@ export type Run = {
   costUsd?: number | null;
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
+  /** The same decisions, apart: the sum of the costs that are known, and how many are not. */
+  decisionsPriced?: { known: number; unpriced: number };
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
    *  when they cannot be read: its timeline's usage row then reads unknown. */
   decisions?: Record<string, unknown>[] | null;
@@ -353,6 +358,24 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   if (!usage) return stored === undefined ? 0 : stored;
   return usage.usage?.usd ?? null;
 }
+/** What a run whose cost is unknown has cost so far (costsofar/1): the sum of its charges whose cost is known, and how many
+ *  have none, from its usage row, plus a workflow's decisions (`decisions`: their known sum and how many are not known;
+ *  null when they could not be read, which says nothing). Undefined while the cost is known, when the row says neither
+ *  (an older run's), or when a workflow's decisions are unreadable. No ceiling is claimed. */
+export type SoFar = { so_far_usd: number; unpriced: number };
+export function soFarOf(rows: readonly TimelineEvent[], decisions?: { known: number; unpriced: number } | null): SoFar | undefined {
+  if (decisions === null) return undefined;
+  const usage = usageOf(rows)?.usage;
+  const models = !usage ? { known: 0, unpriced: 0 } : usage.usd !== null ? { known: usage.usd, unpriced: 0 } : usage.so_far_usd !== undefined && usage.unpriced !== undefined ? { known: usage.so_far_usd, unpriced: usage.unpriced } : undefined;
+  if (!models) return undefined;
+  const unpriced = models.unpriced + (decisions?.unpriced ?? 0);
+  return unpriced > 0 ? { so_far_usd: Math.round((models.known + (decisions?.known ?? 0)) * 1e6) / 1e6, unpriced } : undefined;
+}
+/** What a run's meta kept of its cost so far at its end, when it is well formed. */
+const soFarOfMeta = (meta: Partial<RunMeta> | null | undefined): SoFar | undefined => {
+  const kept = meta?.cost_so_far;
+  return kept && typeof kept.so_far_usd === "number" && Number.isFinite(kept.so_far_usd) && Number.isInteger(kept.unpriced) && kept.unpriced > 0 ? { so_far_usd: kept.so_far_usd, unpriced: kept.unpriced } : undefined;
+};
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
@@ -1016,6 +1039,9 @@ export class Runs {
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
+        // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
+        // as the settled read counts it, never one in flight.
+        if (!run.working && stopped(run)) reducer.idle();
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.
         const rows = reducer.rows();
@@ -1357,6 +1383,7 @@ export class Runs {
     // already sums (request-start.ts).
     const paid = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
     if (paid.length) run.decisionCost = paid.every((cost) => typeof cost === "number") ? (paid as number[]).reduce((a, b) => a + b, 0) : null;
+    if (paid.length) run.decisionsPriced = { known: paid.reduce<number>((a, b) => a + (typeof b === "number" ? b : 0), 0), unpriced: paid.filter((cost) => typeof cost !== "number").length };
   }
 
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
@@ -1368,6 +1395,10 @@ export class Runs {
     await this.learning.beforeSettle(run, outcome);
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
+    // An unknown cost keeps what it cost so far beside it, for the list row read from the store.
+    const soFar = cost === null && !run.imported ? soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) : undefined;
+    if (soFar) run.meta.cost_so_far = soFar;
+    else delete run.meta.cost_so_far;
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
@@ -1873,7 +1904,11 @@ export class Runs {
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
     // An imported run's cost is its source's, for the whole session: its requests may not each have a price.
-    return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    const usd = run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost);
+    // Unknown: what it cost so far and how many charges have no price (costsofar/1), from its rows, else what it said at
+    // its end (a run carried back with no rows read since).
+    const soFar = usd === null && !run.imported ? (soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) ?? (run.rows.length ? undefined : soFarOfMeta(run.meta))) : undefined;
+    return { usd, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null, ...(soFar ?? {}) };
   }
 
   /** `Run`, as the contract shows it. `known`: its stored row as the caller already has it, so nothing is read; a run
@@ -1945,7 +1980,7 @@ export class Runs {
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
-      cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
+      cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
