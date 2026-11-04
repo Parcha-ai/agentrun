@@ -4,7 +4,7 @@ import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { cost, isEstimate, soFar, soFarNote, when } from "@/lib/format";
+import { cost, isEstimate, runLabel, soFar, soFarNote, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 import { placeOf, runPlaceWords } from "@/lib/place";
@@ -33,7 +33,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
         <ArrowLeft className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate">{agentName}</span>
         <span aria-hidden>/</span>
-        <span className="truncate">Run {run.run_id.slice(0, 8)}</span>
+        <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">

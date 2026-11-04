@@ -6,6 +6,7 @@ import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 import { agentHash } from "@/components/AgentPage";
 import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
+import { runLabel } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
@@ -451,7 +452,7 @@ describe("App, the agents' names", () => {
     await act(async () => { button(/send request/i)!.click(); });
     // The run panel's breadcrumb names the agent, as the run's page does.
     const crumb = () => host.querySelector('nav[aria-label="Breadcrumb"]')?.textContent ?? "";
-    await until(() => crumb().includes(`Run ${started.run_id.slice(0, 8)}`));
+    await until(() => crumb().includes(`Run ${runLabel(started.run_id)}`));
     await until(() => crumb().includes(made.definition.name!));
     expect(crumb()).not.toContain(made.agent_id);
   });
