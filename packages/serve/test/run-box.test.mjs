@@ -285,6 +285,25 @@ test("a remote box found at its run's next call: one with no network is kept whe
   assert.deepEqual([made, destroyed], [["none", { allow: ["pypi.org"] }], ["listed", "open"]]);
 });
 
+test("a remote box's refused host list is said as it is refused, before the closed box is made: a closed box that then fails still leaves it said", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  const asked = [];
+  const said = [];
+  const boxes = {
+    list: async () => ({ ok: true, value: [] }),
+    attach: async () => ({ ok: true, value: undefined }),
+    create: async (spec) => {
+      asked.push(spec.network);
+      const error = spec.network === "none" ? { code: "capacity", message: "no room for a box" } : { code: "unsupported", message: "Daytona did not keep this sandbox's domain list" };
+      return { ok: false, error };
+    },
+  };
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, ["pypi.org"], (code) => said.push(code)), /could not be made: no room for a box/);
+  assert.deepEqual(asked, [{ allow: ["pypi.org"] }, "none"]);
+  assert.deepEqual(said, ["unsupported"]);
+});
+
 test("fake docker: read, write and edit run no docker command, on the work/ the box binds; bash runs one docker exec; a run with no bash makes no box", { skip: !writesHeld() && "needs held directory handles (/proc/self/fd)", timeout: 90_000 }, async (t) => {
   const docker = await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
