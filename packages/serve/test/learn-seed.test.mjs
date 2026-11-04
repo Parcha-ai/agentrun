@@ -6,12 +6,13 @@
 // into it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { homeKey, homeOf } from "../dist/files.js";
 import { learningTestHooks } from "../dist/learning.js";
+import { KEEPS, learnedIn, NOTHING_YET } from "./learn-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const SYSTEM = new URL("./fixtures/faux-system.mjs", import.meta.url).pathname;
@@ -35,9 +36,6 @@ const repoOf = (data, id) => join(homeOf(data, id), "learning");
 const pinOf = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "learning.json"), "utf8"));
 const learnedDir = (data, runId) => join(data, "runs", runId, "work", ".learning");
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "";
-/** The index a prompt holds under `# Learned`, after its one line of intro, or undefined. pi's system prompt closes the
- *  instructions with `</instructions>`. */
-const learnedIn = (prompt) => /\n# Learned\n\n[^\n]*\n\n([\s\S]*?)(?:\n\n|\n<\/instructions>|\n?$)/.exec(prompt)?.[1];
 
 /** Commits `files` on main, in the folder's working tree, as a merge into main would leave it. Its commit. */
 function commitToMain(repo, files, message = "learned") {
@@ -55,7 +53,17 @@ async function ran(api, id) {
   const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  await learningEnded(api, run.body.run_id);
   return { runId: run.body.run_id, prompt: await answer(api, run.body.run_id) };
+}
+
+/** Once the run's learning has ended (it does not learn, or it merged or dropped): its end-of-run turn, which the faux
+ *  model answers with its prompt, gives no note. */
+async function learningEnded(api, runId) {
+  for (let i = 0; ["seeded", "reflecting", "proposed"].includes((await api("GET", `/runs/${runId}`)).body.learning?.state); i++) {
+    assert.ok(i < 600, "the run's learning ends");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /** Agent `id` with learning on, created, and its folder made by a first run, with `files` then committed on main. */
@@ -76,11 +84,11 @@ async function learnsNothing(api, data, id, runId, prompt) {
   assert.equal(existsSync(repoOf(data, id)), false, "no learning folder is made");
   assert.equal(existsSync(join(data, "runs", runId, "learning.json")), false, "no pin");
   assert.equal(existsSync(learnedDir(data, runId)), false, "no .learning in the run's work");
-  assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), prompt);
+  assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned") && !prompt.includes("You learn from your runs"), prompt);
   assert.deepEqual(await learningOf(api, id, runId), { whole: null, short: null });
 }
 
-test("a new agent with learning on: its first run makes its folder, main checked out with one host commit holding an empty MEMORY.md, and starts seeded with no # Learned section, as a restarted server reads it too", { timeout: 90_000 }, async (t) => {
+test("a new agent with learning on: its first run makes its folder, main checked out with one host commit holding an empty MEMORY.md, and starts seeded, told under # Learned that it learns and that nothing is learned yet, as a restarted server reads it too", { timeout: 90_000 }, async (t) => {
   const first = await serve(t, { faux: SYSTEM });
   const { api, data } = first;
   assert.equal((await api("POST", "/agents", agent("fresh", { learning: true, instructions: "Answer the question." }))).status, 201);
@@ -97,17 +105,52 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.deepEqual(readdirSync(homeOf(data, "fresh")), ["learning"]);
   assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
   assert.deepEqual(readdirSync(learnedDir(data, runId)), ["MEMORY.md"]);
-  assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), `an empty index adds no section: ${prompt}`);
+  assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), `an empty index: the run is told it learns, and that nothing is learned yet: ${prompt}`);
+  assert.ok(!prompt.includes("What you learned in earlier runs"), "no intro to notes it has none of");
+  // Seeded, then asked the end-of-run turn, which (the faux model says its prompt) gave no note (learn-reflect.test.mjs).
   const { whole, short } = await learningOf(api, "fresh", runId);
-  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "seeded", reason: null, detail: null, at: "string" });
-  assert.deepEqual(short, { state: "seeded", reason: null });
+  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "string" });
+  assert.deepEqual(short, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." }, "a list says it in the same words");
   // A server started again reads the run's learning back from its serve.json, whole and in a list.
   await first.close();
   const again = await serve(t, { data, faux: SYSTEM });
   assert.deepEqual(await learningOf(again.api, "fresh", runId), { whole, short });
 });
 
+// A home made before the agent's first run that learns may already hold an empty `learning/` (mode 0700, no .git), as a
+// home's first making leaves it: the seed takes it as it is, git init in place, and the run starts from its one commit.
+test("an empty learning/ in the agent's home before its first run, with no .git, is taken as it is: the folder is made a repository in place, main holds an empty MEMORY.md, and the run is seeded from it", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { faux: SYSTEM });
+  assert.equal((await api("POST", "/agents", agent("premade", { learning: true, instructions: "Answer the question." }))).status, 201);
+  const repo = repoOf(data, "premade");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  chmodSync(repo, 0o700);
+  assert.deepEqual(readdirSync(repo), []);
+  const { runId } = await ran(api, "premade");
+  const { whole } = await learningOf(api, "premade", runId);
+  assert.deepEqual([whole.state, whole.reason], ["dropped", "empty"], "seeded, and its end-of-run turn gave no note");
+  assert.ok(existsSync(join(repo, ".git")), "a repository, made in place");
+  assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
+  assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md"]);
+  assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
+  assert.equal(statSync(repo).mode & 0o777, 0o700, "its mode as it was");
+});
+
 // The faux harness stands in for claude-agent's and codex's: it says the system prompt the run gives it.
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`a fresh agent's first ${harness} run that learns is told so: # Learned after the instructions says it learns, how, and to tell the person it keeps what they ask but never a secret, then that nothing is learned yet`, { timeout: 90_000 }, async (t) => {
+    const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
+    const id = `first-${harness}`;
+    assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: "Answer the question." }))).status, 201);
+    const { runId, prompt } = await ran(api, id);
+    assert.deepEqual(pinOf(data, runId), { seed: git(repoOf(data, id), ["rev-parse", "main"]) }, "a first run has a pin, with nothing learned");
+    assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), prompt);
+    assert.equal(prompt.split("# Learned").length, 2, "one section");
+    // It never promises to keep what is never kept: a secret the person asks it to remember is refused, and said so.
+    assert.match(prompt, /\n# Learned\n\n[^\n]*tell them you will keep it for later runs\. A secret \(a password, key or token\) is never kept, so say so instead\.\n\n/);
+  });
+}
+
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`a ${harness} run starts from main's commit, never the working tree: MEMORY.md's lines under # Learned, and the index and the active notes in work/.learning, not the superseded one`, { timeout: 120_000 }, async (t) => {
     const { api, data } = await serve(t, { faux: SYSTEM, fauxHarness: SYSTEM });
@@ -120,8 +163,10 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     writeFileSync(join(repo, "loose.md"), note("Loose", "never committed", "project"));
     const { runId, prompt } = await ran(api, id);
     assert.equal(learnedIn(prompt), INDEX.trim(), prompt);
-    assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n`), `the section follows the instructions: ${prompt}`);
-    assert.match(prompt, /# Learned\n\n[^\n]*`\.learning\/`[^\n]*open one when it applies/, "the intro says where the notes are");
+    assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\nWhat you learned in earlier runs`), `the section follows the instructions, and says the run learns before it lists what it learned: ${prompt}`);
+    assert.match(prompt, /\n\nWhat you learned in earlier runs[^\n]*`\.learning\/`[^\n]*open one when it applies/, "the intro says where the notes are");
+    assert.equal(prompt.split(KEEPS).length, 2, "said once");
+    assert.ok(!prompt.includes(NOTHING_YET), prompt);
     assert.ok(!prompt.includes("uncommitted") && !prompt.includes("Loose") && !prompt.includes("Old refunds"), prompt);
     assert.deepEqual(readdirSync(learnedDir(data, runId)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
     for (const file of ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]) assert.equal(readFileSync(join(learnedDir(data, runId), file), "utf8"), MAIN[file], file);
@@ -129,7 +174,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const skills = join(data, "runs", runId, "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
-    assert.deepEqual([whole.state, whole.reason, short], ["seeded", null, { state: "seeded", reason: null }]);
+    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "empty", { state: "dropped", reason: "empty", detail: whole.detail }], "seeded, and its end-of-run turn gave no note");
   });
 }
 
@@ -194,13 +239,14 @@ test("two runs of a new agent made at once: one folder made, one commit on main,
   const made = await Promise.all([1, 2].map(() => api("POST", "/agents/twice/runs", { input: { content: "hi" } })));
   for (const run of made) assert.equal(run.status, 202, JSON.stringify(run.body));
   for (const run of made) await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  for (const run of made) await learningEnded(api, run.body.run_id);
   const repo = repoOf(data, "twice");
   const main = git(repo, ["rev-parse", "main"]);
   assert.equal(git(repo, ["rev-list", "--count", "--all"]), "1");
   assert.equal(git(repo, ["reflog", "show", "--format=%H", "refs/heads/main"]), main, "main was set once");
   assert.deepEqual(made.map((run) => pinOf(data, run.body.run_id).seed), [main, main]);
   assert.deepEqual(readdirSync(homeOf(data, "twice")), ["learning"]);
-  for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.state, "seeded");
+  for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "empty", "seeded, and its end-of-run turn gave no note");
 });
 
 test("two agents whose ids differ only in case: each has its own learning folder, in homes whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000 }, async (t) => {
@@ -268,10 +314,10 @@ test("no hook runs on the host's git calls: neither the folder's own (its hooks 
 async function seedFailed(api, data, id, runId, prompt) {
   assert.equal(existsSync(join(data, "runs", runId, "learning.json")), false, "no pin");
   assert.equal(existsSync(learnedDir(data, runId)), false, "no .learning in the run's work");
-  assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), prompt);
+  assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned") && !prompt.includes("You learn from your runs"), `a run that will not be asked what to keep is not told it learns: ${prompt}`);
   const { whole, short } = await learningOf(api, id, runId);
-  assert.deepEqual([whole.state, whole.reason, short], ["dropped", "seed_failed", { state: "dropped", reason: "seed_failed" }]);
-  assert.match(whole.detail, /started with nothing learned/);
+  assert.deepEqual([whole.state, whole.reason, short], ["dropped", "seed_failed", { state: "dropped", reason: "seed_failed", detail: whole.detail }]);
+  assert.match(whole.detail, /^Not kept: learning stopped \(.*, so the run started without (them|its notes)\)\.$/);
 }
 
 test("a folder the server cannot read: the run still completes, with nothing learned, and its learning is dropped for seed_failed", { timeout: 120_000, skip: process.getuid?.() === 0 && "root reads any folder" }, async (t) => {

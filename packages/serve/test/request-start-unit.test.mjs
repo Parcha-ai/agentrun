@@ -30,7 +30,9 @@ test("a model stream that throws while it is read ends as an error, never a hang
   assert.notEqual(result, "hung", "the request ended");
   assert.equal(result.stopReason, "error");
   assert.match(result.errorMessage, /the connection reset/);
-  assert.deepEqual(kinds, [REQUEST_STARTED], "an error is pi's to write as the request's entry");
+  // Its start event came first, so its response had begun: its end is marked (`error`) before the result settles, and
+  // the error stays pi's to write as the request's entry (cap-error.test.mjs).
+  assert.deepEqual(kinds, [REQUEST_STARTED, REQUEST_ENDED], "its end marked before pi has its result");
 });
 
 test("a request cut before its first content, after the provider named it, ends with the provider's id on its end mark", async () => {
@@ -92,7 +94,7 @@ test("an aborted compaction summary is closed with its end, never priced: the ru
   assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction" } }], "no cost written");
   const answered = { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop", usage: { input: 1, output: 1, cost: { total: 0.01 } } }] };
   const usage = timelineOf([{ kind: REQUEST_STARTED, data: {} }, answered, ...marks]).at(-1).usage;
-  assert.deepEqual(usage, { usd: null, requests: 2 });
+  assert.deepEqual(usage, { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 });
 });
 
 test("a cancelled run sends no summary request either: the model is never called, and nothing is marked", async () => {

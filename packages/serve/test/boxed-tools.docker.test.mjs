@@ -24,9 +24,11 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 const SANDBOX = { mode: "sandbox", box: "docker" };
 /** The image CI pulls before this file runs; the default image, built here, has a test of its own (below). */
 const PULLED = "debian:bookworm-slim";
-// Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
+// Values planted in the server's environment, each one no box may hold: an unnamed key, OpenAI's, and the four keys a
+// tester runs everything with: OpenRouter's (which a harness may be handed under another name), Monid's, Parallel's and
+// Browserbase's. A box is searched for each value, so a key handed on under any name is found.
 const planted = (name) => `planted-${name}-sentinel`;
-const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
+const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("openai"), OPENROUTER_API_KEY: planted("openrouter"), MONID_API_KEY: planted("monid"), PARALLEL_API_KEY: planted("parallel"), BROWSERBASE_API_KEY: planted("browserbase") };
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_", "HOSTNAME"];
 
@@ -66,7 +68,7 @@ async function noSecretIn(text, server) {
   for (const [name, value] of Object.entries({ ...SENTINELS, token: server.token, door })) assert.ok(!text.includes(value), `${name} reached the box`);
 }
 
-test("live Docker (pi): bash, write, read and edit run in the box; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
+test("live Docker (pi): bash runs in the box, and write, read and edit on the work/ it binds; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
   withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker", AGENTRUN_DOCKER_IMAGE: PULLED });
   const server = await serve(t, { faux: PROBE });
   const { api, data } = server;
@@ -130,7 +132,7 @@ test("live Docker (pi): bash, write, read and edit run in the box; no key or tok
   assert.deepEqual([id, uid, gid, cwd], ["ID=debian", String(process.getuid()), String(process.getgid()), "/run/agentrun/run/work"]);
   assert.match(at(11), /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
   assert.ok(!at(11).includes(canonical), "never the data root");
-  assert.match(at(9), /: outside the workspace \/run\/agentrun\/run\/work/, "a host path is refused, never mapped");
+  assert.match(at(9), /: outside the workspace(\n<\/harness>)?$/, "a host path is refused as given, never mapped, and no other path is named");
   await until(() => docker("ps", "--all", "--quiet", "--filter", `label=agentrun.run=${runId}`).trim() === "", "the box's destroy at the run's end");
 });
 

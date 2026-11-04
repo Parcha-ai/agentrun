@@ -38,7 +38,7 @@ async function open() {
   root = createRoot(host);
   act(() => root!.render(createElement(App)));
   const wait = async (ok: () => boolean) => { const end = Date.now() + 4000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); expect(ok()).toBe(true); };
-  await wait(() => !!host.textContent?.includes("Total cost"));
+  await wait(() => !!host.textContent?.includes("Needs input"));
   return { host, asked, wait };
 }
 

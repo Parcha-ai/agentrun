@@ -6,6 +6,14 @@
 // tool's JSON Schema as the host gave it, unchanged, and hands `tools/call`'s arguments to the tool as the model sent
 // them: the host (its executor) validates them, as it does for every other harness. The CLI's tool_use id comes in the
 // call's `_meta`, which the durable call record is keyed by.
+//
+// A host tool's result within the host's bound (HOST_RESULT_MAX_CHARS) reaches the model whole. The pinned CLI checks an
+// MCP tool's result twice: past its character limit (50,000 by default, the tool's `anthropic/maxResultSizeChars` up to
+// 500,000 where it gives one) it saves the result to tool-results/<tool_use_id>.json in its config dir and tells the
+// model to read that file, which a confined session cannot; past MAX_MCP_OUTPUT_TOKENS (25,000 by default) it saves the
+// result the same way, or cuts one that holds an image. Each tool is listed with the bound as its maxResultSizeChars,
+// which also spares a text result the token check, and the harness sets MAX_MCP_OUTPUT_TOKENS from it (env.ts).
+import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 
 /** A tool as the model is shown it. */
 export interface ServedTool {
@@ -23,6 +31,19 @@ export type ServedResult = {
 /** The CLI's tool_use id, in a call's `_meta`. */
 export const TOOL_USE_ID = "claudecode/toolUseId";
 
+/** The `_meta` key of a listed tool by which the CLI takes the most characters of its result it passes whole. */
+export const RESULT_SIZE_KEY = "anthropic/maxResultSizeChars";
+/**
+ * MAX_MCP_OUTPUT_TOKENS: the host's bound, as tokens. The CLI estimates a result at a quarter of a token a character and
+ * 1,600 an image, and counts it exactly only past half its limit, so a result within the bound (with up to fifteen
+ * images) is never counted, let alone saved or cut.
+ */
+export const MCP_OUTPUT_TOKENS = HOST_RESULT_MAX_CHARS;
+
+/** `tools` as the server lists them to the CLI (`tools/list`): each as the host gave it, with the host's result bound as
+ *  its result size. */
+export const listedTools = (tools: readonly ServedTool[]) => tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, _meta: { [RESULT_SIZE_KEY]: HOST_RESULT_MAX_CHARS } }));
+
 /** The SDK's in-process server config for `tools`: `call(name, args, toolUseId)` answers each call. */
 export async function toolServer(name: string, tools: readonly ServedTool[], call: (tool: string, args: unknown, toolUseId: unknown) => Promise<ServedResult>) {
   const [{ McpServer }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
@@ -30,7 +51,7 @@ export async function toolServer(name: string, tools: readonly ServedTool[], cal
     import("@modelcontextprotocol/sdk/types.js"),
   ]);
   const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
-  const listed = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+  const listed = listedTools(tools);
   const names = new Set(tools.map((t) => t.name));
   server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listed }));
   server.server.setRequestHandler(CallToolRequestSchema, async (request) => {

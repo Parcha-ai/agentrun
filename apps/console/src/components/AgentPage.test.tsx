@@ -90,13 +90,13 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage", () => {
-  it("shows a run whose requests were cut as ≤ its bound and why, and an unknown cost without a bound not at all", async () => {
+  it("shows a run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
-    const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, at_most_usd: 0.07 } }, { ...runs[1], cost: unknown }] });
+    const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, so_far_usd: 0.07, unpriced: 1 } }, { ...runs[1], cost: unknown }] });
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
-    expect(links[0].textContent).toContain("≤ $0.07 · some requests were cut");
-    expect(links[1].textContent).not.toMatch(/\$|Unknown|≤/);
+    expect(links[0].textContent).toContain("so far $0.07 est. · 1 not priced");
+    expect(links[1].textContent).not.toMatch(/\$|Unknown|so far/);
   });
 
   it("heads the page with the current revision's harness, model and thinking, and Edit opens the editor", async () => {
@@ -245,7 +245,8 @@ describe("AgentPage", () => {
     expect(count()).toBe(5);
     await page.click(/^Load more$/);
     expect(count()).toBe(5);
-    expect(page.host.textContent).toContain("More runs could not be read: the network went away");
+    expect(page.host.textContent).toContain("More runs could not be read.");
+    expect(page.host.textContent).toContain("the network went away");
     fail = false;
     await page.click(/^Load more$/);
     expect(count()).toBe(runs.length);
@@ -480,11 +481,11 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("codex"), { models: gateway, harnesses });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     const claude = await open(on("claude-agent"), { models: gateway, harnesses });
-    expect(modelOf(claude).textContent).toBe("no default: choose a model");
+    expect(modelOf(claude).textContent).toBe("none yet: add a model key in Settings → Model keys");
   });
   it("a claude-agent agent naming no model has no default to show", async () => {
     const page = await open(on("claude-agent"), { models: gateway });
-    expect(modelOf(page).textContent).toBe("no default: choose a model");
+    expect(modelOf(page).textContent).toBe("none yet: add a model key in Settings → Model keys");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
   });
 });
@@ -524,24 +525,42 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
   });
 });
 
-// Each failed read says the server's refusal as `code: message`, and any other failure by its message.
+// Where the agent runs, said with the rest of its current revision: its box, or the server (no place is the server's
+// default, the runner).
+describe("AgentPage, where it runs", () => {
+  it("says the box an agent runs in, or the server", async () => {
+    const base = agentFixture("invoice-checker");
+    const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
+    expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(base)).fact("Runs")).toBe("On the server");
+  });
+});
+
+// Each failed read says what failed and what to do next in words: an agent this server has no record of, a server that
+// can't be reached, and anything else thrown, with what was said kept small.
 describe("AgentPage, a failed read's problem", () => {
   it("says the agent's read failing: a refusal, an error and anything else thrown", async () => {
     const refused = await open(agentFixture("invoice-checker"), { agentError: new ClientError(404, "agent_not_found", "no agent invoice-checker") });
-    expect(refused.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: agent_not_found: no agent invoice-checker");
+    const r = refused.host.querySelector('[role="alert"]')!;
+    expect(r.textContent).toContain("No agent with this id.");
+    expect(r.querySelector('a[href="#/agents"]')?.textContent).toBe("Open the agents list");
     act(() => root?.unmount());
     const failed = await open(agentFixture("invoice-checker"), { agentError: new TypeError("Failed to fetch") });
-    expect(failed.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: Failed to fetch");
+    expect(failed.host.querySelector('[role="alert"]')?.textContent).toContain("The agent could not be read.Can't reach agentrun-serve.");
+    expect(failed.host.querySelector('[role="alert"]')?.textContent).not.toContain("TypeError");
     act(() => root?.unmount());
     const thrown = await open(agentFixture("invoice-checker"), { agentError: "offline" });
-    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toBe("The agent could not be read: offline");
+    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toContain("Something went wrong in the console. Reload the page.");
+    expect(thrown.host.querySelector('[role="alert"]')?.textContent).toContain("offline");
   });
 
   it("says the next page of runs refused", async () => {
     const runs = runsOf("invoice-checker");
     const page = await open(agentFixture("invoice-checker"), { runs: runs.slice(0, 5), next: "c2", more: async () => { throw new ClientError(400, "invalid_cursor", "that cursor is not one this server gave"); } });
     await page.click(/^Load more$/);
-    expect(page.host.textContent).toContain("More runs could not be read: invalid_cursor: that cursor is not one this server gave");
+    expect(page.host.textContent).toContain("More runs could not be read.");
+    expect(page.host.textContent).toContain("that cursor is not one this server gave · invalid_cursor");
   });
 
   it("says the latest run's record refused on every try, and its timeline refused", async () => {

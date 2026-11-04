@@ -1,7 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { MissionControl } from "@/components/MissionControl";
+import { NeedsYouStrip } from "@/components/NeedsYouStrip";
+import { StartHere } from "@/components/StartHere";
 import { Shell } from "@/components/Shell";
-import { recorded } from "@/fixtures";
+import { editorCaps, recorded } from "@/fixtures";
 import type { Run } from "@/lib/v2";
 import { type Analytics, type MissionView, rangeFrom } from "@/lib/mission";
 
@@ -43,3 +45,32 @@ export const Phone: Story = { render: () => <Shell active="mission"><MissionCont
 const scope = { range: "30d" as const, onRange: () => {}, agent: null, onAgent: () => {} };
 export const WithAnalytics: Story = { render: () => <Shell active="mission"><MissionControl view={{ ...view({ usd: 1.6381, basis: "estimate", unknownRuns: 7 }), analytics }} scope={scope} /></Shell> };
 export const AnalyticsNoRuns: Story = { render: () => <Shell active="mission"><MissionControl view={{ ...view({ usd: null, basis: null, unknownRuns: 0 }), analytics: quiet }} scope={{ ...scope, range: "7d" }} /></Shell> };
+
+// What needs a person, first: two questions (one with the choices it offers), two runs stopped by the same error and one
+// by its own, and a run at work.
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+const needRun = (id: string, agent: string, over: Partial<Run>): Run => ({
+  run_id: id, agent_id: agent, agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: id, created_at: ago(12),
+  ended_at: null, result: null, error: null, cost: null, archived_at: null, ...over,
+});
+const overloaded = { code: "run_failed", message: "529 overloaded: the provider is over capacity, try again shortly", retryable: false };
+const names: Record<string, string> = { "invoice-checker": "Invoice checker", "support-triage": "Support triage", "lead-scorer": "Lead scorer", "meeting-notes": "Meeting notes" };
+const strip = (
+  <NeedsYouStrip agentName={(id) => names[id] ?? id} onAnswer={async () => null} onRunAgain={async (runs) => ({ started: runs.map((r) => r.run_id), problem: null })} onStop={async () => null}
+    asking={[
+      needRun("q1", "invoice-checker", { status: "input_required", state: "waiting", title: "Check invoice INV-2310 from Contoso Freight, a new vendor.", pending: { kind: "question", question: "Contoso Freight isn't on the vendor list yet. Which approval limit applies: the $5,000 standard or the $25,000 preferred tier?", asked_at: ago(9) } }),
+      needRun("q2", "support-triage", { status: "input_required", state: "waiting", title: "Triage ticket #4427: refund request over the policy limit.", pending: { kind: "question", question: "Which product or plan was charged twice?", asked_at: ago(3) } }),
+    ]}
+    failed={[
+      needRun("f1", "lead-scorer", { status: "failed", title: "Score the lead: Hooli, partner referral.", error: overloaded, ended_at: ago(8) }),
+      needRun("f2", "support-triage", { status: "failed", title: "Triage ticket #4425: webhook retries never stop.", error: overloaded, ended_at: ago(8) }),
+      needRun("f3", "invoice-checker", { status: "failed", title: "Check invoice INV-2299 against PO-7790.", error: { code: "spend_cap_reached", message: "the run hit its $0.50 spend cap", retryable: false }, ended_at: ago(20) }),
+    ]}
+    live={[needRun("w1", "meeting-notes", { status: "working", state: "working", title: "Summarize this week's planning call.", created_at: ago(2), cost: { usd: 0.0031, basis: "estimate", charge_state: null, cap_usd: null } })]} />
+);
+export const NeedsYou: Story = { render: () => <Shell active="mission"><MissionControl view={{ ...view({ usd: 1.6381, basis: "estimate", unknownRuns: 7 }), analytics }} scope={scope} needsYou={strip} /></Shell> };
+// Before the owner's first run: three templates, one click each, and the sessions imported from this machine.
+const ready = [{ id: "pi", available: true, default_model: "faux/faux-1" }];
+export const StartHereFirstRun: Story = { render: () => <Shell active="mission"><MissionControl view={view({ usd: null, basis: null, unknownRuns: 0 })} startHere={<StartHere harnesses={ready} tools={editorCaps.tools} onTry={async () => null} imported={6} />} /></Shell> };
+// No harness here has a model to run: the model step comes first.
+export const StartHereNoModel: Story = { render: () => <Shell active="mission"><MissionControl view={view({ usd: null, basis: null, unknownRuns: 0 })} startHere={<StartHere harnesses={[{ id: "pi", available: true, default_model: null }]} tools={editorCaps.tools} onTry={async () => null} />} /></Shell> };

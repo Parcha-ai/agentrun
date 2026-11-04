@@ -24,15 +24,16 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-kernel";
+import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
+import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -42,14 +43,24 @@ export const BOOKED = "adapter.request";
 export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
-/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
-export const MESSAGE = "adapter.message";
-export const MESSAGE_END = "adapter.message_end";
+/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop
+ *  (turn-end.ts, which runs.ts reads them from). */
+export { MESSAGE, MESSAGE_END } from "./turn-end.js";
+/** A turn's end on the root (turn-end.ts), with the session's own outcome (`completed`, `interrupted`, `failed`): written
+ *  once its answer, its costs and any error are, before the door says the run is idle. The only record that a turn which
+ *  took the person's message is over: a request without content is written alike whether it ended the turn or not. */
+export { TURN_END } from "./turn-end.js";
 
 type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 type Pending = { request: number; usage: ModelUsage };
 /** An accepted message: `recorded` once its record is on the root. */
 type Message = { id: string; content: string; recorded: Promise<unknown> };
+/** The run's stop record as serve keeps it (serve.json, runs.ts stopTurn, saved before the stop's abort): the person's
+ *  newest message when they stopped the turn, by its row id (`<conversation>:<entry>`), or, from an older server, how many
+ *  messages they had sent then. */
+export type StopRecord = { stopped_at?: string; stopped_after?: number };
+/** A row id's place in the store: its entry's id. */
+const placeOf = (id: string) => Number(id.slice(id.lastIndexOf(":") + 1));
 
 const now = () => Date.now();
 const textOf = (content: unknown): string =>
@@ -72,7 +83,7 @@ function tokensOf(usage: unknown): { input: number; output: number; cacheRead: n
  *  `error`: a turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
 function assistantMessage(harness: string, model: string | undefined, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
   if (error !== undefined) {
-    return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+    return { role: "assistant", content: [], api: ADAPTER_API, provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
   const usage = request?.usage;
   const known = usage !== undefined && usage.usd !== null && usage.usd !== undefined;
@@ -80,7 +91,7 @@ function assistantMessage(harness: string, model: string | undefined, request: P
   return {
     role: "assistant",
     content: [...(text ? [{ type: "text", text }] : []), ...calls],
-    api: "agentrun-adapter",
+    api: ADAPTER_API,
     provider: harness,
     model: model ?? harness,
     usage: {
@@ -117,6 +128,7 @@ export function adapterRun(
   cancelled: () => boolean = () => false,
   cwd?: string,
   coding?: readonly ToolRegistration[],
+  stopRecord?: StopRecord,
 ): AdapterRun {
   const plane = planeOf(process.env);
   // The web tools' Parallel key, when one resolves to Parallel, read as the run's app loads, before its process starts
@@ -127,6 +139,9 @@ export function adapterRun(
   if (plane.web_search === "native") tools = tools.filter((name) => name !== WEB_SEARCH_TOOL);
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
+  // That `refused` is the cap's, not the cancel's: its error entry gets a start mark of its own first, as pi's does, so the
+  // run's usage counts no request for it.
+  let capRefused = false;
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
@@ -134,16 +149,20 @@ export function adapterRun(
   const inFlight = holdsInFlight();
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
-    const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
-    if (answer) {
+    const byCancel = cancelled();
+    const answer = byCancel ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
+    if (answer && "refuse" in answer) {
       refused = answer.refuse;
+      capRefused = !byCancel;
       return answer;
     }
-    // Admitted: the worst case the cap holds for it, which the runner records, and counts it at if its cost never
-    // comes in.
-    const hold = cap?.worstOf?.(request);
+    // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
+    // at): the worst case the cap holds for it, which the runner records, and counts it at if its cost never comes in.
+    const limit = answer?.outputTokensMax;
+    const hold = cap?.worstOf?.({ ...request, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
     inFlight.admitted(hold);
-    return hold === undefined ? undefined : { holdUsd: hold };
+    if (hold === undefined && limit === undefined) return undefined;
+    return { ...(hold === undefined ? {} : { holdUsd: hold }), ...(limit === undefined ? {} : { outputTokensMax: limit }) };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */
@@ -161,6 +180,8 @@ export function adapterRun(
   let openedDone: () => void = () => {};
   opened = new Promise((resolve) => (openedDone = resolve));
   let turn: Promise<void> | undefined;
+  // A person's stop of the turn in flight: its interrupt, which the turn's end waits for before it settles the turn.
+  let stopping: Promise<void> | undefined;
   // The door's emit, from attach as the door opens: a recovered turn, started by no submit, reports through it too.
   let emit: ((event: DoorEvent) => void) | undefined;
   let attached = false;
@@ -198,21 +219,25 @@ export function adapterRun(
 
   const commit = <T>(change: (tx: Tx) => Promise<T>) => run!.harness.commit(change, context);
 
+  /** A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
+   *  own, so the run's spend counts it, once; any other is a duplicate. */
+  const priceLate = async (late: Pending) => {
+    if (!unpriced.has(late.request) || priced.has(late.request)) return;
+    const tokens = tokensOf(late.usage);
+    await commit(async (tx) => {
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } });
+    });
+    priced.add(late.request);
+  };
+  const writtenAt = () => costed.findIndex((c) => written.has(c.request));
+
   /** Writes what the current request has: its entry with the content so far and the oldest cost not yet written.
    *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost. */
   const flush = (final = false): Promise<void> =>
     later(async () => {
-      // A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
-      // own, so the run's spend and its cap count it; any other is a duplicate.
-      while (costed.length && written.has(costed[0]!.request)) {
-        const late = costed.shift()!;
-        if (!unpriced.has(late.request) || priced.has(late.request)) continue;
-        const tokens = tokensOf(late.usage);
-        await commit(async (tx) => {
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null, ...(tokens ? { usage: tokens } : {}) } });
-        });
-        priced.add(late.request);
-      }
+      // Each cost for a request already written, wherever it sits: a response is booked when its stream closes, so a
+      // late cost can come in after a later request's.
+      for (let at = writtenAt(); at >= 0; at = writtenAt()) await priceLate(costed.splice(at, 1)[0]!);
       if (!text && !calls.length && !costed.length) return;
       if (!costed.length && !final) return;
       const request = costed.shift();
@@ -234,10 +259,14 @@ export function adapterRun(
       if (marked !== undefined) written.add(marked);
       if (request) priced.add(request.request);
       else if (marked !== undefined) unpriced.add(marked);
-      // More costs than content: each later one still gets its own entry, cost only.
+      // More costs than content: each later one still gets its own entry, cost only. One that came in meanwhile for a
+      // request already written is a late cost, or a duplicate.
       while (costed.length) {
         const next = costed.shift()!;
-        if (written.has(next.request)) continue;
+        if (written.has(next.request)) {
+          await priceLate(next);
+          continue;
+        }
         answered.add(next.request);
         await commit(async (tx) => {
           await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, models.get(next.request), next, "", []) as never] });
@@ -264,9 +293,10 @@ export function adapterRun(
       inFlight.ended(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
       booked();
-      // A cost that came in after its answer was written goes in now, not at some later flush. If that write fails, the
-      // next open writes it from the session's booking, once.
-      if (written.has(event.turn)) flush().catch(() => undefined);
+      // A cost that came in after its answer was written goes in now, not at some later flush, and so does one that came
+      // in with no turn running, which no turn's flush would write. If that write fails, the next open writes it from
+      // the session's booking, once.
+      if (written.has(event.turn) || turn === undefined) flush().catch(() => undefined);
     }
   };
 
@@ -341,13 +371,24 @@ export function adapterRun(
       emit?.({ type: "run_start" });
       for (let start: (() => Promise<void>) | undefined = first; start; ) {
         let failed: string | undefined;
+        let status: TurnStatus = "failed";
         try {
           await start();
           const end = await session!.turnEnd();
+          status = end.status;
           if (end.status === "failed") failed = end.error ?? "the turn failed";
         } catch (error) {
           failed = String((error as Error)?.message ?? error);
         } finally {
+          // A turn the person stopped can still be open in the session (an interrupt writes no end there, and a prompt it
+          // stopped before the harness placed it is still pending). It is settled once the interrupt is done, before the
+          // turn's end and any next message, so nothing of it goes on or is sent again. An adapter without the settle is
+          // left as before. A settle that fails leaves the turn to the next open, which settles it from the stop record.
+          if (stopping) {
+            await stopping.catch(() => undefined);
+            stopping = undefined;
+            if (session?.state === "open_turn" && typeof session.settleOpenTurn === "function") await session.settleOpenTurn().catch(() => undefined);
+          }
           // The last request's cost, booked once the proxy has answered: waited for, so the answer is written with it.
           await bookings(BOOKING_WAIT_MS);
           await flush(true);
@@ -355,13 +396,29 @@ export function adapterRun(
           // A turn that failed ends the run on its error, as a pi run's does: the cap's refusal, a cost the booking could
           // not write, or the harness's own failure.
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
+          const unsent = refused !== undefined && capRefused;
           refused = undefined;
-          if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] })));
+          capRefused = false;
+          if (why !== undefined) {
+            await commit(async (tx) => {
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true } });
+              await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
+            });
+          }
+          // A cost that came in while this turn ended, after its flush: written now, while the run still reads busy, so a
+          // message that comes in meanwhile waits its place below and goes on as the next turn of this busy period.
+          if (costed.length) await flush().catch(() => undefined);
+          // Last, and before run_end: a live server reads the turn over no later than it reads the run idle.
+          await commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status: why === undefined ? status : "failed" } })));
         }
         const next = queue.shift();
         start = next === undefined ? undefined : sendOf(next);
       }
+      // Nothing from here to run_end waits: a message that comes in once the run reads idle starts the next busy period,
+      // after this run_end. A cost that comes in from now on is written as it comes in (onModel).
       turn = undefined;
+      // A stop that came after this busy period's last turn had ended stopped nothing: it is not the next one's.
+      stopping = undefined;
       emit?.({ type: "run_end" });
     })();
   };
@@ -393,7 +450,8 @@ export function adapterRun(
         });
       }
       if (!turn) return "idle";
-      await session?.interrupt();
+      stopping = session?.interrupt();
+      await stopping;
       return "aborted";
     },
     busy: () => turn !== undefined,
@@ -408,18 +466,33 @@ export function adapterRun(
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
       const accepted = new Map<string, Message>();
       const paid: { kind: string; data?: unknown }[] = [];
+      // The turn that took the last message sent, while the root has no end for it (runTurns writes the end last, in a
+      // commit of its own): whether the bridge wrote that turn's error.
+      let unended: { failed: boolean } | undefined;
+      // The person's messages on the root: the newest one's entry id, and how many, for the run's stop record.
+      let lastUser: number | undefined;
+      let users = 0;
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
-          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown } | undefined;
+          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown; sent?: unknown } | undefined;
           if (entry.kind === TOOL_COST || entry.kind === TOOL_STARTED) paid.push(entry);
+          const message = (entry as { model?: { api?: unknown; stopReason?: unknown; role?: unknown }[] }).model?.[0];
+          if (unended && message?.api === ADAPTER_API && message.stopReason === "error") unended.failed = true;
+          if (message?.role === "user") {
+            users += 1;
+            lastUser = Number(entry.id);
+          }
           if (data?.key !== spec.key) continue;
           if (entry.kind === BOOKED && typeof data.request === "number") {
             written.add(data.request);
             (data.unpriced === true ? unpriced : priced).add(data.request);
           } else if (entry.kind === PRICED_LATE && typeof data.request === "number") priced.add(data.request);
           else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
-          else if (entry.kind === MESSAGE_END && typeof data.id === "string") accepted.delete(data.id);
+          else if (entry.kind === MESSAGE_END && typeof data.id === "string") {
+            accepted.delete(data.id);
+            if (data.sent === true) unended = { failed: false };
+          } else if (entry.kind === TURN_END) unended = undefined;
         }
         if (page.next === undefined) break;
         cursor = page.next;
@@ -467,10 +540,33 @@ export function adapterRun(
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
       session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
+      // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
+      // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of
+      // its own. A turn a crash or a drain cut has no stop record newer than the newest message, and is resumed as before.
+      const stopped = stopRecord?.stopped_at !== undefined
+        ? lastUser !== undefined && lastUser <= placeOf(stopRecord.stopped_at)
+        : stopRecord?.stopped_after !== undefined && stopRecord.stopped_after === users;
+      // An adapter written before settleOpenTurn has none: its stopped turn is recovered, as before.
+      if (session.state === "open_turn" && stopped && typeof session.settleOpenTurn === "function") await session.settleOpenTurn();
+      // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
+      // what this open wrote and before any new turn, so the message the turn took reads answered (runs.ts noteAnswer).
+      // A turn the person stopped reads interrupted, from the stop record: settled by this open, or by an earlier one that
+      // died before it wrote this end. Otherwise the session says only that the turn is over: completed, or failed when the
+      // bridge wrote its error.
+      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (stopped ? "interrupted" : unended.failed ? "failed" : "completed") : undefined;
+      const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status } }))));
       queue.push(...accepted.values());
+      // With nothing waiting, that end is the run's: written while the door is idle. A message accepted and never sent
+      // still waits, and a server started anew counts none: the door is busy (run_start) before that end goes out, and
+      // the message's turn follows in the same busy period, so no server reads the run done before it answers.
+      if (restored && !queue.length) await restore(restored);
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
-      else if (queue.length) runTurns(sendOf(queue.shift()!));
+      else if (queue.length) {
+        const next = sendOf(queue.shift()!);
+        runTurns(restored ? async () => (await restore(restored), await next()) : next);
+      }
     },
   };
 }

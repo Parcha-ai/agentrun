@@ -246,8 +246,10 @@ land (native and picked web search and tool settings, monid on every harness, th
    crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
-6. On pi, `web_search` searches Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server; a 429
-   is a tool error naming the rate limit, never a hang.
+6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
+   `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;
+   past Exa's free limit it is tried once more, then a tool error in our words (`Free web search is rate-limited right
+   now…`), never Exa's fix text and never a hang.
 
 ### Places (boxes, home, files)
 
@@ -264,6 +266,9 @@ the run's files go to. It gives back:
 - Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
+- Serve, what a run is told of its files (`packages/serve/src/run-manifest.ts`): `firstMessage` adds one line to an
+  agentic run's first message, `Files for this run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from
+  the run's `work/inputs/` as `runs.ts` sends it to the door, on every harness.
 - Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
   (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
 - Serve, an agent's place (`packages/serve/src/place.ts`): `definition.place` is `{mode: "runner"}` or
@@ -271,9 +276,9 @@ the run's files go to. It gives back:
   place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
 - Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
   (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
-  keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` is available when
-  it is, and every other box says runs in it are not available yet.
-- Serve, a run's place and its box: a run request's `place: "runner"` only narrows (`resolvePlace`), and the run keeps
+  keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` and `daytona` are
+  available when they are, and every other box says runs in it are not available yet.
+- Serve, a run's place and its box: a run takes its revision's place or the default (`resolvePlace`), and the run keeps
   its resolved `place` (its `serve.json`, `GET /v2/runs/{id}`). In the run's process, `codingSource(place, box?)`
   (`packages/serve/src/coding-tools.ts`) is the boxed coding source: on the runner pi's `read`, `write` and `edit`; in a
   box those and `bash`, each call on pi-transport's `boxEnv` over the run's box. pi's tool table and the other
@@ -282,9 +287,17 @@ the run's files go to. It gives back:
   box. The box's lifecycle and mounts are `packages/serve/src/run-box.ts` (`runBox`, `boxMounts`, `mountSource`,
   `destroyRunBoxes`, `sweepRunBoxes`), labelled `agentrun.run=<id>`; pi-transport's `endLeftCommands` kills what a
   crashed run's process left running.
+- Serve, a Daytona place (`{mode: "sandbox", box: "daytona"}`): the server makes, seeds, pulls and destroys the run's
+  sandbox with its own key (`ensureRemoteBox`, `pullRemoteBox` in `run-box.ts`; `remotePlace` in `place.ts`), the network
+  blocked (`networkBlockAll`). The run's process reaches it only through the box relay (`packages/serve/src/box-relay.ts`,
+  its address in `<data>/.box-relay`), which takes a run's call only with that run's own door token, follows no redirect,
+  and sends on with the key only a read of the run's own
+  sandbox and its toolbox's programs and files. `work/` is copied in at the sandbox's making and back at each turn's end
+  (a read of the run's files waits for that copy) and before the run's end is recorded; the mark is `box-sync.json`
+  beside the run. Tests: `test/daytona-boxes.test.mjs` on `test/fixtures/fake-daytona.mjs`, a loopback Daytona.
 
-Not on main yet: runs in a box other than Docker, a files API for the agent's home, and uploads. Each one extends this
-section when it lands.
+Not on main yet: runs in a box other than Docker and Daytona, a files API for the agent's home, and uploads. Each one
+extends this section when it lands.
 
 **Alone.** Everything else is faked: boxes by fake providers, the model by the faux model. Put a `docker` that exits
 1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:
@@ -303,7 +316,7 @@ npm test -w @parcha/pi-transport -- home-untrusted-store                       #
 npm run build
 (cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
   test/box-sweep.test.mjs test/box-record.test.mjs test/boxed-tools.test.mjs test/run-box.test.mjs \
-  test/coding-tools.test.mjs test/host-tools.test.mjs)
+  test/coding-tools.test.mjs test/host-tools.test.mjs test/run-manifest.test.mjs)
 ```
 
 `boxed-tools.test.mjs` runs sandbox runs on a faux box (pi-transport's local box, `startServe({ fauxBox })`), and
@@ -337,10 +350,14 @@ or a real `docker` on `PATH` for a server under test.
 7. **Boxed tools**: `boxed-tools.test.mjs` and `run-box.test.mjs` pass. A sandbox run's `bash` `printf hi > out.txt`
    shows in `GET /v2/runs/{id}/files` on pi, claude-agent and codex; the box's environment is `LANG`, `HOME=/tmp` and
    its `PATH`, with no key or token; every `docker run` has `--network none`, `--user` the server's uid:gid, one
-   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; `place: "runner"` on a run makes no box
-   and offers no `bash`; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
+   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; a run request naming `place` is a 422 and
+   makes no run; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
    and nothing is bound; the box is destroyed at completion, cancel and archive, adopted by its label after a crash
    (the left command killed), and swept at start once its run has ended.
+8. **Run files told**: `run-manifest.test.mjs` passes. A run given `notes.txt` is sent "Summarize the attached file."
+   plus `Files for this run: "inputs/notes.txt" (<n> B).`, reads it and answers with its text; on claude-agent and codex
+   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged; a name
+   with `", ` or an RTL override stays inside its quotes, escaped; a link at `work/inputs` lists nothing.
 
 ### Console, import and analytics
 
