@@ -1151,7 +1151,9 @@ export class Runs {
     if (this.secrets.has(run.revision)) return;
     const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
     this.decisionProviders.set(run.revision, await decisionProvidersFor(revision));
-    this.secrets.set(run.revision, await secretsFor(revision));
+    // The model keys it needs are read from the keys this server holds (its launcher's and the saved ones), never from
+    // its environment, which under the launcher holds none: a run on a key's default model is handed that key.
+    this.secrets.set(run.revision, await secretsFor(revision, undefined, withSecrets(process.env, "all", this.options.storedKeys)));
   }
 
   private launch(run: Run): void {
