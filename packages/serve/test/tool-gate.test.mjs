@@ -427,3 +427,36 @@ test("once a parked call with a held key in its arguments is approved, the resum
     assert.equal(holdsPiece(JSON.stringify(listed), RESUME_KEY), false, `${harness}: the run list`);
   }
 });
+
+test("a stop of a parked run withdraws the call: stopped, no pending approval, its row reads withdrawn, and a later answer is 409 and never runs it, across a restart; a cancel does the same and ends the run cancelled", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
+  const first = await serve(t, GATE);
+  const answer = await owner(first);
+  assert.equal((await first.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const stopRun = await fetching(first.api, "stop-parked", "pi");
+  const stopId = (await parked(first.api, stopRun)).view.pending.id;
+  const stop = await first.api("POST", `/runs/${stopRun}/stop`, {});
+  assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
+  const stopped = (await first.api("GET", `/runs/${stopRun}`)).body;
+  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped, as a stop leaves a run");
+  const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
+  assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
+  const late = await answer(stopRun, stopId, { decision: "allow" });
+  assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "withdrawn" }]);
+
+  const cancelRun = await fetching(first.api, "cancel-parked", "codex");
+  const cancelId = (await parked(first.api, cancelRun)).view.pending.id;
+  assert.equal((await first.api("POST", `/runs/${cancelRun}/cancel`)).status, 202);
+  await follow(first.api, cancelRun, ["cancelled"], { deadlineMs: 30_000 });
+  const cancelRow = (await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
+  assert.match(cancelRow.summary, /^Withdrawn/);
+  assert.deepEqual((await answer(cancelRun, cancelId, { decision: "deny" })).status, 409);
+
+  await first.close();
+  const again = await serve(t, { ...GATE, data: first.data, openSetup: false });
+  const answerAgain = await ownerAgain(again);
+  assert.equal((await answerAgain(stopRun, stopId, { decision: "allow" })).status, 409, "after a restart too");
+  assert.equal((await again.api("GET", `/runs/${stopRun}`)).body.pending, null);
+  await sleep(3_000);
+  assert.deepEqual(await dialled(), [], "neither call ever ran");
+});
