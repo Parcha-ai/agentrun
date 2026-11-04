@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPage, type ScheduleView } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
@@ -68,14 +68,16 @@ function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+// A one-time "at" is typed in the browser's own zone: the tests pin it.
+beforeEach(() => { vi.stubEnv("TZ", "UTC"); });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllEnvs(); });
 
-async function open(v2: ReturnType<typeof createClient>, view: ScheduleView) {
+async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, minEvery?: number) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const went: string[] = [];
   const agentName = (id: string) => (id === "triage" ? "Triage" : id);
-  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName })));
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -143,6 +145,25 @@ describe("a new schedule", () => {
     await t.set("maxCost", "0.5");
     await t.click(/^Create schedule$/);
     expect((calls.find((c) => c.method === "POST")!.body as { source: unknown }).source).toEqual({ kind: "schedule", every_s: 300 });
+  });
+  it("takes one time in the browser's own zone, says the instant it becomes, and asks no zone for it", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    const { v2, calls } = server();
+    const t = await open(v2, { schedule: null });
+    await t.choose("at");
+    expect(t.host.querySelector('[name="timezone"]')).toBeNull();
+    await t.set("at", "2026-11-05T01:30");
+    expect(t.text()).toContain("= Nov 5, 9:30 AM UTC");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect((calls.find((c) => c.method === "POST")!.body as { source: unknown }).source).toEqual({ kind: "schedule", at: "2026-11-05T09:30:00Z" });
+  });
+  it("says the shortest interval the server takes, from what it serves", async () => {
+    const t = await open(server().v2, { schedule: null }, 120);
+    await t.choose("every");
+    expect(t.text()).toContain("At least 2 minutes.");
   });
   it("says a missing cap under its field and sends nothing", async () => {
     const { v2, calls } = server();
@@ -223,6 +244,21 @@ describe("one schedule", () => {
 });
 
 describe("editing a schedule", () => {
+  // The server starts a schedule again from now whenever an edit names its source: an edit of the name alone must not.
+  it("saves a name alone with no source in the PATCH, so the schedule keeps its times", async () => {
+    const every: Trigger = { ...NIGHTLY, source: { kind: "schedule", every_s: 300, start_at: "2026-11-04T00:07:00Z" } };
+    const { v2, calls } = server({ triggers: [every] });
+    const t = await open(v2, { schedule: "trg_1", edit: true });
+    await t.set("name", "nightly");
+    expect(t.text()).not.toContain("Changing when restarts the schedule from now.");
+    await t.click(/^Save changes$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "nightly" }]);
+  });
+  it("says a changed when restarts the schedule from now", async () => {
+    const t = await open(server().v2, { schedule: "trg_1", edit: true });
+    await t.set("cron", "0 2 * * *");
+    expect(t.text()).toContain("Changing when restarts the schedule from now.");
+  });
   it("opens with its fields, and saves only what changed", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { schedule: "trg_1", edit: true });
