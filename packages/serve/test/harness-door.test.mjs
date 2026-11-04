@@ -239,3 +239,24 @@ test("a run reopened with a turn to recover and a message that waited for it is 
   await until(() => next.events.includes("run_end"), "the run ends");
   assert.deepEqual(next.events, ["run_start", "run_end"]);
 });
+
+test("an adapter written before settleOpenTurn: a stopped turn it holds open is recovered at the open, as before, and the open does not throw", async () => {
+  const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+  const held = heldAdapter();
+  const open = held.adapter.open;
+  let recovered = 0;
+  // A session from outside this repository: open_turn, with recover() and no settleOpenTurn().
+  held.adapter.open = async (...args) => {
+    const session = await open(...args);
+    return Object.assign(session, { state: "open_turn", async recover() { recovered += 1; held.turns.push(deferred()); }, turnEnd: () => held.turns.at(-1).promise });
+  };
+  // The run's stop record names the person's newest message (none on this root): the open turn is the stopped one.
+  const app = adapterRun(async () => held.adapter, "held", { key: "run:1", label: "a", system: [], context: "fresh" }, ctx, undefined, [], undefined, undefined, () => false, undefined, undefined, { stopped_after: 0 });
+  const events = [];
+  app.door.attach((e) => events.push(e.type));
+  const opening = await app.onOpen(runOf(harness)).then(() => "opened", (error) => `threw: ${error?.message ?? error}`);
+  assert.equal(opening, "opened");
+  await until(() => recovered === 1, "the open turn is recovered, as on an adapter with no settle");
+  held.turns[0].resolve({ status: "completed" });
+  await until(() => events.includes("run_end"), "the recovered turn ends");
+});
