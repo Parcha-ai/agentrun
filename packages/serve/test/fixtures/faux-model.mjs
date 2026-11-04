@@ -34,6 +34,11 @@ export default function reply(context, faux) {
     const canary = JSON.stringify(context);
     // A node whose provider echoed the key it was sent (timeline-key-words.test.mjs holds that value as a key).
     if (canary.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '401 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
+    // A node whose record carries the key in a string field (final-answer-redact.test.mjs holds CUT_KEY as a key).
+    if (canary.includes("Submit the held key")) {
+      if (answered) return faux.message("Submitted.");
+      return faux.message(faux.toolCall("submit", { note: `kept ${CUT_KEY} here`, n: 7 }), { stopReason: "toolUse" });
+    }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
     // A node that says which decision keys its process was handed on their descriptor: names only, never a value.
@@ -211,6 +216,10 @@ export default function reply(context, faux) {
   // The key echoed with a line break in its middle, as a provider that wraps long lines would.
   if (first.includes("Fail with a wrapped key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${CUT_KEY.slice(0, 18)}\n${CUT_KEY.slice(18)} is not valid"}` });
   if (first.includes("Fail echoing an encoded key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${Buffer.from(CUT_KEY).toString("base64")} is not valid"}` });
+  // An answer that quotes the held key, plainly and base64-encoded (final-answer-redact.test.mjs holds CUT_KEY as a key).
+  if (first.includes("Answer quoting the held key.")) return faux.message(`Here it is: ${CUT_KEY} and ${Buffer.from(CUT_KEY).toString("base64")}. The rest stays.`);
+  // A long answer (about 50 KB) that quotes the held key near its end.
+  if (first.includes("Answer at length quoting the held key.")) return faux.message(`${"word ".repeat(10_000)}near the end ${CUT_KEY} done.`);
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
   // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
