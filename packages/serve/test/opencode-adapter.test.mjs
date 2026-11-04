@@ -2,7 +2,7 @@
 // session's real proxy to a scripted provider and its tool calls through the adapter's real MCP server. No network, no
 // OpenCode binary.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -503,4 +503,76 @@ test("a drive whose MCP server cannot listen closes the model proxy it opened, a
   await s.session.close();
   assert.equal(ended.status, "failed");
   assert.deepEqual(servers.map((server) => server.listening), [false, false], "nothing the failed start opened is left listening");
+});
+
+test("an opencode turn whose stop lands while send() is still recording the prompt: the session reads open_turn after it, and the next message is sent alone", { timeout: 60_000 }, async () => {
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-abort-submit" });
+  // The session's writer, with the prompt's submission held at its append until the test lets it go.
+  const inner = await store.open(sp.key);
+  let held;
+  const reached = new Promise((resolve) => { held = resolve; });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+    if (records.some((r) => r.kind === "kernel.submission" && r.data?.text === "go")) { held(); await gate; }
+    return inner.append(records);
+  } };
+  const { adapter: a, provider: p } = adapter([{ text: "Now." }]);
+  const s = await session(a, store, sp, writer);
+  const sending = s.session.send("go");
+  await reached;
+  // The stop lands while the prompt is being recorded: no turn is running yet.
+  await s.session.interrupt();
+  release();
+  await sending;
+  assert.equal((await s.session.turnEnd()).status, "interrupted");
+  const stopped = await folded(store, sp.key);
+  const go = stopped.submissions.find((x) => x.text === "go");
+  assert.ok(go && !stopped.placed.has(go.id), "setup: the stopped prompt was recorded and never placed");
+  // As serve's stop does: a turn the session still holds open after the stop is settled.
+  const afterStop = s.session.state;
+  if (s.session.state === "open_turn") await s.session.settleOpenTurn();
+  await s.session.send("and now?");
+  assert.equal((await s.session.turnEnd()).status, "completed");
+  await s.session.close();
+  const ended = await folded(store, sp.key);
+  const placed = ended.submissions.filter((x) => ended.placed.has(x.id)).map((x) => x.text);
+  assert.deepEqual(
+    { afterStop, pending: pendingSubmissions(ended).map((x) => x.text), placed, modelSaw: userTexts(p) },
+    { afterStop: "open_turn", pending: [], placed: ["and now?"], modelSaw: ["and now?"] },
+    "a stop during the prompt's record leaves the turn open to settle, and the stopped prompt is never sent",
+  );
+});
+
+test("instructions past what one environment string may hold (128 KiB on Linux) reach OpenCode: its config is a file, not an environment variable", { timeout: 60_000 }, async () => {
+  const big = `Answer briefly.\n${"x".repeat(140 * 1024)}`;
+  const { adapter: a, provider: p } = adapter([{ text: "Done." }]);
+  const s = await session(a, memorySessionStore(), spec([], { system: [big] }));
+  await s.session.send("go");
+  const ended = await s.session.turnEnd();
+  await s.session.close();
+  assert.deepEqual(ended, { status: "completed" }, "the drive runs with the instructions whole");
+  assert.ok(JSON.stringify(p.seen[0]?.body.input ?? []).includes("x".repeat(1024)), "the model was given them");
+});
+
+test("OpenCode's process holds no session key in its environment: the config, with the model proxy's and the MCP server's keys, is a file only its user reads (0600)", { timeout: 60_000 }, async () => {
+  const started = Promise.withResolvers();
+  const go = Promise.withResolvers();
+  const wait = { name: "wait", description: "Waits.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: async () => { started.resolve(); await go.promise; return { text: "waited" }; } };
+  const { adapter: a, traced } = adapter([{ call: "hands_wait" }, { text: "Done." }]);
+  const s = await session(a, memorySessionStore(), spec([wait]));
+  await s.session.send("go");
+  await started.promise;
+  const pid = traced().find((line) => typeof line.pid === "number")?.pid;
+  const environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+  const named = (name) => environ.find((entry) => entry.startsWith(`${name}=`))?.slice(name.length + 1);
+  const file = named("OPENCODE_CONFIG");
+  // Read while the drive runs: its private directories go with it.
+  const mode = file ? statSync(file).mode & 0o777 : undefined;
+  go.resolve();
+  await s.session.turnEnd();
+  await s.session.close().catch(() => {});
+  assert.deepEqual({ content: named("OPENCODE_CONFIG_CONTENT") !== undefined, file: typeof file === "string" }, { content: false, file: true }, "the config is a file OPENCODE_CONFIG names, not the environment's");
+  assert.equal(mode, 0o600, "only OpenCode's user reads it");
 });

@@ -6,7 +6,8 @@
 //  - `GET /event` (server-sent events: server.connected, message.updated, message.part.updated, message.part.delta,
 //    session.status, session.idle, session.error), `POST /session`, `POST /session/:id/prompt_async`,
 //    `POST /session/:id/abort`, `GET /session/:id/message`, `POST /sync/history`, `POST /sync/replay`;
-//  - a prompt runs OpenCode's loop on the config it was given (OPENCODE_CONFIG_CONTENT): each step a Responses request to
+//  - a prompt runs OpenCode's loop on the config it was given (the file OPENCODE_CONFIG names, as the pinned build reads it,
+//    else OPENCODE_CONFIG_CONTENT): each step a Responses request to
 //    its one provider (the adapter's model proxy, with its key), each function call the answer makes an MCP `tools/call`
 //    to its one MCP server (the adapter's), until an answer makes none;
 //  - every change is a sync event of the session's (its aggregate), so /sync/history gives the log and /sync/replay
@@ -24,10 +25,10 @@
 // FAKE_OPENCODE_IGNORE_ABORT=1: `POST /session/:id/abort` answers 200 and the turn goes on: OpenCode does not end it.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const password = process.env.OPENCODE_SERVER_PASSWORD ?? "";
-const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}");
+const config = JSON.parse(process.env.OPENCODE_CONFIG ? readFileSync(process.env.OPENCODE_CONFIG, "utf8") : (process.env.OPENCODE_CONFIG_CONTENT ?? "{}"));
 const provider = config.provider?.openai?.options ?? {};
 const mcpEntry = config.mcp?.hands ?? {};
 const agentName = config.default_agent ?? "hands";

@@ -39,7 +39,7 @@ async function until(what, check, ms = 60_000) {
   for (const end = Date.now() + ms; !(await check()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, what);
 }
 
-for (const harness of ["claude-agent", "codex"]) {
+for (const harness of ["claude-agent", "codex", "opencode"]) {
   test(`${harness}: a turn stopped mid-request stays stopped when its process is replaced; the follow-up is answered by its own turn, and nothing of the stopped turn shows before it`, { timeout: 180_000 }, async (t) => {
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
     const go = join(await scratch(t), "go");
@@ -67,7 +67,7 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-for (const harness of ["claude-agent", "codex"]) {
+for (const harness of ["claude-agent", "codex", "opencode"]) {
   test(`${harness}: a turn stopped mid-request whose process died before the turn's end was written: the next process writes that end, interrupted, before the follow-up, which is a turn of its own`, { timeout: 180_000 }, async (t) => {
     const dir = await scratch(t);
     const [arm, held, go] = [join(dir, "arm"), join(dir, "held"), join(dir, "go")];
