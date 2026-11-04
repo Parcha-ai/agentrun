@@ -1548,7 +1548,21 @@ usage is never read: it is not what the provider billed (the Responses API repor
 output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
 went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
 response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
-request cut by a crash (its process gone mid-request).
+request cut by a crash (its process gone mid-request). A request stopped before the provider's first header counts its
+input and the 1,024 tokens, on every harness.
+
+Reasoning the provider never streams counts too. A model whose reasoning streams only as a summary (the Responses API's
+reasoning; Claude 4-class thinking, and redacted thinking) or not at all is billed for far more than the summary's
+bytes, so a stopped request that reasons also counts the part of its reasoning budget that did not stream: input +
+streamed + 1,024 + max(0, reasoning budget - reasoning streamed), never more than the hold. Reasoning streamed is its
+thinking's bytes on pi; on `claude-agent` and `codex`, where the proxy cannot tell reasoning from the rest, the bytes
+the response sent. The budget is its effort's or thinking level's (minimal 1,024, low 2,048, medium 8,192, high 16,384;
+on Anthropic's API, the `budget_tokens` it was sent with). With no effort or level given, on an API whose model then
+reasons at its own default (OpenAI's), it counts its whole output limit, the conservative side; with thinking off on
+Anthropic's API, none. On `claude-agent`, every request that thinks counts its budget, since Claude 4-class models
+stream only a summary of their thinking; thinking that streamed is subtracted, so a stop after a budget's worth of
+visible thinking counts nothing on top. The figure is an estimate: an effort's budget is not a limit the provider keeps,
+so a request can reason past it. It is bounded by the request's hold, and its real usage replaces it when that comes.
 
 On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
 of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the

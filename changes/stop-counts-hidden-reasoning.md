@@ -1,0 +1,10 @@
+---
+packages: @parcha/agentrun-kernel, @parcha/agentrun-serve, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex
+kind: fix
+---
+A request you stop under a cap counts the reasoning it never streamed. A model whose reasoning streams only as a summary (the Responses API's reasoning, Claude 4-class thinking) is billed for far more than the summary's bytes. A stop after about 10,000 hidden reasoning tokens on a gpt-5-class model with a 20 KB context cost about $0.106 and counted $0.038, so deliberate stops could pass a cap. A stopped request that reasons now also counts the part of its reasoning budget that did not stream: input + streamed + 1,024 + max(0, reasoning budget - reasoning streamed), never more than its hold. Real usage still replaces the figure when it comes.
+- **On pi:** a reasoning model's stopped request counts its thinking level's budget (on Anthropic's API, the budget it was sent with). With no level, on an API whose model reasons at its own default, it counts its whole output limit. With thinking off on Anthropic's API, nothing more.
+- **On `codex`:** the effort's budget (minimal 1,024, low 2,048, medium 8,192, high 16,384), none at effort `none`, and the output limit when the body names no effort.
+- **On `claude-agent`:** the thinking budget, or `max_tokens` when thinking is adaptive, for every request that thinks; none with thinking off. Thinking that streamed is subtracted, so a stop after a budget's worth of visible thinking counts nothing on top.
+- **Kernel:** a provider policy may read a request's hidden reasoning from its body (`reasoningHidden`). The model proxy books a stopped response's with it (`stoppedHiddenTokens`), and the runner counts the part of it the response's bytes did not cover.
+- **A stop before the provider's first header** on `claude-agent` and `codex` now counts as a stop with nothing streamed (its input and 1,024 tokens, as on pi), not its whole hold. A response the provider answered with an error status still counts at its hold.

@@ -412,6 +412,18 @@ export function responsesOutputLeast(body: Record<string, unknown>): number {
   return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
 }
 
+/** The reasoning tokens a Responses request may bill that its stream never shows (only a summary of its reasoning
+ *  streams): its effort's budget; none at effort `none`; and with no effort the body says (the model then reasons at its
+ *  own default, or not at all), its output limit, `fallback` when the body names none: the conservative side. An
+ *  estimate, as the efforts' budgets are not limits the provider keeps: a stopped request counts the part of it that
+ *  did not stream (the host subtracts what the response sent), never past its hold. */
+export function responsesReasoningHidden(body: Record<string, unknown>, fallback: number): number {
+  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  if (effort === "none") return 0;
+  const budget = effort === undefined ? undefined : REASONING_TOKENS_ALLOWED[effort];
+  return budget ?? responsesOutputAsked(body) ?? fallback;
+}
+
 /** A Responses body with its output limited to `max` tokens, reasoning included: never raised, and never longer. */
 export function limitResponsesOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
   const asked = responsesOutputAsked(body);
@@ -470,6 +482,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured.
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
+    reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     limitOutput: limitResponsesOutput,
     serverInputOverhead: search ? (body) => {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;

@@ -206,6 +206,18 @@ export function anthropicOutputLeast(body: Record<string, unknown>): number {
   return isPlain(body.thinking) && body.thinking.type === "enabled" ? ANSWER_TOKENS_LEAST + THINKING_BUDGET_LEAST : ANSWER_TOKENS_LEAST;
 }
 
+/** The thinking tokens a Messages request may bill that its stream never shows: Claude 4-class models stream only a
+ *  summary of their thinking (and a redacted block shows none of it), so a request that thinks counts its thinking
+ *  budget, or its `max_tokens` when its thinking is adaptive (no budget); one with thinking off, none. A stopped request
+ *  counts the part of it that did not stream (the host subtracts what the response sent), never past its hold. */
+export function anthropicReasoningHidden(body: Record<string, unknown>): number {
+  const thinking = body.thinking;
+  if (!isPlain(thinking)) return 0;
+  if (thinking.type === "enabled") return typeof thinking.budget_tokens === "number" && Number.isFinite(thinking.budget_tokens) && thinking.budget_tokens > 0 ? thinking.budget_tokens : anthropicOutputAsked(body) ?? 0;
+  if (thinking.type === "adaptive") return anthropicOutputAsked(body) ?? 0;
+  return 0;
+}
+
 /** A Messages body with its output limited to `max` tokens, thinking included: `max_tokens` at most `max`, never raised,
  *  and a thinking budget squeezed under it so that 1,024 tokens stay for the answer, never below the provider's least
  *  budget. Only numbers get smaller, so the body is never longer. */
@@ -361,6 +373,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
     outputAsked: anthropicOutputAsked,
     outputLeast: anthropicOutputLeast,
+    reasoningHidden: anthropicReasoningHidden,
     limitOutput: limitAnthropicOutput,
     usageOf: anthropicUsage,
   };
