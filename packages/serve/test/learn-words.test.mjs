@@ -30,6 +30,11 @@ test("the words: notes counted as a person counts them, what was learned by name
   assert.equal(said.checker([{ rule: "too_large" }, { rule: "secret_value" }, { rule: "too_large" }]), "Not kept: it held something that must not be stored (one of this server's secrets).");
   assert.equal(said.checker([{ rule: "too_large" }, { rule: "exists" }]), "Not kept: it didn't pass the checks on notes (a note over 4 KB; a note under a name already taken).");
   assert.equal(said.stale([{ rule: "exists" }]), "Not kept: the agent's notes changed while this run ran (a note under a name already taken).");
+  // A note the run's notes would replace that is gone, or that a person changed after the grade read it: both the rule
+  // `supersedes`, said in one sentence true of both.
+  const REPLACED = "Not kept: a note it would replace is gone or was changed since.";
+  assert.equal(said.stale([{ rule: "supersedes", path: "refunds-v2.md", detail: "refunds.md changed after the grade read it" }]), REPLACED);
+  assert.equal(said.stale([{ rule: "supersedes" }]), REPLACED);
   assert.equal(said.checker([{ rule: "a_rule_added_later" }]), "Not kept: it didn't pass the checks on notes (a_rule_added_later).");
   const all = [
     said.seeded(0), said.seeded(2), said.reflecting, said.proposed(2), said.merged([{ name: "A", supersedes: ["b.md"] }]), said.empty, said.grader("Too narrow."),

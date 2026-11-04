@@ -99,6 +99,7 @@ test("a note a person corrects while a grade that supersedes it is under way is 
   held.release();
   const { view, rows } = await ended(held.api, held.runId);
   settled(view, rows, "dropped", "checker");
+  assert.equal(view.learning.detail, "Not kept: a note it would replace is gone or was changed since.", "said as a person reads it");
   const problems = [{ rule: "supersedes", path: "refunds-v2.md", detail: "refunds.md changed after the grade read it" }];
   assert.deepEqual((await savedOf(held.data, held.runId)).learning.problems, problems);
   assert.deepEqual((await held.api("GET", `/runs/${held.runId}/learning`)).body.problems, problems);
