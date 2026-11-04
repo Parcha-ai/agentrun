@@ -519,13 +519,13 @@ export function adapterRun(
       const stopped = stopRecord?.stopped_at !== undefined
         ? lastUser !== undefined && lastUser <= placeOf(stopRecord.stopped_at)
         : stopRecord?.stopped_after !== undefined && stopRecord.stopped_after === users;
-      const settled = session.state === "open_turn" && stopped;
-      if (settled) await session.settleOpenTurn();
+      if (session.state === "open_turn" && stopped) await session.settleOpenTurn();
       // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
       // what this open wrote and before any new turn, so the message the turn took reads answered (runs.ts noteAnswer).
-      // A turn settled here was stopped: interrupted. Otherwise the session says only that the turn is over: completed, or
-      // failed when the bridge wrote its error.
-      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (settled ? "interrupted" : unended.failed ? "failed" : "completed") : undefined;
+      // A turn the person stopped reads interrupted, from the stop record: settled by this open, or by an earlier one that
+      // died before it wrote this end. Otherwise the session says only that the turn is over: completed, or failed when the
+      // bridge wrote its error.
+      const restored: TurnStatus | undefined = session.state === "idle" && unended ? (stopped ? "interrupted" : unended.failed ? "failed" : "completed") : undefined;
       const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status } }))));
       queue.push(...accepted.values());
       // With nothing waiting, that end is the run's: written while the door is idle. A message accepted and never sent
