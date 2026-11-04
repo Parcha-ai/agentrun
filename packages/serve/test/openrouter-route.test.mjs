@@ -82,16 +82,29 @@ test("or-3: the harness's own settings win over OpenRouter, as on a host without
   assert.throws(() => adapters.codexProvider({}, openai), refused(/OPENAI_API_KEY.*OPENROUTER_API_KEY/));
 });
 
-test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's catalog entry (cache reads at $0.10 per million), direct by Anthropic's ($0.20)", async () => {
+test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's catalog entry for the model, direct by Anthropic's, whichever pi-ai catalog is installed", async () => {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const real = await import("@parcha/agentrun-harness-claude");
+  const catalog = builtinModels();
+  // Every kind of token, each a different count, so a price names one entry's whole cost.
+  const usage = { input: 1_000_000, output: 2_000_000, cacheRead: 3_000_000, cacheWrite: 4_000_000 };
   const priceOn = async (env, model) => {
     let price;
-    await adapters.claudeOf(env, { model, models: builtinModels() }, async () => ({ ...real, claudeAgentAdapter: (options) => ((price = options.price), { id: "claude-agent" }) }));
-    return price("any", { input: 0, output: 0, cacheRead: 1_000_000 });
+    await adapters.claudeOf(env, { model, models: catalog }, async () => ({ ...real, claudeAgentAdapter: (options) => ((price = options.price), { id: "claude-agent" }) }));
+    return price("any", usage);
   };
-  assert.equal(await priceOn(ONLY, { provider: "anthropic", modelId: "claude-sonnet-5.5" }), 0.1);
-  assert.equal(await priceOn({ ANTHROPIC_API_KEY: OWN }, { provider: "anthropic", modelId: "claude-sonnet-5-5" }), 0.2);
+  const atEntry = (provider, id) => {
+    const cost = catalog.getModel(provider, id)?.cost;
+    assert.ok(cost, `the installed catalog lists ${provider}/${id}`);
+    return (usage.input * cost.input + usage.output * cost.output + usage.cacheRead * (cost.cacheRead ?? 0) + usage.cacheWrite * (cost.cacheWrite ?? 0)) / 1e6;
+  };
+  const [viaOpenRouter, direct] = [atEntry("openrouter", "anthropic/claude-sonnet-5.5"), atEntry("anthropic", "claude-sonnet-5-5")];
+  assert.equal(await priceOn(ONLY, { provider: "anthropic", modelId: "claude-sonnet-5.5" }), viaOpenRouter, "OpenRouter's entry: OpenRouter bills it");
+  assert.equal(await priceOn({ ANTHROPIC_API_KEY: OWN }, { provider: "anthropic", modelId: "claude-sonnet-5-5" }), direct, "Anthropic's entry");
+  // The catalog this was written on (pi-ai's newest) lists cache reads at $0.10 through OpenRouter and $0.20 direct; the
+  // consumer legs' older pi-ai (1.2, 1.3) lists both at $0.10, and the routes then cost the same.
+  const cacheRead = (provider, id) => catalog.getModel(provider, id).cost.cacheRead;
+  if (cacheRead("openrouter", "anthropic/claude-sonnet-5.5") === 0.1 && cacheRead("anthropic", "claude-sonnet-5-5") === 0.2) assert.notEqual(viaOpenRouter, direct);
 });
 
 test("or-8: no model here names OpenRouter's key first, and claude-agent's names it too; a direct provider's key still wins the default", async () => {
