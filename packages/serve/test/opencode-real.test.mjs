@@ -111,7 +111,7 @@ test("on the pinned OpenCode, a host tool's result as long as the host's bound r
   assert.equal(seen.length, 2);
   const output = seen[1].input.find((item) => item.type === "function_call_output" && item.call_id === "call_long")?.output;
   assert.equal(typeof output, "string");
-  assert.ok(!output.includes("output truncated"), `cut: ${output.slice(-200)}`);
+  assert.doesNotMatch(output, /the output was truncated\. Full output saved to/, `cut: ${output.slice(-200)}`);
   assert.equal(output, text, "the model reads the whole result");
 });
 
