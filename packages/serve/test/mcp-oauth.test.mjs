@@ -5,7 +5,8 @@
 // launch calls; one whose refresh is refused reads `expired`. The servers are fakes on loopback
 // (fixtures/fake-oauth-server.mjs, fixtures/fake-mcp-server.mjs).
 import assert from "node:assert/strict";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import dns from "node:dns/promises";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -33,10 +34,10 @@ async function fakes(t, options) {
 /** What the owner's browser does with a start's answer: keep the cookie it set, open the authorization URL (the fake
  *  approves at once) and follow the authorization server's redirect to this server's callback, with that cookie and no
  *  token. Answers the callback's response. */
-async function approve(started, { cookie = true } = {}) {
+async function approve(started, { cookie = true, jar } = {}) {
   const asked = await fetch(started.body.authorization_url, { redirect: "manual" });
   assert.equal(asked.status, 302, await asked.text());
-  const kept = started.headers.get("set-cookie")?.split(";")[0];
+  const kept = jar ?? started.headers.get("set-cookie")?.split(";")[0];
   return fetch(asked.headers.get("location"), { redirect: "manual", headers: cookie && kept ? { cookie: kept } : {} });
 }
 
@@ -65,7 +66,7 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   assert.equal(unbound.status, 403, "a callback from a browser that did not start the sign-in is refused");
   assert.match((await unbound.json()).error.message, /started in another browser/);
   assert.ok(!as.log.some((entry) => entry.path === "/token"), "and nothing was exchanged");
-  assert.match(started.headers.get("set-cookie"), /^agentrun-oauth-\d+=[^;]+; HttpOnly; SameSite=Lax; Path=\/v2\/settings\/mcp-servers\/oauth\/callback; Max-Age=600/);
+  assert.match(started.headers.get("set-cookie"), /^agentrun-oauth-\d+-[0-9a-f]{16}=[^;]+; HttpOnly; SameSite=Lax; Path=\/v2\/settings\/mcp-servers\/oauth\/callback; Max-Age=600/);
   const back = await approve(started);
   assert.equal(back.status, 302, await back.clone().text());
   assert.equal(back.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
@@ -98,7 +99,7 @@ test("an OAuth server: preview says to sign in; start, approve and callback keep
   // The state is single-use: the same callback again is refused, and an unknown one too.
   const again = await fetch(back.url, { redirect: "manual", headers: { cookie: started.headers.get("set-cookie").split(";")[0] } });
   assert.equal(again.status, 400, "the state is used once");
-  assert.equal((await fetch(`${base}${CALLBACK}?code=x&state=never-given`, { redirect: "manual", headers: { cookie: `agentrun-oauth-${new URL(base).port}=never-given` } })).status, 400);
+  assert.equal((await fetch(`${base}${CALLBACK}?code=x&state=never-given`, { redirect: "manual", headers: { cookie: `agentrun-oauth-${new URL(base).port}-${createHash("sha256").update("never-given").digest("hex").slice(0, 16)}=never-given` } })).status, 400);
 });
 
 test("a sign-in's state expires: a callback after ten minutes is refused", async (t) => {
@@ -345,6 +346,16 @@ function publicFakes(t, metadata) {
   return log;
 }
 
+/** `DIR/mcp-servers.json` holding one OAuth server `pub` at the public made-up name, signed in a minute before its
+ *  access token expires, whose token endpoint is `tokenEndpoint`: as a sign-in saved it, sealed under `key`. */
+function savedPublic(data, key, tokenEndpoint) {
+  const set = { tokens: { access_token: "not-a-secret", refresh_token: "not-a-secret", token_type: "Bearer" }, obtained_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(), client: { client_id: "public-client" }, kind: "dynamic", discovery: { authorizationServerUrl: "https://as.example.test", authorizationServerMetadata: { issuer: "https://as.example.test", authorization_endpoint: "https://as.example.test/authorize", token_endpoint: tokenEndpoint, response_types_supported: ["code"] } }, resource: "https://mcp.example.test/mcp" };
+  const sealKeyBytes = Buffer.from(key, "base64");
+  const check = createHmac("sha256", sealKeyBytes).update("agentrun-serve mcp-servers/1 key check").digest("base64url");
+  const now = new Date().toISOString();
+  writeFileSync(join(data, "mcp-servers.json"), JSON.stringify({ format: "mcp-servers/1", servers: { pub: { url: "https://mcp.example.test/mcp", auth: { type: "oauth", sealed: { oauth: seal(sealKeyBytes, Buffer.from(JSON.stringify(set)), "mcp:pub:oauth").toString("base64") }, check, oauth: { scopes: [], client: "dynamic" } }, protocol: "2026-07-28", server_info: null, tools: [], listed_at: now, updated_at: now } } }));
+}
+
 /** A loopback service an authorization server might steer this server to: it counts what reaches it. */
 async function target(t) {
   const hits = [];
@@ -378,13 +389,58 @@ test("a public MCP server's authorization server may not steer this server to a 
 
   // A token set that names a private token endpoint (as one saved before this rule would): its refresh sends nothing.
   publicFakes(t, {});
-  const set = { tokens: { access_token: "not-a-token", refresh_token: "not-a-refresh-token", token_type: "Bearer" }, obtained_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(), client: { client_id: "public-client" }, kind: "dynamic", discovery: { authorizationServerUrl: "https://as.example.test", authorizationServerMetadata: { issuer: "https://as.example.test", authorization_endpoint: "https://as.example.test/authorize", token_endpoint: inside.url, response_types_supported: ["code"] } }, resource: "https://mcp.example.test/mcp" };
-  const sealKeyBytes = Buffer.from(key, "base64");
-  const check = createHmac("sha256", sealKeyBytes).update("agentrun-serve mcp-servers/1 key check").digest("base64url");
-  const now = new Date().toISOString();
-  writeFileSync(join(data, "mcp-servers.json"), JSON.stringify({ format: "mcp-servers/1", servers: { pub: { url: "https://mcp.example.test/mcp", auth: { type: "oauth", sealed: { oauth: seal(sealKeyBytes, Buffer.from(JSON.stringify(set)), "mcp:pub:oauth").toString("base64") }, check, oauth: { scopes: [], client: "dynamic" } }, protocol: "2026-07-28", server_info: null, tools: [], listed_at: now, updated_at: now } } }));
+  savedPublic(data, key, inside.url);
   const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
   assert.equal(store.get("pub").credential, "sealed", "the token set opens, so its refresh is tried");
   await store.headersForRun("pub");
   assert.deepEqual(inside.hits, [], "the refresh did not reach the private target");
+});
+
+test("two tabs signing in at once each keep their own cookie, and both finish; a finished sign-in clears its cookie", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const { mcp } = await fakes(t);
+  const one = await api("POST", "/settings/mcp-servers/one/oauth/start", { url: mcp.url });
+  const two = await api("POST", "/settings/mcp-servers/two/oauth/start", { url: mcp.url });
+  const cookies = [one, two].map((started) => started.headers.get("set-cookie").split(";")[0]);
+  assert.notEqual(cookies[0].split("=")[0], cookies[1].split("=")[0], "one cookie per sign-in");
+  const jar = cookies.join("; ");
+  const first = await approve(one, { jar });
+  assert.equal(first.headers.get("location"), "/#/settings/mcp?server=one&sign_in=ok");
+  assert.match(first.headers.get("set-cookie") ?? "", new RegExp(`^${cookies[0].split("=")[0]}=; .*Max-Age=0`), "its cookie is cleared");
+  assert.equal((await approve(two, { jar })).headers.get("location"), "/#/settings/mcp?server=two&sign_in=ok");
+  for (const name of ["one", "two"]) assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).body.credential, "sealed");
+});
+
+test("a sign-in starts on the address the authorization server sends the browser back to: from localhost it answers where to open the console", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api, url: base, token } = await serve(t);
+  const { mcp } = await fakes(t);
+  const port = new URL(base).port;
+  const viaLocalhost = await fetch(`http://localhost:${port}/v2/settings/mcp-servers/docs/oauth/start`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ url: mcp.url }) });
+  assert.equal(viaLocalhost.status, 409);
+  const said = (await viaLocalhost.json()).error;
+  assert.equal(said.code, "wrong_origin");
+  assert.equal(said.details.open, `${base}/#/settings/mcp`);
+  assert.match(said.message, new RegExp(`open the console at ${base.replace(/[.]/g, "[.]")}`));
+  assert.equal(viaLocalhost.headers.get("set-cookie"), null, "no cookie for an address the callback never reaches");
+  const viaLoopback = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(viaLoopback.status, 200, JSON.stringify(viaLoopback.body));
+  assert.equal(new URL(viaLoopback.body.authorization_url).searchParams.get("redirect_uri"), `${base}${CALLBACK}`, "the redirect URI stays the one address, for a registered client too");
+});
+
+test("a resolver that never answers holds no refresh past the server's stop", async (t) => {
+  const key = sealKey();
+  const data = await scratch(t);
+  savedPublic(data, key, "https://as.example.test/token");
+  t.mock.method(dns, "lookup", () => new Promise(() => {}));
+  const store = new McpServers(data, { AGENTRUN_SEAL_KEY: key }, "test");
+  const before = readFileSync(join(data, "mcp-servers.json"), "utf8");
+  const launch = store.headersForRun("pub");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const at = Date.now();
+  await store.close(5_000);
+  await launch;
+  assert.ok(Date.now() - at < 1_000, `the stop waited ${Date.now() - at} ms on a stalled resolver`);
+  assert.equal(readFileSync(join(data, "mcp-servers.json"), "utf8"), before, "nothing written");
 });
