@@ -44,11 +44,12 @@ test("GET /v2/openapi.json without a credential: the contract it vendors, named 
 });
 
 test("approving a note is the owner's password session alone, from the console with a JSON body: the operation names a cookie scheme and no token, and declares its empty JSON body, so a client generated from the document sends what the route takes", async (t) => {
-  const { doc } = await served(t);
+  const { baseUrl, doc } = await served(t);
   const op = doc.paths["/agents/{agent_id}/learning/files/{file}/approve"].post;
   assert.deepEqual(op.security, [{ ownerSession: [] }], "never the document's bearer: the route answers 403 to every token");
   const scheme = doc.components.securitySchemes.ownerSession;
   assert.deepEqual([scheme.type, scheme.in], ["apiKey", "cookie"]);
+  assert.equal(scheme.name, `agentrun-${new URL(baseUrl).port}`, "the cookie the console sets on this server: agentrun-<its port>");
   assert.match(scheme.description, /password/);
   assert.equal(op.requestBody?.required, true);
   assert.deepEqual(op.requestBody.content["application/json"].schema, { type: "object", additionalProperties: false, maxProperties: 0 });

@@ -1151,8 +1151,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // The console's password session, the one credential approving a note takes (approveLearningFile).
   ((doc.components as Json).securitySchemes as Record<string, Json>).ownerSession = {
-    type: "apiKey", in: "cookie", name: "agentrun-PORT",
-    description: "The owner's console session: the cookie `agentrun-<port>` (this server's port) the console sets when the owner signs in with their password (accounts on). Sent from this server's own origin; a token never stands for it.",
+    type: "apiKey", in: "cookie", name: "agentrun-<port>",
+    description: "The owner's console session: the cookie `agentrun-<port>`, this server's port (the document as served names it), that the console sets when the owner signs in with their password (accounts on). Sent from this server's own origin; a token never stands for it.",
     "x-agentrun-serve": "learning/2",
   };
   const schemas = (doc.components as Json).schemas as Record<string, Json>;
@@ -1281,4 +1281,13 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // that server, not the first of the contract's.
   doc.servers = [{ url: "/v2", description: "This server." }];
   return doc;
+}
+
+/** The document as served on `port`: the owner's session cookie named as the console sets it on that port
+ *  (page.ts: `agentrun-<port>`). Without a port, the document as built. */
+export function servedOpenapi(doc: Json, port: number | undefined): Json {
+  if (port === undefined) return doc;
+  const components = doc.components as Json;
+  const schemes = components.securitySchemes as Record<string, Json>;
+  return { ...doc, components: { ...components, securitySchemes: { ...schemes, ownerSession: { ...schemes.ownerSession, name: `agentrun-${port}` } } } };
 }
