@@ -45,18 +45,21 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   const [adding, setAdding] = useState(false);
   const asked = useRef(0);
   const reading = useRef(false);
-  const read = () => {
+  // Reads the tab again. The answer settles once the list is read, or once that read failed (it never rejects), so an
+  // approve or a retire that landed stays busy until then, and is never left busy after it.
+  const read = (): Promise<void> => {
     const n = ++asked.current;
     reading.current = false;
     setError(null);
-    v2.agentLearning(agent.agent_id).then((r) => {
+    const learning = v2.agentLearning(agent.agent_id).then((r) => {
       if (n !== asked.current) return;
       setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
     }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
     v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); setAllRuns(!r.next_cursor); } }, () => {});
+    return learning;
   };
-  useEffect(read, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
   // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
   // it, so old and new versions never mix and the cursor is always the current read's.
   const more = () => {
@@ -345,7 +348,7 @@ type From = { run?: { id: string; at: string; reason: string }; edited?: string 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
  *  `usedOf`: how many runs `usedIn` counts over, when they are the agent's latest only (more runs than were read). */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, usedOf, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; usedOf?: number; onChanged: () => void; approves?: Approval }) {
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, usedOf, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; usedOf?: number; onChanged: () => void | Promise<void>; approves?: Approval }) {
   const [editing, setEditing] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
@@ -363,11 +366,14 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
       if (seen.kind === "changed") { setSaid(words(`${CHANGED} Reload the tab to see the newest version.`)); setApproving(false); return; }
       if (seen.kind === "unknown") { setSaid(words(NO_VERSION)); setApproving(false); return; }
       await v2.approveNote(agentId, note.file, seen.etag);
-      onChanged();
     } catch (e) {
       setApproving(false);
       setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, "the note", "The note was not approved.")} className="" />);
+      return;
     }
+    // It landed: Approving until the list is read again, however that read ends.
+    await onChanged();
+    setApproving(false);
   };
   useEffect(() => {
     if (!focused) return;
@@ -418,7 +424,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
         if (seen.kind === "unknown") return NO_VERSION;
         await v2.retireNote(agentId, note.file, seen.etag);
         return null;
-      }} onDone={(ok) => { setRetiring(false); if (ok) onChanged(); }} />}
+      }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
 }
@@ -428,7 +434,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
  *  Retire (after the notes' confirm) are made on the file that says whether it is in use, a skill's SKILL.md or a
  *  workflow's README, at the version listed, or an open skill's shown. A run changes it; a person approves or retires
  *  it, never edits it. */
-function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void }) {
+function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | null>(null);
   // The version of the text shown: a skill is approved on it, never on a newer one the list holds (its etag).
@@ -462,11 +468,14 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
     setApproving(true); setSaid(null);
     try {
       await v2.approveNote(agentId, statusFile(item), version);
-      onChanged();
     } catch (e) {
       setApproving(false);
       setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? <p className="text-[12px] text-destructive-text" role="alert">{`${CHANGED} Reload the tab to see the newest version.`}</p> : <ProblemCard problem={failed(e, `the ${kind}`, `The ${kind} was not approved.`)} className="" />);
+      return;
     }
+    // It landed: Approving until the list is read again, however that read ends.
+    await onChanged();
+    setApproving(false);
   };
   const label = `the ${kind} ${item.name}`;
   return (
@@ -499,7 +508,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         </span>}
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
-      {retiring && <RetireConfirm name={item.name} kind={kind} retire={async () => { await v2.retireNote(agentId, statusFile(item), version); return null; }} onDone={(ok) => { setRetiring(false); if (ok) onChanged(); }} />}
+      {retiring && <RetireConfirm name={item.name} kind={kind} retire={async () => { await v2.retireNote(agentId, statusFile(item), version); return null; }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
 }
@@ -531,7 +540,7 @@ const RETIRES: Record<"note" | "skill" | "workflow", string> = {
  *  and Esc or Keep keeps it. `retire` makes it on the version the card showed, and answers why it did not, or null: a
  *  note changed since is never retired unseen (seenVersion), it says so instead, and one the server names no version of
  *  is not retired either. A 412, made on a version changed since, says so in the same words. */
-function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "note" | "skill" | "workflow"; retire: () => Promise<string | null>; onDone: (retired: boolean) => void }) {
+function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "note" | "skill" | "workflow"; retire: () => Promise<string | null>; onDone: (retired: boolean) => void | Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -542,19 +551,21 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
     try {
       const not = await retire();
       if (not !== null) { setBusy(false); setSaid(words(not)); return; }
-      onDone(true);
     } catch (e) {
       setBusy(false);
       setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, `the ${kind}`, `The ${kind} was not retired.`)} className="" />);
+      return;
     }
+    // It landed: Retiring until the card's owner has read the list again (and closed this), however that read ends.
+    await onDone(true);
   };
   return (
-    <div role="alertdialog" aria-label={`Retire ${name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(false); } }}
+    <div role="alertdialog" aria-label={`Retire ${name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); void onDone(false); } }}
       className="flex flex-wrap items-center gap-3 border-t border-destructive/40 bg-destructive/5 px-5 py-3">
       <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Retire it?</span> {RETIRES[kind]}</p>
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Yes, retire"}</Button>
-      <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Keep</Button>
+      <Button size="sm" variant="ghost" onClick={() => void onDone(false)} disabled={busy}>Keep</Button>
     </div>
   );
 }
