@@ -708,6 +708,9 @@ export class Runs {
    *  when it stopped, waits or parked. A workflow run ends when its workflow does. */
   private decide(run: Run): { outcome: Status; error?: RunError; abort?: boolean } | undefined {
     if (run.kind === "workflow") return undefined;
+    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote, a cost over the cap too): nothing
+    // ends it otherwise meanwhile, so its first terminal status is its last. The cancel has aborted the turn already.
+    if (run.cancel) return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
@@ -715,8 +718,6 @@ export class Runs {
     // A message accepted and not sent yet waits for its turn: a server started after it counts none submitted, and a turn's
     // end before it is no end of the run (harness-app.ts writes a turn's end, then sends the next message).
     if (run.waiting?.size) return undefined;
-    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote): nothing completes it meanwhile.
-    if (run.cancel) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
