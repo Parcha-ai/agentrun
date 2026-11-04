@@ -1,7 +1,8 @@
 // What an end-of-run turn adds is checked before anything is written to git, and merged as one host commit on main: new
 // notes added, the ones they supersede marked, MEMORY.md rebuilt by the host. A run edits nothing that was there, its
-// MEMORY.md is ignored, and a name another run took since is refused at the merge. A link in the run's copy is never
-// followed, and a secret the launcher holds never reaches a git object.
+// MEMORY.md is ignored, and a name another run took since is refused at the merge, as is a supersede of a note a person
+// changed after the grade read it. A link in the run's copy is never followed, and a secret the launcher holds never
+// reaches a git object.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -38,6 +39,35 @@ async function plans(api, id, plan, extra = {}) {
   assert.equal(res.status, 200, JSON.stringify(res.body));
 }
 
+/** A note that supersedes refunds.md, and refunds.md as that merge marks it. */
+const MOVED = note("Refunds path", "Refunds live under /policies/refunds", "Moved in the redesign.\n", "supersedes: [refunds.md]\n");
+const MARKED = note("Refunds path", "Refunds live under /help/", "Refunds live under /help/.\n", "status: superseded\nsuperseded_by: refunds-v2.md\n");
+
+/** Agent `id` seeded, and its run that supersedes refunds.md (MOVED) started, its grade under way: main read and the
+ *  grader asked, which answers only once `release` is called. */
+async function heldGrade(t, id) {
+  const dir = await scratch(t);
+  const calls = join(dir, "calls.jsonl");
+  const gate = join(dir, "grade");
+  withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  const server = await seeded(t, id, SEED);
+  await plans(server.api, id, [["refunds-v2.md", MOVED]], { instructions: `Answer the question.\nGrade once ${gate} exists.` });
+  const runId = await started(server.api, id);
+  for (let i = 0; !(existsSync(calls) && readFileSync(calls, "utf8").includes('"grade"')); i++) {
+    assert.ok(i < 1800, "the grader is asked");
+    await sleep(50);
+  }
+  return { ...server, runId, release: () => writeFileSync(gate, "") };
+}
+
+/** A person's edit of agent `id`'s note `file` to `text`, through the learning route, with the ETag read just before. */
+async function personEdits({ api, baseUrl, token }, id, file, text) {
+  const path = `/agents/${id}/learning/files/${file}`;
+  const etag = (await api("GET", path)).headers.get("etag");
+  const res = await fetch(`${baseUrl}${path}`, { method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "text/markdown", "if-match": etag }, body: text });
+  assert.equal(res.status, 200, await res.text());
+}
+
 test("a note that supersedes one: the old note is marked superseded by the new one, and the index lists the new one alone", { timeout: 120_000 }, async (t) => {
   const { api, data, repo } = await seeded(t, "replacer", SEED);
   const NEW = note("Refunds path", "Refunds live under /policies/refunds", "Moved in the redesign.\n", "supersedes: [refunds.md]\n");
@@ -59,6 +89,37 @@ test("a note that supersedes one: the old note is marked superseded by the new o
   await ended(api, next);
   assert.deepEqual(existsSync(join(turnCopyOf(data, next), "refunds.md")), false);
   assert.ok(existsSync(join(turnCopyOf(data, next), "refunds-v2.md")));
+});
+
+test("a note a person corrects while a grade that supersedes it is under way is never superseded on that grade: the person's text stays active and in the index, and the run's learning is dropped as checker, naming the note", { timeout: 150_000 }, async (t) => {
+  const held = await heldGrade(t, "corrected");
+  const CORRECTED = note("Refunds path", "Refunds live under /help/refunds", "A person corrected the path.\n");
+  await personEdits(held, "corrected", "refunds.md", CORRECTED);
+  const edited = git(held.repo, ["rev-parse", "main"]);
+  held.release();
+  const { view, rows } = await ended(held.api, held.runId);
+  settled(view, rows, "dropped", "checker");
+  const problems = [{ rule: "supersedes", path: "refunds-v2.md", detail: "refunds.md changed after the grade read it" }];
+  assert.deepEqual((await savedOf(held.data, held.runId)).learning.problems, problems);
+  assert.deepEqual((await held.api("GET", `/runs/${held.runId}/learning`)).body.problems, problems);
+  assert.equal(git(held.repo, ["rev-parse", "main"]), edited, "main is as the person left it");
+  assert.equal(git(held.repo, ["show", "main:refunds.md"]), CORRECTED.trimEnd());
+  assert.equal(`${git(held.repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as tables\n- [Refunds path](refunds.md) — Refunds live under /help/refunds\n");
+  assert.deepEqual(mergesOf(held.repo, held.runId), []);
+});
+
+test("a grade that supersedes a note merges as before when a person changed another note meanwhile: main moved, the note it read did not", { timeout: 150_000 }, async (t) => {
+  const held = await heldGrade(t, "unchanged");
+  const SORTED = note("Prefers tables", "The user reads results as sorted tables");
+  await personEdits(held, "unchanged", "prefers-tables.md", SORTED);
+  held.release();
+  const { view, rows } = await ended(held.api, held.runId);
+  settled(view, rows, "merged");
+  assert.equal(git(held.repo, ["show", "main:refunds.md"]), MARKED.trimEnd());
+  assert.equal(git(held.repo, ["show", "main:refunds-v2.md"]), MOVED.trimEnd());
+  assert.equal(git(held.repo, ["show", "main:prefers-tables.md"]), SORTED.trimEnd(), "the person's edit kept");
+  assert.equal(`${git(held.repo, ["show", "main:MEMORY.md"])}\n`, "- [Prefers tables](prefers-tables.md) — The user reads results as sorted tables\n- [Refunds path](refunds-v2.md) — Refunds live under /policies/refunds\n");
+  assert.equal(mergesOf(held.repo, held.runId).length, 1);
 });
 
 test("two runs at once that add different notes both merge, and the index has both; the same name added by two runs at once merges once, and the second is refused as exists at the merge", { timeout: 150_000 }, async (t) => {

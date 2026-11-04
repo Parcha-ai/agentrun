@@ -692,7 +692,7 @@ export class LearningRuns {
     const before = run.meta.learning;
     if (before?.state !== "proposed" || this.closing) return;
     const data = this.options.agents.dir;
-    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { verdict: before.verdict, cost_usd: before.cost_usd, tokens: before.tokens } : {};
+    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { verdict: before.verdict, graded: before.graded, cost_usd: before.cost_usd, tokens: before.tokens } : {};
     // Its end saved, and with it its line in the ledger, which carries what the grade spent (onSaved).
     const end = (state: LearningState, reason: LearningReason | null, detail: string, more: typeof kept = {}) => {
       this.setLearning(run, state, reason, detail, { ...kept, ...more });
@@ -720,11 +720,15 @@ export class LearningRuns {
         // read no longer knows: its reason and its items' words are what the run's words are said from again (wordsOf).
         kept.verdict = cutVerdict(judged.verdict, this.refused(run));
         if (!kept.verdict.merge) return await end("dropped", "grader", notKept(kept.verdict));
-        // Kept before the merge: a restart merges on this verdict, and never asks the grader again.
+        // Kept before the merge, with the blobs it judged superseded: a restart merges on this verdict, never asks the
+        // grader again, and checks the same blobs.
+        kept.graded = main.graded;
         this.setLearning(run, "proposed", null, before.detail, kept);
         await this.kernel.save(run);
       }
-      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.");
+      // A verdict kept with no `graded`: a note the proposal supersedes is refused, never marked on a text nobody knows
+      // was read.
+      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.", kept.graded ?? {});
       if ("problems" in merge) return await end("dropped", "checker", said.stale(merge.problems), { problems: merge.problems });
       if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
       const learned = learnedOf(proposal);
