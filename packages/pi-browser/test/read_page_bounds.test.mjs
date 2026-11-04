@@ -239,3 +239,12 @@ test("a textarea's or a title's text is never read as tags: a \"<template>\" in 
     assert.doesNotMatch(page.text, /Hidden/, how);
   }
 });
+
+test("a page cut between the two halves of a character written as a surrogate pair is cut before it: no half reaches the text", async () => {
+  // "<p>" and 999,996 x's put the pair's first half at the 1,000,000th character, the last a read keeps.
+  const html = `<p>${"x".repeat(999_996)}\u{1F600} and the rest of the page</p>`;
+  const page = await readPage(html, "https://site.example/");
+  assert.equal(page.truncated, true);
+  assert.doesNotMatch(page.text, /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/, "no half of a pair");
+  assert.ok(page.text.endsWith("x"), "cut before the pair");
+});
