@@ -19,6 +19,13 @@ export type HarnessRunner = ((request: NodeRequest) => Promise<unknown>) & { sto
 
 /** The tool the runner injects; a host tool may not take its name. */
 export const SUBMIT_TOOL = "submit";
+/** Why a review rejected a candidate, as the model reads it: its message, or, for none (no message, or a blank one),
+ *  that it gave no reason. Always a string, so a rejection never lets the candidate through (Pi's runner reads a review
+ *  the same way). A long one reaches the model through the host's one bound on a result (HOST_RESULT_MAX_CHARS). */
+const reviewRejection = (message: unknown): string => {
+  const said = message === undefined || message === null ? "" : String(message);
+  return said.trim() ? said : "the review rejected it without saying why";
+};
 /** A held figure as a host gives it or a record keeps it: a finite amount, 0 or more, else none. */
 const heldFigure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
 /** `total` with `cost` added: unknown once either is. */
@@ -44,11 +51,22 @@ export type BeforeRequest = (request: {
   /** The most input tokens this request can be billed for (the body's UTF-8 bytes plus what the provider adds, as the
    *  model proxy measured it), undefined when it was not measured: a budget treats that input as unknown, never 0. */
   inputTokensMax?: number;
+  /** The most output tokens it asks for, and the least it may be limited to and still answer, as the model proxy read
+   *  them from its body (ModelRequest). */
+  outputTokensAsked?: number;
+  outputTokensLeast?: number;
   /** This session's paid requests admitted and not yet answered (in this process), oldest first, each with its own
-   *  `inputTokensMax`: a budget holds each one's worst case until it answers, since `spentUsd` counts answered requests
-   *  only. Requests are admitted one at a time, so each check sees every request admitted before it. */
-  inFlight: readonly { turn: number; model: string; inputTokensMax?: number }[];
-}) => void | { refuse: string } | { holdUsd: number } | Promise<void | { refuse: string } | { holdUsd: number }>;
+   *  `inputTokensMax` and the output limit it was admitted with (`outputTokensMax`): a budget holds each one's
+   *  worst case until it answers, since `spentUsd` counts answered requests only. Requests are admitted one at a time,
+   *  so each check sees every request admitted before it. */
+  inFlight: readonly InFlight[];
+}) => void | { refuse: string } | Admission | Promise<void | { refuse: string } | Admission>;
+
+/** A request admitted and not yet answered, as a budget holds it. */
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number };
+/** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
+ *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. */
+export type Admission = { holdUsd?: number; outputTokensMax?: number };
 
 export interface HarnessRunnerOptions {
   /** The run's store, through whoever owns it. */
@@ -169,7 +187,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (typeof data.turn === "number" && data.providerIds) responses.set(data.turn, data.providerIds);
   }
   // This process's requests in flight, oldest first: the turn each was admitted as, and its model.
-  const open: { turn: number; model: string; inputTokensMax?: number }[] = [];
+  const open: InFlight[] = [];
   // Response ids whose own write was refused, marked `late`: the booking's next write of its own (the next runner.request,
   // or a runner.turn) carries them first, so a request this process cuts by dying after that still keeps its ids. One a
   // runner.turn writes with the ids is dropped, never written twice. A process that dies before writing for its booking
@@ -192,15 +210,21 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
-  const admit = async (model: string, inputTokensMax: number | undefined): Promise<ModelTicket> => {
+  const admit = async ({ model, inputTokensMax, outputTokensAsked, outputTokensLeast }: ModelRequest): Promise<ModelTicket> => {
     const stopped = options.stopped?.() ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
-    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax });
+    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
+      ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;
+    // The output limit the host admits it with goes into its body. A limit that is no whole number of tokens above 0 (a
+    // fraction, 0, a negative, NaN) can't be sent, so the request is refused before anything is written: dropping it would
+    // send the request with no limit at all. Only a verdict with no limit sends the request with none.
+    const limited = verdict && "outputTokensMax" in verdict ? verdict.outputTokensMax : undefined;
+    if (limited !== undefined && !(Number.isSafeInteger(limited) && limited > 0)) throw end("refused", `the request was not sent: its output limit (${String(limited)}) is not a whole number of tokens above 0`);
     // A stop or a pause that came while the host was checking: nothing was written for this request, so it is refused, not
     // sent. After the write below it is committed (refusing it then would leave a recorded request that was never sent).
     const late = options.stopped?.() ?? failed ?? options.draining?.();
@@ -221,13 +245,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
       throw stoppedNow;
     }
-    open.push({ turn, model, inputTokensMax });
+    open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }) });
     emit({ type: "request_start", turn, model });
-    return { turn };
+    return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }) };
   };
   const models: ModelPort = {
-    beforeRequest: ({ model, inputTokensMax }: ModelRequest) => {
-      const admitted = admitting.then(() => admit(model, inputTokensMax));
+    beforeRequest: (request: ModelRequest) => {
+      const admitted = admitting.then(() => admit(request));
       admitting = admitted.catch(() => {});
       return admitted;
     },
@@ -416,7 +440,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         else if (!validator.Check(candidate)) message = JSON.stringify([...validator.Errors(candidate)]);
         else if (request.review) {
           const verdict = await request.review(candidate);
-          if (!verdict.accepted) message = verdict.message;
+          if (!verdict.accepted) message = reviewRejection(verdict.message);
           else if (!validator.Check(candidate)) message = "The reviewed candidate no longer satisfies its output schema";
         }
         if (stopped) return { text: "This session has stopped.", isError: true };

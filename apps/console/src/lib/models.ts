@@ -28,4 +28,6 @@ export function harnessDefault(harness: string, harnesses: readonly HarnessInfo[
   if (offer && "default_model" in offer) return offer.default_model ?? undefined;
   return harness === "pi" ? defaultModel : undefined;
 }
-export const NO_DEFAULT = "No default for this harness: choose a model.";
+export const NO_DEFAULT = "No default for this harness yet: add a model key in Settings → Model keys, or choose a model here.";
+/** The agent page's Model fact for an agent that names no model on a harness with no default here: the same fix. */
+export const NO_MODEL_YET = "none yet: add a model key in Settings → Model keys";

@@ -15,7 +15,7 @@ import { reapCommands } from "./commands.ts";
 import { HeldError, PdaError } from "./errors.ts";
 import { takeOwnerLock } from "./run.ts";
 import { listLocalRunFiles, listRunFiles, putRunFile, readLocalRunFile, readRunFile, RunFileError, type RunFileControl } from "./run-files.ts";
-import { ENV_NAME, keyShaped } from "./hosts/attempt-env.ts";
+import { ENV_NAME, keyShaped, SECRET_NAME_RULE } from "./hosts/attempt-env.ts";
 import { readRunRecord, type RunRecord } from "./status.ts";
 import {
   CONTROL_TIMEOUT_MS,
@@ -547,8 +547,9 @@ export type UnheldStart = {
 /**
  * A hook in a start's window (`ArchilPlaceOptions.unheld`). What it returns is added to that start's environment, which
  * the instance can read: plain values only. A name the start already sets (PATH, PDA_HOLDER, HOST_BOX or one in the
- * order's environment), a name that is not a variable name, a key-shaped name (a KEY, TOKEN, SECRET, PASSWORD, PASSWD,
- * CREDENTIAL or CREDENTIALS segment) or a value that is not a string without NUL fails the start (INVALID_ARGUMENT,
+ * order's environment), a name that is not a variable name, a key-shaped name (secret-name.ts: a KEY, TOKEN, SECRET,
+ * PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN segment, or a last PWD after another) or a value that is
+ * not a string without NUL fails the start (INVALID_ARGUMENT,
  * naming the variable, never its value).
  *
  * A start fails, and the driver never starts a box, when any put in the hook was refused because the run is held
@@ -952,7 +953,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       for (const [name, value] of Object.entries(returned)) {
         if (!ENV_NAME.test(name)) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${JSON.stringify(name)}, which is not an environment variable name`);
         if (taken.has(name)) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${name}, which this start already sets (the driver, HOST_BOX or the order)`);
-        if (keyShaped(name)) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${name}, a secret's name (a KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL or CREDENTIALS segment): the instance can read its environment, so a secret never goes there`);
+        if (keyShaped(name)) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${name}, a secret's name (${SECRET_NAME_RULE}): the instance can read its environment, so a secret never goes there`);
         if (typeof value !== "string" || value.includes("\0")) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${name} with a value that is not a string without NUL`);
       }
       return returned as Record<string, string>;

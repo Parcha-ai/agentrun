@@ -33,10 +33,10 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
   const rate = successRate(t);
   const spent = groupCost(t, basis);
   const tiles: { label: string; value: string; notes: (string | undefined)[] }[] = [
-    { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.unmetered ? `${plural(t.unmetered, "request")} unmetered: in no token sum` : undefined] },
+    { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.unmetered ? `${plural(t.unmetered, "request")} with no token count` : undefined] },
     { label: "Run time", value: duration(a.time.wall_ms), notes: [`wall time of ${plural(a.time.ended_runs, "ended run")}`, a.time.active_runs ? `${duration(a.time.active_ms)} active, over ${plural(a.time.active_runs, "run")}` : undefined] },
     { label: "Success rate", value: percent(rate), notes: [t.completed + t.failed ? outcomes(t) : "No run completed or failed yet"] },
-    { label: "Cost", value: spent.total, notes: [spent.note, spent.bound] },
+    { label: "Cost", value: spent.total, notes: [spent.note] },
   ];
   return (
     <div className={cn("space-y-6 transition-opacity", refreshing && "opacity-60")} aria-busy={refreshing}>

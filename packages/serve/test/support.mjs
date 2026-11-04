@@ -16,7 +16,8 @@ delete process.env.AGENTRUN_BOXES;
 
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return dir;
 }
 
@@ -177,33 +178,41 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.
- *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for. */
-export async function responsesEndpoint(t, text, tokens) {
+ *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for,
+ *  `authorizations` each POST's authorization header.
+ *  `incomplete`: each answer stops at its length instead (response.incomplete, max_output_tokens: pi's stopReason "length"). */
+export async function responsesEndpoint(t, text, tokens, { incomplete = false } = {}) {
   const asked = [];
   const bodies = [];
   const models = [];
+  const authorizations = [];
   const server = createServer((req, res) => {
     asked.push(`${req.method} ${req.url}`);
+    if (req.method === "POST") authorizations.push(req.headers.authorization ?? null);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       if (req.method === "POST") bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "null"));
       if (req.method === "POST") models.push(bodies.at(-1)?.model);
-      const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const item = { type: "message", id: "msg_1", role: "assistant", status: incomplete ? "incomplete" : "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const usage = { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens };
+      const end = incomplete
+        ? { type: "response.incomplete", response: { id: "resp_1", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [item], usage } }
+        : { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage } };
       res.writeHead(200, { "content-type": "text/event-stream" });
       for (const event of [
         { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
         { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
         { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
         { type: "response.output_item.done", output_index: 0, item },
-        { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens } } },
+        end,
       ]) res.write(`data: ${JSON.stringify(event)}\n\n`);
       res.end();
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models };
+  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models, authorizations };
 }
 
 /** Sets `vars` in this process's environment, which a server's runs inherit, for test `t`; the rest of `names` unset. */

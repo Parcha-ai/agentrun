@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
@@ -15,6 +14,9 @@ import { BOX_IDS, BOX_KEYS, boxesLog, boxRegistry, VM_PROVIDER } from "../dist/b
 import { SERVER_LOCK } from "../dist/server-lock.js";
 import { startServe } from "../dist/index.js";
 import { FAUX, scratch, withEnv } from "./support.mjs";
+// A fake Daytona API on loopback (each request kept in `seen`, `answer` writing the response); daytona-boxes.test.mjs
+// runs whole sandboxes on the same fixture.
+import { fakeDaytona } from "./fixtures/fake-daytona.mjs";
 
 const VM = VM_PROVIDER.id;
 const DAYTONA_KEY = "DAYTONA_API_KEY";
@@ -37,17 +39,6 @@ async function fakeDocker(t, body) {
 const ANSWERS = 'case "$1" in version) echo 27.3.1; exit 0 ;; esac\nexit 1';
 const FAILS = "echo 'RAW-DOCKER-STDERR permission denied on the daemon socket' >&2\nexit 1";
 
-/** A fake Daytona API on loopback: each request is kept in `seen`, and `answer` writes the response (or none). */
-async function fakeDaytona(t, answer) {
-  const seen = [];
-  const server = createServer((req, res) => {
-    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
-    answer(req, res);
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
-  return { url: `http://127.0.0.1:${server.address().port}/api`, seen };
-}
 /** Daytona as it answers a box that does not exist: 404 to the key it takes, 401 to any other, with a body that echoes
  *  what it was sent. */
 const takes = (key) => (req, res) => {
@@ -91,6 +82,18 @@ test("docker listed: a docker that answers `docker version` is available, with i
   assert.deepEqual(offerOf(registry, "daytona"), { id: "daytona", available: false, reason: notEnabled("daytona", ["docker", "bwrap"]) });
   // The log line says why each listed box is not there, bwrap included; a box not listed needs no reason.
   assert.deepEqual(boxesLog(registry.offers(), new Set(["docker", "bwrap"])), { available: "docker", unavailable: BOX_IDS.filter((id) => id !== "docker").join(","), bwrap: NOT_YET });
+});
+
+test("docker's probe gets the server's environment through the one cut a run's takes: no box key, no listed secret, no name shaped like a key; the rest, DOCKER_HOST among it, passes", async (t) => {
+  const seen = join(await scratch(t), "env-names");
+  // Names only, never a value.
+  const docker = await fakeDocker(t, `env | cut -d= -f1 > '${seen}'\n${ANSWERS}`);
+  const env = { PATH: docker.PATH, AGENTRUN_BOXES: "docker", DOCKER_HOST: "unix:///nowhere.sock", ...keys(), GEMINI_API_KEY: `${CANARY}-GEMINI`, FOO_API_KEY: `${CANARY}-FOO`, FOO_PASSWORD: `${CANARY}-PW`, GITHUB_TOKEN: `${CANARY}-GH` };
+  const registry = await boxRegistry(env);
+  assert.deepEqual(offerOf(registry, "docker"), { id: "docker", available: true });
+  const names = readFileSync(seen, "utf8").split("\n").filter(Boolean);
+  assert.deepEqual(names.filter((name) => [...BOX_KEYS, "GEMINI_API_KEY", "FOO_API_KEY", "FOO_PASSWORD", "GITHUB_TOKEN"].includes(name)), [], "a key reached docker's environment");
+  assert.ok(names.includes("DOCKER_HOST") && names.includes("AGENTRUN_BOXES"), names.join(" "));
 });
 
 test("docker listed: a docker that fails, or none on PATH, leaves it unavailable with a short reason, no stack and none of its output", async (t) => {

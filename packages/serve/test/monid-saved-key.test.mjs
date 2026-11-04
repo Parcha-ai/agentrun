@@ -1,9 +1,9 @@
 // A person saves a monid key and an agent uses monid's catalog, end to end on faux monid and the faux harness: the key
-// saved through the settings API reaches a claude-agent run that names monid with no restart, and monid's charge is in
-// that run's cost on a line of its own; a run naming only `read` holds no monid key (what its process was handed over
-// its pipe, as secret-custody.test.mjs reads it); a capped run whose spend plus the call's held figure would pass its
-// cap is refused before monid is called; and once the key is deleted, a run naming monid is refused for it. No network,
-// no real key.
+// saved through the settings API (checked first, with one discover) reaches a claude-agent run that names monid with no
+// restart, and monid's charge is in that run's cost on a line of its own; a run naming only `read` holds no monid key
+// (what its process was handed over its pipe, as secret-custody.test.mjs reads it); a capped run whose spend plus the
+// call's held figure would pass its cap is refused before monid is called; and once the key is deleted, a run naming
+// monid is refused for it. No network, no real key.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -37,7 +37,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   const log = join(await scratch(t), "monid-calls.jsonl");
   // Built here, so no scanner reads it as a credential.
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_KEY: saved }, ["MONID_API_KEY"]);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY"]);
   // pi answers with the custody model (what its process was handed); claude-agent runs the faux harness.
   const { api, data } = await serve(t, { faux: CUSTODY, fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
   const sent = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
@@ -54,8 +54,8 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   const run = await api("POST", "/agents/enrich/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
-  assert.deepEqual(sent().map((call) => [call.method, call.path, call.authorized, call.key]), [["POST", "/v1/run", true, digest(saved)]], "sent once, on the saved key");
-  assert.ok(sent().every((call) => call.pid !== process.pid), "from the run's process");
+  assert.deepEqual(sent().map((call) => [call.method, call.path, call.authorized, call.key]), [["POST", "/v1/discover", true, digest(saved)], ["POST", "/v1/run", true, digest(saved)]], "checked once as it was saved (a discover, which costs nothing), then the run sent once, on the saved key");
+  assert.deepEqual(sent().map((call) => call.pid === process.pid), [true, false], "the check from the server's own process, the run from the run's");
   // Booked once in the run's own records, as a tool cost, and summed with its two requests ($0.001 each).
   assert.deepEqual(entries(data, run.body.run_id, "agentrun.tool_cost").map(({ data: { tool, charged_by, usd } }) => ({ tool, charged_by, usd })), [{ tool: "monid.run", charged_by: "monid", usd: 0.003 }]);
   assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "monid.run").map((row) => row.summary), ["Tool cost: monid charged $0.0030 for monid.run"]);

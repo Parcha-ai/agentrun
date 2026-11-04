@@ -9,13 +9,20 @@ import { BOUND_TOOLS, missingEnv, TOOLS } from "../dist/tools.js";
 
 const names = (extension) => (extension.tools ?? []).map((tool) => tool.name);
 
-test("the coding tools serve installs have no bash; read, write and edit are pi's own, and the rest of pi's extension is kept", () => {
+test("the coding tools serve installs have no bash; read, write and edit are pi's own, only their refusals named by the path given, and the rest of pi's extension is kept", () => {
   assert.ok(names(ArchilCodingTools).includes("bash"), "pi's coding tools carry bash, which serve leaves out");
   assert.ok(!names(CodingTools).includes("bash"));
   for (const name of ["read", "write", "edit"]) assert.ok(names(CodingTools).includes(name), name);
   const pis = ArchilCodingTools.tools.filter((tool) => tool.name !== "bash");
   assert.equal(CodingTools.tools.length, pis.length);
-  CodingTools.tools.forEach((tool, index) => assert.equal(tool, pis[index], `${tool.name} is pi's tool, not a copy`));
+  // pi's tool, not a copy: every field pi's, the schema and replay included, and only execute wrapped (asGivenRefusals).
+  CodingTools.tools.forEach((tool, index) => {
+    const { execute: _ours, ...fields } = tool;
+    const { execute: _pis, ...theirs } = pis[index];
+    assert.deepEqual(Object.keys(fields), Object.keys(theirs), tool.name);
+    for (const key of Object.keys(theirs)) assert.equal(fields[key], theirs[key], `${tool.name}.${key} is pi's`);
+    assert.notEqual(tool.execute, pis[index].execute, `${tool.name}'s refusals are named by the path given`);
+  });
   const { tools: _ours, ...ours } = CodingTools;
   const { tools: _theirs, ...theirs } = ArchilCodingTools;
   assert.deepEqual(ours, theirs, "everything but the tools is pi's extension's, its name included");
@@ -61,12 +68,12 @@ test("in a box the source is pi's read, write, edit and bash, each call made on 
   assert.throws(() => codingSource({ mode: "sandbox", box: "docker" }), /needs its box/);
 });
 
-test("in a box a file tool's path stays in the box's work dir: a host path, a way out, ~ or a file: URL is refused in the confined tools' words, before the box is asked", async () => {
+test("in a box a file tool's path stays in the box's work dir: a host path, a way out, ~ or a file: URL is refused as the confined tools refuse, naming only the path given, before the box is asked", async () => {
   const asked = [];
   const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async () => (asked.push("env"), { cwd: "/run/agentrun/run/work" }) });
   const read = source.tools.find((tool) => tool.name === "read");
   for (const path of ["/var/lib/agentrun/runs/r1/work/x.md", "../x.md", "/run/agentrun/run/workx/y", "~/x", "file:///etc/passwd", "/etc/passwd"]) {
-    await assert.rejects(read.execute({ path }, {}, {}), new Error(`${path}: outside the workspace /run/agentrun/run/work`), path);
+    await assert.rejects(read.execute({ path }, {}, {}), { name: "PathOutsideWorkError", message: `${path}: outside the workspace` }, path);
   }
   assert.deepEqual(asked, [], "no box was asked for a refused path");
   for (const path of ["x.md", "sub/../x.md", "/run/agentrun/run/work/x.md"]) {
@@ -88,7 +95,7 @@ test("in a box a path under the run's own host work dir is the same file at the 
   const asked = [];
   const source = codingSource({ mode: "sandbox", box: "docker" }, { hostWork, env: async () => (asked.push("env"), { cwd: "/run/agentrun/run/work" }) });
   const read = source.tools.find((tool) => tool.name === "read");
-  await assert.rejects(read.execute({ path: "/var/lib/agentrun/runs/r1/x.md" }, {}, {}), new Error("/var/lib/agentrun/runs/r1/x.md: outside the workspace /run/agentrun/run/work"));
+  await assert.rejects(read.execute({ path: "/var/lib/agentrun/runs/r1/x.md" }, {}, {}), { name: "PathOutsideWorkError", message: "/var/lib/agentrun/runs/r1/x.md: outside the workspace" });
   assert.deepEqual(asked, []);
   await read.execute({ path: `${hostWork}/x.md` }, { output() {}, diagnostic() {} }, {}).catch(() => undefined);
   assert.deepEqual(asked, ["env"]);

@@ -61,6 +61,10 @@ export async function readNodeLog(root: string): Promise<NodeLine[]> {
   return out;
 }
 
+/** The llm calls the node log says answered, in order: a run's `llmRead` counts them, and its cost reads the rest. */
+export const llmAnswers = (lines: readonly NodeLine[]) =>
+  lines.filter((line): line is Extract<NodeLine, { t: "effect.end" }> => line.t === "effect.end" && line.tool === "llm" && line.status === "done");
+
 /** What the run's process last wrote of its driver's frame and its receipts. */
 export type LiveView = { at: string; pin: Record<string, unknown>; receipts: Array<Record<string, unknown>> };
 

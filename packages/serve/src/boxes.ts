@@ -12,6 +12,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { BoxProvider } from "@parcha/pi-transport";
+import { withoutSecrets } from "./secrets.js";
 
 /** The VM provider: its box id, which is also its SDK's npm name, the SDK's client class and the token's names. */
 export const VM_PROVIDER = { id: "modal", client: "ModalClient", keys: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] } as const;
@@ -21,8 +22,12 @@ const VM = VM_PROVIDER.id;
 export const BOX_IDS = ["bwrap", "docker", VM, "daytona"] as const;
 export type BoxId = (typeof BOX_IDS)[number];
 
-/** One box: whether this server has it, and why when not (or how it was checked). */
-export type BoxOffer = { id: BoxId; available: boolean; reason?: string };
+/** One box: whether this server has it, and why when not (or how it was checked). `state`, set where the server knows
+ *  more than the probe did (box-image.ts): `preparing` is available, its image still coming. */
+export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string };
+/** A box's state in capabilities: ready, preparing (available; a run's first box waits for its image), or unavailable. */
+export const BOX_STATES = ["ready", "preparing", "unavailable"] as const;
+export type BoxState = (typeof BOX_STATES)[number];
 
 /** The boxes this server set up at its start. */
 export type BoxRegistry = {
@@ -38,6 +43,15 @@ export const BOXES_ENV = "AGENTRUN_BOXES";
 export const BOX_APP_ENV = "AGENTRUN_BOX_APP";
 const DEFAULT_BOX_APP = "agentrun";
 const DAYTONA_KEY = "DAYTONA_API_KEY";
+/** Daytona's API when DAYTONA_API_URL names none: pi-transport's own default. */
+export const DAYTONA_API_URL = "https://app.daytona.io/api";
+
+/** Daytona's API and this server's key for it, from its environment (its secrets readable); undefined without a key. The
+ *  key goes to the server's Daytona provider and its box relay, never further (box-relay.ts). */
+export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: string } | undefined {
+  const apiKey = env[DAYTONA_KEY];
+  return apiKey ? { apiKey, apiUrl: env.DAYTONA_API_URL || DAYTONA_API_URL } : undefined;
+}
 /** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
 export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 
@@ -128,8 +142,9 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
   async docker(env, signal) {
     const boxes = await load(TRANSPORT, () => import("@parcha/pi-transport/box/docker").then((module) => module.dockerBoxes));
     if (!boxes.ok) return unavailable("docker", boxes.reason);
-    // Its environment is the server's without the boxes' keys; the server's other secrets do not enumerate (withSecrets).
-    const dockerEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !BOX_KEYS.includes(name)));
+    // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
+    // name shaped like a key.
+    const dockerEnv = withoutSecrets(env);
     const answer = await new Promise<{ failed?: string; out: string }>((resolve) =>
       execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout) => {
         const code = (error as { code?: unknown } | null)?.code;

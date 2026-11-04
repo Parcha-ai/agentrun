@@ -1,12 +1,15 @@
 import { ArrowRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
 import { Chip } from "@/components/ui/chip";
 import { type Client, follow, problemOf } from "@/lib/client";
 import { when } from "@/lib/format";
+import { learningSteps } from "@/lib/learning";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { latest } from "@/lib/viewing";
+import { useLearningSettle } from "@/lib/useLearningSettle";
 import type { Run, TimelineRow } from "@/lib/v2";
 
 /** When the run's record is read again after its status moved: at once, then twice more after these pauses. */
@@ -27,6 +30,8 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
   // Why the record could not be read again once its status moved, until a read of it lands.
   const [stale, setStale] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  // Read again from the start when the run's learning moves on: its timeline's learning row changes in place.
+  const [follows, setFollows] = useState(0);
   const runReads = useRef(latest()).current;
   // `held`: the status/state the record in hand was read for (it moves only when a read lands). `asking`: the one a read
   // is under way for. `want`: the one the newest page named, which the next page is compared with and Retry reads for.
@@ -67,7 +72,10 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
       },
     }).catch((e) => { if (!ctl.signal.aborted) setError(problemOf(e)); });
     return () => { ctl.abort(); runReads.cancel(); asking.current = null; };
-  }, [v2, run.run_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [v2, run.run_id, follows]); // eslint-disable-line react-hooks/exhaustive-deps
+  // An ended run still deciding what to learn is read again until it settles; a read lands only while the record in hand
+  // is still the one it was asked for and no other read is under way, so it never puts back a status a page moved past.
+  useLearningSettle(run, () => { const s = held.current; void v2.getRun(run.run_id).then((r) => { if (held.current === s && asking.current === null) onRun(r); }, () => {}); }, () => setFollows((n) => n + 1));
   const href = `#/runs/${encodeURIComponent(run.run_id)}`;
   const now = page ?? run;
   return (
@@ -76,6 +84,7 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
         <span className="caps text-[11px] font-semibold">Latest run</span>
         {stale ? <Chip tone="muted">Not refreshed</Chip> : <StatusBadge run={run} />}
         <a href={href} className="min-w-0 flex-1 truncate text-[14px] hover:underline" title={run.title}>{run.title}</a>
+        <LearningChips run={run} link />
         <span className="font-mono text-[12px] text-muted-foreground">{when(run.created_at)}</span>
         <a href={href} className="caps flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">Open the run <ArrowRight className="size-3" aria-hidden /></a>
       </div>
@@ -87,7 +96,7 @@ export function LatestRun({ v2, run, onRun }: { v2: Client; run: Run; onRun: (ru
       )}
       <div className="px-4 py-3">
         {error ? <p className="font-mono text-[13px] text-destructive-text" role="alert">The timeline could not be read: {error}</p>
-          : rows ? <Timeline rows={rows} live={runState(now.status, now.state, run.kind, NO_MESSAGES, true).live} />
+          : rows ? <Timeline rows={learningSteps(rows, run.learning)} live={runState(now.status, now.state, run.kind, NO_MESSAGES, true).live} />
           : <p className="py-6 text-center font-mono text-[13px] text-muted-foreground">Reading the timeline...</p>}
       </div>
     </section>

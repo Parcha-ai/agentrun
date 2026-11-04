@@ -11,7 +11,7 @@ import { chooseModel, llmTiers, type ModelRef, nodeTiers, workflowNodes } from "
 import type { BoxOffer } from "./boxes.js";
 import { boxAvailability, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, toolOf, workflowTools } from "./tools.js";
-import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap } from "./tool-plane.js";
+import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 /** A revision's body as it is saved or stored. */
@@ -37,7 +37,8 @@ export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref:
   // harness every harness takes the run's usual model.
   const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
   if (own && !available) return undefined;
-  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : await chooseModel(env, ref);
+  // codex's is the run's usual model, but an OpenAI model it reaches through OpenRouter alone is OpenRouter's (codexRef).
+  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : harness === "codex" ? await (await import("./adapters.js")).codexModel(env, ref) : await chooseModel(env, ref, "default", harness);
   if ("why" in chosen) return chosen;
   // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
   if (harness !== DEFAULT_HARNESS && available) {
@@ -64,7 +65,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
    *  provider in its place. */
   const unavailable = (field: string, tools: readonly string[], tool: string) => {
     const resolved = planeFor(env, { tools, harness, ...(revision.kind === "workflow" ? { workflow: true as const } : {}), ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings, { capped })[capabilityOf(tool) as Pickable];
-    if (isUnavailable(resolved)) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} does not run here on ${harness}: ${resolved.slice("unavailable: ".length)}.`, host: true, ...(resolved === NO_PARALLEL_KEY ? { missing: { tool, vars: [PARALLEL_KEY_ENV] } } : {}) });
+    if (isUnavailable(resolved)) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} does not run here on ${harness}: ${whyUnavailable(resolved)}.`, host: true, ...(resolved === NO_PARALLEL_KEY ? { missing: { tool, vars: [PARALLEL_KEY_ENV] } } : {}) });
   };
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
   const unset = (field: string, tool: string) => {
@@ -87,7 +88,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
-      // A shell runs only in a box: no place, or the runner, has none (a run narrowed to the runner drops it, server.ts).
+      // A shell runs only in a box: no place, or the runner, has none.
       else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs only in a box, and ${place ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner"}, which has no shell: give it a sandbox place.`, fix: placeFix({ mode: "sandbox", box: RUN_BOXES[0]! }), host: false, tool });
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });

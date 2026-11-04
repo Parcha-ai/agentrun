@@ -50,3 +50,26 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 `run.escalated.*` are one workflow run that escalated, recorded from a server with live decision models during a QA pass rather than from the dev kit: a judge found the evidence did not support the claim, and the run completed with `review` (`needs_evidence`, its node and its reason). They are its run (`GET /v2/runs/{id}`) and its graph (`GET /v2/runs/{id}/graph`), the bodies as the server answered.
 
 No password is recorded: a request that sent one lists only its field names (`body_fields`), and the session value is a placeholder.
+
+`learning.*` are one agent's learning, recorded from a faux server with learning on (`learning-demo/`: `serve.mjs` starts
+agentrun-serve on `faux-refunds.mjs`, a refund-policy finder that works slowly until it has notes and reads each note first
+once it does; `seed.mjs` runs it six times; `record.mjs` records). Taylor Stitch's run keeps the first note, Brooklinen's
+keeps a better one that replaces it, a person adds a note of their own, Kith's note is not kept (about one shop only), and
+three runs have nothing new. Then, in order: the agent, its learning, its runs and its stats; a person opens a note
+(`learning.note`), someone else saves a change to it (`learning.note-theirs`), the person's save on the version they
+opened is refused (`learning.note-stale`, 412), the newest version (`learning.note-newest`), a save with a hidden
+character the checks refuse (`learning.note-refused`, 400 with `problems`), the clean save (`learning.note-saved`) and the
+learning after it; the person's own note read and retired, and the learning after that. `learning.off-*` are an agent with
+no notes and learning off: its learning, its runs, the definition saved with learning on, and its learning after.
+They are recorded from a server that says what each run read and kept (`used`, `learned`, on a run and in every list)
+and the agent's before and after (`impact`): two Brooklinen and Allbirds runs, the agent's runs and its learning carry
+them. Each note in the learning carries its `etag`, the same value as `learning.note`'s ETag, so the console edits and
+retires on the version a card shows; the note's own reads are kept for the reload after a refused save. The runs list
+carries each run's learning in words (`detail`), and the impact each side's time to the answer, the job's own cost and
+what learning itself costs a run.
+`learning.diff-run` and `learning.diff` are a pair from one later recording of the same story: Brooklinen's run, and what
+its learning changed (`GET /v2/runs/{id}/learning/diff`: the note it added, the note it replaced, and the index), for
+the run page's "What it changed". `record.mjs` records them with the rest; until the set is recorded again whole, their
+run is not the one in `learning.runs`.
+To record them again: build the server and the console, then `node serve.mjs ...`, `node seed.mjs <url> <data>` and
+`node record.mjs <url> <data> apps/console/src/fixtures`. No token is written: the token stays in the data directory.

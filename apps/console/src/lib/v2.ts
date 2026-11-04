@@ -1,5 +1,7 @@
 // The slice of agentrun.v2/0 the console reads, typed from the server's recorded responses (src/fixtures).
 
+import type { RunLearning } from "./learning";
+
 /** `paused`: a workflow run paused by POST /v2/runs/{id}/pause; its calls in flight finish and no node starts. */
 export type RunStatus = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled" | "paused";
 export type RunState = "working" | "waiting" | "idle";
@@ -15,10 +17,10 @@ export type ToolSettings = Record<string, { provider?: string }>;
  *  none (the server's), and what it resolves to on the agent's harness and model. */
 export type AgentTool = { name: string; provider?: string; provider_from?: "agent" | "server" | "default"; default_provider?: string; resolved?: string };
 
-/** `at_most_usd`: the run's cost bound, when the server knows one. It is set only while `usd` is null because requests
- *  were cut or stopped, each with a worst case, and it is the most the run can have cost. Absent, the cost is unknown with
- *  no bound. */
-export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null; at_most_usd?: number | null };
+/** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null: the sum of every charge whose cost
+ *  is known, and how many charges have none (a request cut, stopped or still pending, a model with no price, a paid call
+ *  charged an unknown amount). `so_far_usd` is never the whole cost and never a ceiling. */
+export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null; so_far_usd?: number; unpriced?: number };
 
 export type Run = {
   run_id: string;
@@ -37,11 +39,16 @@ export type Run = {
   result: { output?: unknown; final_answer?: string | null } | null;
   error: ApiError | null;
   cost: Cost | null;
+  /** Where the run's learning is: null for a run that does not learn, absent from a server without learning. */
+  learning?: RunLearning;
   archived_at: string | null;
   poll_after_ms?: number;
   /** A workflow run that escalated: it completed, and waits for a person to review it (`kind`, the node it stopped
    *  at, and why). Null or absent on every other run. */
-  review?: RunReview | null;
+  review?: RunReview | null;  /** What a run waiting on a person waits for: its question and when it was asked. Null on every other run. */
+  pending?: { kind: "question"; question: string; asked_at: string } | null;
+  /** Imported history: where the run was run (`claude-code`, `codex` or `pi`) and its session there; else null. */
+  imported_from?: { source: string; session: string } | null;
 };
 
 export type RunReview = { kind: string | null; node: string | null; reason: string; at?: string };
@@ -97,12 +104,24 @@ export type ToolKeyField = { name: string; set: boolean; source: "server" | "sto
 /** A saved key's check with its provider: accepted, when; or not checked, why (in plain words) and when it last tried, if
  *  it did. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = { state: "accepted"; at: string } | { state: "not_checked"; reason: string; at?: string };
-export type ToolKey = { id: string; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[]; check?: ToolKeyCheck | null };
+/** `kind`: `model`, a model provider's key, which every run gets; `tool`, one a tool needs. Absent on an older server. */
+export type ToolKey = { id: string; kind?: "tool" | "model"; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[]; check?: ToolKeyCheck | null };
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */
 export type ToolKeysReenter = { reason: "seal_key_missing" | "seal_key_changed" | "file_unreadable"; fields: string[] };
 export type ToolKeys = { keys: ToolKey[]; reenter: ToolKeysReenter | null };
 /** `capabilities.features.tool_keys`: the routes, and whether a saved key is kept (`sealed`) or cannot be (`unavailable`). */
 export type ToolKeysFeature = { routes: boolean; at_rest: "sealed" | "unavailable" };
+
+/** The webhook (GET /v2/settings/webhook, a serve extension): the URL run notices are POSTed to, signed by the Standard
+ *  Webhooks spec; whether its secret signs here; and why it is off, when a 410 turned it off. Never the secret. */
+export type Webhook = { configured: false } | { configured: true; url: string; signing: "sealed" | "seal_key_missing" | "unreadable"; disabled: { at: string; reason: string } | null; updated_at: string };
+/** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
+export type WebhookSaved = Extract<Webhook, { configured: true }> & { secret?: string };
+/** One try of a message (GET .../deliveries, newest first): its webhook-id, the receiver's answer or why it failed, and
+ *  when it is tried again. */
+export type WebhookAttempt = { webhook_id: string; type: "run.needs_input" | "run.ended" | "webhook.test"; at: string; status_code: number | null; latency_ms: number; error: string | null; retry_at: string | null; redelivery: boolean };
+/** `capabilities.features.webhooks`: the routes, the events, and whether a secret is kept (`sealed`) or cannot be. */
+export type WebhooksFeature = { routes: boolean; events: string[]; signing: string; at_rest: "sealed" | "unavailable" };
 
 /** A recorded response: what the server answered, exactly. */
 export type Recorded<T> = { request: { method: string; path: string }; status: number; headers?: Record<string, string>; body: T };
