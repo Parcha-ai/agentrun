@@ -934,3 +934,22 @@ test("a run's process that opened again after the last one ended unfinished is a
   reducer.apply([{ type: "snapshot", entries }]);
   assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
 });
+
+test("a message after an adapter turn's end is the person's next message, not a steer: a codex turn stopped right after a tool result", () => {
+  const userMessages = (rows) => rows.filter((r) => r.kind === "user_message").map((r) => r.summary);
+  const live = (entries) => {
+    const reducer = timelineReducer();
+    reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
+    return reducer.rows();
+  };
+  // A turn on another harness ends with serve's turn end on the root ("adapter.turn_end"); its last round's tool ran to
+  // the end, and no request was in flight when the stop came.
+  const entries = [
+    user("Write five files", 0),
+    assistant([call("a", "write", { path: "a.md" })], 1),
+    result("a", "write", "ok", 2),
+    custom("adapter.turn_end", { key: "s", status: "interrupted", answer: null, cost: "booked" }),
+    user("Go on.", 3),
+  ];
+  assert.deepEqual([userMessages(timelineOf(entries)), userMessages(live(entries))], [["You: Write five files", "You: Go on."], ["You: Write five files", "You: Go on."]]);
+});
