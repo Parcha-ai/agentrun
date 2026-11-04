@@ -246,5 +246,8 @@ describe("AgentEditor, the tool settings on a narrow screen", () => {
     const page = await open(agentWith());
     const table = page.host.querySelector("section[aria-label=\"Tool settings\"] table")!;
     expect(table.parentElement!.className.split(" ")).toContain("overflow-x-auto");
+    // Positioned, so the header's screen-reader "Reset" (absolute, sr-only) is placed inside the box and scrolls with it:
+    // unpositioned, it hung past the box and widened the page to 427 px.
+    expect(table.parentElement!.className.split(" ")).toContain("relative");
   });
 });
