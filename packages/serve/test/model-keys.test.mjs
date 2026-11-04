@@ -77,6 +77,13 @@ test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway
   assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5", ...keyed("openai") }, "default", "opencode"), "openai/gpt-6.1-sol", "an Anthropic AGENT_MODEL is skipped for the OpenAI key's default");
   assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5" }, "default", "opencode"), undefined, "an Anthropic AGENT_MODEL alone: none");
   assert.deepEqual(MODEL_KEYS.find((row) => row.id === "openai").harnesses, ["pi", "codex", "opencode"], "the OpenAI key runs pi, codex and opencode");
+  // Guard (#1571): behind a gateway, opencode runs the gateway's model id as given, as codex does, a namespaced one and one
+  // that looks like another vendor's alike; without a gateway, neither.
+  const gw = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
+  assert.equal(harnessRuns(gw, "team/model", "opencode"), true, "behind a gateway: team/model");
+  assert.equal(harnessRuns(gw, "anthropic/x", "opencode"), true, "behind a gateway: anthropic/x, the gateway's own string");
+  assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model", ...keyed("openai") }, "default", "opencode"), "team/model", "never the OpenAI key's default instead");
+  assert.equal(harnessRuns({}, "team/model", "opencode"), false, "no gateway: team/model");
 });
 
 // A key-less first run (npx, no key yet) is told what a person does: add a key in the console or where AgentRun starts.
