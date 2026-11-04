@@ -6,6 +6,8 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
+import { chargeOf, monidClient } from "../dist/monid.js";
+import fakeMonid, { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -98,6 +100,44 @@ test("a paid call that fails counts at what it was held at, as a model request t
   assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
   const refused = await request.result();
   assert.match(refused.errorMessage, /^spend_cap_reached: .*with \$0\.001000 spent the run would pass its cap of \$0\.0015/);
+});
+
+/** monid's run of `endpoint` on the tests' fake: /slow runs until it is stopped, /late answers TIMED_OUT. */
+const monidRun = (endpoint, options = {}, signal) => monidClient({ key: MONID_KEY, fetch: fakeMonid, ...options }).run({ provider: "faux", endpoint }, signal);
+/** Past the turn the cap's count of an ended request takes. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a paid call the run's stop cuts short, or one that times out, counts at what it was held at, never unknown: the next model request goes while that leaves room, and is refused for room once it does not", async (t) => {
+  // Each request's worst case is $0.001 and each monid run is held at its $0.001 quote: $0.0045 holds three runs and a
+  // request, not a $0.002 one.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0045, 0);
+  t.after(() => useSpend(undefined));
+  const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
+  // Stopped by the run's stop while monid runs it: monid is asked to stop it, and says nothing of a charge.
+  const stop = new AbortController();
+  const stopped = await paidCall("monid_run", () => monidRun("/slow", { sleep: async () => stop.abort() }, stop.signal), chargeOf, hold);
+  assert.match(stopped.result?.error ?? JSON.stringify(stopped), /was stopped by the caller; monid was asked to stop it/);
+  const next = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the stopped call counts at its $0.001 hold, never unknown: the next request goes");
+  sent[0].end(0);
+  await next.result();
+  await settled();
+  // Past the run's wait, and monid's own TIMED_OUT: neither says what it charged.
+  const outlasted = await paidCall("monid_run", () => monidRun("/slow", { waitMs: 500, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }), chargeOf, hold);
+  assert.match(outlasted.result?.error ?? JSON.stringify(outlasted), /did not end in 0\.5 s; monid was asked to stop it|no answer in 0\.5 s/);
+  const timedOut = await paidCall("monid_run", () => monidRun("/late"), chargeOf, hold);
+  assert.match(timedOut.result?.error ?? JSON.stringify(timedOut), /\(TIMED_OUT\)/);
+  const after = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 2, "the three calls at their holds, $0.003, and this request's $0.001 fit the $0.0045 cap");
+  sent[1].end(0);
+  await after.result();
+  await settled();
+  // A request dearer than the room left is refused for room, naming what is spent: never for a spend unknown.
+  const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 2, "not sent");
+  assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.002000, and with \$0\.003000 spent the run would pass its cap of \$0\.0045: the run is out of budget\.$/);
 });
 
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */
