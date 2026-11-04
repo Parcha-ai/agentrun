@@ -20,6 +20,7 @@ import { wireName } from "./catalog.js";
 import { BOXED_TOOLS, CodingTools } from "./coding-tools.js";
 import { FETCH_PAGE_TOOL } from "./fetch-page.js";
 import { monidTools } from "./monid.js";
+import { booking } from "./paid-calls.js";
 import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
@@ -105,7 +106,8 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.
   const stray = coding.map((tool) => tool.name).filter((name) => !BOXED_TOOLS.includes(name));
   if (stray.length) throw new Error(`the coding source holds ${stray.join(", ")}, which is no coding tool`);
-  const web = [webFetchTool(process.env), webFetchTool(process.env, FETCH_PAGE_TOOL), webSearchTool(process.env)] as unknown as ToolRegistration[];
+  // Their paid requests (Parallel's) are booked under the call, in the run's store, as pi's are (paid-calls.ts).
+  const web = [webFetchTool(process.env), webFetchTool(process.env, FETCH_PAGE_TOOL), webSearchTool(process.env)].map(booking) as unknown as ToolRegistration[];
   // monid's, only for a run that names one: its key is the one this process was handed over its pipe (secrets.ts),
   // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
   // the call. They are outside the coding source, which holds the coding tools only.
