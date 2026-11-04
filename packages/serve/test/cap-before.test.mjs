@@ -87,3 +87,17 @@ test("the over-cap row: after the usage row, once its booked cost is past the ca
   assert.deepEqual([over.id, over.kind, over.summary, over.seq, "usage" in over], ["1:usage:over_cap", "phase", "Spent $1.2500, $0.2500 over the run's cap of $1", 9, false]);
   for (const [usd, cap] of [[1, 1], [0.5, 1], [null, 1], [2, undefined]]) assert.equal(withOverCap(rows(usd), cap).length, 2, `${usd} under ${cap}`);
 });
+
+test("a request its client stops part way counts its input and what streamed plus 1,024 tokens of output (stoppedOf), within its output limit, never its whole hold", async () => {
+  // $2 a million input (its cache write) and $600 a million output, a 1,000-token ceiling: a request of 400 input tokens
+  // admitted at 1,000 output tokens is held at $0.0008 + $0.6.
+  const cap = await capBefore(1, { ...model, maxTokens: 5_000, cost: { input: 1, output: 600, cacheRead: 0, cacheWrite: 2 } });
+  const admitted = { inputTokensMax: 400, outputTokensMax: 4_000 };
+  assert.ok(Math.abs(cap.worstOf(admitted) - (400 * 2 / 1e6 + 4_000 * 600 / 1e6)) < 1e-12, "held at its input and its limit");
+  // Stopped after 100 bytes: its input, and 100 + 1,024 tokens of output, priced as a request admitted at 1,124 is held.
+  assert.equal(cap.stoppedOf?.(admitted, 100), cap.worstOf({ inputTokensMax: 400, outputTokensMax: 1_124 }), "its input, what streamed and the allowance");
+  // Past its limit, at most its limit: what it was held at.
+  assert.equal(cap.stoppedOf?.(admitted, 3_500), cap.worstOf(admitted), "within its limit");
+  // An input that was not measured has no such figure (the runner then counts its hold).
+  assert.equal(cap.stoppedOf?.({ outputTokensMax: 4_000 }, 100), undefined);
+});
