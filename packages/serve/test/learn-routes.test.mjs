@@ -49,7 +49,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // An agent whose learning was never on has no folder: an empty view; its run has no learning and no diff.
   await made(api, agent("plain"));
   const plain = (await api("GET", "/agents/plain/learning")).body;
-  assert.deepEqual(plain, { agent: "plain", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null });
+  assert.deepEqual(plain, { agent: "plain", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null });
   meets("/agents/{agent_id}/learning", plain);
   const plainRun = await started(api, "plain");
   await follow(api, plainRun, ["completed"]);
@@ -386,9 +386,12 @@ test("a commit's notes are read once: a later page and the view at the same main
   assert.deepEqual([log2.items.map((c) => c.reason), log2.total], [["created by a person: b-two.md"], 3]);
   assert.deepEqual(reads(), [["log", "--skip=1", "--max-count=1"]]);
 
-  // The view at the same main: its notes as kept, its log's first page read.
+  // The view at the same main: its notes as kept, its log's first page read, and its skills and workflows listed once
+  // (one tree read; a folder with none reads no history for them). A second view reads its log's page alone.
   const view = (await api("GET", "/agents/paged/learning")).body;
-  assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length], [["c-three.md", "b-two.md", "a-one.md"], 3]);
+  assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length, view.skills, view.workflows], [["c-three.md", "b-two.md", "a-one.md"], 3, [], []]);
+  assert.deepEqual(reads().sort(), [["log", "--skip=0", "--max-count=20"], ["ls-tree"]]);
+  await api("GET", "/agents/paged/learning");
   assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
 });
 

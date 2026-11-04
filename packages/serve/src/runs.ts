@@ -4,7 +4,7 @@
 // back to the agent store (`carryBack`), and it is finished. A run whose process went before the run ended is opened
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -42,7 +42,7 @@ import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
-import { keyRefusal, redacted, redactedLive, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
@@ -177,10 +177,15 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
   row.state !== "escalated" ? null : (meta?.review ?? { kind: null, node: null, reason: row.summary ?? "The workflow escalated." });
 
 /** One run as this server holds it. */
+/** A run's answer or output as a view served it: `out`, redacted from `input` over the held values whose digest is `keys`. */
+type Served = { keys: string; input: unknown; out: unknown };
+
 export type Run = {
   id: string;
   /** The values of the secrets each launch handed its process: what its errors never show, a key rotated since included. */
   handed?: Set<string>;
+  /** What a view last served of its answer and its workflow output (runs.ts servedOnce), with what it was made from. */
+  served?: { answer?: Served; output?: Served };
   agentId: string;
   kind: RevisionKind;
   revision: string;
@@ -908,6 +913,30 @@ export class Runs {
    *  no loopback address. */
   private shown(run: Run, text: string): string {
     return withoutLoopback(redacted(text, this.refusedValues(run)));
+  }
+
+  /** A run's answer as serve serves it: no held secret, never cut (redactedAnswer). Loopback addresses stay: an answer is
+   *  the model's own words, and a local address there can be what the person asked about. */
+  private servedAnswer(run: Run, text: string | null): string | null {
+    return text ? (this.servedOnce(run, "answer", text, (values) => redactedAnswer(text, values)) as string) : text;
+  }
+
+  /** A workflow run's output as serve serves it: each string in it as servedAnswer, its shape kept. */
+  private servedOutput(run: Run, output: unknown): unknown {
+    return output === null ? null : this.servedOnce(run, "output", output, (values) => redactedOutput(output, values));
+  }
+
+  /** `redact(values)` over the values `run` holds, read once per input and held value set: a console polls a run's
+   *  view, and an answer a run was made to write can be large. The run keeps the one it served last, of each slot; a key
+   *  saved or deleted changes the values' digest, and the next view redacts again. */
+  private servedOnce(run: Run, slot: "answer" | "output", input: unknown, redact: (values: string[]) => unknown): unknown {
+    const values = this.refusedValues(run);
+    const keys = createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex");
+    const last = run.served?.[slot];
+    if (last && last.keys === keys && last.input === input) return last.out;
+    const out = redact(values);
+    run.served = { ...run.served, [slot]: { keys, input, out } };
+    return out;
   }
 
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
@@ -2237,7 +2266,8 @@ export class Runs {
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
       ended_at: endedAt,
-      result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
+      // An answer is served with no held secret in it, whole (key-refusal.ts redactedAnswer); the stored one stays as written.
+      result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       pending: status === "input_required" && state === "waiting" ? pendingOf(run.rows) : null,

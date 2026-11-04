@@ -1342,11 +1342,23 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
   as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
   `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
-  settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
+  settings off, so a `.claude/` in the work never loads). The pin keeps the section the run
   reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
   (`learned`), is read as that server gave it.
 - `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
   secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
+- The skills the agent wrote, each a folder `skills/<name>/` on `main` with its `SKILL.md`, join the revision's own:
+  each is copied, every file of it, into the run's `work/.agents/skills/<name>/`, and the run gets it as it gets the
+  revision's (pi and codex read each `SKILL.md` in their prompt, claude-agent loads the ones its adapter takes through
+  its Skill tool). A skill named like one of the revision's is the revision's, and only an active skill is served: one
+  whose `SKILL.md` front matter says `status: pending` (held for its owner's OK), or any status but `active`, is not.
+  The learned ones get 256 KiB, every file of each together, and never more than the revision's skills leave of the 1
+  MiB an adapter takes of a run's skills in all, so they never push the revision's back into the prompt: the one
+  changed last on `main` first, each whole while it fits. One that does not fit, or holds one of the server's secrets,
+  is left out. The pin names the files of the ones laid (`skills`) and the ones left out (`skills_left_out`), and a
+  follow-up gets them laid again, fresh, whatever the run wrote over them; one the work no longer holds whole when the
+  run's process starts is left out of what its harness gets, and the run goes on. A skill whose name or files are out
+  of shape is not read, and a symbolic link or a submodule at `skills/` or anywhere under it is a learning fault.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -1547,13 +1559,21 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
   with no held figure (below). Every later request of the run is refused. `claude-agent` and `codex` runs also continue
   after a cut, at the worst case the cap held, as pi does.
 
-On pi a request stopped before its end (`POST /runs/{id}/stop`, or a summary that failed) or cut by a crash (its process
-gone mid-request) counts at the worst case the cap held for it, the most the provider can have billed, never at the cut
-stream's own usage (the Responses API reports none until the end). The figure is written on the request's start mark
-(`agentrun.request_started`) and on the end mark of one stopped (`agentrun.request_ended`), as `heldUsd`, so a later
-process counts it the same: a capped pi run stopped and sent another message, or opened again after its process died,
-goes on while its cap allows. A cut request from a store written before serve kept the figure has none, and is a spend
-no one knows.
+A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
+word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
+calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
+(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
+usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
+output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
+went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
+response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
+request cut by a crash (its process gone mid-request).
+
+On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
+of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
+request's `runner.request` record (its worst case) and, for one stopped, on its `runner.turn`. A later process counts it
+the same: a capped run stopped and sent another message, or opened again after its process died, goes on while its cap
+allows. A cut request from a store written before serve kept the figure has none, and is a spend no one knows.
 
 A refusal says so in plain words, with the numbers, on the run's error and on its timeline row: "Not sent: this run's
 cap of $0.01 can't cover one Claude Sonnet 5.5 request (at least $0.03). Raise the cap to at least $0.03 to run it.", and
@@ -1613,11 +1633,14 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Safety
 
 - An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
-  environment's key-shaped variables and the keys saved on this server, and the keys [secretlint](https://github.com/secretlint/secretlint)'s
+  environment's key-shaped variables and the keys saved on this server, the secrets this server made and keeps (its API
+  token, its door token, its sign-in secret, and its webhook's signing secret when the seal key opens it; when it does
+  not, the CLI's import says so once, on stderr, and goes on), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
-  it removed. Known key formats are removed. Other secrets in your session history, like passwords in config files, are
-  imported as they are.
+  distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
+  config files, are imported as they are. So are a key-shaped value this server did not make (a `whsec_` secret from
+  another service) and a run's own door token.
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
   a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
   providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev

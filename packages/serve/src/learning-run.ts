@@ -20,7 +20,7 @@ import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-d
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -295,8 +295,10 @@ export class LearningRuns {
       let failed = "failed" in seeded ? seeded.failed : undefined;
       if ("seed" in seeded) {
         try {
-          await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown() });
+          const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
+          const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own });
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
+          for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
         } catch (error) {
           warn(started.runId, `starts with nothing learned: ${(error as Error).message}`);
           failed = said.stopped(STOPPED.notCopied);
@@ -390,15 +392,16 @@ export class LearningRuns {
   }
 
   /** A run that learns, opened again for a follow-up, before its process starts: `work/.learning/` laid again from its
-   *  seed where the run took it away, so the follow-up finds the notes its instructions name where they say. A fault
-   *  leaves it without. */
+   *  seed where the run took it away, so the follow-up finds the notes its instructions name where they say, and the
+   *  learned skills its pin names laid again, fresh, so its process reads each where it was. A fault leaves it without. */
   async onReopen(run: Run): Promise<void> {
     await learningTestHooks.beforeReopen?.(run.dir);
     const dir = join(run.dir, "work", LEARNED_DIR);
-    if (!run.meta.reflect || (await lstat(dir).then(() => true, () => false))) return;
+    if (!run.meta.reflect) return;
     try {
       const pin = await readPin(run.dir);
-      if (pin) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed), this.shown());
+      if (pin && !(await lstat(dir).then(() => true, () => false))) await layLearned(dir, await seedAt(this.options.agents.dir, run.agentId, pin.seed), this.shown());
+      if (pin) await layPinnedSkills(join(run.dir, "work"), pin, () => skillsAt(this.options.agents.dir, run.agentId, pin.seed));
     } catch (error) {
       warn(run.id, `opens again without its copy of what its agent learned: ${(error as Error).message}`);
     }
@@ -609,8 +612,9 @@ export class LearningRuns {
       const seed = await seedAt(this.options.agents.dir, run.agentId, pin.seed);
       await this.kernel.save(run);
       const { reflectPrompt } = await import("./learn/index.js");
+      const tools = await this.draftTools(run);
       // The one call that sends the end-of-run turn, with its origin.
-      await this.kernel.toLiveDoor(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir: LEARNED_DIR, active: Object.keys(seed.notes).length }), whenBusy: "followUp" }, REFLECT_ORIGIN);
+      await this.kernel.toLiveDoor(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir: LEARNED_DIR, active: Object.keys(seed.notes).length, tools }), whenBusy: "followUp" }, REFLECT_ORIGIN);
       end = await this.reflectEnd(run, Date.parse(reflect.deadline));
     } catch (error) {
       if (!this.kernel.live(run) || run.cancel) return;
@@ -674,6 +678,15 @@ export class LearningRuns {
     return once(this.proposing, run.id, () => this.propose(run));
   }
 
+  /** The tools a run's workflow draft may name: its revision's granted tools a workflow node runs here (tools.ts
+   *  learnedWorkflowTools); none for a revision not found, so a draft that names one is refused. */
+  private async draftTools(run: Run): Promise<string[]> {
+    const known = await this.options.agents.revision(run.agentId, run.revision);
+    if (known?.revision.kind !== "agentic") return [];
+    const { learnedWorkflowTools } = await import("./tools.js");
+    return learnedWorkflowTools(known.revision.body.tools);
+  }
+
   private async propose(run: Run): Promise<void> {
     try {
       await learningTestHooks.beforePropose?.(run.dir);
@@ -681,9 +694,9 @@ export class LearningRuns {
       if (!pin) throw new Error("the run has no learning pin");
       const { proposeRun } = await import("./propose.js");
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
-      // run, and its own tokens.
-      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run) });
-      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes));
+      // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.
+      const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), tools: await this.draftTools(run) });
+      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows));
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);
       else if (proposed.reason === "unparsed") {
         warn(run.id, `its end-of-run turn's answer was not read: ${proposed.detail}`);
@@ -729,7 +742,7 @@ export class LearningRuns {
         const { instructions, harness, model, thinking } = known.revision.body;
         const env = this.hostEnv();
         const gradeModel = gradeModelOf(env, this.options.gradeModel);
-        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
+        const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("file" in judged) return await end("dropped", judged.reason, judged.reason === "screen" ? said.screen : said.stopped(STOPPED.screenDown));
         if ("error" in judged) {
@@ -754,9 +767,13 @@ export class LearningRuns {
       // A note the user asked for whose rule is risky waits on main for their OK: named here, and no run reads it yet.
       const waiting = new Set((kept.verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
       const pending = proposal.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
-      // What it learned: the notes it added that runs read, a note that waits for its OK not among them.
+      // What it learned: the notes it added that runs read, a note that waits for its OK not among them; and its skill
+      // and workflow draft, each pending when it waits.
       const learned = learnedOf(proposal).filter(({ file }) => !waiting.has(file));
-      await end("merged", null, redactSecrets(said.merged(learned, pending), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}) });
+      const made = (suffix: string): LearnedFile[] => (proposal.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
+      const skills = made("/SKILL.md");
+      const workflows = made("/workflow.json");
+      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows]), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;
