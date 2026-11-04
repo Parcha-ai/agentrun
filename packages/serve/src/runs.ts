@@ -1905,6 +1905,10 @@ export class Runs {
         storeError(error, "run");
       }
       run.outcome = undefined;
+      // With its outcome cleared the run reads open, so a message that comes in before the launch below no longer waits
+      // for this reopen: it may launch the process itself. Whichever launch comes first is the follow-up's (launch()
+      // takes the flag).
+      run.followUpOpen = true;
       run.settled = false;
       run.endedAt = undefined;
       run.error = undefined;
