@@ -260,3 +260,41 @@ test("an event stream that does not open is opened again and the turn completes;
   assert.match(ended.error, /OpenCode's event stream did not open 3 times \(no server\.connected within 500 ms\)/);
   assert.equal(never.provider.seen.length, 0, "nothing was asked of the model");
 });
+
+test("a session closed while OpenCode's event stream has not opened yet stops at once: nothing is left waiting", { timeout: 60_000 }, async () => {
+  // The stream never answers, and its tries wait long: close comes in the middle of the first.
+  const { adapter: a, traced } = adapter([{ text: "never" }], { standInEnv: { FAKE_OPENCODE_STALL_EVENTS: "3" }, options: { eventConnectMs: 30_000 } });
+  const s = await session(a, memorySessionStore(), spec([]));
+  await s.session.send("hi");
+  for (let i = 0; !traced().some((l) => l.stalled); i++) {
+    assert.ok(i < 200, "the stand-in got the stream's request");
+    await sleep(25);
+  }
+  const closed = await Promise.race([s.session.close().then(() => "closed"), sleep(10_000).then(() => "still waiting after 10 s")]);
+  assert.equal(closed, "closed");
+  const ended = await Promise.race([s.session.turnEnd(), sleep(5_000).then(() => "no end")]);
+  assert.equal(ended.status, "interrupted", JSON.stringify(ended));
+});
+
+test("an answer given while the event stream was down reaches the session when it is opened again: the text, then the turn's end", { timeout: 60_000 }, async () => {
+  const said = [];
+  const { adapter: a, traced } = adapter([{ text: "Said while no one listened." }], { standInEnv: { FAKE_OPENCODE_DROP_EVENTS_IN_TURN: "1" }, options: { log: (message) => said.push(message) } });
+  const s = await session(a, memorySessionStore(), spec([]));
+  await s.session.send("hi");
+  assert.deepEqual(await s.session.turnEnd(), { status: "completed" });
+  await s.session.close();
+  assert.ok(traced().some((l) => l.dropped), "the stand-in dropped the stream mid-turn");
+  assert.ok(said.some((m) => m.includes("event stream is opened again")), "the stream was opened again");
+  assert.equal(s.events.filter((e) => e.type === "text").map((e) => e.delta).join(""), "Said while no one listened.", "the answer's text reached the session");
+});
+
+test("a message OpenCode refuses ends the turn failed with OpenCode's own status and reason", { timeout: 60_000 }, async () => {
+  const { adapter: a, provider: p } = adapter([{ text: "never" }], { standInEnv: { FAKE_OPENCODE_REJECT_PROMPT: "1" } });
+  const s = await session(a, memorySessionStore(), spec([]));
+  await s.session.send("hi");
+  const ended = await s.session.turnEnd();
+  await s.session.close();
+  assert.equal(ended.status, "failed");
+  assert.match(ended.error, /OpenCode refused the message \(400\): .*agent hands is not configured/);
+  assert.equal(p.seen.length, 0, "nothing reached the model");
+});

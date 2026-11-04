@@ -13,6 +13,9 @@
 //    rebuilds the session from it in a fresh process.
 // FAKE_OPENCODE_EXIT_AFTER_CALL=<tool>: the process exits (as if killed) once that tool's MCP call has started.
 // FAKE_OPENCODE_STALL_EVENTS=<n>: the process's first n event-stream requests get no answer at all.
+// FAKE_OPENCODE_DROP_EVENTS_IN_TURN=1: the event stream ends as the first turn starts, and a new one is answered only
+//   once that turn has answered: its text and its end come while no one listens.
+// FAKE_OPENCODE_REJECT_PROMPT=1: prompt_async answers 400 with a reason, and runs nothing.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -25,6 +28,9 @@ const agentName = config.default_agent ?? "hands";
 const prompt = config.agent?.[agentName]?.prompt ?? "";
 const exitAfter = process.env.FAKE_OPENCODE_EXIT_AFTER_CALL;
 let stalls = Number(process.env.FAKE_OPENCODE_STALL_EVENTS ?? 0);
+let dropInTurn = process.env.FAKE_OPENCODE_DROP_EVENTS_IN_TURN === "1";
+/** While set, a new event-stream request waits for it before it is answered. */
+let held;
 const trace = process.env.FAKE_OPENCODE_TRACE;
 const note = (line) => trace && appendFileSync(trace, `${JSON.stringify({ pid: process.pid, ...line })}\n`);
 
@@ -138,6 +144,16 @@ async function loop(sid, user) {
   running.set(sid, controller);
   const signal = controller.signal;
   status(sid, "busy");
+  let release;
+  if (dropInTurn) {
+    dropInTurn = false;
+    held = new Promise((resolve) => (release = resolve));
+    for (const res of [...subscribers]) {
+      subscribers.delete(res);
+      res.end();
+    }
+    note({ dropped: "/event" });
+  }
   let error;
   try {
     const listed = await mcp("tools/list", {}, signal);
@@ -182,6 +198,10 @@ async function loop(sid, user) {
   }
   if (error) emit("session.error", { sessionID: sid, error });
   status(sid, "idle");
+  if (release) {
+    held = undefined;
+    release();
+  }
 }
 
 const json = (res, status, body) => {
@@ -203,6 +223,7 @@ const server = createServer(async (req, res) => {
       note({ stalled: "/event" });
       return; // no headers, no body: the client's own timeout ends it
     }
+    if (held) await held;
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     res.write(`data: ${JSON.stringify({ id: id("evt"), type: "server.connected", properties: {} })}\n\n`);
     subscribers.add(res);
@@ -239,6 +260,9 @@ const server = createServer(async (req, res) => {
     if (action === "abort" && req.method === "POST") {
       running.get(sid)?.abort();
       return json(res, 200, true);
+    }
+    if (action === "prompt_async" && req.method === "POST" && process.env.FAKE_OPENCODE_REJECT_PROMPT === "1") {
+      return json(res, 400, { name: "BadRequest", data: { message: "agent hands is not configured" } });
     }
     if (action === "prompt_async" && req.method === "POST") {
       if (running.has(sid)) return json(res, 409, { error: "busy" });

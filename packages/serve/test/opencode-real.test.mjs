@@ -7,6 +7,7 @@
 // Without the pinned binary this skips; with AGENTRUN_OPENCODE_REQUIRE_BINARY=1 (CI) it fails.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -114,4 +115,44 @@ test("twenty follow-ups on the pinned OpenCode, each a new process that took the
   const last = JSON.stringify(seen[19].input);
   for (let i = 1; i <= 20; i++) assert.ok(last.includes(`Message ${i}.`), `the twentieth process has message ${i} back`);
   assert.equal(events.filter((e) => e.type === "text").map((e) => e.delta).join(" "), Array.from({ length: 20 }, (_, i) => `Answer ${i + 1}.`).join(" "));
+});
+
+/** A port free on 127.0.0.1 now. */
+const freePort = () => new Promise((resolve, reject) => {
+  const probe = createServer();
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const { port } = probe.address();
+    probe.close(() => resolve(port));
+  });
+});
+
+test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try", { skip, timeout: 600_000 }, async (t) => {
+  // The pinned binary, started by the adapter's stand-in hook on one port for every drive: each new process listens where
+  // the killed one before it did. A connection kept from an earlier drive is then a connection to a dead process.
+  process.env.AGENTRUN_OPENCODE_STANDIN = "1";
+  t.after(() => delete process.env.AGENTRUN_OPENCODE_STANDIN);
+  const port = await freePort();
+  const standIn = { command: "/bin/sh", args: ["-c", `exec "$0" serve --hostname 127.0.0.1 --port ${port}`, findOpenCode().path] };
+  const seen = [];
+  const fetch = async (_url, init) => {
+    const i = seen.length;
+    seen.push(JSON.parse(init.body));
+    return new Response(answer({ text: `Answer ${i + 1}.` }, i), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const reopened = [];
+  const a = openCodeAdapter({ model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "provider-secret" }, sessionsDir: join(ROOT, "same-port"), fetch, standIn, log: (message, fields) => message.includes("event stream is opened again") && reopened.push(fields?.why) });
+  const store = memorySessionStore();
+  const io = { writer: await store.open("same-port"), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, cwd: mkdtempSync(join(ROOT, "same-port-work-")), onEvent: () => {} };
+  const session = await a.open({ key: "same-port", label: "task", system: ["You answer."], tools: [], context: "fresh" }, io);
+  const ends = [];
+  for (let i = 1; i <= 20; i++) {
+    await session.send(`Message ${i}.`);
+    ends.push((await session.turnEnd()).status);
+  }
+  await session.close();
+  t.diagnostic(`${ends.filter((e) => e === "completed").length}/20 drives completed on one port; ${reopened.length} event streams opened again`);
+  assert.deepEqual(ends, Array(20).fill("completed"));
+  assert.deepEqual(reopened, [], "every drive's stream opened at the first try");
+  assert.equal(seen.length, 20, "one request per turn");
 });
