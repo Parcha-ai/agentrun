@@ -570,6 +570,14 @@ describe("App, the no-model bar", () => {
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
+  it("says to name the gateway's model in AGENT_MODEL, with no OpenRouter promise and no Settings link, where the server sends its models to a gateway", async () => {
+    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }));
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart.");
+    expect(bar(host)?.querySelector("a")).toBeNull();
+  });
+
   it("names AGENT_MODEL when it is the problem, has no Settings link where the server keeps no keys, and is not on the first screen, which has the key card", async () => {
     serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), false);
     const host = await mount("#/runs");
