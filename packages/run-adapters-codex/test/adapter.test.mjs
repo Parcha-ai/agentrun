@@ -458,3 +458,34 @@ test("the adapter ends an aborted turn only through the kernel's abortedOutcome,
   assert.match(source, /abortedOutcome\(current\.signal, io\.signal\)/);
   assert.doesNotMatch(source, /status:\s*"interrupted"/);
 });
+
+test("a turn its session interrupted (a stop) is open to the next process; settled, it ends interrupted, sends nothing and stays ended, and the next message is a turn of its own", async () => {
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:stop', label: 'w', system: [], tools: [wait], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { adapter: codex } = adapter(['call wait {}']);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  await reached;
+  const ending = a.turnEnd();
+  await a.interrupt();
+  assert.equal((await ending).status, 'interrupted');
+  await a.close();
+
+  const { adapter: again } = adapter([]);
+  const b = await again.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn', 'the stopped turn is open to the next process');
+  await b.settleOpenTurn();
+  assert.equal(b.state, 'idle');
+  await b.send('and now?');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+
+  const { adapter: later } = adapter([]);
+  const c = await later.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(c.state, 'idle', 'settled for good: no open turn for the process after');
+  await c.close();
+});
