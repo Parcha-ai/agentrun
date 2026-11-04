@@ -85,6 +85,34 @@ export function boxLimitsOf(env: NodeJS.ProcessEnv): BoxLimits {
   return { cpus: cpus === undefined ? DEFAULT_BOX_CPUS : Number(cpus), memory: memory ?? DEFAULT_BOX_MEMORY, pidsLimit: pids === undefined ? DEFAULT_BOX_PIDS : Number(pids) };
 }
 
+/** The setting that names the hosts a box may reach: a comma list of hosts, each a name or `*.` and a name, which
+ *  replaces the default list; `none` for no network at all. Unset or empty, the default. */
+export const BOX_ALLOW_ENV = "AGENTRUN_BOX_ALLOW";
+/** The hosts a box reaches when the setting names none: the package registries pip and npm (and yarn) install from, and
+ *  GitHub for a clone or an archive. */
+export const DEFAULT_BOX_ALLOW: readonly string[] = Object.freeze(["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "github.com", "codeload.github.com"]);
+/** The most hosts the list may hold: Daytona's own limit on a sandbox's domain list. */
+export const MAX_BOX_ALLOW = 100;
+/** A host name, or `*.` and one: letters, digits and hyphens in dotted labels, the last one starting with a letter, so no
+ *  IP address is one. */
+const ALLOW_HOST = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** The hosts a box may reach, from `env`'s AGENTRUN_BOX_ALLOW: its list, lower-cased, each host once; the default list when
+ *  unset or empty; `none` for no network. `*`, an IP address, a CIDR, a port, a URL, or more than 100 hosts throws, saying
+ *  what the setting takes: the start checks it (startServe), so no run meets one. */
+export function boxAllowOf(env: NodeJS.ProcessEnv): readonly string[] | "none" {
+  const value = (env[BOX_ALLOW_ENV] ?? "").trim();
+  if (!value) return DEFAULT_BOX_ALLOW;
+  if (value.toLowerCase() === "none") return "none";
+  const hosts = [...new Set(value.split(",").map((host) => host.trim().toLowerCase()).filter(Boolean))];
+  const takes = "a comma list of host names (such as pypi.org or *.pythonhosted.org), or none for no network";
+  const bad = hosts.find((host) => !ALLOW_HOST.test(host));
+  if (bad !== undefined) throw new Error(`${BOX_ALLOW_ENV} is ${takes}: ${JSON.stringify(bad)} is not a host name${bad === "*" ? " (a box never reaches every host)" : ""}`);
+  if (hosts.length === 0) throw new Error(`${BOX_ALLOW_ENV} is ${takes}; it is ${JSON.stringify(value)}`);
+  if (hosts.length > MAX_BOX_ALLOW) throw new Error(`${BOX_ALLOW_ENV} names ${hosts.length} hosts; it takes at most ${MAX_BOX_ALLOW}`);
+  return Object.freeze(hosts);
+}
+
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
@@ -313,10 +341,16 @@ async function relayedRunBox(root: string, runDir: string, runId: string, contex
   return { box: attached.value, made: given.made };
 }
 
-/** The spec of a run's remote box: its work/ comes with its seed, never a mount. */
-const remoteSpec = (runId: string): BoxSpec => ({
-  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
+/** The spec of a run's remote box: its work/ comes with its seed, never a mount; its network the hosts `allow` names, or
+ *  none. */
+const remoteSpec = (runId: string, allow: readonly string[] | "none"): BoxSpec => ({
+  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" ? "none" : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
 });
+
+/** The refusals of a create with a host list that say the provider cannot keep one here, so a box with no network is made
+ *  in its place: Daytona did not keep the list (`unsupported`), or refused it (`invalid`, `unauthorized`: a tier that takes
+ *  none). Never a refusal a closed box would meet too, such as a timeout. */
+const NO_LIST: ReadonlySet<string> = new Set(["unsupported", "invalid", "unauthorized"]);
 
 type SyncMark = { box: string; mark: Manifest };
 const markOf = async (runDir: string): Promise<SyncMark | undefined> => {
@@ -326,26 +360,38 @@ const markOf = async (runDir: string): Promise<SyncMark | undefined> => {
 const keepMark = (runDir: string, mark: SyncMark) => writeDurable(join(runDir, BOX_SYNC_FILE), `${JSON.stringify(mark)}\n`);
 
 /** The server's side of a remote box: run `run`'s box, found by its label or made, with its work/ seeded once (its mark
- *  says so); its id, and whether it was made now. A found box whose network is not closed is destroyed and made again;
- *  a box whose seed fails is destroyed, and the call fails. */
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>): Promise<{ id: string; made: boolean }> {
+ *  says so); its id, whether it was made now, and, when the provider could not keep the host list `allow` names, why
+ *  (`noList`, its refusal's code). A box is made with that list, or with no network when `allow` is `none`; a create the
+ *  provider refuses for its list (NO_LIST) is made again with no network, never open. A found box whose network is more
+ *  than asked (open, unknown, or a list when `none` was asked) is destroyed and made again; one with no network is kept.
+ *  A box whose seed fails is destroyed, and the call fails. */
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>, allow: readonly string[] | "none" = "none"): Promise<{ id: string; made: boolean; noList?: string }> {
+  let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
-  if (box && box.facts().network !== "none") {
+  let noList: string | undefined;
+  const network = box?.facts().network;
+  if (box && network !== "none" && network !== asked) {
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
   }
   if (!box) {
-    const created = await boxes.create(remoteSpec(run.id), context);
+    let created = await boxes.create(remoteSpec(run.id, allow), context);
+    if (!created.ok && asked === "allowlist" && NO_LIST.has(created.error.code)) {
+      noList = created.error.code;
+      asked = "none";
+      await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
+      created = await boxes.create(remoteSpec(run.id, "none"), context);
+    }
     if (!created.ok) {
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
       throw new Error(`the run's box could not be made: ${created.error.message}`);
     }
     box = created.value;
     made = true;
-    if (box.facts().network !== "none") {
+    if (box.facts().network !== asked) {
       await box.destroy(context);
-      throw new Error("the run's box was made with its network open, so it is not used");
+      throw new Error(`the run's box was made with its network ${box.facts().network ?? "unknown"}, not ${asked === "none" ? "closed" : "its host list"}, so it is not used`);
     }
   }
   // A box found without its seed's mark was made by a server that went down before it seeded it: seeded now.
@@ -358,7 +404,7 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     }
     await keepMark(run.dir, { box: box.id, mark: seeded.value.mark });
   }
-  return { id: box.id, made };
+  return { id: box.id, made, ...(noList ? { noList } : {}) };
 }
 
 /** What a pull of a remote box brought back; undefined when the run has no box (none made, or it is gone). */
