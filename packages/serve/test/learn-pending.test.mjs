@@ -121,6 +121,53 @@ test("approving a pending note takes the owner's password session in the console
   assert.ok(existsSync(join(copyOf(data, next), "paperdepot24-first.md")));
 });
 
+test("approving a pending note that supersedes one marks it as a merge would, in the approval's one commit: an active note it replaces is superseded and leaves MEMORY.md, and one a person retired meanwhile stays as it is", { timeout: 150_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data, port } = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
+  const origin = `http://127.0.0.1:${port}`;
+  const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
+  assert.equal(setup.status, 201, setup.text);
+  const cookie = cookieOf(setup);
+  // The folder made by a first run, then main as two runs' merges and a person's retire leave it: two notes wait, each
+  // replacing one, merged while that one was active; one of those a person has retired since.
+  await made(api, learner("keeper"));
+  await ended(api, await started(api, "keeper"));
+  const repo = repoOf(data, "keeper");
+  const SOURCES = note("Quote sources", "Name the page each figure came from", "Name the page each figure came from.\n", "status: retired\n");
+  const SHORT = note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\norigin: you\nstatus: pending\n");
+  const CITED = note("Cite every figure", "Link the page each figure came from", "Link each figure's page beside it.\n", "supersedes: [quote-sources.md]\norigin: you\nstatus: pending\n");
+  const files = { "answer-in-tables.md": TABLES, "quote-sources.md": SOURCES, "answer-in-short-tables.md": SHORT, "cite-every-figure.md": CITED, "MEMORY.md": "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables\n" };
+  for (const [file, text] of Object.entries(files)) writeFileSync(join(repo, file), text);
+  git(repo, ["add", "--", ...Object.keys(files)]);
+  git(repo, ["commit", "-q", "-m", "merged and retired"]);
+  const approve = async (file) => {
+    const etag = (await api("GET", `/agents/keeper/learning/files/${file}`)).headers.get("etag");
+    const res = await call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/${file}/approve`, headers: { ...json, cookie, origin, "if-match": etag }, body: {} });
+    assert.equal(res.status, 200, res.text);
+  };
+  const changed = () => git(repo, ["diff-tree", "-r", "--name-status", "--no-commit-id", "main"]).split("\n");
+
+  // An active note replaced: superseded by the approved one, out of MEMORY.md, in the approval's own commit.
+  const before = git(repo, ["rev-parse", "main"]);
+  await approve("answer-in-short-tables.md");
+  assert.equal(git(repo, ["rev-parse", "main^"]), before, "one commit");
+  assert.equal(git(repo, ["log", "-1", "--format=%s", "main"]), "learning: approved by a person: answer-in-short-tables.md");
+  assert.deepEqual(changed(), ["M\tMEMORY.md", "M\tanswer-in-short-tables.md", "M\tanswer-in-tables.md"]);
+  assert.equal(git(repo, ["show", "main:answer-in-short-tables.md"]), note("Answer in short tables", "The user wants answers as short tables", "Keep each table to five rows.\n", "supersedes: [answer-in-tables.md]\norigin: you\n").trimEnd());
+  assert.equal(git(repo, ["show", "main:answer-in-tables.md"]), note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: superseded\nsuperseded_by: answer-in-short-tables.md\n").trimEnd());
+  assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in short tables](answer-in-short-tables.md) — The user wants answers as short tables");
+  const [top] = (await api("GET", "/agents/keeper/learning/log")).body.items;
+  assert.deepEqual([top.by, top.files.sort()], [{ user: true, via: "console" }, ["MEMORY.md", "answer-in-short-tables.md", "answer-in-tables.md"]]);
+
+  // A replaced note a person retired meanwhile: it stays retired, as it was, and the approval changes only its own note
+  // and MEMORY.md.
+  const retired = git(repo, ["rev-parse", "main:quote-sources.md"]);
+  await approve("cite-every-figure.md");
+  assert.deepEqual(changed(), ["M\tMEMORY.md", "M\tcite-every-figure.md"]);
+  assert.equal(git(repo, ["rev-parse", "main:quote-sources.md"]), retired, "the retired note is unchanged");
+  assert.deepEqual(git(repo, ["show", "main:MEMORY.md"]).split("\n").sort(), ["- [Answer in short tables](answer-in-short-tables.md) — The user wants answers as short tables", "- [Cite every figure](cite-every-figure.md) — Link the page each figure came from"]);
+});
+
 test("with accounts off nothing approves, a page cookie the token mints included, and capabilities say so", { timeout: 150_000 }, async (t) => {
   const server = await learnedPending(t);
   const { api, port, repo } = server;
