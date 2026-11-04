@@ -1082,7 +1082,9 @@ test("a notice and its record are one write: the outbox holds the end and the wa
   assert.equal(next.emit("run.ended", run, later), "queued");
   await until(() => hook.got.length === 3, "the new end sent");
   await sleep(200);
-  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.needs_input", "run.ended", "run.ended"]);
+  // The first two were queued together, and each message goes on its own tries: they land in either order.
+  const types = hook.got.map((r) => JSON.parse(r.body).type);
+  assert.deepEqual([types.slice(0, 2).sort(), types[2]], [["run.ended", "run.needs_input"], "run.ended"]);
   assert.equal(ledgerOf(dir).run_1.ended, later);
 });
 
@@ -1251,7 +1253,9 @@ test("a run still waiting on the same question a day later, its message gone fro
   webhooks.emit("run.ended", { ...waiting, status: "completed", pending: undefined }, end);
   await until(() => hook.got.length >= 3, "the new wait and the end");
   await sleep(300);
-  assert.deepEqual(hook.got.map((r) => JSON.parse(r.body).type), ["run.ended", "run.needs_input", "run.ended"]);
+  // The new wait and the end were queued together, and each message goes on its own tries: they land in either order.
+  const types = hook.got.map((r) => JSON.parse(r.body).type);
+  assert.deepEqual([types[0], types.slice(1).sort()], ["run.ended", ["run.ended", "run.needs_input"]]);
   assert.deepEqual(ledgerOf(dir).waiting, { wait: "row_12", ended: end }, "the newest wait, and the end past it");
 });
 
