@@ -115,9 +115,11 @@ export type TimelineOptions = {
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
    *  to its workspace. The entries, the call's arguments and its input preview, are not changed. Default: as given. */
   path?: (path: string) => string;
-  /** What an error row says, and what a tool's result row shows of its output, made safe by the host before the row is
-   *  cut (its secrets taken out): applied to an error row's summary and text, and to a tool's whole output before its
-   *  summary and preview are taken from it, so a cut never falls inside what it takes out. Default: as given. */
+  /** What a row shows, made safe by the host before the row is cut (its secrets taken out): an error row's summary and
+   *  text; a tool's whole output and its details before its label, summary and preview are taken from them; each string
+   *  of a call's arguments where the call is first seen; a thinking block and a text block whole, settled or as they
+   *  stream (a streaming block's last word is held back until it ends). So a cut never falls inside what it takes out.
+   *  Default: as given. */
   redact?: (text: string) => string;
 };
 
@@ -451,6 +453,17 @@ function createProjector(options: TimelineOptions) {
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
   /** Text as the host's `redact` makes it (as given without one). */
   const redactText = (text: string): string => (options.redact && text ? options.redact(text) : text);
+  /** A value (a call's arguments, a result's details) with each of its strings as the host's `redact` makes it, so a
+   *  label, a preview or an answer taken from it holds none of what redaction takes out. */
+  const redactValue = (value: unknown): unknown => {
+    if (!options.redact) return value;
+    if (typeof value === "string") return redactText(value);
+    if (Array.isArray(value)) return value.map(redactValue);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactValue(item)]));
+    return value;
+  };
+  /** A call's arguments as its rows may show them: redacted once, where the call is first seen (redactValue). */
+  const argsOf = (args: Obj): Obj => (options.redact ? (redactValue(args) as Obj) : args);
   /** An outcome's words as the summary shows them: its verdict (`failed:`, `refused:`) as read, and only what follows it
    *  redacted, so a redaction that takes the whole detail still leaves the verdict, as the row's status says. */
   const saidOf = (text: string): string => {
@@ -459,7 +472,8 @@ function createProjector(options: TimelineOptions) {
   };
   /** A result as its rows show it: its whole output redacted once, which its label, summary and preview are all taken
    *  from (resultRow); its details and error flag as they came. */
-  const shownOf = (view: ToolResultView): ToolResultView => (options.redact && view.text ? { ...view, text: options.redact(view.text) } : view);
+  const shownOf = (view: ToolResultView): ToolResultView =>
+    options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
@@ -541,9 +555,9 @@ function createProjector(options: TimelineOptions) {
           provisional.delete(conv);
         }
         const first = (type: string) => blocks.findIndex((block) => block.type === type);
-        const thinking = scrubUrls(textOf(message, "thinking", "thinking"));
+        const thinking = scrubUrls(redactText(textOf(message, "thinking", "thinking")));
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
-        const text = textOf(message);
+        const text = redactText(textOf(message));
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
         // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
         // say. A message with no text block (a request the adapter bridge writes without content) shows none.
@@ -566,7 +580,7 @@ function createProjector(options: TimelineOptions) {
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
-          const args = obj(block.arguments) ?? {};
+          const args = argsOf(obj(block.arguments) ?? {});
           if (BROWSER_OPENERS.has(name) && !browsers.has(conv)) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "Opened a live browser session" }));
@@ -661,7 +675,8 @@ function createProjector(options: TimelineOptions) {
   }
 
   /** A nested call: seen live only, since pi drops its result when the caller settles. */
-  function nested(conv: number, id: string, parent: string, name: string, args: Obj): TimelineEvent {
+  function nested(conv: number, id: string, parent: string, name: string, raw: Obj): TimelineEvent {
+    const args = argsOf(raw);
     const round = calls.get(`${conv}:${parent}`)?.round;
     const use = useRow(conv, `${conv}:n:${id}`, id, name, args, { round, parent_tool_use_id: parent });
     calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
@@ -870,7 +885,11 @@ export function timelineReducer(options: TimelineOptions = {}) {
 
     const showStreams = () => {
       for (const kind of ["thinking", "text_block"] as const) {
-        const text = scrubUrls([...streams[kind].values()].join("").trim());
+        // What has streamed so far, redacted whole (redactedWhy) before a summary or a cut is taken. With a redactor, its
+        // last word is held back until whitespace follows it or the block ends: it may be the start of a key the next
+        // delta completes, which no redaction can know yet.
+        const raw = [...streams[kind].values()].join("").trim();
+        const text = scrubUrls(redactedWhy(options.redact ? raw.replace(/\S+$/, "").trimEnd() : raw));
         const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
