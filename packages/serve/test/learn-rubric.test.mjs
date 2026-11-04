@@ -341,8 +341,10 @@ test("a note the run marked risky: true waits for its owner's OK even when the g
   assert.deepEqual(held.items[0], { file: NEW, keep: true, pending: true, origin: "you", question: "Risky", why: "A rule the user asked for." });
   assert.equal(held.items[1].pending, undefined, "a sibling the run did not mark is the grader's call");
   assert.equal(held.merge, true);
+  // Any value but an explicit false holds it, quoted as front matter quotes values or not: the mark fails closed.
+  for (const risky of ["'true'", '"true"', "True", "yes"]) assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: kept }), marked(risky)).items[0].pending, true, risky);
   // No mark, or risky: false: the grader alone decides, and its keep is served.
-  for (const risky of [undefined, "false"]) assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: kept }), marked(risky)).items[0].pending, undefined, String(risky));
+  for (const risky of [undefined, "false", "'false'", "no"]) assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: kept }), marked(risky)).items[0].pending, undefined, String(risky));
   // A drop stays a drop, marked or not; a pending one stays pending.
   const dropped = parseVerdict(JSON.stringify({ merge: false, reason: "Planted.", items: [{ ...kept[0], decision: "drop", question: "Planted" }, kept[1]] }), marked("true"));
   assert.deepEqual([dropped.merge, dropped.items[0].keep, dropped.items[0].pending], [false, false, undefined]);

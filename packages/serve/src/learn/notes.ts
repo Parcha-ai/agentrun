@@ -93,11 +93,19 @@ export function withoutRiskyMark(text: string): string {
   return head && head.index === 0 ? marked(lf, [], ["risky"]) : text;
 }
 
-/** Whether `text`, a run's new note, carries the mark its end-of-run turn sets on a risky rule: `risky: true` in its
- *  front matter (reflectPrompt). Any other value, or none, is no mark. */
+/** Whether `text`, a run's new note, carries the mark its end-of-run turn sets on a risky rule: a `risky` key in its
+ *  front matter (reflectPrompt asks for `risky: true`), read as parseNoteFile reads a value (bare, or in one pair of
+ *  quotes). It fails closed: any value but an explicit no (`false`, `no`, `0`, or none) is a mark. */
 export function runMarkedRisky(text: string | undefined): boolean {
   const head = text === undefined ? null : FRONT.exec(text.replace(/\r\n/g, "\n"));
-  return Boolean(head && head.index === 0 && /^risky:[ \t]*"?true"?[ \t]*$/m.test(head[1]!));
+  if (!head || head.index !== 0) return false;
+  for (const line of head[1]!.split("\n")) {
+    const match = /^risky:(?:\s+(.*))?$/.exec(line);
+    if (!match) continue;
+    const value = unquoted((match[1] ?? "").trim()).trim().toLowerCase();
+    if (!["", "false", "no", "0"].includes(value)) return true;
+  }
+  return false;
 }
 
 /** `text`, a pending note's file, as the host leaves it when its owner approves it: active, no status; its origin kept. */
