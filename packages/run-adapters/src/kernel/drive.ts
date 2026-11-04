@@ -67,8 +67,42 @@ export function foldSession(runId: string, records: readonly SessionRecord[]): S
   return state;
 }
 
+/** What the next prompt or follow-up says of the ones a stop withdrew before any work on them began (`carry`). */
+export const stoppedLine = (count: number): string =>
+  count === 1 ? "(The message above was stopped before any work on it began.)" : "(The messages above were stopped before any work on them began.)";
+
+/** The texts each prompt or follow-up carries: those of the prompts and follow-ups withdrawn with `carry` since the one
+ *  before it, in order, with whatever each of them carried, so several stops before a message all reach it. A steer
+ *  neither carries nor is carried. */
+function carriedBy(state: SessionState): Map<string, string[]> {
+  const byId = new Map(state.submissions.map((s) => [s.id, s]));
+  const carried = new Map<string, string[]>();
+  let waiting: string[] = [];
+  for (const s of state.submissions) {
+    if (s.kind === "withdraw") {
+      const target = s.carry && s.target && state.withdrawn.has(s.target) ? byId.get(s.target) : undefined;
+      if (!target || (target.kind !== "prompt" && target.kind !== "followUp")) continue;
+      waiting.push(...(carried.get(target.id) ?? []), ...(target.text ? [target.text] : []));
+      carried.delete(target.id);
+    } else if (s.kind !== "steer" && waiting.length) {
+      carried.set(s.id, waiting);
+      waiting = [];
+    }
+  }
+  return carried;
+}
+
+/** The submissions the harness has yet to place, oldest first. A prompt or follow-up after a stop's withdraw carries the
+ *  stopped text first, then `stoppedLine`, then its own: the person's earlier words stay in the conversation, and the
+ *  stopped turn never runs on its own. */
 export function pendingSubmissions(state: SessionState): Submission[] {
-  return state.submissions.filter((s) => s.kind !== "withdraw" && !state.placed.has(s.id) && !state.withdrawn.has(s.id));
+  const carried = carriedBy(state);
+  return state.submissions
+    .filter((s) => s.kind !== "withdraw" && !state.placed.has(s.id) && !state.withdrawn.has(s.id))
+    .map((s) => {
+      const before = carried.get(s.id);
+      return before?.length ? { ...s, text: `${before.join("\n\n")}\n\n${stoppedLine(before.length)}\n\n${s.text ?? ""}` } : s;
+    });
 }
 
 export function hostToolIO(io: EffectIO, ctx: DriveContext, overrides: { signal?: AbortSignal; progress?: (chunk: unknown) => void } = {}): HostToolIO {

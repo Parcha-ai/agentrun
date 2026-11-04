@@ -18,6 +18,10 @@ export interface Submission {
   text?: string;
   /** For a withdraw: the submission it withdraws. */
   target?: string;
+  /** For a withdraw of a prompt or follow-up: its text stays in the conversation, carried into the next prompt or
+   *  follow-up (`pendingSubmissions`). A person's stop withdraws this way (settleTurn): what they asked is kept, never
+   *  run on its own. */
+  carry?: true;
   receivedAt: Date;
 }
 
