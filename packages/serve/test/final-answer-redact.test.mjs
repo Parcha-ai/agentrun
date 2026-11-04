@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
+import { redactedOutput } from "../dist/key-refusal.js";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
@@ -60,4 +61,32 @@ test("a workflow's output carrying a held key in a string field is served with i
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   noKey(JSON.stringify(run), "the run");
   assert.deepEqual(run.result.output, { note: "kept [redacted] here", n: 7 });
+});
+
+test("a workflow output carrying a held key as a property name, nested too, is served with no piece of it", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  const { api } = await serve(t);
+  const flow = {
+    v: 2, name: "named",
+    schemas: {
+      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Out: { type: "object", required: ["note", "n", "dict"], properties: { note: { type: "string" }, n: { type: "number" }, dict: { type: "object", additionalProperties: true } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Out", path: "out" },
+    root: { node: "chain", steps: [{ node: "extract", label: "out", instructions: "Submit the held key as a name.", out: "Out", as: "out" }] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("named", flow))).status, 201);
+  const started = await api("POST", "/agents/named/runs", { input: { question: "x" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 50_000 });
+  const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  noKey(JSON.stringify(run), "the run");
+  assert.deepEqual(run.result.output, { note: "ok", n: 1, dict: { "[redacted]": "found", nested: { "[redacted]": "deep", kept: "yes" } } });
+});
+
+test("two property names that redact to the same name withhold their object whole, never merge one value over the other", () => {
+  const out = redactedOutput({ keep: 1, both: { [CUT_KEY]: "a", [`${CUT_KEY}-2`]: "b" }, [CUT_KEY]: "top" }, [CUT_KEY, `${CUT_KEY}-2`]);
+  noKey(JSON.stringify(out), "the output");
+  assert.deepEqual(out, { keep: 1, both: "[redacted]", "[redacted]": "top" });
 });

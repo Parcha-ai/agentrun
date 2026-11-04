@@ -34,6 +34,11 @@ export default function reply(context, faux) {
     const canary = JSON.stringify(context);
     // A node whose provider echoed the key it was sent (timeline-key-words.test.mjs holds that value as a key).
     if (canary.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '401 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
+    // A node whose record carries the key as a property NAME, nested too; and two names that redact to the same one.
+    if (canary.includes("Submit the held key as a name")) {
+      if (answered) return faux.message("Submitted.");
+      return faux.message(faux.toolCall("submit", { note: "ok", n: 1, dict: { [CUT_KEY]: "found", nested: { [CUT_KEY]: "deep", kept: "yes" } } }), { stopReason: "toolUse" });
+    }
     // A node whose record carries the key in a string field (final-answer-redact.test.mjs holds CUT_KEY as a key).
     if (canary.includes("Submit the held key")) {
       if (answered) return faux.message("Submitted.");
