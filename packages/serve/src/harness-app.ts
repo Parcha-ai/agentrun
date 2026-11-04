@@ -363,14 +363,16 @@ export function adapterRun(
 
   /** Turns until nothing waits: the turn, then each message that waited for it, as one busy period on the door (as a pi
    *  run's follow-ups are), so the server never reads the run idle, and done, while an accepted message is unanswered. A
-   *  message that arrives meanwhile waits its place. */
-  const runTurns = (first: () => Promise<void>) => {
+   *  message that arrives meanwhile waits its place. `carried`: the first turn's answer so far, when it is a turn an
+   *  earlier process left open and this one recovers (its answer already on the root); a new message's turn starts with
+   *  none. */
+  const runTurns = (first: () => Promise<void>, carried?: number) => {
     turn = (async () => {
       emit?.({ type: "run_start" });
-      for (let start: (() => Promise<void>) | undefined = first; start; ) {
+      for (let start: (() => Promise<void>) | undefined = first, carry = carried; start; carry = undefined) {
         let failed: string | undefined;
         let status: TurnStatus = "failed";
-        answer = undefined;
+        answer = carry;
         try {
           await start();
           const end = await session!.turnEnd();
@@ -549,7 +551,8 @@ export function adapterRun(
       // the message's turn follows in the same busy period, so no server reads the run done before it answers.
       if (restored && !queue.length) await restore(restored);
       openedDone();
-      if (session.state === "open_turn") runTurns(() => session!.recover());
+      // Its answer so far is the root's, which a recovery that streams no new text keeps as the turn's.
+      if (session.state === "open_turn") runTurns(() => session!.recover(), unended?.answer ?? undefined);
       else if (queue.length) {
         const next = sendOf(queue.shift()!);
         runTurns(restored ? async () => (await restore(restored), await next()) : next);
