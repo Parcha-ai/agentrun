@@ -376,3 +376,24 @@ test("a run's start is answered 202 even when the agent store turns busy right a
   assert.equal(runs.length, 1, "one run");
   await follow(api, started.body.run_id, ["completed"]);
 });
+
+test("a message to a run working on its first turn is taken while another connection holds the agent store: the run's harness is known from its start, so nothing is read", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, data } = await serve(t);
+  const go = join(dir, "go");
+  const { run_id } = await startRun(api, "gated", `Answer once ${go} exists.`);
+  for (const end = Date.now() + 30_000; ; await sleep(50)) {
+    const { status, state } = (await api("GET", `/runs/${run_id}`)).body;
+    if (status === "working" && state === "working") break;
+    assert.ok(Date.now() < end, `the run works: last ${status}/${state}`);
+  }
+  // No reader gets through: a message that read the run's harness from the store would wait about 2 s, then answer
+  // home_busy. Its turn holds until the file exists, so the run is working when the message comes.
+  const release = hold(t, data, "EXCLUSIVE");
+  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "And then this." });
+  release();
+  await writeFile(go, "");
+  assert.deepEqual([sent.status, sent.body.mode], [202, "steer"], JSON.stringify(sent.body));
+  const { rows } = await follow(api, run_id, ["completed"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.text).slice(1), ["And then this."], "taken, and run once");
+});
