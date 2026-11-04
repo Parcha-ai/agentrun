@@ -6,11 +6,16 @@
 // monid is refused for it. No network, no real key.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { reported } from "./fixtures/custody-report.mjs";
+// A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
+// (fixtures/custody-report.mjs), never from the answer.
+process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -71,7 +76,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
     assert.equal((await api("POST", "/agents", agent(id, { instructions: "Answer.", tools }))).status, 201);
     const { body } = await api("POST", `/agents/${id}/runs`, { input: { content: "Report." } });
     await follow(api, body.run_id, ["completed"]);
-    return JSON.parse((await api("GET", `/runs/${body.run_id}`)).body.result.final_answer);
+    return reported(body.run_id);
   };
   const reader = await handed("reader", ["read"]);
   assert.deepEqual([reader.handed.MONID_API_KEY, reader.inEnv, reader.pipe], ["none", [], { fd: 3, closed: true }]);
@@ -107,7 +112,7 @@ test("two servers in one process each hand their own runs their own saved key, n
     assert.equal((await api("POST", "/agents", agent("holder", { instructions: "Answer.", tools: ["monid.run"] }))).status, 201);
     const { body } = await api("POST", "/agents/holder/runs", { input: { content: "Report." } });
     await follow(api, body.run_id, ["completed"]);
-    return JSON.parse((await api("GET", `/runs/${body.run_id}`)).body.result.final_answer).handed.MONID_API_KEY;
+    return reported(body.run_id).handed.MONID_API_KEY;
   };
   assert.equal(await handed(one.api), digest(first), "the first server's run: the first server's key");
   assert.equal(await handed(two.api), digest(second), "the second server's run: its own");
