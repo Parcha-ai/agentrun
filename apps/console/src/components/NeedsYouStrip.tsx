@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { cost } from "@/lib/format";
+import { cost, soFar } from "@/lib/format";
 import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
@@ -163,7 +163,8 @@ function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at:
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const usd = run.cost?.usd;
-  const spent = usd === 0 ? "nothing spent yet" : typeof usd === "number" ? `${cost(run.cost)} so far` : "cost not known yet";
+  // A cost not known whole says what is known so far, when the server says it (costsofar/1): cost() reads "so far …".
+  const spent = usd === 0 ? "nothing spent yet" : typeof usd === "number" ? `${cost(run.cost)} so far` : soFar(run.cost) ? cost(run.cost) : "cost not known yet";
   return (
     <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
       <span className="size-2 shrink-0 rounded-full bg-[hsl(var(--run-active))] shadow-[0_0_0_4px_hsl(var(--run-active)/0.18)]" aria-hidden />

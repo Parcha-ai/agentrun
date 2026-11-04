@@ -1,4 +1,4 @@
-import { cost, upTo } from "./format";
+import { cost } from "./format";
 import type { Run } from "./v2";
 
 /** What Mission Control shows: counts from the server's store, the cost said with its basis, and the latest runs. */
@@ -8,35 +8,26 @@ export type MissionView = {
    *  `needsReview`: escalated runs that completed and wait for a person, apart from `failed`. */
   runs: { total: number; active: number; needsInput: number; failed: number; statusUnknown: number; needsReview: number };
   perAgent: { agentId: string; name: string; runs: number }[];
-  /** `usd` sums the runs whose cost is known; `unknownRuns` counts the rest. No known cost at all is null, never 0.
-   *  `bounded`: of those unknown, the runs whose cost bound the server knows (requests cut or stopped), and their bounds
-   *  summed, which the total never adds in. */
-  cost: { usd: number | null; basis: "reported" | "estimate" | null; unknownRuns: number; bounded?: Bounded };
+  /** `usd` sums the runs whose cost is known; `unknownRuns` counts the rest. No known cost at all is null, never 0. */
+  cost: { usd: number | null; basis: "reported" | "estimate" | null; unknownRuns: number };
   recent: Run[];
   /** The runs' tokens, time, tools and success over the range the page asked for. */
   analytics: Analytics;
 };
 
-/** Runs whose cost is unknown but bounded, and the most they can have cost together (null when no bound is known):
- *  `/v2/stats`' `bounded_unknown`, read. The server sends it from the runs' cost bounds. */
-export type Bounded = { runs: number; atMostUsd: number | null };
-const boundedOf = (b: { runs: number; at_most_usd: number | null } | undefined): Bounded | undefined => (b ? { runs: b.runs, atMostUsd: b.at_most_usd } : undefined);
-
-/** The total cost, as far as it is known: "Unknown" with no known cost, "est." unless it was charged, how many runs the total
- *  leaves out, and the most its cut runs can add. */
+/** The total cost, as far as it is known: "Unknown" with no known cost, "est." unless it was charged, and how many runs the
+ *  total leaves out. */
 export function costLine(c: MissionView["cost"]): string {
-  const { total, note, bound } = costParts(c);
-  return [total, note, bound].filter(Boolean).join(" · ");
+  const { total, note } = costParts(c);
+  return [total, note].filter(Boolean).join(" · ");
 }
 
-/** The total and, apart, how many runs it leaves out and the most the runs whose requests were cut can add: the page
- *  shows each small under the total. The total stays the known sum, never the known sum plus the bound. */
-export function costParts(c: MissionView["cost"]): { total: string; note?: string; bound?: string } {
-  const b = c.bounded;
-  const bound = b && b.runs > 0 && b.atMostUsd !== null ? `up to ${upTo(b.atMostUsd)}${c.usd === null ? "" : " more"} for ${b.runs} cut ${b.runs === 1 ? "run" : "runs"}` : undefined;
-  if (c.usd === null) return { total: "Unknown", ...(bound ? { bound } : {}) };
+/** The total and, apart, how many runs it leaves out: the page shows the count small under the total. The total is the
+ *  known sum. */
+export function costParts(c: MissionView["cost"]): { total: string; note?: string } {
+  if (c.usd === null) return { total: "Unknown" };
   const total = cost({ usd: c.usd, basis: c.basis === "reported" ? "reported" : "estimate", charge_state: null, cap_usd: null });
-  return { total, ...(c.unknownRuns ? { note: `${c.unknownRuns} ${c.unknownRuns === 1 ? "run" : "runs"} unknown` } : {}), ...(bound ? { bound } : {}) };
+  return { total, ...(c.unknownRuns ? { note: `${c.unknownRuns} ${c.unknownRuns === 1 ? "run" : "runs"} unknown` } : {}) };
 }
 
 /** `GET /v2/stats` (a serve extension): counts and sums from the agent store, archived agents and runs left out of
@@ -46,7 +37,7 @@ export type Stats = {
   runs: { total: number; active: number; needs_input: number; failed: number; status_unknown: number; needs_review: number };
   per_agent: { agent_id: string; name: string; runs: number }[];
   /** `basis` is the contract's Cost.basis: "charge" or "estimate" (serve says estimate), null when `usd` is null. */
-  cost: { usd: number | null; basis: "charge" | "estimate" | null; unknown_runs: number; bounded_unknown?: { runs: number; at_most_usd: number | null } };
+  cost: { usd: number | null; basis: "charge" | "estimate" | null; unknown_runs: number };
   archived?: { agents: number; runs: number };
   /** Over the runs `from`, `to` and `agent` pick (every other number is the whole store's). */
   analytics: Analytics;
@@ -59,7 +50,7 @@ export type AnalyticsGroup = { runs: number; completed: number; failed: number; 
 /** GET /v2/stats's `analytics`. `input` excludes cached input: the whole input is input + cache_read + cache_write. */
 export type Analytics = {
   filter: { from: string | null; to: string | null; agent: string | null };
-  totals: AnalyticsGroup & { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number; bounded_unknown?: { runs: number; at_most_usd: number | null } };
+  totals: AnalyticsGroup & { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number };
   time: { ended_runs: number; wall_ms: number; active_runs: number; active_ms: number };
   by_harness_effort: (AnalyticsGroup & { harness: string; effort: string | null })[];
   by_day: (AnalyticsGroup & { day: string })[];
@@ -93,8 +84,7 @@ export function cachedShare(t: Analytics["totals"]): number | null {
   return input ? t.cache_read / input : null;
 }
 /** A group's cost with the store's basis (the page's), said as costParts says it: never $0 for a cost not known. */
-export const groupCost = (g: AnalyticsGroup & { bounded_unknown?: { runs: number; at_most_usd: number | null } }, basis: MissionView["cost"]["basis"]) =>
-  costParts({ usd: g.cost_usd, basis, unknownRuns: g.unknown_cost_runs, ...(g.bounded_unknown ? { bounded: boundedOf(g.bounded_unknown) } : {}) });
+export const groupCost = (g: AnalyticsGroup, basis: MissionView["cost"]["basis"]) => costParts({ usd: g.cost_usd, basis, unknownRuns: g.unknown_cost_runs });
 /** What a token sum leaves out, said so a partial figure never reads as complete: "tokens from 3 of 5 runs". */
 export const coverage = (g: Pick<AnalyticsGroup, "runs" | "runs_with_metrics">) => (g.runs_with_metrics < g.runs ? `tokens from ${g.runs_with_metrics} of ${g.runs} runs` : undefined);
 
@@ -133,7 +123,7 @@ export function missionFrom(s: Stats, recent: Run[]): MissionView {
     agents: s.agents,
     runs: { total: s.runs.total, active: s.runs.active, needsInput: s.runs.needs_input, failed: s.runs.failed, statusUnknown: s.runs.status_unknown, needsReview: s.runs.needs_review },
     perAgent: s.per_agent.map((a) => ({ agentId: a.agent_id, name: a.name, runs: a.runs })),
-    cost: { usd: s.cost.usd, basis: s.cost.basis === "charge" ? "reported" : s.cost.basis, unknownRuns: s.cost.unknown_runs, ...(s.cost.bounded_unknown ? { bounded: boundedOf(s.cost.bounded_unknown) } : {}) },
+    cost: { usd: s.cost.usd, basis: s.cost.basis === "charge" ? "reported" : s.cost.basis, unknownRuns: s.cost.unknown_runs },
     recent,
     analytics: s.analytics,
   };
