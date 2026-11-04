@@ -40,7 +40,7 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
-import { Turns } from "./turns.js";
+import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
@@ -982,7 +982,7 @@ export class Runs {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
     const reducer = timelineReducer({ path: rowPaths(run.dir) });
     // `inputs=1`: the snapshot carries pi's newest input submissions, the settlements its turns end on (turns.ts).
-    const up = await fetch(new URL("/events?inputs=1", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
+    const up = await fetch(new URL(`/events?inputs=1&skip=${encodeURIComponent(REFLECT_REQUEST)}`, door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
     let buffer = "";

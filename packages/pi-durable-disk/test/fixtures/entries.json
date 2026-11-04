@@ -271,6 +271,7 @@
       "findDelegations",
       "isLeaseFresh",
       "mintMountToken",
+      "newestSettledInput",
       "parseRunRecord",
       "pathlessResolver",
       "removeMountToken",
@@ -281,6 +282,7 @@
       "unmountClaim"
     ],
     "types": [
+      "InputRecord",
       "Pin",
       "PinSpec",
       "RootName"

@@ -175,15 +175,28 @@ const callsOf = (record: { model?: readonly unknown[] } | undefined): boolean =>
   (((record?.model?.[0] as { content?: unknown } | undefined)?.content as { type?: string }[] | undefined) ?? []).some((b) => b?.type === "toolCall");
 
 /** Start listening; requests are answered once `attach` hands over the open run. */
+/** An input submission as a snapshot's rule reads it: a door's record, or one a host read from a snapshot. */
+export type InputRecord = { readonly status: string; readonly entry?: unknown; readonly requestId?: unknown };
+
+/** The index, in a conversation's input submissions in id order, of the newest one settled on an entry (done, or
+ *  unanswered after it was placed) whose request id does not begin with `skip` (a host's own turns, as agentrun-serve's
+ *  end-of-run learning turn), else -1. The one rule a door's snapshot (snapshotInputs) and a host that reads it choose
+ *  the snapshot's newest settled input by. */
+export function newestSettledInput(records: readonly InputRecord[], skip?: string): number {
+  let newest = -1;
+  records.forEach((record, at) => {
+    const own = skip === undefined || typeof record.requestId !== "string" || !record.requestId.startsWith(skip);
+    if (own && (record.status === "done" || record.status === "unanswered") && record.entry !== undefined) newest = at;
+  });
+  return newest;
+}
+
 /** The inputs a door's snapshot carries, from a conversation's input submissions in id order: the newest one settled
  *  (done, or unanswered after it was placed), every one after it, and every one before it not settled yet (queued or
  *  placed: a steer settles ahead of a follow-up queued before it, which is still to run). So an input a reader holds
  *  open that is missing here, from before the newest settled one, is settled. */
-export function snapshotInputs<T extends { readonly status: string; readonly entry?: unknown }>(records: readonly T[]): T[] {
-  let newest = -1;
-  records.forEach((record, at) => {
-    if ((record.status === "done" || record.status === "unanswered") && record.entry !== undefined) newest = at;
-  });
+export function snapshotInputs<T extends InputRecord>(records: readonly T[], skip?: string): T[] {
+  const newest = newestSettledInput(records, skip);
   if (newest < 0) return [...records];
   return [...records.slice(0, newest).filter((record) => record.status === "queued" || record.status === "placed"), ...records.slice(newest)];
 }
@@ -292,7 +305,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
    *  that answer asked for tools (`answer_calls`, a tool ended the turn): pi-durable settles a person's message in the
    *  commit of its turn's last entry, so a reader that comes in now knows which messages are still open, that one it
    *  holds open and finds missing is settled, and how the newest one's turn ended. */
-  async function inputsOf(conversationId: ConversationId, context: Context): Promise<unknown[]> {
+  async function inputsOf(conversationId: ConversationId, context: Context, skip?: string): Promise<unknown[]> {
     const storage = run!.store.storage;
     // In id order (an older pi-durable scans no other way).
     const inputs: Extract<SubmissionRecord, { type: "input" }>[] = [];
@@ -303,7 +316,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
       cursor = page.next;
     }
     const out: unknown[] = [];
-    for (const record of snapshotInputs(inputs)) {
+    for (const record of snapshotInputs(inputs, skip)) {
       const answer = record.status === "done" ? (await storage.entry(record.answer, context))?.entry : undefined;
       // A done one with its answer's text, and whether that answer asked for tools (a tool ended the turn).
       out.push(record.status === "done" ? { ...record, answer_text: answerTextOf(answer), answer_calls: callsOf(answer) } : record);
@@ -323,7 +336,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     const hook = door && conversation.id === ROOT_CONVERSATION_ID ? door : undefined;
     // pi's turns record their ends as the settlements of the person's messages, which the snapshot does not hold: a reader
     // that asks (`inputs=1`) gets the root's newest ones with it.
-    const inputs = !hook && url.searchParams.get("inputs") === "1" && conversation.id === ROOT_CONVERSATION_ID ? await inputsOf(conversation.id, context).catch(() => undefined) : undefined;
+    const inputs = !hook && url.searchParams.get("inputs") === "1" && conversation.id === ROOT_CONVERSATION_ID ? await inputsOf(conversation.id, context, url.searchParams.get("skip") ?? undefined).catch(() => undefined) : undefined;
     write("snapshot", hook ? { ...stream.snapshot, run: hook.busy() ? { inputs: [] } : undefined } : { ...stream.snapshot, ...(inputs ? { inputs } : {}) });
     const unwatch = hook?.watch((event) => write("events", [event]));
     stream.start(async (batch) => write("events", batch));
