@@ -1621,7 +1621,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
   for (let port = first; ; port++) {
     try {
-      await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => (server.off("error", reject), done()))));
+      // Each attempt takes off both its handlers when it ends, so a taken port leaves no listener behind.
+      await new Promise<void>((done, reject) => {
+        const onError = (error: Error) => (server.off("listening", onListening), reject(error));
+        const onListening = () => (server.off("error", onError), done());
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(port, host);
+      });
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
