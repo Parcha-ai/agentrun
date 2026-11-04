@@ -176,14 +176,16 @@ test("demo: run from npx, a missing Claude Agent SDK says the npx line that star
   assert.match(missingSdk, /install it with: npm install --save-exact @anthropic-ai\/claude-agent-sdk@0\.3\.286$/);
   // A message with no such line is left as it is.
   assert.equal(installHint("claude-agent needs ANTHROPIC_API_KEY", claude.CLAUDE_AGENT_SDK_INSTALL, sdk, true), "claude-agent needs ANTHROPIC_API_KEY");
-  // Through serve's own check of the harness: the reason a person reads. This checkout has Codex installed beside serve,
-  // so the line keeps it.
+  // Through serve's own check of the harness: the reason a person reads. This checkout has Codex and OpenCode installed
+  // beside serve, so the line keeps both.
   const real = claude;
   const noSdk = async () => ({ ...real, claudeAgentAdapter: () => real.verifyClaudeAgent({}, () => undefined) });
   const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
   const codex = adapters.installedHere?.("@openai/codex");
   assert.equal(codex, "0.164.0", "this checkout installs Codex beside serve");
-  await assert.rejects(claudeOf({}, needs, noSdk, true), (error) => error instanceof HarnessUnavailable && error.message.endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@${codex} -p ${sdk} agentrun-serve`) && !error.message.includes("npm install"));
+  const opencode = adapters.installedHere?.("opencode-ai");
+  assert.equal(opencode, "1.19.5", "this checkout installs OpenCode beside serve");
+  await assert.rejects(claudeOf({}, needs, noSdk, true), (error) => error instanceof HarnessUnavailable && error.message.endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p @openai/codex@${codex} -p opencode-ai@${opencode} -p ${sdk} agentrun-serve`) && !error.message.includes("npm install"));
 });
 
 test("demo: run from npx, a missing Codex says the npx line that starts this server again with it; installed in a project, the npm line", async () => {
@@ -199,8 +201,10 @@ test("demo: run from npx, a missing Codex says the npx line that starts this ser
   const reason = async (npx, env = {}) => codexOf(env, needs, absent, npx).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
   const claude = adapters.installedHere?.("@anthropic-ai/claude-agent-sdk");
   assert.equal(claude, "0.3.286", "this checkout installs the Claude Agent SDK beside serve");
-  assert.ok((await reason(true)).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p ${spec} agentrun-serve`));
-  assert.ok((await reason(true, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0" })).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p ${spec} agentrun`));
+  const opencode = adapters.installedHere?.("opencode-ai");
+  assert.equal(opencode, "1.19.5", "and OpenCode");
+  assert.ok((await reason(true)).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p opencode-ai@${opencode} -p ${spec} agentrun-serve`));
+  assert.ok((await reason(true, { AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0" })).endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun@0.3.0 -p @parcha/agentrun-serve@${SERVE} -p @anthropic-ai/claude-agent-sdk@${claude} -p opencode-ai@${opencode} -p ${spec} agentrun`));
   assert.ok((await reason(false)).endsWith(`; ${codex.CODEX_INSTALL}`));
   // As the start's probe says it (startReason): in a project, the restart that shows the install; under npx, the npx
   // line alone, since running it is the restart.
