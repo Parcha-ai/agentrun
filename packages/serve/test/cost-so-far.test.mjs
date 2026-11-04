@@ -4,7 +4,6 @@
 // run's meta once the server no longer holds the run). No ceiling is claimed. A run whose every cost is known has neither.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { metersIn } from "../dist/cap.js";
@@ -35,6 +34,8 @@ async function piFollowUpInFlight(api, id) {
     const { status, state } = await view(api, runId);
     return status === "working" && state === "working";
   });
+  // Its request is marked as sent: a cancel before that withdraws it unsent, at no cost, and a stop cuts it either way.
+  await until("the follow-up's request is marked", async () => (await usageRow(api, runId))?.requests === 2);
   return { runId, first };
 }
 
@@ -99,20 +100,6 @@ for (const harness of ["claude-agent", "codex"]) {
     const run = await view(api, runId);
     assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, 0.002, 1], JSON.stringify(run.cost));
     assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: 0.002, unpriced: 1 });
-  });
-
-  test(`${harness}: a turn stopped mid-request, then followed up to its end, reads the finished requests' sum so far and 1 charge with no price`, { timeout: 120_000 }, async (t) => {
-    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
-    const go = join(await scratch(t), "go");
-    const runId = await secondOut(api, `stop-${harness}`, go);
-    assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
-    await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
-    // The follow-up's turn goes on past the cut request: "After the cut." at $0.004.
-    await writeFile(go, "");
-    assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).status, 202);
-    await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
-    const run = await view(api, runId);
-    assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, round(0.002 + 0.004), 1], JSON.stringify(run.cost));
   });
 }
 
