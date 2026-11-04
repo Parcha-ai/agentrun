@@ -274,6 +274,15 @@ export function heldFiles(files: readonly NoteText[], verdict?: Verdict): NoteTe
   });
 }
 
+/** The blob `file` is at commit `sha` of the agent's folder, or undefined when the commit holds no such file. */
+async function blobAt(home: string, repo: string, sha: string, file: string): Promise<string | undefined> {
+  try {
+    return line(await git(home, repo, ["rev-parse", "--verify", "--quiet", `${sha}:${file}`])) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Merges run `runId`'s proposal into main as main is now, in the agent's queue, as `verdict` judged its notes: one commit
  *  on main (its parent main) that adds the new notes, each with its `origin` and a pending one with `status: pending`
  *  (in no index, so no run reads it, until a person approves it), marks each note a kept one supersedes (a pending
@@ -307,6 +316,13 @@ export function mergeProposal(data: string, agentId: string, runId: string, prop
       // it.
       const changed = [...replaced].filter(([old]) => main.oids.get(old) !== graded[old]).map(([old, by]): Problem => ({ rule: "supersedes", path: by, detail: `${old} changed after the grade read it` }));
       if (changed.length) return { problems: changed };
+      // A skill's or a draft's file is written whole over main's: one that changed on main after the run started (a
+      // person retired or approved it, or another run's merge changed it) is never written over on this run's copy.
+      const moved: Problem[] = [];
+      for (const { file } of proposal.files ?? []) {
+        if ((await blobAt(home, repo, proposal.seed, file)) !== (await blobAt(home, repo, sha, file))) moved.push({ rule: "supersedes", path: file, detail: `${file} changed on main after the run started` });
+      }
+      if (moved.length) return { problems: moved };
       const notes = notesOf(main);
       // The new tree: main's, with the new notes, the ones the kept notes supersede marked, and the index rebuilt from
       // what is active then (a pending note is not).

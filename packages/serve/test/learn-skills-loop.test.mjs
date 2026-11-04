@@ -3,11 +3,11 @@
 // agent's own tools; the grader drops a draft that singles out one case; a risky skill waits for its owner's OK; and a
 // SKILL.md whose steps hold code blocks is kept whole.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, git, learner, LEARN, made, mergesOf, repoOf, savedOf, started } from "./learn-support.mjs";
+import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, savedOf, sleep, started } from "./learn-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
 /** A SKILL.md whose steps hold a fenced code block: a ``` line inside its four-backtick block closes nothing. */
@@ -116,4 +116,31 @@ test("a risky skill waits for its owner's OK: merged with status: pending in its
   const saved = await savedOf(data, view.run_id);
   assert.deepEqual(saved.learning.skills, [{ file: "skills/find-policies/SKILL.md", name: "find-policies", pending: true }]);
   assert.match(view.learning.detail, /Waiting for your OK: skill find-policies\./);
+});
+
+test("a run whose skill changed on main after it started never writes over it: retired by a person meanwhile, the run's merge is refused and the skill stays retired", { timeout: 180_000 }, async (t) => {
+  const { api, data } = await server(t);
+  const go = join(await scratch(t), "go");
+  const only = (skill) => ["Keeping a skill.", `\`\`\`\`skill find-policies\n${skill}\`\`\`\``, "Reflected."].join("\n\n");
+  await made(api, answering("stale", only(SKILL), [`Reflect once ${go} exists.`]));
+  writeFileSync(go, "");
+  assert.equal((await ended(api, await started(api, "stale"))).view.learning?.state, "merged");
+  // Run 2 starts from the skill, active, and holds before its end-of-run turn.
+  rmSync(go);
+  assert.equal((await api("PUT", "/agents/stale/definition", answering("stale", only(SKILL.replace("Then the footer links.", "Then the site map.")), [`Reflect once ${go} exists.`], { version: 2 }))).status, 200);
+  const runId = await started(api, "stale");
+  for (let i = 0; !reflectRows((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).some((row) => row.kind === "user_message"); i++) {
+    assert.ok(i < 600, "the turn is asked");
+    await sleep(50);
+  }
+  // Meanwhile a person retires the skill.
+  const file = encodeURIComponent("skills/find-policies/SKILL.md");
+  const read = await api("GET", `/agents/stale/learning/files/${file}`);
+  assert.equal((await api("POST", `/agents/stale/learning/files/${file}/retire`, undefined, { "if-match": read.headers.get("etag") })).status, 200);
+  writeFileSync(go, "");
+  const { view } = await ended(api, runId);
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "checker"], JSON.stringify(view.learning));
+  const repo = repoOf(data, "stale");
+  assert.match(show(repo, "skills/find-policies/SKILL.md"), /^status: retired$/m, "the person's retire stands");
+  assert.ok(!show(repo, "skills/find-policies/SKILL.md").includes("Then the site map."), "the run's text is not on main");
 });
