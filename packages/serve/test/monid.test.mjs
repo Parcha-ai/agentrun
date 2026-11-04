@@ -15,6 +15,8 @@ import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+/** The faux model priced on output only: a request's worst case is about $1.64 whatever its input. */
+const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const NAMES = ["monid.discover", "monid.inspect", "monid.run"];
 const sleeps = [];
 /** The client on the fake, its waits recorded and skipped. */
@@ -128,27 +130,61 @@ const entriesOf = (data, runId, kind) => {
   }
 };
 
-test("a run that times out after it was sent books an unknown charge: the run's cost is unknown, its next model request under the cap is refused, and so is what a restarted process reads", { timeout: 90_000 }, async (t) => {
+test("a run whose monid call times out (TIMED_OUT, no cost said) books its charge unknown, and the cap counts the call at its hold: its next model request goes while the cap allows, the run's cost reads unknown, and a restarted process reads the hold too", { timeout: 90_000 }, async (t) => {
   withEnv(t, { MONID_API_KEY: KEY });
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
   assert.equal((await api("POST", "/agents", agent("late", { harness: "claude-agent", instructions: "Run monid's /late on Ada.", tools: ["monid.run"] }))).status, 201);
+  // No inspect quoted the endpoint: the call is held at the $1 allowance, which a $5 cap holds beside the requests.
   const run = await api("POST", "/agents/late/runs", { input: { content: "hi" }, max_cost_usd: 5 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const id = run.body.run_id;
-  await follow(api, id, ["failed"], { deadlineMs: 55_000 });
-  assert.deepEqual(entriesOf(data, id, "agentrun.tool_cost").map((entry) => entry.data.usd), [null], "TIMED_OUT says no cost: unknown, never $0");
+  await follow(api, id, ["completed", "failed", "cancelled"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${id}`)).body;
-  assert.deepEqual([ended.cost.usd, ended.error?.code], [null, "spend_cap_reached"]);
-  assert.match(ended.error.message, /spent is unknown/, "its next model request was refused");
-  // A restarted process starts from what the store says: unknown, so its first model request and any paid call refuse.
+  assert.deepEqual([ended.status, ended.error?.code ?? null, ended.result?.final_answer], ["completed", null, "Ran."], `the timed-out call counts at its $1 hold, never unknown: its next model request goes (${JSON.stringify(ended.error)})`);
+  assert.deepEqual(entriesOf(data, id, "agentrun.tool_cost").map((entry) => entry.data.usd), [null], "TIMED_OUT says no cost: booked unknown, never $0");
+  assert.equal(ended.cost.usd, null, "the run's cost reads unknown: the hold is the cap's bound, never a charge");
+  // A restarted process starts from what the store says: the hold, so what fits goes and what does not is refused for room.
   const root = entriesOf(data, id);
-  assert.equal(capToolSpend(root), null);
-  assert.equal(spentIn(join(data, "runs", id, "store", "run.sqlite")), null);
-  useSpend({ cap: 5, spent: () => capToolSpend(root), add: () => {} });
+  assert.equal(capToolSpend(root), 1, "another harness's reading, at its open: the $1 hold");
+  const spent = spentIn(join(data, "runs", id, "store", "run.sqlite"));
+  assert.ok(spent >= 1 && spent < 1.01, `pi's reading: the $1 hold and the requests, $${spent}`);
   t.after(() => useSpend(undefined));
-  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused, /spent is unknown/);
+  useSpend({ cap: 5, spent: () => capToolSpend(root), add: () => {} });
+  assert.ok("result" in (await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })), "a paid call that fits goes");
+  useSpend({ cap: 1.002, spent: () => capToolSpend(root), add: () => {} });
+  assert.match((await paidCall("monid_run", async () => ({}), chargeOf, { usd: 0.003, basis: "quoted" })).refused ?? "", /with \$1\.000000 spent the run would pass its cap of \$1\.002/, "one that does not is refused for room");
   const guard = await capBefore(5, { id: "faux", api: "faux", provider: "faux", maxTokens: 10, contextWindow: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
-  assert.match(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }).refuse, /spent is unknown/);
+  assert.deepEqual(guard.beforeRequest({ spentUsd: capToolSpend(root), inFlight: [], inputTokensMax: 1 }), { outputTokensMax: 10 }, "and a model request that fits goes, at its whole output (#1539's clamp leaves it whole)");
+});
+
+test("a capped pi run stopped while its monid call is under way: monid is asked to stop it, the call counts at its hold, never unknown, and the next message's request goes while the cap allows; the run's cost reads unknown", { timeout: 90_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, data } = await serve(t, { faux: OUTPUT_PRICED, fauxMonid: FAUX_MONID });
+  assert.equal((await api("POST", "/agents", agent("halted", { tools: ["monid.run"] }))).status, 201);
+  // No inspect quoted /slow: the call is held at the $1 allowance, which a $5 cap holds beside the next request's $1.64.
+  const run = await api("POST", "/agents/halted/runs", { input: { content: "Run monid's /slow." }, max_cost_usd: 5 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const id = run.body.run_id;
+  const logged = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line).path);
+  const until = async (what, done) => {
+    for (let i = 0; !done(await logged()); i++) {
+      assert.ok(i < 400, what);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  await until("the monid call is sent", (paths) => paths.includes("/v1/run"));
+  assert.equal((await api("POST", `/runs/${id}/stop`)).body.stopped, true);
+  await until("monid is asked to stop the run", (paths) => paths.some((path) => /^\/v1\/runs\/[^/]+\/stop$/.test(path)));
+  await follow(api, id, ["input_required"]);
+  assert.equal((await api("POST", `/runs/${id}/messages`, { content: "go on" })).body.mode, "follow_up");
+  await follow(api, id, ["completed", "failed", "cancelled"], { deadlineMs: 55_000 });
+  const ended = (await api("GET", `/runs/${id}`)).body;
+  assert.deepEqual([ended.status, ended.error?.code ?? null, ended.result?.final_answer], ["completed", null, "Ran."], `the stopped call counts at its $1 hold, never unknown: the next request goes (${JSON.stringify(ended.error)})`);
+  assert.equal(ended.cost.usd, null, "what the stopped call charged no one knows: the run's cost reads unknown");
+  // Its process gone, the store says the same: the hold, never unknown.
+  const spent = spentIn(join(data, "runs", id, "store", "run.sqlite"));
+  assert.ok(spent >= 1 && spent < 1.1, `a later process reads the $1 hold and the requests: $${spent}`);
 });
 
 test("/usage by meter during a monid run in flight: tokens are the run's model cost, and no tool charge is reported until the call settles", { timeout: 90_000 }, async (t) => {

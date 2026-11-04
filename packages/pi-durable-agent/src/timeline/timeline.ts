@@ -771,7 +771,8 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
       const id = str(message.toolCallId);
       const call = calls.get(`${conv}:${id ?? ""}`);
       const named = str(message.toolName);
-      const result = { text: textOf(message), isError: message.isError === true };
+      // The text is read only by a tool that tells its outcome (most tell none; a fetch's is its whole page).
+      const result = { get text() { return textOf(message); }, isError: message.isError === true };
       // A result before its call waits for it, to count under its name and by its rule.
       if (!call && id) {
         early.set(`${conv}:${id}`, { named, result, place: at });

@@ -7,10 +7,10 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
 import { access, type FileHandle, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
 import { RUN_META, syncDir, writeDurable } from "./files.js";
-import { storedPlace } from "./place.js";
+import { remotePlace, storedPlace } from "./place.js";
 
 /** The type a file is served as, by its extension: a run's files, a home's, and an upload whose reservation names none.
  *  A Map, so only its own extensions resolve: an object's would also give its prototype's (`.constructor`, `.__proto__`). */
@@ -18,6 +18,8 @@ const TYPES: ReadonlyMap<string, string> = new Map(Object.entries({
   txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
   html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
 }));
+/** The types a file is served as in the page (every known type but PDF); any other is a download. */
+export const INLINE_TYPES: ReadonlySet<string> = new Set([...TYPES.values()].filter((type) => type !== "application/pdf"));
 /** The type of a file at `path`, by its extension; undefined for one the table does not know. */
 export const typeOf = (path: string): string | undefined => TYPES.get(extname(path).slice(1).toLowerCase());
 
@@ -300,13 +302,24 @@ export function assertHardlinkProtection(read = () => readFileSync("/proc/sys/fs
 const NO_LINK_DIR = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const NEW_FILE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
 
-/** Whether the run whose work/ is `work` runs in a box, by the place its start kept (serve.json beside work/). */
+/** Whether the run whose work/ is `work` runs in a box that binds it, by the place its start kept (serve.json beside
+ *  work/). A remote box's commands never reach this machine's work/: what comes back from it is pulled, and a pull writes
+ *  no link. */
 function boxedRun(work: string): boolean {
   try {
-    return storedPlace((JSON.parse(readFileSync(join(dirname(work), RUN_META), "utf8")) as { place?: unknown }).place).mode === "sandbox";
+    const place = storedPlace((JSON.parse(readFileSync(join(dirname(work), RUN_META), "utf8")) as { place?: unknown }).place);
+    return place.mode === "sandbox" && !remotePlace(place);
   } catch {
     return false;
   }
+}
+
+type Mirror = (path: string, data: string | Uint8Array) => Promise<void>;
+const mirrors = new Map<string, Mirror>();
+/** In a run's process whose box is remote: each file writeInWork files below `work` is copied into the box as well, at the
+ *  same path below its work/ (run-box.ts), so the run's tools there read what its host tools filed. */
+export function mirrorWrites(work: string, mirror: Mirror): void {
+  mirrors.set(resolve(work), mirror);
 }
 
 /** Writes `data` as a new file `name` in `dirs` below a run's `work`, never through a link: a box's command can plant one
@@ -340,4 +353,8 @@ export async function writeInWork(work: string, dirs: readonly string[], name: s
   } finally {
     await dir.close();
   }
+  // The box's copy is a convenience to its tools; the file filed here is the record, and stands whatever the copy does.
+  await mirrors.get(resolve(work))?.([...dirs, name].join("/"), data).catch((error: Error) => {
+    process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${[...dirs, name].join("/")} was filed in work/ but not copied into the run's box: ${error?.message ?? String(error)}` })}\n`);
+  });
 }

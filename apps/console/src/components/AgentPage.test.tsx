@@ -90,13 +90,13 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage", () => {
-  it("shows a run whose requests were cut as ≤ its bound and why, and an unknown cost without a bound not at all", async () => {
+  it("shows a run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
-    const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, at_most_usd: 0.07 } }, { ...runs[1], cost: unknown }] });
+    const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, so_far_usd: 0.07, unpriced: 1 } }, { ...runs[1], cost: unknown }] });
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
-    expect(links[0].textContent).toContain("≤ $0.07 · some requests were cut");
-    expect(links[1].textContent).not.toMatch(/\$|Unknown|≤/);
+    expect(links[0].textContent).toContain("so far $0.07 est. · 1 not priced");
+    expect(links[1].textContent).not.toMatch(/\$|Unknown|so far/);
   });
 
   it("heads the page with the current revision's harness, model and thinking, and Edit opens the editor", async () => {

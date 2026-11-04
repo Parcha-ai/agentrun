@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Analytics, cachedShare, compact, costLine, costParts, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
+import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
 
@@ -228,40 +228,6 @@ describe("runs that need review (needs_review)", () => {
   });
 });
 
-// Runs whose cost is unknown but bounded (the server's cost bounds, requests cut or stopped): the total stays the known
-// sum, and "up to $y more" says the rest.
-describe("the cost of cut runs (bounded_unknown)", () => {
-  atNow();
-  it("costParts says the known total as before and, apart, up to how much more the cut runs can add", () => {
-    expect(costParts({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toEqual({ total: "$0.50 est.", note: "3 runs unknown", bound: "up to $0.06 more for 2 cut runs" });
-    expect(costParts({ usd: null, basis: null, unknownRuns: 1, bounded: { runs: 1, atMostUsd: 0.004 } })).toEqual({ total: "Unknown", bound: "up to $0.0040 for 1 cut run" });
-    expect(costLine({ usd: 0.5, basis: "estimate", unknownRuns: 3, bounded: { runs: 2, atMostUsd: 0.0517 } })).toBe("$0.50 est. · 3 runs unknown · up to $0.06 more for 2 cut runs");
-  });
-  it("without the field, or with no bound known, says what it always did", () => {
-    const before = { usd: 0.5, basis: "estimate" as const, unknownRuns: 3 };
-    expect(costParts(before)).toEqual({ total: "$0.50 est.", note: "3 runs unknown" });
-    expect(costParts({ ...before, bounded: { runs: 0, atMostUsd: null } })).toEqual(costParts(before));
-    expect(costParts({ ...before, bounded: { runs: 2, atMostUsd: null } })).toEqual(costParts(before));
-  });
-  it("missionFrom reads /v2/stats' bounded_unknown, and the page says the cost once: the range's, with its own bound", () => {
-    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2, bounded_unknown: { runs: 2, at_most_usd: 0.0311 } }, analytics: analytics() };
-    const v = missionFrom(stats, []);
-    expect(v.cost.bounded).toEqual({ runs: 2, atMostUsd: 0.0311 });
-    const a = analytics({ totals: { ...analytics().totals, bounded_unknown: { runs: 1, at_most_usd: 0.25 } } });
-    const html = render({ ...v, analytics: a }, scope);
-    expect(html).toContain("up to $0.25 more for 1 cut run");
-    // The known total stays the known sum, and there is one cost on the page.
-    expect(html).toContain("$1.23 est.");
-    expect(html).not.toContain("up to $0.04 more");
-  });
-  it("stats with no bounded_unknown read exactly as before", () => {
-    const stats: Stats = { agents: 1, runs: { total: 4, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 }, per_agent: [], cost: { usd: 0.012, basis: "estimate", unknown_runs: 2 }, analytics: analytics() };
-    const v = missionFrom(stats, []);
-    expect(v.cost).toEqual({ usd: 0.012, basis: "estimate", unknownRuns: 2 });
-    expect(render({ ...v, analytics: analytics() }, scope)).not.toContain("cut run");
-  });
-});
-
 // Mission Control routes a person to what needs them: every count is a link to its list, and the latest runs say whose
 // they are, how long they took and what they cost.
 describe("MissionControl, the counts as links and the latest runs in full", () => {
@@ -289,6 +255,13 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     expect(html).toContain("$0.0086 est.");
     // A run still working has no duration yet, and an unknown cost is left out, never $0.
     expect(html).not.toContain("$0.0000");
+  });
+  it("shows a latest run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", () => {
+    const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
+    const stopped: Run = { ...run("run-9", "completed", "idle", "Check invoice INV-2291"), cost: { ...unknown, so_far_usd: 0.0123, unpriced: 1 } };
+    const html = render({ ...view, recent: [stopped, { ...run("run-2", "completed", "idle", "Summarize the standup"), cost: unknown }] });
+    expect(html).toContain("so far $0.0123 est. · 1 not priced");
+    expect(html).not.toContain("Unknown");
   });
   it("puts what needs you first, and before a first run of your own, the start-here panel in place of the counts", () => {
     const needs = createElement("section", { "aria-label": "Needs you" }, "the strip");

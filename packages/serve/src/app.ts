@@ -31,13 +31,14 @@ import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
 import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
-import { storedPlace } from "./place.js";
+import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
+import { mirrorWrites } from "./workspace.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
@@ -115,7 +116,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const meta = await readJson(join(where.root, RUN_META));
   const place = storedPlace(meta?.place);
   const root = resolve(where.root, "..", "..");
-  const box = place.mode === "sandbox" ? runBox(() => runBoxProvider(place, env, root), { id: run.id, root, dir: where.root, place }) : undefined;
+  // A remote box (Daytona) is the server's to make and seed, reached through its relay; Docker's is made here.
+  const box = place.mode === "sandbox" ? runBox(remotePlace(place) ? { relay: root } : { provider: () => runBoxProvider(place, env, root) }, { id: run.id, root, dir: where.root, place }) : undefined;
+  // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
+  if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
@@ -150,7 +154,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
     const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
+    // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
+    const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord);
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
     return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
