@@ -81,14 +81,15 @@ async function killRun(pid) {
   }
 }
 
-test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes", async (t) => {
+test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes; its timeline says it resumed after a crash", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await killRun(pid);
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
-  const { last } = await follow(api, runId, ["completed"]);
+  const { last, rows } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
+  assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after a crash"], "one stored row, kept by the settle's read");
   assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
   assert.equal(storeRun(data, runId).state, "completed");
   assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
@@ -320,6 +321,22 @@ test("a start that needs the place of a cancelled run whose adopted process will
   assert.equal(answer.status, 429, JSON.stringify(answer.body));
   assert.ok(waited >= 3_000, `it waited for the place being given back: ${waited} ms`);
   assert.ok(waited < 8_000, `and answered by its deadline, never hanging on a process that will not go: ${waited} ms`);
+});
+
+test("a run whose live process the next server adopts holds its harness's memory there: a start that needs it is 429, one that fits the rest starts", async (t) => {
+  const { data, runId } = await crashMidRun(t, "Take your time.");
+  // 384 MB: 256 for runs, 128 of it the adopted pi run's.
+  const was = process.constrainedMemory;
+  process.constrainedMemory = () => 384 * 2 ** 20;
+  t.after(() => void (process.constrainedMemory = was));
+  const api = await adopting(t, data, runId, { fauxHarness: new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname, drainTimeout: "5s" });
+  await untilState(api, runId, ["working", "working"]);
+  assert.equal((await api("POST", "/agents", agent("mid", { harness: "codex" }))).status, 201);
+  const refused = await api("POST", "/agents/mid/runs", { input: { content: "hi" } });
+  assert.deepEqual([refused.status, refused.body.error?.details?.harness, refused.body.error?.details?.free_mb], [429, "codex", 128], JSON.stringify(refused.body));
+  const fits = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(fits.status, 202, JSON.stringify(fits.body));
+  await follow(api, fits.body.run_id, ["completed"]);
 });
 
 test("Idempotency-Key answers outlive a restart for the retention capabilities state", async (t) => {

@@ -36,8 +36,8 @@ curl -s "$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2/capabilities" | no
 ```
 
 `null` means it has no model yet. Ask the person to set one provider key in the shell that starts AgentRun
-(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY`), never in this chat, then stop it (`kill %1`, or `kill -- -<PGID>` for
-its process group) and start it again as in step 2. Never print, echo or write a key anywhere. Started this way, the
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY`), never in this chat, then stop it (`kill %1`, or the
+PID you started) and start it again as in step 2. Never print, echo or write a key anywhere. Started this way, the
 person's shell and npm keep the keys they exported in their environment, as they always do; the server itself, and its
 runs, hold none.
 

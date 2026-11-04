@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { capModels } from "../dist/cap.js";
-import { sideRequests } from "../dist/cap.js";
+import { capModels, paidCall, sideRequests, useSpend } from "../dist/cap.js";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -50,6 +49,55 @@ test("a request in flight holds its worst case: a second that fits alone but not
   assert.equal(sent.length, 2, "once the first answered ($0.0001 spent), the next fits");
   sent[1].end(0);
   await third.result();
+});
+
+/** A paid call (monid_run's, through paidCall) the test holds under way until it settles it with what it charged, or
+ *  fails it; resolved once the call is sent, past the cap's check. Settled at the test's end in any case, so a paid call
+ *  in a later test is never queued behind it. */
+async function underWay(t, usd) {
+  const call = { sent: false };
+  const answer = new Promise((resolve, reject) => Object.assign(call, { settle: resolve, fail: reject }));
+  call.paid = paidCall("monid_run", () => ((call.sent = true), answer), (charged) => charged, { usd, basis: "the price monid_inspect quoted" });
+  t.after(() => (call.settle(0), call.paid.catch(() => undefined)));
+  while (!call.sent) await new Promise((resolve) => setImmediate(resolve));
+  return call;
+}
+
+/** Whether a request was sent: one that was is ended at once, so a request the cap should have held never hangs the test. */
+const wentOut = (sent) => (sent.forEach((request) => request.end(0)), sent.length);
+
+test("a paid call under way holds what it is held at: a model request that fits only without it is refused, and goes once the call's charge is in", async (t) => {
+  // A request's worst case is $0.001 (1,000 output tokens at $1 a million) and monid's run is held at its $0.001 quote:
+  // the cap holds one of the two, not both.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0015, 0);
+  t.after(() => useSpend(undefined));
+  const call = await underWay(t, 0.001);
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "not sent while the paid call is under way");
+  const refused = await request.result();
+  assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.001000, and with \$0\.001000 spent the run would pass its cap of \$0\.0015: the run is out of budget\.$/);
+  call.settle(0.0002);
+  assert.deepEqual(await call.paid, { result: 0.0002 });
+  const admitted = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "once the call settled at $0.0002, the request fits: $0.0012 of $0.0015");
+  sent[0].end(0);
+  await admitted.result();
+});
+
+test("a paid call that fails counts at what it was held at, as a model request that fails with no answer does: its hold never just drops", async (t) => {
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0015, 0);
+  t.after(() => useSpend(undefined));
+  const call = await underWay(t, 0.001);
+  call.fail(new Error("monid's socket closed"));
+  await assert.rejects(call.paid, /socket closed/);
+  const request = capped.streamSimple(priced, context);
+  assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
+  const refused = await request.result();
+  assert.match(refused.errorMessage, /^spend_cap_reached: .*with \$0\.001000 spent the run would pass its cap of \$0\.0015/);
 });
 
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */
