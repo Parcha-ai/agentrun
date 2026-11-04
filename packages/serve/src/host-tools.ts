@@ -20,6 +20,7 @@ import { wireName } from "./catalog.js";
 import { BOXED_TOOLS, CodingTools } from "./coding-tools.js";
 import { FETCH_PAGE_TOOL } from "./fetch-page.js";
 import { monidTools } from "./monid.js";
+import { booking } from "./paid-calls.js";
 import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
@@ -30,9 +31,10 @@ export { workspaceRelative } from "./workspace-paths.js";
 /** Each tool a harness other than pi runs here, by catalog name, and whether a call a crash cut off may run again. */
 export const REPLAY: Record<string, "safe" | "never"> = { read: "safe", write: "never", edit: "never", bash: "never", [FETCH_PAGE_TOOL]: "safe", [WEB_FETCH_TOOL]: "safe", [WEB_SEARCH_TOOL]: "safe", "monid.discover": "safe", "monid.inspect": "safe", "monid.run": "never" };
 
-/** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own. */
-const MAX_BYTES = 50 * 1024;
-const MAX_LINES = 2000;
+/** pi's limits on a tool's output (its DEFAULT_MAX_BYTES and DEFAULT_MAX_LINES), unless the tool names its own: read's
+ *  head and bash's tail are held to them (the host-bounds test reads pi's own words for them). */
+export const MAX_BYTES = 50 * 1024;
+export const MAX_LINES = 2000;
 
 /** Whether `byte` continues a UTF-8 character (0b10xxxxxx), so a cut before it would split one. */
 const continues = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
@@ -104,7 +106,8 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.
   const stray = coding.map((tool) => tool.name).filter((name) => !BOXED_TOOLS.includes(name));
   if (stray.length) throw new Error(`the coding source holds ${stray.join(", ")}, which is no coding tool`);
-  const web = [webFetchTool(process.env), webFetchTool(process.env, FETCH_PAGE_TOOL), webSearchTool(process.env)] as unknown as ToolRegistration[];
+  // Their paid requests (Parallel's) are booked under the call, in the run's store, as pi's are (paid-calls.ts).
+  const web = [webFetchTool(process.env), webFetchTool(process.env, FETCH_PAGE_TOOL), webSearchTool(process.env)].map(booking) as unknown as ToolRegistration[];
   // monid's, only for a run that names one: its key is the one this process was handed over its pipe (secrets.ts),
   // never in its environment, and its long answers go in the run's work/, the claim's as pi's (`where.work`), read at
   // the call. They are outside the coding source, which holds the coding tools only.

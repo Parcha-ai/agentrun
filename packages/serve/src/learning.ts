@@ -26,7 +26,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, valueMatcher, type Verdict } from "./learn/index.js";
-import { homeOf, writeDurable } from "./files.js";
+import { homeOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 
@@ -322,11 +322,7 @@ export const withAgentRepo = <T>(data: string, agentId: string, work: () => Prom
 export const withAgentGrade = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => queued(`${learningRepo(data, agentId)}\0grade`, work);
 
 function queued<T>(key: string, work: () => Promise<T>): Promise<T> {
-  const next = (queues.get(key) ?? Promise.resolve()).then(work, work);
-  const settled = next.catch(() => undefined);
-  queues.set(key, settled);
-  void settled.then(() => queues.get(key) === settled && queues.delete(key));
-  return next;
+  return serialBy(queues, key, work);
 }
 
 /** Main's commit, or undefined when there is no main yet: no repository, one whose `init` never finished, or one whose
@@ -493,8 +489,6 @@ export async function readTurn(runDir: string): Promise<Turn> {
  *  read (learn/secrets.ts PRINT_MAX). */
 const linesShown = (text: string, shown: Shown) => text.split("\n").map(shown.text).join("\n");
 
-/** A note's file an index line links to. */
-const LINKED = /\]\(([^)\s]+)\)/;
 /** Every link's target on an index line: `<…>` or up to a space or `)`. */
 const LINKS = /\]\(\s*(?:<([^>\n]*)>|([^)\s]+))/g;
 
@@ -566,7 +560,8 @@ export function learnedOf(seed: Seed, options: LearnedOptions): string | undefin
   const blocks = notes.map((note) => wholeNote(note, shown));
   // Each part's bytes, and the blank line before it.
   const size = (text: string) => Buffer.byteLength(text) + 2;
-  const named = lines.every((entry) => active.has(LINKED.exec(entry)?.[1] ?? ""));
+  // Each line's first link, in any spelling (`./x.md` is x.md: linkedFiles, as servedIndex reads it), names an active note.
+  const named = lines.every((entry) => active.has(linkedFiles(entry)[0] ?? ""));
   if (named && blocks.reduce((sum, block) => sum + size(block), 0) <= budget) return [WHOLE_INTRO, ...blocks].join("\n\n");
   const shownIndex = lines.map(shown.text).join("\n");
   let left = budget - (shownIndex ? size(shownIndex) : 0);
@@ -603,6 +598,7 @@ export async function dropSeed(runDir: string, work: string): Promise<boolean> {
   const pinFile = join(runDir, LEARNING_PIN);
   const dir = join(work, LEARNED_DIR);
   const there = Boolean((await lstat(pinFile).catch(() => null)) ?? (await lstat(dir).catch(() => null)));
+  if (!there) return false;
   await rm(pinFile, { force: true });
   await rm(dir, { recursive: true, force: true });
   return there;

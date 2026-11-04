@@ -4,18 +4,33 @@
 // pattern whose every try is bounded by the next character it can stop at. read-page.ts runs them on the event loop;
 // its worker runs the scan for the title and links.
 
-/** An entity decoder for a run of text or an attribute value (read-page.ts hands node-html-parser's). */
+/** An entity decoder for a run of text or an attribute value: node-html-parser's in the worker, entities.ts's on the
+ *  event loop. */
 export type Decode = (text: string) => string;
 
 const INERT_NAMES = new Set(["script", "style", "svg", "noscript", "template"]);
-const CLOSER: Record<string, RegExp> = Object.fromEntries(["script", "style", "svg", "noscript", "template"].map((name) => [name, new RegExp(`</${name}(?=[\\s/>])[^>]*>?`, "gi")]));
+/** The elements whose content is text, not markup, to their first end tag, as a browser reads them: a tag inside one is
+ *  none (script, style and noscript are also inert). */
+const TEXT_ONLY = new Set(["script", "style", "noscript", "textarea", "title", "xmp", "iframe", "noembed", "noframes"]);
+/** The kept ones whose text the drop also writes as text: each "<" in a textarea's or a title's text becomes "&lt;", so
+ *  a parser that reads them as markup (node-html-parser does) reads the text a browser shows. */
+const KEPT_TEXT = new Set(["textarea", "title"]);
+const CLOSER: Record<string, RegExp> = Object.fromEntries([...TEXT_ONLY, "svg", "template"].map((name) => [name, new RegExp(`</${name}(?=[\\s/>])[^>]*>?`, "gi")]));
+
+/** InertDrop's one pass over a page's template tags, from its first template: `open` the start tags of the templates
+ *  it holds open, innermost last; `seen` every start it met; `ends`, for each it saw closed, the offset just past the
+ *  end tag that closed it; `done` once it has read the page to its end. */
+type TemplatePass = { next: (at: number) => Tag | null; at: number; open: number[]; seen: Set<number>; ends: Map<number, number>; done: boolean };
 
 /** A page without its script, style, svg, noscript and template elements and its comments, in steps so a caller on the
  *  event loop can yield between them (dropInert, all at once). One whose end is missing runs to the end of the page, as
  *  a browser reads it; but an svg's start tag goes alone, since a browser lets the HTML that follows out of an unclosed
- *  svg. A nested svg or template ends at the first end tag of its name. A search for an end tag that finds none is not
- *  made again from a later start of that name (none follows it either), so a page of unclosed svgs is read once, not
- *  once for each. */
+ *  svg. A template ends at the end tag that closes it, as in a browser: a template inside it is counted, so its end tag
+ *  ends only the inner one, and the text of an element that holds text, not markup, is never read as tags in it
+ *  (TEXT_ONLY: a script, a textarea, a title). Out of a template, a textarea's or a title's text is not read as tags
+ *  either: a "<template>" or a "<script>" in it is text, kept with each "<" written "&lt;" (KEPT_TEXT). A nested svg ends at the first end tag of its name. A search for an end tag that finds none is not made again from
+ *  a later start of that name (none follows it either), so a page of unclosed svgs is read once, not once for each; and
+ *  the templates' ends are found in one forward pass however many there are (#templateEnd). */
 export class InertDrop {
   // Its blocks are found among the page's tags (tagsOf), so a "<script>" inside an attribute value is none.
   readonly #next: (at: number) => Tag | null;
@@ -25,12 +40,14 @@ export class InertDrop {
   #at = 0;
   #from = 0;
   #done = false;
+  #templates: TemplatePass | null = null;
 
   constructor(readonly html: string) {
     this.#next = tagsOf(html);
   }
 
-  /** Drops the blocks found in the next `chars` characters or so; true once the whole page is read. */
+  /** Drops the blocks found in the next `chars` characters or so; true once the whole page is read. A template's end
+   *  is looked for `chars` characters at a time too, so no step reads much more than that. */
   step(chars: number): boolean {
     const { html } = this;
     const until = this.#at + chars;
@@ -40,24 +57,90 @@ export class InertDrop {
       const comment = html.startsWith("!--", tag.lt + 1);
       // A tag with no ">" after it: the rest of the page is kept as it is (a comment with no "-->" runs to its end).
       if (!comment && tag.gt < 0) { this.#finish(); break; }
-      if (!comment && (tag.end || !INERT_NAMES.has(tag.name))) { this.#at = tag.gt + 1; continue; }
+      if (!comment && (tag.end || !INERT_NAMES.has(tag.name))) {
+        if (tag.end || !KEPT_TEXT.has(tag.name)) { this.#at = tag.gt + 1; continue; }
+        // A textarea or a title: its text is passed to its end tag, never read as tags, so a "<script>" or a
+        // "<template>" in it drops nothing, and is kept with each "<" written "&lt;"; with no end tag the rest of the
+        // page is its text.
+        const close = this.#endTag(tag.name, tag.gt + 1);
+        const text = html.slice(tag.gt + 1, close ? close.start : html.length);
+        if (text.includes("<")) {
+          this.#kept.push(html.slice(this.#from, tag.gt + 1), text.replaceAll("<", "&lt;"));
+          this.#from = close ? close.start : html.length;
+        }
+        if (!close) { this.#finish(); break; }
+        this.#at = close.end;
+        continue;
+      }
       let end = tag.gt < 0 ? html.length : tag.gt + 1;
       if (!comment) {
         const name = tag.name;
-        let close: RegExpExecArray | null = null;
-        if (end < (this.#unclosed.get(name) ?? Number.POSITIVE_INFINITY)) {
-          const closer = CLOSER[name]!;
-          closer.lastIndex = end;
-          close = closer.exec(html);
-          if (!close) this.#unclosed.set(name, end);
+        if (name === "template") {
+          const close = this.#templateEnd(tag.lt, end, chars);
+          // Not found within this step's reading: the next step goes on from this template.
+          if (close === undefined) break;
+          end = close >= 0 ? close : html.length;
+        } else {
+          const close = this.#endTagEnd(name, end);
+          end = close >= 0 ? close : name === "svg" ? end : html.length;
         }
-        end = close ? close.index + close[0].length : name === "svg" ? end : html.length;
       }
       this.#kept.push(html.slice(this.#from, tag.lt));
       this.#from = this.#at = end;
       if (end >= html.length) this.#finish();
     }
     return this.#done;
+  }
+
+  /** The first end tag named `name` from `from` (CLOSER), where it starts and the offset just past it; null when there
+   *  is none. */
+  #endTag(name: string, from: number): { start: number; end: number } | null {
+    if (from >= (this.#unclosed.get(name) ?? Number.POSITIVE_INFINITY)) return null;
+    const closer = CLOSER[name]!;
+    closer.lastIndex = from;
+    const close = closer.exec(this.html);
+    if (!close) { this.#unclosed.set(name, from); return null; }
+    return { start: close.index, end: close.index + close[0].length };
+  }
+
+  /** The offset just past the first end tag named `name` from `from`, or -1 when there is none (#endTag). */
+  #endTagEnd(name: string, from: number): number {
+    return this.#endTag(name, from)?.end ?? -1;
+  }
+
+  /**
+   * The offset just past the end tag that closes the template whose start tag is at `lt` and ends at `from`, -1 when
+   * none closes it, or undefined when the pass has read `budget` characters without finding it (the next call goes on).
+   * One pass over the page's tags from its first template, with tags of its own (tagsOf), only ever forward: a start
+   * tag of a template is opened, an end tag closes the innermost one open, and an element that holds text (TEXT_ONLY:
+   * a script, a textarea, a title) is passed to its end tag, its text never read as tags. Each template's end is kept as the pass meets it, so a later
+   * template asks the pass again only when it is past where the pass has read. A template the pass did not meet as a
+   * tag (one inside a block the two scans read differently) ends at the first end tag of its name, as before.
+   */
+  #templateEnd(lt: number, from: number, budget: number): number | undefined {
+    const pass: TemplatePass = (this.#templates ??= { next: tagsOf(this.html), at: lt, open: [], seen: new Set(), ends: new Map(), done: false });
+    const stop = pass.at + budget;
+    while (!pass.ends.has(lt) && !pass.done && (pass.at <= lt || pass.seen.has(lt))) {
+      if (pass.at >= stop) return undefined;
+      const tag = pass.next(pass.at);
+      // No tag left, or one with no ">" after it (a comment with no "-->" among them): nothing closes after it.
+      if (!tag || tag.gt < 0) { pass.done = true; break; }
+      pass.at = tag.gt + 1;
+      if (tag.name === "template") {
+        if (!tag.end) { pass.open.push(tag.lt); pass.seen.add(tag.lt); }
+        else {
+          const opened = pass.open.pop();
+          if (opened !== undefined) pass.ends.set(opened, tag.gt + 1);
+        }
+      } else if (!tag.end && TEXT_ONLY.has(tag.name)) {
+        const close = this.#endTagEnd(tag.name, pass.at);
+        if (close < 0) pass.done = true;
+        else pass.at = close;
+      }
+    }
+    const end = pass.ends.get(lt);
+    if (end !== undefined) return end;
+    return pass.seen.has(lt) ? -1 : this.#endTagEnd("template", from);
   }
 
   #finish(): void {
@@ -78,11 +161,14 @@ export function dropInert(html: string): string {
 }
 
 /** `html` cut to at most `max` characters, after the last tag that ends before the cut, so no tag is left half; at
- *  `max` itself when that tag ends more than 64 KiB before it (a page of one long text). */
+ *  `max` itself when that tag ends more than 64 KiB before it (a page of one long text), or one before it when `max`
+ *  falls between the two halves of a character written as a surrogate pair, so no half of one is left. */
 export function cutHtml(html: string, max: number): string {
   if (html.length <= max) return html;
   const gt = html.lastIndexOf(">", max - 1);
-  return html.slice(0, gt >= 0 && max - gt <= 65_536 ? gt + 1 : max);
+  let at = gt >= 0 && max - gt <= 65_536 ? gt + 1 : max;
+  if ((html.charCodeAt(at - 1) & 0xfc00) === 0xd800 && (html.charCodeAt(at) & 0xfc00) === 0xdc00) at -= 1;
+  return html.slice(0, at);
 }
 
 /** Tags whose start and end each begin a paragraph of the plain text; LINES, a line; CELLS, a cell of a row. */
@@ -97,6 +183,10 @@ const NAME = /[a-zA-Z][a-zA-Z0-9:-]*/y;
 export type Tag = { lt: number; gt: number; name: string; end: boolean };
 
 const isSpace = (code: number) => code === 32 || (code >= 9 && code <= 13);
+const SLASH = 47;
+const EQUALS = 61;
+/** Whether `code` ends an attribute's name: a space, "/", "=" or ">". */
+const endsName = (code: number) => isSpace(code) || code === SLASH || code === EQUALS || code === 62;
 
 /**
  * A reader of `html`'s tags, each call the next tag from `at`: "<" then a letter starts one, "</" an end tag, "<!" a
@@ -156,25 +246,137 @@ export function tagsOf(html: string): (at: number) => Tag | null {
   };
 }
 
-const HREF = /\shref\s*=\s*/i;
 const TITLE_END = /<\/title(?=[\s/>])/gi;
-const quotes = new Set(['"', "'"]);
 
-/** The value of the first `href` in a tag's inside (`a href="..."`), decoded; null when it has none. */
-function hrefOf(inside: string, decode: Decode): string | null {
-  const found = HREF.exec(inside);
-  if (!found) return null;
-  const from = found.index + found[0].length;
-  const quote = inside[from]!;
-  let value: string;
-  if (quotes.has(quote)) {
-    const close = inside.indexOf(quote, from + 1);
-    value = inside.slice(from + 1, close < 0 ? inside.length : close);
-  } else {
-    const space = inside.slice(from).search(/[\s>]/);
-    value = inside.slice(from, space < 0 ? inside.length : from + space);
+/**
+ * The value of a tag's first `name` attribute (href or src), decoded; "" for one written with no value; null when it has
+ * none. `inside` is what the tag holds between its name and its ">" (insideOf). Its attributes are read in one pass, as a
+ * browser reads them: a name (up to a space, "/", "=" or ">"; a "=" that starts one is part of it), then "=" and a
+ * value, quoted or up to a space, or no value. So a "src=" inside another attribute's quoted value is that value's
+ * text, and an attribute right after a closing quote (`class="x"src=...`) is one. A value is quoted by the same rule
+ * tagsOf ends a tag by: a quote right after the "=" and its spaces; one that no quote closes runs to the tag's end.
+ */
+function attrOf(inside: string, name: "href" | "src", decode: Decode): string | null {
+  const { length } = inside;
+  for (let at = 0; at < length;) {
+    const code = inside.charCodeAt(at);
+    if (isSpace(code) || code === SLASH) { at += 1; continue; }
+    const from = at;
+    do at += 1; while (at < length && !endsName(inside.charCodeAt(at)));
+    const named = at - from === name.length && inside.slice(from, at).toLowerCase() === name;
+    while (isSpace(inside.charCodeAt(at))) at += 1;
+    if (inside.charCodeAt(at) !== EQUALS) {
+      if (named) return "";
+      continue;
+    }
+    at += 1;
+    while (isSpace(inside.charCodeAt(at))) at += 1;
+    const quote = inside[at];
+    let start = at;
+    let end: number;
+    if (quote === '"' || quote === "'") {
+      start = at + 1;
+      const close = inside.indexOf(quote, start);
+      end = close < 0 ? length : close;
+      at = end + 1;
+    } else {
+      while (at < length && !isSpace(inside.charCodeAt(at))) at += 1;
+      end = at;
+    }
+    if (named) {
+      const value = inside.slice(start, end);
+      return value.includes("&") ? decode(value) : value;
+    }
   }
-  return value.includes("&") ? decode(value) : value;
+  return null;
+}
+/** What a tag at `lt` named `name` holds between its name and its ">" at `gt`. */
+const insideOf = (html: string, name: string, lt: number, gt: number) => html.slice(lt + 1 + name.length, gt);
+
+const MAIN = ["article", "main", "body"] as const;
+/** The first article element of `html`, else its first main, else its body, as HTML from its start tag to its end tag
+ *  (or the page's end); the whole of `html` when it has none of them. One pass: an element of the same name inside one
+ *  is counted, so its end tag does not end the one around it. Run on a page its inert blocks are dropped from, so
+ *  none is picked from inside a script or a comment. */
+export function mainOf(html: string): string {
+  const found = new Map<string, { from: number; depth: number; to?: number }>();
+  const next = tagsOf(html);
+  for (let tag = next(0); tag && tag.gt >= 0; tag = next(tag.gt + 1)) {
+    if (!(MAIN as readonly string[]).includes(tag.name)) continue;
+    const element = found.get(tag.name);
+    if (!tag.end) {
+      if (!element) found.set(tag.name, { from: tag.lt, depth: 1 });
+      else if (element.to === undefined) element.depth += 1;
+    } else if (element && element.to === undefined && (element.depth -= 1) === 0) {
+      element.to = tag.gt + 1;
+      if (tag.name === "article") break;
+    }
+  }
+  for (const name of MAIN) {
+    const element = found.get(name);
+    if (element) return html.slice(element.from, element.to ?? html.length);
+  }
+  return html;
+}
+
+/** One pass over a page's tags for its frames, in steps so a caller on the event loop can yield between them: each
+ *  `iframe` element's, and each `frame` element's inside a `frameset` (a `<frame>` outside one is no element, as in a
+ *  browser), `src` (decoded; null without one), in page order, with the text inside an iframe element (the fallback a
+ *  browser does not render, where a block page keeps its message: its tags skipped, its entities decoded, read up to
+ *  `readChars` characters); and the page's first `<base href>`. Inside an iframe element, only its end tag is a tag. */
+export class FrameScan {
+  #at = 0;
+  #frameset = 0;
+  #base: string | null = null;
+  #open: { src: string | null; text: string[]; read: number } | null = null;
+  readonly #frames: Array<{ src: string | null; text: string }> = [];
+  readonly #next: (at: number) => Tag | null;
+
+  constructor(readonly html: string, readonly decode: Decode, readonly readChars: number) {
+    this.#next = tagsOf(html);
+  }
+
+  get done(): boolean { return this.#at >= this.html.length; }
+
+  /** Scans the tags that start in the next `chars` characters (see PageScan.step). */
+  step(chars: number): boolean {
+    const { html } = this;
+    const until = Math.min(html.length, this.#at + chars);
+    while (this.#at < until) {
+      const tag = this.#next(this.#at);
+      if (!tag) { this.#words(html.slice(this.#at)); this.#at = html.length; break; }
+      this.#words(html.slice(this.#at, tag.lt));
+      if (tag.gt < 0) { this.#at = html.length; break; }
+      this.#at = tag.gt + 1;
+      const { name, end, lt, gt } = tag;
+      if (this.#open) { if (end && name === "iframe") this.#close(); continue; }
+      if (name === "frameset") this.#frameset = Math.max(0, this.#frameset + (end ? -1 : 1));
+      else if (end) continue;
+      else if (name === "base" && this.#base === null) this.#base = attrOf(insideOf(html, name, lt, gt), "href", this.decode);
+      else if (name === "iframe") this.#open = { src: attrOf(insideOf(html, name, lt, gt), "src", this.decode), text: [], read: 0 };
+      else if (name === "frame" && this.#frameset > 0) this.#frames.push({ src: attrOf(insideOf(html, name, lt, gt), "src", this.decode), text: "" });
+    }
+    if (this.done && this.#open) this.#close();
+    return this.done;
+  }
+
+  #words(raw: string): void {
+    const open = this.#open;
+    if (!open || !raw || open.read >= this.readChars) return;
+    const part = raw.slice(0, this.readChars - open.read);
+    open.read += part.length;
+    open.text.push(part.includes("&") ? this.decode(part) : part);
+  }
+
+  #close(): void {
+    this.#frames.push({ src: this.#open!.src, text: this.#open!.text.join("") });
+    this.#open = null;
+  }
+
+  /** The frames scanned, and the first base href (null without one). */
+  result(): { frames: Array<{ src: string | null; text: string }>; base: string | null } {
+    return { frames: [...this.#frames], base: this.#base };
+  }
 }
 
 /** One pass over a page's tags, in steps so a caller on the event loop can yield between them: its title (the first
@@ -223,7 +425,7 @@ export class PageScan {
     }
     if (end) return;
     if (name === "a" || (name === "base" && this.#base === null)) {
-      const href = hrefOf(this.html.slice(lt + 1 + name.length, gt), this.decode);
+      const href = attrOf(insideOf(this.html, name, lt, gt), "href", this.decode);
       if (href === null) return;
       if (name === "a") this.#hrefs.push(href);
       else this.#base = href;

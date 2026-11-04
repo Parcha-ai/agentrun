@@ -10,6 +10,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
+import { ANSWER_TOKENS_LEAST } from "../dist/cap.js";
 import { homeOf } from "../dist/files.js";
 import { startServe } from "../dist/index.js";
 import { learningTestHooks } from "../dist/learning.js";
@@ -19,8 +20,9 @@ import { agent, client, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
-/** The faux model's max output tokens, at $100 per million: one request's worst case under OUTPUT_PRICED. */
-const WORST = (16_384 * 100) / 1e6;
+/** A request's least under OUTPUT_PRICED: its answer's 1,024 tokens (the faux model does not think), at $100 per million.
+ *  A cap sends any request it can buy this much of, limited to what it can buy, and refuses one it cannot. */
+const LEAST = (ANSWER_TOKENS_LEAST * 100) / 1e6;
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
 
 /** The bin on `data`, as an operator starts it. */
@@ -29,17 +31,26 @@ async function serverProcess(data) {
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   for (let i = 0; !/AGENTRUN_BASE_URL=/.test(out); i++) {
-    assert.ok(i < 400 && child.exitCode === null, `the server did not start: ${out}`);
+    // 90 s: a loaded machine can take well over 20 s to start a server process (the test's own timeout is 150 s).
+    assert.ok(i < 1800 && child.exitCode === null, `the server did not start: ${out}`);
     await sleep(50);
   }
   return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
 
 test("a server that goes while a run reflects: the next one asks the turn again under the same request id, the run's process takes it once, and what it wrote merges", { timeout: 150_000 }, async (t) => {
+  // Teardown, registered before the scratch folders: node:test runs a test's after hooks in the order they were added and
+  // stops at the first that throws, so the servers and the run's process go first, and the folders' rm (scratch) after.
+  // Each step here is guarded, so one that fails never skips the rest.
+  let first, next, pid;
+  t.after(async () => {
+    try { first?.child.kill("SIGKILL"); } catch {}
+    try { if (pid && processAlive(pid)) process.kill(pid, "SIGKILL"); } catch {}
+    try { await next?.close(); } catch {}
+  });
   const data = join(await scratch(t), "agents");
   const go = join(await scratch(t), "go");
-  const first = await serverProcess(data);
-  t.after(() => first.child.kill("SIGKILL"));
+  first = await serverProcess(data);
   await made(first.api, learner("crash", { instructions: `Say your prompt. Reflect once ${go} exists.`, plan: PLAN }));
   const runId = await started(first.api, "crash");
   for (let i = 0; !reflectRows((await first.api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).some((row) => row.kind === "user_message"); i++) {
@@ -49,11 +60,9 @@ test("a server that goes while a run reflects: the next one asks the turn again 
   assert.equal((await first.api("GET", `/runs/${runId}`)).body.learning.state, "reflecting");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+  pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
   assert.ok(processAlive(pid), "the run's process outlived its server, mid-turn");
-  t.after(() => processAlive(pid) && process.kill(pid, "SIGKILL"));
-  const next = await startServe({ data, port: 0, faux: LEARN, drainTimeout: "5s" });
-  t.after(() => next.close());
+  next = await startServe({ data, port: 0, faux: LEARN, drainTimeout: "5s" });
   const api = client(next.baseUrl, next.token);
   writeFileSync(go, "");
   const { view, rows } = await ended(api, runId);
@@ -81,15 +90,17 @@ test("no_budget: a turn whose request the run's cap refuses, and a run whose cap
   const probe = await ended(api, await started(api, "probe", "hi"));
   const spent = probe.view.cost.usd;
   assert.ok(spent > 0);
-  // Room for one request's worst case and half of what the job costs: the job's request fits, the turn's never.
+  // Room for one request's least and half of what the job costs: the job's request is sent (limited), and once the job
+  // has spent, what is left is short of the turn's least, so its request is refused.
   await made(api, learner("tight"));
-  const tight = await ended(api, await started(api, "tight", "hi", { max_cost_usd: WORST + spent / 2 }));
+  const tight = await ended(api, await started(api, "tight", "hi", { max_cost_usd: LEAST + spent / 2 }));
   assert.deepEqual([tight.view.status, tight.view.error], ["completed", null]);
   settled(tight.view, tight.rows, "dropped", "no_budget");
   assert.equal(tight.view.cost.usd, spent, "only the job was paid for");
-  assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached: /);
+  assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$[\d.]+ of its \$[\d.]+ cap, and its next faux-1 request needs at least \$[\d.]+\. Raise the cap to at least \$[\d.]+ to run it\.$/);
   await made(api, learner("broke"));
-  const broke = await ended(api, await started(api, "broke", "hi", { max_cost_usd: WORST / 2 }), ["failed"]);
+  // Half a request's least: the job's first request is refused, so no turn is sent.
+  const broke = await ended(api, await started(api, "broke", "hi", { max_cost_usd: LEAST / 2 }), ["failed"]);
   assert.equal(broke.view.error.code, "spend_cap_reached");
   settled(broke.view, broke.rows, "dropped", "no_budget");
   assert.equal(reflectRows(broke.rows).length, 0, "no turn");

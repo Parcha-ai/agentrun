@@ -60,11 +60,18 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 					await launch(box, "asnobody", { argv: program, cwd: "/tmp", user: "nobody", stdin, secrets }, context),
 				);
 				expect(started.user).toEqual({ name: "nobody", uid: 65534 });
-				expect((await until("the program's uid", () => fileIn(box, "/tmp/uid")))?.trim()).toBe("65534");
-				expect((await until("its stdin", () => fileIn(box, "/tmp/in")))?.trim()).toBe(sha(stdin));
-				expect((await until("its secrets", () => fileIn(box, "/tmp/sec")))?.trim()).toBe(
-					sha(JSON.stringify(secrets)),
-				);
+				// Each file is created empty by its redirect before the command writes it: the waits are for the text.
+				expect(
+					(
+						await until("the program's uid", async () => (await fileIn(box, "/tmp/uid"))?.trim() || undefined)
+					)?.trim(),
+				).toBe("65534");
+				expect(
+					(await until("its stdin", async () => (await fileIn(box, "/tmp/in"))?.trim() || undefined))?.trim(),
+				).toBe(sha(stdin));
+				expect(
+					(await until("its secrets", async () => (await fileIn(box, "/tmp/sec"))?.trim() || undefined))?.trim(),
+				).toBe(sha(JSON.stringify(secrets)));
 				const encoded = [
 					Buffer.from(stdin).toString("base64"),
 					Buffer.from(JSON.stringify(secrets)).toString("base64"),

@@ -90,13 +90,13 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage", () => {
-  it("shows a run whose requests were cut as ≤ its bound and why, and an unknown cost without a bound not at all", async () => {
+  it("shows a run's cost so far and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate", charge_state: null, cap_usd: null };
-    const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, at_most_usd: 0.07 } }, { ...runs[1], cost: unknown }] });
+    const page = await open(agentFixture("invoice-checker"), { runs: [{ ...runs[0], cost: { ...unknown, so_far_usd: 0.07, unpriced: 1 } }, { ...runs[1], cost: unknown }] });
     const links = [...page.host.querySelectorAll<HTMLAnchorElement>('ul[aria-label="Runs"] a')];
-    expect(links[0].textContent).toContain("≤ $0.07 · some requests were cut");
-    expect(links[1].textContent).not.toMatch(/\$|Unknown|≤/);
+    expect(links[0].textContent).toContain("so far $0.07 est. · 1 not priced");
+    expect(links[1].textContent).not.toMatch(/\$|Unknown|so far/);
   });
 
   it("heads the page with the current revision's harness, model and thinking, and Edit opens the editor", async () => {
@@ -481,11 +481,11 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("codex"), { models: gateway, harnesses });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     const claude = await open(on("claude-agent"), { models: gateway, harnesses });
-    expect(modelOf(claude).textContent).toBe("no default: choose a model");
+    expect(modelOf(claude).textContent).toBe("none yet: add a model key in Settings → Model keys");
   });
   it("a claude-agent agent naming no model has no default to show", async () => {
     const page = await open(on("claude-agent"), { models: gateway });
-    expect(modelOf(page).textContent).toBe("no default: choose a model");
+    expect(modelOf(page).textContent).toBe("none yet: add a model key in Settings → Model keys");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
   });
 });
@@ -522,6 +522,18 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
     expect(pi.host.querySelector('[aria-label="Harness not available"]')).toBeNull();
     await pi.set(pi.input(), "Check this invoice.");
     expect(pi.button(/^Run$/)!.disabled).toBe(false);
+  });
+});
+
+// Where the agent runs, said with the rest of its current revision: its box, or the server (no place is the server's
+// default, the runner).
+describe("AgentPage, where it runs", () => {
+  it("says the box an agent runs in, or the server", async () => {
+    const base = agentFixture("invoice-checker");
+    const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
+    expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(base)).fact("Runs")).toBe("On the server");
   });
 });
 

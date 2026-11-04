@@ -187,7 +187,7 @@ test("ask_person reaches only an agent that names it: one that does not goes on 
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, '{"region":"us"}');
 });
 
-test("a run whose next request could pass its max_cost_usd ends failed with spend_cap_reached, and the request is not sent", async (t) => {
+test("a run whose cap can't cover one request's least ends failed with spend_cap_reached, in plain words, and the request is not sent", async (t) => {
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", { definition: { id: "pricey", version: 1, name: "pricey", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
   const started = await api("POST", "/agents/pricey/runs", { input: { content: "What is six times seven?" }, max_cost_usd: 0.01 });
@@ -195,7 +195,12 @@ test("a run whose next request could pass its max_cost_usd ends failed with spen
   const { rows } = await follow(api, started.body.run_id, ["failed"]);
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(run.error.code, "spend_cap_reached");
-  assert.match(run.error.message, /^the next model request was not sent/);
+  // faux-1 at $1 a token: the least, its answer's 1,024 tokens and its input, is past $1,024; nothing spent, so the cap to
+  // raise to is the least.
+  const words = /^Not sent: this run's cap of \$0\.01 can't cover one faux-1 request \(at least \$(\d+\.\d\d)\)\. Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(run.error.message);
+  assert.ok(words, run.error.message);
+  assert.equal(words[2], words[1]);
+  assert.ok(Number(words[1]) > 1024, `the least covers the answer's 1,024 tokens: $${words[1]}`);
   assert.equal(run.cost.usd, 0, "nothing was spent");
   assert.equal(rows.some((r) => r.kind === "final_answer"), false);
 });

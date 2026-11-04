@@ -82,8 +82,12 @@ export default function reply(context, faux) {
   // A follow-up that asks the person: the question its turn ends on.
   if (users.length > 1 && last === "Ask me now.") return answered ? faux.message("Asked.") : faux.message(faux.toolCall("ask_person", { question: "Which one?" }), { stopReason: "toolUse" });
   // Asks the person through ask_person; for an agent without it the call fails, and the reply goes on without asking.
+  // "Pick a region once <file> exists." asks only once the test has made that file, and then makes `<file>.asked`.
   if (first.includes("Pick a region")) {
-    if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
+    const gate = /^Pick a region once (\S+) exists\.$/.exec(first)?.[1];
+    const ask = () => faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
+    // It says it asked by `<file>.asked`: the run's own store is its process's alone while it lives.
+    if (users.length === 1 && !answered) return gate ? untilExists(gate).then(async () => ((await import("node:fs")).writeFileSync(`${gate}.asked`, ""), ask())) : ask();
     return faux.message(JSON.stringify({ region: users.length === 1 ? "us" : last.trim() }));
   }
   // The run's process says which of these it sees: the server's token must not reach it, the rest must.
@@ -96,8 +100,8 @@ export default function reply(context, faux) {
     const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user");
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
   }
-  // Runs monid's /slow, which holds until it is stopped; then says so.
-  if (first.includes("Run monid's /slow.")) return results === 0 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
+  // Runs monid's /slow, which holds until it is stopped; then, or on a follow-up (the run stopped), says so.
+  if (first.includes("Run monid's /slow.")) return results === 0 && users.length === 1 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
   // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
   if (first.includes("Search the web for ")) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
@@ -107,6 +111,15 @@ export default function reply(context, faux) {
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
     return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
+  // Reads each path its first message lists with read, one per turn, then says so; "once <file> exists" holds the first
+  // read until the test has made that file (and planted what the reads need).
+  const reads = /^Read these paths(?: once (\S+) exists)?: (.*)$/s.exec(first);
+  if (reads) {
+    const paths = JSON.parse(reads[2]);
+    const call = () => faux.message(faux.toolCall("read", { path: paths[results] }), { stopReason: "toolUse" });
+    if (results >= paths.length) return faux.message("Read them.");
+    return reads[1] && results === 0 ? untilExists(reads[1]).then(call) : call();
   }
   // Fetches each URL its first message lists with fetch_page (or the tool it names), one per turn, then says so.
   const fetches = /^Fetch these pages(?: with (\w+))?: (.*)$/s.exec(first);
@@ -137,6 +150,17 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message(faux.toolCall("write", { path: "a.md", content: "a" }), { stopReason: "toolUse" });
     return import("node:fs").then(({ writeFileSync }) => (writeFileSync(signalWait[1], ""), slow(faux, 60_000, "Done slowly.")));
   }
+  // Review F3: an answer; a follow-up whose turn says something with a call, then holds (the person stops it); a last
+  // follow-up answered with nothing (as a /compact is).
+  if (first.includes("Answer, reread, then compact.")) {
+    if (users.length === 1) return faux.message("Report written.");
+    if (users.length === 2) return results === 0 ? faux.message([faux.text("Let me reread the report first."), faux.toolCall("read", { path: "report.md" })], { stopReason: "toolUse" }) : slow(faux, 60_000, "Reread it.");
+    return faux.message("");
+  }
+  // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
+  // answered in a run of its own.
+  const held = /Hold the answer until (\S+)\./.exec(first)?.[1];
+  if (held) return users.length > 1 ? faux.message("Answer 2.") : untilExists(held).then(() => faux.message("Answer 1."));
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   // An answer of nothing: one empty thinking block and one empty text block, a stop with no tool call.
   if (first.includes("Answer with nothing")) return faux.message([faux.thinking(""), faux.text("")]);
@@ -164,6 +188,8 @@ export default function reply(context, faux) {
   // "Answer once <file> exists.": the test says when, by making the file.
   const once = /^Answer once (\S+) exists\.$/.exec(first);
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
+  // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
+  if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   // Asked at a learning run's end what to keep (learn/reflect.ts reflectPrompt): nothing.

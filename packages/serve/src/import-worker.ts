@@ -27,7 +27,8 @@ for (const [name, value] of Object.entries(secrets)) Object.defineProperty(env, 
 const options = { home, ...(temp ? { temp } : {}), env, stored, signal: stop.signal };
 const answer = async (): Promise<ImportAnswer> => {
   if (task === "plan") {
-    const plan = await planImport(options);
+    // A count keeps no transcript: no key scan (a whole history read through secretlint at every start).
+    const plan = await planImport({ ...options, keys: false });
     // Sessions as the import takes them: a session written in several files (a resumed thread) is one run.
     return stop.signal.aborted ? { stopped: true } : { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + new Set(p.sessions.map((s) => `${s.source}:${s.id}`)).size, 0) };
   }
