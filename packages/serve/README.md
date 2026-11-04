@@ -1546,11 +1546,12 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Safety
 
 - An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
-  environment's key-shaped variables and the keys saved on this server, and the keys [secretlint](https://github.com/secretlint/secretlint)'s
+  environment's key-shaped variables and the keys saved on this server, the secrets this server made and keeps (its API
+  token, its door tokens, its sign-in secret and its webhook's signing secret), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
-  it removed. Known key formats are removed. Other secrets in your session history, like passwords in config files, are
-  imported as they are.
+  distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
+  config files or a `whsec_` secret another server made, are imported as they are.
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
   a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
   providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev
