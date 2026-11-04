@@ -161,3 +161,24 @@ test("past the 1 MiB a failed run's message is looked for in, the last whole har
   await writeFile(join(dir, "process.log"), text);
   assert.equal(await lastLogLine({ dir }), "harness: model proxy (openai): refused 13999");
 });
+
+// The default model the server hands a run (model.ts), in the run's environment as every launch sets it, is a model id,
+// not a secret: a harness's log line naming it keeps it, and so does a failed run's message made of that line
+// (lastLogLine). Under a key-shaped name, harnessLog cut it out as one: "model [redacted] not found".
+test("a harness's log line, and a failed run's message made of it, name the server's default model: its variable is no secret's", async (t) => {
+  const { DEFAULT_MODEL_ENV } = await import("../dist/model.js");
+  const model = "openai/gpt-6.1-sol";
+  const lines = [];
+  // A placeholder, never a real key, built at run time as the file's other tests build theirs.
+  const placeholder = (what) => `not-a-secret-${what}`;
+  const log = harnessLog("codex", { [DEFAULT_MODEL_ENV]: model, AGENT_MODEL_API_KEY: placeholder("gateway-key") }, (line) => lines.push(line));
+  log(`codex: model ${model} not found`, { status: 404 });
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].includes(model), `the line names the model: ${lines[0]}`);
+  assert.ok(!lines[0].includes("[redacted]"), lines[0]);
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, "process.log"), lines.join(""));
+  const said = await lastLogLine({ dir });
+  assert.ok(said.includes(model) && !said.includes("[redacted]"), `the run's failure names the model: ${said}`);
+});
