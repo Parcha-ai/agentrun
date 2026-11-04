@@ -518,3 +518,40 @@ test("two calls for one page at once: one extract, booked once, in the call whos
     assert.deepEqual([first.rows, second.rows], [BOOKED("c1"), []], `${what}: booked once, in the call that started the read`);
   }
 });
+
+test("a read under way is never evicted: nine pages at once, then the first again while they are all being read, is still one extract for the first", inCall(async () => {
+  const asked = [];
+  const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Parallel answers each URL after 150 ms, with the URL it was asked for.
+  const send = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    asked.push(body.urls[0]);
+    await later(150);
+    return new Response(JSON.stringify({ results: [{ url: body.urls[0], title: "Page", full_content: `page ${body.urls[0]} ${"x".repeat(200)}` }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const extract = parallelExtract(CANARY, send);
+  const held = new Map();
+  const urls = Array.from({ length: web.PAGES_HELD + 1 }, (_, n) => `${PUBLIC}${n}`);
+  const read = (url) => webFetch(url, { ...network(), parallel: extract, pages: held });
+  const pages = await Promise.all([...urls.map(read), later(20).then(() => read(urls[0]))]);
+  assert.ok(pages.every((page) => page.ok && page.via === "parallel"), JSON.stringify(pages.map((page) => [page.ok, page.via, page.error])));
+  assert.equal(asked.filter((url) => url === urls[0]).length, 1, `the first page is one extract while it is being read: ${JSON.stringify(asked)}`);
+  assert.equal(asked.length, urls.length, "one extract a page");
+  assert.ok(held.size <= web.PAGES_HELD, `once every read is done, the run keeps at most ${web.PAGES_HELD}: ${held.size}`);
+}));
+
+test("a call stopped before its page arrived says so: not via direct, as no page was fetched for it, and its error says the call was stopped", inCall(async () => {
+  const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const send = async () => {
+    await later(150);
+    return new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Slow", full_content: "slow page" }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const extract = parallelExtract(CANARY, send);
+  const soon = new AbortController();
+  const [page] = await Promise.all([webFetch(PUBLIC, { ...network(), parallel: extract, pages: new Map(), signal: soon.signal }), later(30).then(() => soon.abort())]);
+  assert.equal(page.ok, false);
+  assert.notEqual(page.via, "direct", "a page never fetched is not said to have been fetched directly");
+  assert.equal(page.via, "stopped");
+  assert.match(page.error, /stopped before the page arrived/);
+  assert.equal(page.parallel, undefined, "no reason why Parallel gave no page: it was not asked to stop");
+}));
