@@ -15,7 +15,8 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOfBody, steersMidTurn } from "./harness.js";
+import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
+import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
@@ -23,18 +24,15 @@ import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, 
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { rowPaths } from "./workspace-paths.js";
-import { FAUX_WEB_ENV } from "./fetch-page.js";
-import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
+import { ASK_TOOL, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, PARALLEL_KEY_ENV } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { FAUX_MONID_ENV } from "./monid.js";
 import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
-import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
+import { EFFORT_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
+import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
@@ -45,7 +43,7 @@ import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV,
 import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
-import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
+import { destroyRunBoxes, sweepRunBoxes } from "./run-box.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Emitted } from "./webhooks.js";
@@ -208,7 +206,7 @@ export type Run = {
   finishing?: Status;
   /** A stop on its way: from its mark to its abort's answer, or a server's abort of a saved stop's turn that outlived the
    *  server before it (finishStop). The abort withdraws every input queued behind that turn, so a message meanwhile waits
-   *  for it (stopAnswered). */
+   *  for it (message). */
   stopping?: true;
   endedAt?: string;
   outcome?: Status;
@@ -322,12 +320,13 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
   }
 }
 
-const shows = (r: TimelineEvent) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id);
+/** Read only on a run's `rows`, which hold no QUIET row (take). */
+const shows = (r: TimelineEvent) => r.kind !== "usage" && r.kind !== "phase";
 const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => shows(r) && r.agent_label !== LEARNING_LABEL);
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-export type Pending = { kind: "question"; question: string; asked_at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
@@ -405,6 +404,13 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
 /** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
 const waitMark = (run: Run): string => (stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "";
 
+/** Waits for `work`, or until `deadline` (ms since the epoch), whichever comes first. */
+async function untilDeadline(work: Promise<unknown> | undefined, deadline: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([work, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
+  clearTimeout(timer);
+}
+
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
@@ -433,11 +439,11 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
-export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => Emitted;
+export type RunNotify = (event: (typeof WEBHOOK_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -734,7 +740,7 @@ export class Runs {
       // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
       // does (readDecisionCost): never its model nodes' total alone.
       try { run.decisions = durableDecisions(file); } catch { run.decisions = null; }
-      run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
+      run.llmRead = llmAnswers(await readNodeLog(run.dir)).length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
@@ -822,14 +828,7 @@ export class Runs {
 
   /** The test hooks startServe's options name, as a run's process and this server's own calls get them. */
   private fauxEnv(): NodeJS.ProcessEnv {
-    const { faux, fauxBrowser, fauxWeb, fauxJev, fauxParallel, fauxOpenrouter, fauxMonid, fauxExa, fauxHarness } = this.options;
-    return {
-      ...(faux ? { [FAUX_ENV]: faux, ...(fauxBrowser ? { [FAUX_BROWSER_ENV]: fauxBrowser } : {}), ...(fauxWeb ? { [FAUX_WEB_ENV]: fauxWeb } : {}), ...(fauxJev ? { [FAUX_JEV_ENV]: fauxJev } : {}), ...(fauxParallel ? { [FAUX_PARALLEL_ENV]: fauxParallel } : {}), ...(fauxOpenrouter ? { [FAUX_OPENROUTER_ENV]: fauxOpenrouter } : {}), ...(this.options.fauxUpstream ? { [FAUX_UPSTREAM_ENV]: this.options.fauxUpstream } : {}), ...(this.options.fauxExa ? { [FAUX_EXA_ENV]: this.options.fauxExa } : {}) } : {}),
-      ...(fauxHarness ? { [FAUX_HARNESS_ENV]: fauxHarness } : {}),
-      ...(faux && fauxMonid ? { [FAUX_MONID_ENV]: fauxMonid } : {}),
-      ...(this.options.faux && this.options.fauxBox ? { [FAUX_BOX_ENV]: this.options.fauxBox } : {}),
-      ...(faux && fauxExa ? { [FAUX_EXA_ENV]: fauxExa } : {}),
-    };
+    return { ...this.options.fauxEnv };
   }
 
   /** Let go of a live run with `outcome`: SIGTERM, after aborting its turn when it is still working. */
@@ -1069,9 +1068,7 @@ export class Runs {
     // And for its files, which its start copies before it launches it: within the time left.
     const copying = run.preparing;
     if (copying) {
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([copying, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
-      clearTimeout(timer);
+      await untilDeadline(copying, deadline);
       if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
     for (let launched = false; ; await sleep(100)) {
@@ -1084,9 +1081,7 @@ export class Runs {
         // A process that just went is being settled: its run may be over, so nothing starts it again before that.
         if (run.settles > 0) {
           // Within the time left: a settle waiting on a busy store must not hold this caller past its deadline.
-          let timer: NodeJS.Timeout | undefined;
-          await Promise.race([run.settling, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
-          clearTimeout(timer);
+          await untilDeadline(run.settling, deadline);
           if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
           continue;
         }
@@ -1684,10 +1679,10 @@ export class Runs {
     do {
       // A stop in flight is answered first. Sent between its mark and its abort, a message would read the run stopped, go
       // to the turn the abort is cutting, and be dropped with it, its row never coming.
-      if (run.stopping) await this.stopAnswered(run);
+      if (run.stopping) await this.waitWhile(() => run.stopping === true, 50, "The run is being stopped");
       // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
       // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
-      if (run.finishing && !run.outcome) await this.endWritten(run);
+      if (run.finishing && !run.outcome) await this.waitWhile(() => Boolean(run.finishing && !run.outcome), 100, "The run's end is still being written");
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     } while (run.stopping);
     const steers = this.steers(run);
@@ -1710,17 +1705,10 @@ export class Runs {
     return { mode, messageId };
   }
 
-  /** Waits, up to a request's deadline, for a stop in flight to answer. */
-  private async stopAnswered(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.stopping; await sleep(50)) {
-      if (Date.now() > deadline) throw new ApiError("unavailable", "The run is being stopped; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    }
-  }
-
-  /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
-  private async endWritten(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.finishing && !run.outcome; await sleep(100)) {
-      if (Date.now() > deadline) throw new ApiError("unavailable", "The run's end is still being written; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+  /** Waits, up to a request's deadline, while `holds` (checked every `everyMs`): else 503 `unavailable`, saying `why`. */
+  private async waitWhile(holds: () => boolean, everyMs: number, why: string): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); holds(); await sleep(everyMs)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", `${why}; try again.`, { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
   }
 
@@ -1769,7 +1757,7 @@ export class Runs {
   /** Waits, up to a request's deadline, until a live run's rows show every message sent to it, and any rows at all: its
    *  record has caught up with its process. Its end, a cancel or its process going ends the wait. */
   private async caughtUp(run: Run): Promise<void> {
-    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.submitted > 0 || !run.rows.length; await sleep(100)) {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.submitted > 0 || !run.rows.length; await run.log.changed(100)) {
       if (!this.live(run) || run.finishing || run.outcome || run.cancel || Date.now() > deadline) return;
     }
   }
