@@ -56,8 +56,10 @@ export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal)
  *  that closes the link, so parentheses it holds in pairs (a wiki title's) stay. */
 function* linksOf(markdown: string): Generator<string> {
   const seen = new Set<string>();
-  for (let at = markdown.indexOf("]("); at !== -1; at = markdown.indexOf("](", at + 2)) {
-    let end = at + 2;
+  // The next "](" is looked for from where this one's URL ended, so no character is scanned twice: one pass, however
+  // many unclosed "](" a hostile page holds.
+  for (let at = markdown.indexOf("]("), end = 0; at !== -1; at = markdown.indexOf("](", Math.max(at + 2, end))) {
+    end = at + 2;
     for (let depth = 0; end < markdown.length && !/\s/.test(markdown[end]!); end++) {
       if (markdown[end] === "(") depth++;
       else if (markdown[end] === ")" && depth-- === 0) break;
