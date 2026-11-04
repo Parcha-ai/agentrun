@@ -3,53 +3,13 @@
 // the last run is active, stops while paused and skips the paused range, runs now once per Idempotency-Key, and starts
 // no second run when a restart drives a firing left due. The triggers' clock is a fake one the test moves.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
-
-/** The triggers' clock: `to(time)` moves it, and fires the one timer the engine holds once its time has come. */
-function fakeClock(start) {
-  const clock = {
-    t: Date.parse(start),
-    timer: null,
-    now: () => clock.t,
-    arm(fire, ms) {
-      const held = { at: clock.t + ms, fire };
-      clock.timer = held;
-      return { clear: () => void (clock.timer === held && (clock.timer = null)) };
-    },
-    to(time) {
-      clock.t = Date.parse(time);
-      const held = clock.timer;
-      if (held && held.at <= clock.t) {
-        clock.timer = null;
-        held.fire();
-      }
-    },
-  };
-  return clock;
-}
-
-const keyOf = (kind, id, what) => `fir_${createHash("sha256").update(`${kind}\n${id}\n${what}`).digest("hex").slice(0, 32)}`;
-const schedule = (id, source, extra = {}) => ({ name: "nightly", source: { kind: "schedule", ...source }, target: { kind: "start_run", agent_id: id, input: { content: "Say hello." }, max_cost_usd: 0.5 }, ...extra });
-
-async function made(api, id, extra) {
-  assert.equal((await api("POST", "/agents", agent(id, extra))).status, 201);
-}
-
-/** The trigger's firings, newest first, once it holds at least `n` and none is still due. */
-async function firings(api, id, n) {
-  for (const end = Date.now() + 30_000; ; await sleep(50)) {
-    const { status, body } = await api("GET", `/triggers/${id}/firings`);
-    assert.equal(status, 200, JSON.stringify(body));
-    if (body.firings.length >= n && body.firings.every((f) => f.status !== "due")) return body.firings;
-    assert.ok(Date.now() < end, `no ${n} settled firings: ${JSON.stringify(body.firings)}`);
-  }
-}
+import { flowAgent, follow, scratch, serve } from "./support.mjs";
+import { fakeClock, firings, keyOf, made, schedule } from "./trigger-support.mjs";
 
 async function documented(t, baseUrl) {
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
@@ -224,7 +184,7 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule"], targets: ["start_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200 });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule"], targets: ["start_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5 });
 });
 
 test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000 }, async (t) => {
@@ -253,12 +213,12 @@ test("a firing left due by a server that went down mid-start is driven again at 
   assert.deepEqual(run.body.trigger, { id: body.id, firing_key: fired.key }, "its provenance read back from serve.json");
 });
 
-test("times missed while the server was down are one missed firing with their count, and the schedule goes on from now", { timeout: 120_000 }, async (t) => {
+test("with no catch-up window, times missed while the server was down are one missed firing with their count, none fires, and the schedule goes on from now", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const first = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(first.api, "down");
-  const { body } = await first.api("POST", "/triggers", schedule("down", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  const { body } = await first.api("POST", "/triggers", schedule("down", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }, { catchup_window_s: 0 }));
   await first.close();
   const second = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:58:20Z") });
   const [missed] = await firings(second.api, body.id, 1);
