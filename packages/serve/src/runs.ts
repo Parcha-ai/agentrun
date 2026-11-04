@@ -427,9 +427,9 @@ const NO_TOOL_KEYS = RUN_SECRETS.filter((name) => !scopedOf(TOOL_KEYS).includes(
 /** The secrets a run of `revision` is handed over its pipe: RUN_SECRETS but each field of a `tool` row of `rows`
  *  (TOOL_KEYS) that unlocks none of the tools the run binds, named as its process binds them (app.ts): an agentic
  *  revision's `tools`, a workflow's on its model nodes and its `call` nodes; and but each model key its model does not
- *  need, from the host's model settings in `env`: a pi run's, its models' providers' keys or the gateway's (model.ts'
- *  modelKeys: its own model, or the host's of each tier it runs); codex's and claude-agent's, what their providers read
- *  (adapters.ts' harnessModelKeys). */
+ *  need, from the host's model settings and the keys it holds in `env`: a pi run's, its models' providers' keys or the
+ *  gateway's (model.ts' modelKeys: its own model, or the host's of each tier it runs); codex's and claude-agent's, the
+ *  one key their route sends for the revision's model (adapters.ts' harnessModelKeys). */
 export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = TOOL_KEYS, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
   const workflow = revision.kind === "workflow" ? revision.body.workflow : undefined;
   const nodes = workflow ? workflowNodes(workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(workflow)) : undefined;
@@ -438,7 +438,7 @@ export async function secretsFor(revision: Revision, rows: readonly KeyRow[] = T
   const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
   const scoped = scopedOf(rows);
   const harness = revision.body.harness ?? DEFAULT_HARNESS;
-  const needs = new Set(harness !== DEFAULT_HARNESS ? harnessModelKeys(harness, env) : nodes ? modelKeys(env, undefined, llmTiers(nodes, nodeTiers(nodes))) : modelKeys(env, revision.kind === "agentic" ? revision.body.model : undefined));
+  const needs = new Set(harness !== DEFAULT_HARNESS ? harnessModelKeys(harness, env, revision.kind === "agentic" ? revision.body.model : undefined) : nodes ? modelKeys(env, undefined, llmTiers(nodes, nodeTiers(nodes))) : modelKeys(env, revision.kind === "agentic" ? revision.body.model : undefined));
   return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || needs.has(name)));
 }
 /** The decision providers a run of `revision` needs keys for (decisions.ts' decisionKeysFor): its workflow's decision

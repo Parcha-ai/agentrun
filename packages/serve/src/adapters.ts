@@ -13,6 +13,7 @@ import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
 import { keyShaped } from "./secret-cut.js";
+import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
@@ -208,13 +209,15 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
-/** The model keys a run on `harness` takes, by what its provider below reads: codex OpenAI's, or the gateway's when
- *  AGENT_MODEL_BASE_URL is set; claude-agent Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike. None for pi,
- *  whose keys are its models' (model.ts' modelKeys). */
-export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv): string[] {
-  if (harness === "codex") return env.AGENT_MODEL_BASE_URL ? ["AGENT_MODEL_API_KEY"] : ["OPENAI_API_KEY"];
-  if (harness === "claude-agent") return ["ANTHROPIC_API_KEY"];
-  return [];
+/** The model key a run on `harness` (claude-agent or codex) of `model` (the revision's; none, the host's default for the
+ *  harness) takes: the one its requests carry on the route its provider below takes, as key-refusal.ts' runKeyOf names
+ *  it. codex: the gateway's when AGENT_MODEL_BASE_URL is set, else OpenAI's, or OpenRouter's on OpenRouter's route;
+ *  claude-agent: Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike, or OpenRouter's on OpenRouter's route.
+ *  None for pi, whose keys are its models' (model.ts' modelKeys). */
+export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?: string): string[] {
+  if (harness !== "codex" && harness !== "claude-agent") return [];
+  const key = runKeyOf(env, harness, model);
+  return key ? [key.field] : [];
 }
 
 /** OpenRouter's API: its Anthropic Messages endpoint (`<base>/v1/messages`) and its Responses API (`<base>/v1/responses`)
