@@ -563,13 +563,18 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         return outcome;
       };
 
-      // A turn a crash cut off: the kernel's note, as a user message, with the user's own words when OpenCode never
-      // recorded the message that carried them.
+      // A turn a crash cut off: the kernel's note, as a user message, then, as codex's recovery does (its owed
+      // submissions), the whole words of each placed message OpenCode never recorded: the restored session holds no
+      // other copy, so they are never cut (the note's own quotes are).
       const note = recoveryNote(ctx.state());
       if (note) {
         const sent = new Map(prompts.filter((p) => p.submission && p.messageID).map((p) => [p.submission!, p.messageID!]));
-        const lost = note.turn.placed.some((s) => !sent.has(s) || !holdsMessage(mirrored, sent.get(s)!));
-        const text = lost ? recoveryNote(ctx.state(), { prompts: true })!.text : note.text;
+        const state = ctx.state();
+        const lost = note.turn.placed
+          .filter((id) => !sent.has(id) || !holdsMessage(mirrored, sent.get(id)!))
+          .map((id) => state.submissions.find((x) => x.id === id))
+          .filter((x): x is NonNullable<typeof x> => !!x && (x.kind === "prompt" || x.kind === "steer" || x.kind === "followUp"));
+        const text = lost.length ? `${note.text}\n\nMessages that may not have reached you before the interruption:\n${lost.map((x) => quote(x.text ?? "")).join("\n")}` : note.text;
         journal.message({ type: "message", role: "user", text, synthetic: "recovery" });
         await placeSubmissions(ctx, note.pending);
         const outcome = await runTurn(text, `recovery:${transcriptCount(ctx.state())}`);
@@ -600,6 +605,9 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
     }
   }
 }
+
+/** `text` as a quote, line by line, as codex's recovery quotes a message. */
+const quote = (text: string): string => text.split("\n").map((line) => `> ${line}`).join("\n");
 
 /** A turn's error as OpenCode recorded it, in the words a run's error takes. A provider's answer (an APIError) leads with
  *  its HTTP status, as codex's does ("unexpected status 401 …"), so a refused key reads in plain words wherever a run's
