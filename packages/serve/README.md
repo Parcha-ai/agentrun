@@ -778,9 +778,14 @@ is `422 input_invalid`, its field's reason `refused_by_provider`, in plain words
 before stays as it was. Otherwise it is kept, and `GET` gives its row a `check`: `{state: "accepted", at}`, or
 `{state: "not_checked", reason, at}` when the provider would not answer the check (403: a key scoped away from that
 call may still work for its tools), did not answer in 5 s, could not be reached, answered a redirect (never followed,
-so the key goes nowhere else) or something else, or has no call that costs nothing. `check` is null when the key is
-not stored here (the server's own is not checked here); a key saved before this server checked keys reads
-`not_checked`, and is checked when saved again. A save of Browserbase's project id alone sends no key, and leaves its
+so the key goes nowhere else) or something else, or has no call that costs nothing. A tool's key the server is
+started with is checked once as it starts, with the same call, in the background (the start never waits on it): its
+row's `check` is `accepted`, `not_checked`, or `{state: "refused", reason, at}` (`Browserbase refused
+BROWSERBASE_API_KEY (401: Unauthorized) when this server started: set the right one where AgentRun starts, then
+restart it`), and a tool that needs a refused key reads unavailable in capabilities with the same words. `check` is
+null when the key is not set, or is the server's and its check has not answered yet; a key saved before this server
+checked keys reads `not_checked`, and is checked when saved again. A model key the server is started with is not
+checked here: a run on a refused one fails at its first request, saying so. A save of Browserbase's project id alone sends no key, and leaves its
 check as it was. A save whose check is still waiting when the server begins to close keeps nothing (`503
 unavailable`, while its connection lasts): the check stops waiting, and the server's lock, released at close, may be
 another server's by then. Under `--faux` a key is checked only against the fake its runs are given (`fauxMonid`,
