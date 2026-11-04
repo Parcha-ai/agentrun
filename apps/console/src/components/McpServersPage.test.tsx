@@ -128,6 +128,27 @@ describe("Settings → MCP servers, adding one", () => {
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=x"]);
   });
 
+  it("drops a preview's answer when the address changed while it ran: Save waits for a preview of what is typed", async () => {
+    let answer: (r: Response) => void = () => {};
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? (new Promise<Response>((done) => { answer = done; }) as unknown as Response) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "fake");
+    await p.type("mcp-url", VARS.url);
+    await p.click(/^Preview$/);
+    await p.type("mcp-url", "http://127.0.0.1:4999/mcp");
+    await act(async () => { answer(json(200, PREVIEW)); });
+    await p.settle();
+    expect(p.host.querySelector('[aria-label="Tools it lists"]')).toBeNull();
+    expect(p.button(/^Save$/)!.disabled).toBe(true);
+    await p.click(/^Preview$/);
+    await act(async () => { answer(json(200, PREVIEW)); });
+    await p.settle();
+    expect(p.host.querySelector('[aria-label="Tools it lists"]')).not.toBeNull();
+    expect(p.button(/^Save$/)!.disabled).toBe(false);
+    expect(s.writes().map((c) => (c.body as { url: string }).url)).toEqual([VARS.url, "http://127.0.0.1:4999/mcp"]);
+  });
+
   it("says each other refusal in plain words", async () => {
     const cases: [Response, string][] = [
       [refusal(422, "not_mcp", "Nothing it answered was MCP."), "This address doesn't speak MCP"],
@@ -158,8 +179,22 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.row("old").textContent).toContain("can't be opened");
     expect(p.row("open").textContent).toContain("no credential");
     await p.click(/^Sign in again$/, p.row("docs"));
-    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/docs/oauth/start", body: { url: VARS.url } }]);
+    // The scopes it signed in with go again.
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/docs/oauth/start", body: { url: VARS.url, scopes: ["read"] } }]);
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=y"]);
+  });
+
+  it("signs in again with the person's own client only once its ID is entered again: the server keeps no client to reuse", async () => {
+    const own = saved({ name: "crm", auth: { type: "oauth" }, credential: "expired", oauth: { scopes: ["read", "write"], client: "pre-registered" } });
+    const s = server([[own]], (c) => (c.path.endsWith("/oauth/start") ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=z" }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Sign in again$/, p.row("crm"));
+    expect(s.writes()).toEqual([]);
+    expect(p.text()).toContain("enter its ID");
+    expect(p.input("mcp-scopes").value).toBe("read write");
+    await p.type("mcp-client-id", "owner-app");
+    await p.click(/^Sign in again$/, p.host.querySelector("form")!);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/crm/oauth/start", body: { url: VARS.url, scopes: ["read", "write"], client_id: "owner-app" } }]);
   });
 
   it("changes one with its token kept: the field is empty and says saved", async () => {

@@ -22,7 +22,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
  *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
  *  model the server runs for it when a definition names none (null: none). */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[] };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -46,6 +46,8 @@ export type EditorProps = {
   providerChoices?: ToolChoice[];
   /** The saved MCP servers, when `caps.mcp`: null while read, "failed" when they could not be. */
   mcpServers?: McpServer[] | null | "failed";
+  /** Reads the MCP servers again, after a read that failed. */
+  onRetryMcp?: () => void;
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
 
@@ -68,7 +70,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], mcpServers = null }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], mcpServers = null, onRetryMcp }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
@@ -240,7 +242,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     );
                   })}
                 </ul>
-                {caps.mcp && !workflow && <McpToolPicker servers={mcpServers} tools={f.tools ?? []} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} />}
+                {caps.mcp && !workflow && <McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} />}
               </Field>
               {!workflow && (
                 <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}

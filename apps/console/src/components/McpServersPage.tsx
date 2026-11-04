@@ -100,7 +100,7 @@ function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client;
         </div>
         {!confirm && (
           <div className="flex flex-wrap gap-2">
-            {oauth && s.credential !== "sealed" && <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => signIn(s.name, { url: s.url }))}>Sign in again</Button>}
+            {oauth && s.credential !== "sealed" && <Button size="sm" variant="primary" disabled={busy} onClick={() => (s.oauth?.client === "pre-registered" ? onChange() : void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) })))}>Sign in again</Button>}
             <Button size="sm" disabled={busy} onClick={() => void run(async () => { setNote(await v2.refreshMcpServer(s.name)); onChanged(); })}>Refresh</Button>
             <Button size="sm" disabled={busy} onClick={onChange}>Change</Button>
             <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirm(true)}>Delete</Button>
@@ -134,6 +134,9 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
   const [preview, setPreview] = useState<McpPreview | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
+  // Each change of the address or the credential: a preview's answer counts only for the inputs it was asked for.
+  const edits = useRef(0);
+  const edited = () => { edits.current++; setPreview(null); };
   const value = (field: string) => ((form.current?.elements.namedItem(field) as HTMLInputElement | null)?.value ?? "").trim();
   // The credential typed: none typed is none sent, which a save takes as "keep the sealed one".
   const auth = (): McpAuth => {
@@ -148,6 +151,15 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
     const client = value("mcp-client-id");
     return signIn(name.trim(), { url: url.trim(), ...(scopes.length ? { scopes } : {}), ...(client ? { client_id: client, ...(value("mcp-client-secret") ? { client_secret: value("mcp-client-secret") } : {}) } : {}) });
   });
+  const runPreview = () => {
+    const asked = edits.current;
+    void act(async () => {
+      try {
+        const answer = await v2.previewMcpServer(url.trim(), auth());
+        if (asked === edits.current) setPreview(answer);
+      } catch (e) { if (asked === edits.current) throw e; }
+    });
+  };
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (type === "oauth" && !saved) return void startSignIn();
@@ -157,7 +169,7 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
   const keepNote = (what: string) => saved?.credential === "sealed" && saved.auth.type === type && <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Saved. {what}</span>;
   return (
     <form ref={form} autoComplete="off" onSubmit={submit} aria-label={saved ? `Change ${saved.name}` : "Add an MCP server"} className="space-y-4 border bg-card p-4"
-      onInput={(e) => { if ((e.target as HTMLInputElement).name !== "mcp-name") setPreview(null); }}>
+      onInput={(e) => { if ((e.target as HTMLInputElement).name !== "mcp-name") edited(); }}>
       <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Name</span>
         <span className="-mt-1 mb-2 block text-[12px] text-muted-foreground">Lowercase letters, digits and dashes: an agent grants its tools as mcp:{name.trim() || "<name>"}/&lt;tool&gt;.</span>
         <input name="mcp-name" value={name} readOnly={!!saved} onChange={(e) => setName(e.target.value)} spellCheck={false} className={input} /></label>
@@ -168,7 +180,7 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
         <div className="flex flex-wrap gap-4">
           {AUTH.map(([id, label]) => (
             <label key={id} className="flex items-center gap-2 text-[13px]">
-              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={cantStore && id !== "none"} onChange={() => { setType(id); setPreview(null); }} className="accent-[hsl(var(--primary))]" />{label}
+              <input type="radio" name="mcp-auth" value={id} checked={type === id} disabled={cantStore && id !== "none"} onChange={() => { setType(id); edited(); }} className="accent-[hsl(var(--primary))]" />{label}
             </label>
           ))}
         </div>
@@ -189,7 +201,8 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
       {type === "oauth" && (
         <div className="space-y-3">
           <p className="text-[12px] text-muted-foreground">This server signs in for you and keeps the tokens; an agent never sees one. Sign in opens the server's own page to approve it, and its tools are saved once you do.</p>
-          <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Scopes (optional)</span><input name="mcp-scopes" placeholder="read write" spellCheck={false} className={input} /></label>
+          {saved?.oauth?.client === "pre-registered" && <p className="text-[12px] text-warning-text">It signed in with your own client: enter its ID, and its secret if it has one, to sign in again.</p>}
+          <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Scopes (optional)</span><input name="mcp-scopes" placeholder="read write" defaultValue={saved?.oauth?.scopes.join(" ")} spellCheck={false} className={input} /></label>
           <div className="flex gap-2">
             <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client ID (optional)</span><input name="mcp-client-id" spellCheck={false} className={input} /></label>
             <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client secret (optional)</span><input name="mcp-client-secret" {...secret} /></label>
@@ -217,7 +230,7 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
       <div className="flex flex-wrap gap-2">
         {type === "oauth"
           ? <Button type="button" size="sm" variant="solid" disabled={busy || !name.trim() || !url.trim() || cantStore} onClick={() => void startSignIn()}>{saved ? "Sign in again" : "Sign in"}</Button>
-          : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={() => void act(async () => setPreview(await v2.previewMcpServer(url.trim(), auth())))}>Preview</Button>}
+          : <Button type="button" size="sm" disabled={busy || !url.trim()} onClick={runPreview}>Preview</Button>}
         {(type !== "oauth" || saved) && <Button type="submit" size="sm" variant="solid" disabled={!canSave}>{busy ? "Working" : "Save"}</Button>}
         <Button type="button" size="sm" onClick={() => { form.current?.reset(); onCancel(); }}>Cancel</Button>
       </div>
