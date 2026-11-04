@@ -1,11 +1,14 @@
+const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
+const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/;
+
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["AWS access key id", /(?:AKIA|ASIA)[0-9A-Z]{16}/],
   ["Google API key", /AIza[0-9A-Za-z_-]{35}/],
   ["private key block", /-----BEGIN[ A-Z0-9]*PRIVATE KEY[ A-Z0-9]*-----/],
   ["GitHub token", /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/],
-  ["sk- key", /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/],
-  ["Slack token", /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/],
+  ["sk- key", SK_KEY],
+  ["Slack token", SLACK_TOKEN],
   ["JWT", /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/],
   ["URL with a password", /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/],
 ];
@@ -19,12 +22,18 @@ type Span = [start: number, end: number];
 function spans(text: string, pattern: RegExp): Span[] {
   const re = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
   const out: Span[] = [];
+  const toEnd = RUN_TO_END.has(pattern);
   for (let m = re.exec(text); m; m = re.exec(text)) {
     out.push([m.index, m.index + m[0].length]);
-    re.lastIndex = m.index + 1;
+    re.lastIndex = toEnd ? m.index + m[0].length : m.index + 1;
   }
   return out;
 }
+
+/** Shapes that are a prefix and then one greedy run of a character class holding the prefix's own characters: a match
+ *  that starts inside another ends where it ends, so it adds nothing to what is redacted, and spans() goes on from the
+ *  match's end. A run of "sk-sk-sk-…" is then read once, not again from every third character. */
+const RUN_TO_END: ReadonlySet<RegExp> = new Set([SK_KEY, SLACK_TOKEN]);
 
 function places(text: string, form: string): Span[] {
   const out: Span[] = [];

@@ -21,7 +21,7 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, writeDurable } from "./files.js";
+import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
@@ -49,6 +49,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
+import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
@@ -63,7 +64,6 @@ const workerArgs = (args: readonly string[]): string[] =>
   args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
 export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
-const TOKEN_FILE = ".token";
 const IDEMPOTENCY_FILE = ".idempotency.json";
 const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
@@ -300,6 +300,12 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
+  { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
+  { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -461,6 +467,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
        *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
       tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the same seal key
+       *  (mcp-servers.ts); with none, only servers that take no credential are kept. */
+      mcp_client: { routes: true, transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -589,6 +598,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
+  const mcpServers = new McpServers(data, withSecrets(base, "own"), VERSION);
   // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
   const settings = new ToolSettings(data);
   // The server's reading, in parts: `env`, its environment with its secrets, saved keys among them (storedKeys);
@@ -756,6 +766,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       worker.once("exit", (code) => {
         workers.delete(worker);
         if (answer) answered(answer);
+        // A count the close ended: stopped, not failed (the next start counts again).
+        else if (closing && task === "plan") answered({ stopped: true });
         else failed(new Error(`the import's worker ended (${code}) with no answer`));
       });
     });
@@ -1234,19 +1246,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       case "/setup/import": {
-        if (!offersImport) throw new ApiError("not_found", "no route /v2/setup/import");
-        // Before the owner is set, to the setup page: that it can import (202 while it counts), and then how many projects
-        // and sessions it would, or null for each when the count failed.
+        // No offer is an answer, `{ offer: false }`, never a 404: the console reads this on its first page, and a browser
+        // logs every 404 as an error.
+        // Before the owner is set, to the setup page: none on a server that cannot import, else that it can (202 while it
+        // counts), and then how many projects and sessions it would, or null for each when the count failed.
         if (!me.hasPassword()) {
           pageRead(req);
+          if (!offersImport) return send(res, 200, { offer: false });
           countSessions();
           if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
           if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
           return send(res, 202, { counting: true });
         }
-        // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
-        if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
-        return send(res, 200, importState);
+        // After, to the signed-in owner: the import asked for at setup, running, done or stopped, or none asked.
+        if (!signedIn(req, me)) throw new ApiError("not_found", "no route /v2/setup/import");
+        return send(res, 200, importState ?? { offer: false });
       }
       case "/auth/sign-in": {
         fromPage(req);
@@ -1564,6 +1578,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         toolKeys.remove(id);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
+      case "listMcpServers":
+        return send(res, 200, mcpServers.list());
+      case "getMcpServer":
+        return send(res, 200, mcpServers.get(id));
+      case "previewMcpServer":
+        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
+      case "saveMcpServer":
+        return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
+      case "refreshMcpServer":
+        return send(res, 200, await mcpServers.refresh(id, stopping.signal));
+      case "deleteMcpServer":
+        mcpServers.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getToolSettings":
         return send(res, 200, withDefaults(settings.get()));
       case "putToolSettings": {
@@ -1719,11 +1747,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
     }
     if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
-    // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
-    // after close.
+    // An import under way stops between two session files and is waited for: nothing writes the store after close. A
+    // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
-    for (const worker of workers.keys()) worker.postMessage("stop");
+    for (const [worker, { task }] of workers) {
+      if (task === "plan") void worker.terminate();
+      else worker.postMessage("stop");
+    }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
