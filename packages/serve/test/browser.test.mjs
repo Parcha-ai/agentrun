@@ -110,8 +110,9 @@ test("two parallel workflow nodes that browse each keep their evidence file", as
 const REFUSED_BROWSER = new URL("./fixtures/faux-browser-refused.mjs", import.meta.url).pathname;
 const REFUSED_WORDS = "Browserbase refused BROWSERBASE_API_KEY (401): set it where AgentRun starts, or save it in Settings → Tool keys.";
 
-for (const [tools, other] of [[["browser", "read"], false], [["browser", "web_fetch"], true]]) {
-  test(`a refused Browserbase key reads as the model keys' refusals do, names web_fetch only when the run has it (${tools.join(", ")}), and opens no session on the Timeline`, async (t) => {
+// `other`: the page reader the run has, by the name its tool is bound under (fetch_page, the legacy name, is its own).
+for (const [tools, other] of [[["browser", "read"], null], [["browser", "web_fetch"], "web_fetch"], [["browser", "fetch_page"], "fetch_page"]]) {
+  test(`a refused Browserbase key reads as the model keys' refusals do, names the run's page reader only when it has one, by its own name (${tools.join(", ")}), and opens no session on the Timeline`, async (t) => {
     withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" });
     const { api } = await serve(t, { fauxBrowser: REFUSED_BROWSER });
     assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools } })).status, 201);
@@ -124,7 +125,9 @@ for (const [tools, other] of [[["browser", "read"], false], [["browser", "web_fe
     const said = (await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer;
     assert.ok(said.includes(REFUSED_WORDS), said);
     assert.doesNotMatch(said, /\bplanes?\b|\blanes?\b|executor/, said);
-    assert.equal(/web_fetch/.test(said), other, said);
+    if (other) assert.ok(said.includes(`${other} still reads public pages`), said);
+    else assert.doesNotMatch(said, /web_fetch|fetch_page/, said);
+    if (other === "fetch_page") assert.doesNotMatch(said, /web_fetch/, "the name the run's tool is bound under, not its capability's");
     assert.ok(failed.summary.includes("Browserbase refused BROWSERBASE_API_KEY (401)"), failed.summary);
     assert.equal(rows.some((row) => /Opened a live browser session/.test(row.summary ?? "")), false, "no session was opened");
   });

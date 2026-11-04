@@ -949,3 +949,22 @@ test("a live browser session reads as opened only once a browser call got one, r
   const never = timelineOf([user("Browse.", 0), assistant([call("a", "run", { code: 'await page.goto("https://example.com")' })], 1), result("a", "run", refused, 2, { isError: true })]);
   assert.equal(never.some((r) => SESSION.test(r.summary ?? "")), false, JSON.stringify(never.map(tag)));
 });
+
+test("a browser call that got a session but failed after (a blank page read as not content) still opened it, right before that call", () => {
+  const blank = JSON.stringify({ ok: false, code: "not_content", retryable: true, effect: "none", message: "This browser is fresh and has loaded no page yet: it was just opened. Navigate to the page you need with run, then read again." });
+  const tag = (r) => `${r.kind}${r.tool_use_id ? `:${r.tool_use_id}` : ""}${SESSION.test(r.summary ?? "") ? ":session" : ""}`;
+  const rows = timelineOf([
+    user("Browse.", 0),
+    assistant([call("a", "browser_read", {})], 1),
+    result("a", "browser_read", blank, 2, { isError: true }),
+    assistant([call("b", "run", { code: 'await page.goto("https://example.com")' })], 3),
+    result("b", "run", "ok", 4),
+  ]);
+  assert.deepEqual(rows.filter((r) => r.kind !== "usage").map(tag), ["user_message", "phase:session", "tool_use:a", "tool_result:a", "tool_use:b", "tool_result:b"]);
+  // A call the browser never got to (unreachable, refused, rate limited at the start, cancelled) opened none.
+  for (const code of ["auth", "browser_unavailable", "rate_limited", "aborted"]) {
+    const failed = JSON.stringify({ ok: false, code, message: "x" });
+    const none = timelineOf([user("Browse.", 0), assistant([call("a", "browser_read", {})], 1), result("a", "browser_read", failed, 2, { isError: true })]);
+    assert.equal(none.some((r) => SESSION.test(r.summary ?? "")), false, code);
+  }
+});
