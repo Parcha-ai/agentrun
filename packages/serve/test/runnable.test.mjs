@@ -13,7 +13,7 @@ import { checkDefinitionBody } from "../dist/validate.js";
 import { agent, answerFlow, client, scratch, serve, withEnv } from "./support.mjs";
 
 /** No gateway, no default model, no OpenAI key: pi-ai's providers serve the models, and none has a key. */
-const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "OPENAI_API_KEY"];
+const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 async function keyless(t) {
   withEnv(t, {}, MODEL_VARS);
   return serve(t, { faux: undefined });
@@ -53,14 +53,14 @@ test("a model whose provider has no key here, or no model on a host with no defa
   const saved = await api("POST", "/agents", agent("keyless", { model: "openai/gpt-5" }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), [["definition.model", "not_set_up_here"]]);
-  assert.match(saved.body.warnings[0].message, /no key for openai/);
+  assert.match(saved.body.warnings[0].message, /No OpenAI key here for openai\/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
   const plain = await api("POST", "/agents", agent("plain"));
   assert.equal(plain.status, 201);
   assert.deepEqual(plain.body.warnings.map((w) => [w.field, w.reason]), [["definition.model", "not_set_up_here"]]);
-  assert.match(plain.body.warnings[0].message, /names no model, and this host has no default/);
+  assert.match(plain.body.warnings[0].message, /No model yet: add a model key in Settings → Model keys, or set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY where AgentRun starts\./);
   const run = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code], [409, "agent_not_runnable"]);
-  assert.match(run.body.error.message, /no key for openai/);
+  assert.match(run.body.error.message, /No OpenAI key here for openai\/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
 });
 
 test("a definition that runs here saves with no warnings", async (t) => {

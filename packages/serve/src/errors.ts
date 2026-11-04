@@ -30,10 +30,12 @@ export const ERROR_STATUS = {
   unsupported_here: 501,
   unavailable: 503,
   // This server's own, beside the contract's list (openapi.ts marks them): a tool key its launcher sets, a key saved with
-  // no seal key to keep it under, and a send to a webhook a 410 turned off.
+  // no seal key to keep it under, a send to a webhook a 410 turned off, and a write to a learning note that names no
+  // version it read.
   key_set_by_server: 409,
   no_sealing_key: 409,
   webhook_off: 409,
+  precondition_required: 428,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
@@ -49,6 +51,8 @@ export type ErrorExtra = {
   next_action?: Record<string, unknown>;
   details?: Record<string, unknown>;
   retry_after_ms?: number;
+  /** A learning note the structural checks refuse: each problem, printable. */
+  problems?: readonly unknown[];
 };
 
 export class ApiError extends Error {
@@ -71,6 +75,9 @@ export class ApiError extends Error {
 
 /** A feature this server does not offer: 501 naming its dotted path under `features`. */
 export const unsupported = (capability: string, message: string) => new ApiError("unsupported_here", message, { capability });
+
+/** `text` as one sentence: it ends in one full stop, whatever it ended in (a box's reason ends in none). */
+export const sentence = (text: string): string => `${text.trimEnd().replace(/[.?!;:,]+$/, "")}.`;
 
 /** `422 input_invalid` with each field that is missing or wrong. */
 export const invalid = (fields: InputIssue[], message = fields[0]?.message ?? "the request is not valid") => new ApiError("input_invalid", message, { fields });

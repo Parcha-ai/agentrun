@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
@@ -326,4 +326,74 @@ test("an escalated workflow's review.at is its ended_at, one saved end time, eve
   t.after(() => again.close());
   const read = client(again.baseUrl, again.token);
   assert.deepEqual([...same((await read("GET", "/runs")).body.runs.find((row) => row.run_id === runId)), (await read("GET", `/runs/${runId}`)).body.review?.at], ["completed", "review", true, run.ended_at], "and the next server reads the same time");
+});
+
+test("a follow-up to a stopped run is taken while another connection holds the agent store, and runs; taken or refused, never both", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  const { run_id } = await startRun(api, "slow", "Take your time.");
+  for (const end = Date.now() + 30_000; ; await sleep(50)) {
+    const { status, state } = (await api("GET", `/runs/${run_id}`)).body;
+    if (status === "working" && state === "working") break;
+    assert.ok(Date.now() < end, `the run works: last ${status}/${state}`);
+  }
+  assert.equal((await api("POST", `/runs/${run_id}/stop`)).body.stopped, true);
+  await follow(api, run_id, ["input_required"]);
+  // No reader gets through: a message that reads the store waits about 2 s, then answers home_busy.
+  const release = hold(t, data, "EXCLUSIVE");
+  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "Go on." });
+  release();
+  // Taken or refused, never both: a refusal for a message the run took anyway (it runs) invites a retry that sends it
+  // twice. Taken, the run no longer reads stopped (its message waits its turn, or has run); refused, it does.
+  const after = (await api("GET", `/runs/${run_id}`)).body;
+  const taken = !(after.status === "input_required" && after.state === "idle");
+  assert.equal(taken, sent.status === 202, `answered ${sent.status} ${sent.body.error?.code ?? sent.body.mode}, and the run ${taken ? `took it (${after.status}/${after.state})` : "did not take it"}: taken or refused, never both`);
+  assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+  const { rows } = await follow(api, run_id, ["completed"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.summary), ["You: Take your time.", "You: Go on."], "it ran, once");
+});
+
+test("a run's start is answered 202 even when the agent store turns busy right after the run is written; taken or refused, never both", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("starter"))).status, 201);
+  // In this process the agent store reads and writes through node:sqlite. From the moment the run's row is written, the
+  // store's read of one run (readRun) finds it busy for 3 s, longer than a request waits (about 2 s), as a store another
+  // connection took right then would be. Everything before that goes through, the run's own writes among it.
+  const prepare = DatabaseSync.prototype.prepare;
+  let busyUntil = 0;
+  DatabaseSync.prototype.prepare = function (sql, ...rest) {
+    if (/^INSERT INTO runs /.test(sql)) busyUntil = Date.now() + 3_000;
+    if (Date.now() < busyUntil && /FROM runs r JOIN agents a /.test(sql) && /WHERE r\.id = :id/.test(sql)) throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+    return prepare.call(this, sql, ...rest);
+  };
+  t.after(() => (DatabaseSync.prototype.prepare = prepare));
+  const started = await api("POST", "/agents/starter/runs", { input: { content: "What is six times seven?" } });
+  while (Date.now() < busyUntil) await sleep(100);
+  DatabaseSync.prototype.prepare = prepare;
+  // Taken or refused, never both: a refusal for a run that started anyway invites a retry that starts a second one.
+  const runs = (await api("GET", "/agents/starter/runs")).body.runs;
+  assert.equal(runs.length === 1, started.status === 202, `answered ${started.status} ${started.body.error?.code ?? ""}, and ${runs.length} run(s) started: taken or refused, never both`);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal(runs.length, 1, "one run");
+  await follow(api, started.body.run_id, ["completed"]);
+});
+
+test("a message to a run working on its first turn is taken while another connection holds the agent store: the run's harness is known from its start, so nothing is read", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, data } = await serve(t);
+  const go = join(dir, "go");
+  const { run_id } = await startRun(api, "gated", `Answer once ${go} exists.`);
+  for (const end = Date.now() + 30_000; ; await sleep(50)) {
+    const { status, state } = (await api("GET", `/runs/${run_id}`)).body;
+    if (status === "working" && state === "working") break;
+    assert.ok(Date.now() < end, `the run works: last ${status}/${state}`);
+  }
+  // No reader gets through: a message that read the run's harness from the store would wait about 2 s, then answer
+  // home_busy. Its turn holds until the file exists, so the run is working when the message comes.
+  const release = hold(t, data, "EXCLUSIVE");
+  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "And then this." });
+  release();
+  await writeFile(go, "");
+  assert.deepEqual([sent.status, sent.body.mode], [202, "steer"], JSON.stringify(sent.body));
+  const { rows } = await follow(api, run_id, ["completed"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.text).slice(1), ["And then this."], "taken, and run once");
 });

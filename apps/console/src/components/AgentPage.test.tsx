@@ -481,11 +481,11 @@ describe("AgentPage, the model on a gateway server", () => {
     const page = await open(on("codex"), { models: gateway, harnesses });
     expect(modelOf(page).textContent).toBe("gpt-6-luna (default)");
     const claude = await open(on("claude-agent"), { models: gateway, harnesses });
-    expect(modelOf(claude).textContent).toBe("no default: choose a model");
+    expect(modelOf(claude).textContent).toBe("none yet: add a model key in Settings → Model keys");
   });
   it("a claude-agent agent naming no model has no default to show", async () => {
     const page = await open(on("claude-agent"), { models: gateway });
-    expect(modelOf(page).textContent).toBe("no default: choose a model");
+    expect(modelOf(page).textContent).toBe("none yet: add a model key in Settings → Model keys");
     expect(page.host.textContent).not.toContain("gpt-6-luna");
   });
 });
@@ -522,6 +522,18 @@ describe("AgentPage, an agent whose harness the server can't run", () => {
     expect(pi.host.querySelector('[aria-label="Harness not available"]')).toBeNull();
     await pi.set(pi.input(), "Check this invoice.");
     expect(pi.button(/^Run$/)!.disabled).toBe(false);
+  });
+});
+
+// Where the agent runs, said with the rest of its current revision: its box, or the server (no place is the server's
+// default, the runner).
+describe("AgentPage, where it runs", () => {
+  it("says the box an agent runs in, or the server", async () => {
+    const base = agentFixture("invoice-checker");
+    const boxed = { ...base, definition: { ...base.definition, place: { mode: "sandbox", box: "docker" } } };
+    expect((await open(boxed)).fact("Runs")).toBe("In a docker box");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect((await open(base)).fact("Runs")).toBe("On the server");
   });
 });
 

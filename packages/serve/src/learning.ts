@@ -1,6 +1,6 @@
 // Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
 // starts from it. The folder is its home's `learning/` (files.ts homeOf), in Claude Code's auto-memory format
-// (notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
+// (learn/notes.ts): `MEMORY.md`, the index, one line per active note, and one `<slug>.md` per note. It is plain
 // git with main checked out, so any reader sees its files. This server is its only writer. Every git call runs with the
 // repository's hooks, fsmonitor, replace refs and lazy fetches off and reads no system or global config, and every call
 // on one agent's folder waits its turn in that agent's queue in this process.
@@ -9,17 +9,21 @@
 // empty `MEMORY.md`), resolves main's commit and reads it with plumbing, never the working tree. It copies that commit's
 // index and active notes into the run's `work/.learning/` and pins the commit in the run's directory (`learning.json`),
 // with what the run reads of the index. The run's process reads that pin (withLearned, for app.ts) and never runs git, so
-// it may run anywhere its directory is.
+// it may run anywhere its directory is. When the run ends the server asks it one more turn, in which it may add notes to
+// that copy (learning-run.ts). As the run settles, before anything can open it again, the copy is moved whole out of its work
+// (snapshotLearned); what the turn added is checked from there (propose.ts), graded and merged into main (grade.ts).
 //
 // The host never follows a symbolic link into the folder (agentFolder): a link at the agent's home, at its `learning/`
 // or at `learning/.git`, or a `MEMORY.md` that is one when the host writes it, is refused, and the run starts with
-// nothing learned.
+// nothing learned. The end-of-run turn's seed, its proposal's check, its grade and its merge reach the folder the same
+// way, and a link there drops what the run learned. A person's reads and writes (learning-routes.ts) check it the same
+// way (readFolder, agentFolder), and a link there is an error.
 import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
+import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, type Verdict } from "./learn/index.js";
 import { homeOf, writeDurable } from "./files.js";
-import { INDEX_FILE, loadedIndex, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { isObject } from "./validate.js";
 
 /** The server's learning switch (`--learning`, AGENTRUN_SERVE_LEARNING; capabilities.features.learning). `on`, the
@@ -34,23 +38,49 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
   return value as LearningMode;
 }
 
-/** Where a run's learning stands (its `learning`, runs.ts): `seeded` once it starts from what its agent learned, or
- *  `dropped` with why. A learning fault never refuses a run: it starts with nothing learned, `seed_failed`. */
-export const LEARNING_STATES = ["seeded", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed"] as const;
+/** Where a run's learning stands (its `learning`, runs.ts): `seeded` once it starts from what its agent learned,
+ *  `reflecting` while its end-of-run turn runs and until what it wrote is checked, `proposed` once that passed the checks
+ *  and is kept in the run's directory (propose.ts), `merged` once it is on main (grade.ts), or `dropped` with a reason
+ *  from the closed list. A learning fault never refuses a run: it starts with nothing learned, `seed_failed`.
+ *  `tool_denied` is the tool gate's, which this server does not have yet: no run reads it today. */
+export const LEARNING_STATES = ["seeded", "reflecting", "proposed", "merged", "dropped"] as const;
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "no_write_tool", "tool_denied", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "propose_failed", "checker", "screen", "screen_down", "grader", "grade_failed"] as const;
 export type LearningState = (typeof LEARNING_STATES)[number];
 export type LearningReason = (typeof LEARNING_REASONS)[number];
-export type Learning = { state: LearningState; reason: LearningReason | null; detail: string | null; at: string };
+/** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
+ *  nor written to the cache. */
+export type Tokens = { input: number; cache_read: number; cache_write: number; output: number };
+export const NO_TOKENS: Tokens = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+/** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
+ *  grader's `verdict` and the blob of each note it read superseded (`graded`, by file), both kept before the merge, the
+ *  merge commit, and what the grade cost (null when unknown, never 0), which is in no run's totals. */
+export type Learning = {
+  state: LearningState; reason: LearningReason | null; detail: string | null; at: string;
+  problems?: Problem[]; verdict?: Verdict; graded?: Record<string, string>; merged?: string; cost_usd?: { grade: number | null }; tokens?: { grade: Tokens | null };
+};
+/** A run's learning as its view shows it: the state, why and when. */
+export const learningView = ({ state, reason, detail, at }: Learning) => ({ state, reason, detail, at });
+/** A run's learning as a list shows it: its state and reason. */
+export const shortLearning = (learning: Learning | null) => (learning ? { state: learning.state, reason: learning.reason } : null);
+/** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
+export const LEARNING_LABEL = "learning";
+
+/** A run's proposal, in its directory (propose.ts): the seed it was checked against, and each new note's file and text. */
+export const PROPOSAL = "learning-proposal.json";
+export type Proposal = { seed: string; notes: { file: string; text: string }[] };
 
 /** A run's pin, in its directory: written once, when the run is made, and never changed by a resume. */
 export const LEARNING_PIN = "learning.json";
 /** Where a run finds its agent's notes: in its work, a copy the run may read and nothing reads back. */
 export const LEARNED_DIR = ".learning";
+/** Where that copy goes once the run's end-of-run turn ended and the run settles: in the run's directory, outside its
+ *  work, where the host alone reads it (snapshotLearned). */
+export const LEARNED_SNAPSHOT = "learning-turn";
 /** What a run's pin holds: the commit of main it was seeded from, and what it reads of the index, when that holds a line. */
 export type Pin = { seed: string; learned?: string };
-/** What a run is seeded from: main's commit, its index and its active notes by file. `skipped` names what was there
- *  and not read. */
-export type Seed = { sha: string; index?: string; notes: Record<string, string>; skipped: string[] };
+/** What a run is seeded from: main's commit, its index and its active notes by file, and the name of every entry at its
+ *  top. `skipped` names what was there and not read. */
+export type Seed = { sha: string; index?: string; notes: Record<string, string>; files: string[]; skipped: string[] };
 
 /** A file main holds over this is not read: a note is short, and the index is read only so far (loadedIndex). */
 const FILE_CAP = 1 << 20;
@@ -91,26 +121,40 @@ async function refuseLink(data: string, path: string, absent = false): Promise<v
   if (!stats.isDirectory()) throw new Error(`${relative(data, path)} is not a directory`);
 }
 
-/** The agent's learning folder, its home and the folder made where absent, one level at a time, each checked after it
- *  is made: neither, nor the folder's `.git` once there, may be a symbolic link or anything but a directory, or the
- *  host's git, its writes and its commits would land where the link points. A link swapped in for a part just made is
- *  caught by the check after. `<data>/homes` is the operator's, as the data directory is. Every path into the folder
- *  goes through it, in the agent's queue: before anything reads or makes the repository, and again once `git init`
- *  has made `.git`. A refusal throws, so the run starts with nothing learned (seed_failed). */
-async function agentFolder(data: string, agentId: string): Promise<string> {
+/** The agent's learning folder, each level checked by `lstat`: its home, its `learning/` and, once there, `.git`. None
+ *  may be a symbolic link or anything but a directory, or the host's git would read from, and write to, where the link
+ *  points. `make`: the home and the folder are made where absent first, one level at a time, each checked after it is
+ *  made (agentFolder); without it nothing is made and a missing level passes (readFolder). The one link rule. */
+async function checkedFolder(data: string, agentId: string, make: boolean): Promise<string> {
   const home = homeOf(data, agentId);
   const repo = learningRepo(data, agentId);
-  await makeDir(dirname(home));
+  if (make) await makeDir(dirname(home));
   for (const dir of [home, repo]) {
-    await makeDir(dir);
-    await refuseLink(data, dir);
+    if (make) await makeDir(dir);
+    await refuseLink(data, dir, !make);
   }
   await refuseLink(data, join(repo, ".git"), true);
   return repo;
 }
 
+/** The agent's learning folder, its home and the folder made where absent (checkedFolder). A link swapped in for a part
+ *  just made is caught by the check after. `<data>/homes` is the operator's, as the data directory is. Every write into
+ *  the folder goes through it, in the agent's queue: before anything reads or makes the repository, and again once
+ *  `git init` has made `.git`; before a run's end-of-run turn reads its seed again (seedAt), before its proposal is
+ *  checked against it (propose.ts), before its grade reads main and its merge writes it (grade.ts), and before a
+ *  person's edit, create or retire (learning-routes.ts). A refusal throws: a run about to start starts with nothing
+ *  learned (seed_failed), a run that ended drops what it learned (reflect_failed, propose_failed or grade_failed), and
+ *  a person's write is an error. */
+export const agentFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, true);
+
+/** The agent's learning folder for a person's read, outside the queue: the same check as agentFolder's, and nothing
+ *  made. A link or a non-directory throws as it does there; a missing level passes, so a folder never made reads as
+ *  empty (mainOf finds no main). */
+export const readFolder = (data: string, agentId: string): Promise<string> => checkedFolder(data, agentId, false);
+
 /** Before every command: a `-c` flag wins over the repository's own config. No hook or fsmonitor runs, no replace ref
- *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily. */
+ *  is read, a commit is never signed (which would run a program), and no transport runs, so nothing is fetched lazily.
+ *  No optional lock is taken (GIT_OPTIONAL_LOCKS), so a read never writes. */
 const SAFE = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false", "-c", "protocol.allow=never"];
 
 /** Every call's environment, built from nothing: no system or global config (so no template or hooks folder named
@@ -122,6 +166,7 @@ const gitEnv = (gitDir: string | undefined): NodeJS.ProcessEnv => ({
   GIT_ATTR_NOSYSTEM: "1",
   GIT_NO_REPLACE_OBJECTS: "1",
   GIT_NO_LAZY_FETCH: "1",
+  GIT_OPTIONAL_LOCKS: "0",
   GIT_TERMINAL_PROMPT: "0",
   LC_ALL: "C",
   GIT_AUTHOR_NAME: IDENTITY.name,
@@ -131,10 +176,12 @@ const gitEnv = (gitDir: string | undefined): NodeJS.ProcessEnv => ({
   ...(gitDir ? { GIT_DIR: gitDir } : {}),
 });
 
-/** One git call on `repo` (none for `init`), from `cwd`: its stdout, or a rejection naming the command and its stderr. */
-function git(cwd: string, repo: string | undefined, args: readonly string[], input = ""): Promise<Buffer> {
+/** One git call on `repo` (none for `init`), from `cwd`: its stdout, or a rejection naming the command and its stderr.
+ *  `env` adds to the call's environment (a temporary index, a work tree named outright). */
+export function git(cwd: string, repo: string | undefined, args: readonly string[], input: string | Uint8Array = "", env: NodeJS.ProcessEnv = {}): Promise<Buffer> {
+  learningTestHooks.git?.(args);
   return new Promise((resolve, reject) => {
-    const child = spawn("git", [...SAFE, ...args], { cwd, env: gitEnv(repo && join(repo, ".git")), stdio: ["pipe", "pipe", "pipe"], timeout: GIT_TIMEOUT_MS });
+    const child = spawn("git", [...SAFE, ...args], { cwd, env: { ...gitEnv(repo && join(repo, ".git")), ...env }, stdio: ["pipe", "pipe", "pipe"], timeout: GIT_TIMEOUT_MS });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
@@ -149,7 +196,7 @@ function git(cwd: string, repo: string | undefined, args: readonly string[], inp
   });
 }
 
-const line = (out: Buffer): string => out.toString("utf8").trim();
+export const line = (out: Buffer): string => out.toString("utf8").trim();
 
 const gitChecks = new Map<string, Promise<string | undefined>>();
 
@@ -179,8 +226,12 @@ const queues = new Map<string, Promise<unknown>>();
 
 /** Runs `work` once every call queued before it on the agent's folder has finished: one at a time per agent, in this
  *  process. Everything that touches an agent's folder goes through it, so two runs made at once never both make it. */
-export function withAgentRepo<T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> {
-  const key = learningRepo(data, agentId);
+export const withAgentRepo = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => queued(learningRepo(data, agentId), work);
+/** Runs `work` after every grade of the agent's runs queued before it (grade.ts): one grade at a time per agent, each
+ *  against main as the one before left it. Its own queue, so a grade's model call never holds a run's seed. */
+export const withAgentGrade = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => queued(`${learningRepo(data, agentId)}\0grade`, work);
+
+function queued<T>(key: string, work: () => Promise<T>): Promise<T> {
   const next = (queues.get(key) ?? Promise.resolve()).then(work, work);
   const settled = next.catch(() => undefined);
   queues.set(key, settled);
@@ -191,7 +242,7 @@ export function withAgentRepo<T>(data: string, agentId: string, work: () => Prom
 /** Main's commit, or undefined when there is no main yet: no repository, one whose `init` never finished, or one whose
  *  making stopped before main. A main that is there, by its ref, and names no commit git can read is an error: the
  *  repository is never made again over it. */
-async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
+export async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
   if (!existsSync(join(repo, ".git")) || !(await git(cwd, repo, ["rev-parse", "--git-dir"]).then(() => true, () => false))) return undefined;
   if (!line(await git(cwd, repo, ["for-each-ref", "--format=%(objectname)", "refs/heads/main"]))) return undefined;
   return line(await git(cwd, repo, ["rev-parse", "--verify", "--quiet", "refs/heads/main^{commit}"]));
@@ -203,7 +254,7 @@ async function mainOf(cwd: string, repo: string): Promise<string | undefined> {
  *  through), and main is created last, only where it is not there yet: a making that stops anywhere before leaves no
  *  main, and the next one does it all again. Called in the queue, on the folder agentFolder made and checked; `check`
  *  checks it again once `.git` is made. */
-async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unknown>): Promise<string> {
+export async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unknown>): Promise<string> {
   const known = await mainOf(cwd, repo);
   if (known) return known;
   await git(cwd, undefined, ["init", "-q", "--template=", "--initial-branch=main", repo]);
@@ -219,8 +270,14 @@ async function openAgentRepo(cwd: string, repo: string, check: () => Promise<unk
   return commit;
 }
 
+/** Brings the folder's checked-out files in line with commit `sha` of main: host-only files, so no hook or filter runs,
+ *  with the work tree named outright, the folder itself. Why it could not, when it could not. In the queue, on the
+ *  folder agentFolder checked. */
+export const checkOut = (repo: string, sha: string): Promise<Error | undefined> =>
+  git(repo, repo, ["read-tree", "-u", "--reset", sha], "", { GIT_WORK_TREE: repo }).then(() => undefined, (error: Error) => error);
+
 /** The blobs `oids` hold, in order, read in one `cat-file --batch`. One git cannot read throws. */
-async function readBlobs(cwd: string, repo: string, oids: readonly string[]): Promise<Buffer[]> {
+export async function readBlobs(cwd: string, repo: string, oids: readonly string[]): Promise<Buffer[]> {
   if (!oids.length) return [];
   const out = await git(cwd, repo, ["cat-file", "--batch"], oids.map((oid) => `${oid}\n`).join(""));
   const blobs: Buffer[] = [];
@@ -238,17 +295,18 @@ async function readBlobs(cwd: string, repo: string, oids: readonly string[]): Pr
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** What commit `sha` holds for a run, read with plumbing: its index and its active notes, the `.md` files at its top.
- *  Only a regular file (mode 100644) under FILE_CAP, in UTF-8, is read, and only a note in shape (notes.ts
+ *  Only a regular file (mode 100644) under FILE_CAP, in UTF-8, is read, and only a note in shape (learn/notes.ts
  *  parseNoteFile); anything else is named in `skipped`. A superseded or retired note is not a run's. A read git fails (an
  *  object missing, a timeout) throws. */
-async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {
-  const seed: Seed = { sha, notes: {}, skipped: [] };
+export async function readSeed(cwd: string, repo: string, sha: string): Promise<Seed> {
+  const seed: Seed = { sha, notes: {}, files: [], skipped: [] };
   const listed = (await git(cwd, repo, ["ls-tree", "-l", "-z", sha])).toString("utf8").split("\0").filter(Boolean);
   const wanted: { path: string; oid: string }[] = [];
   for (const entry of listed) {
     const tab = entry.indexOf("\t");
     const [mode, type, oid, size] = entry.slice(0, tab).split(/\s+/);
     const path = entry.slice(tab + 1);
+    seed.files.push(path);
     if (!path.endsWith(".md")) continue;
     if (path !== INDEX_FILE && !NOTE_FILE.test(path)) seed.skipped.push(`${path} (not a note's file name)`);
     else if (mode !== "100644" || type !== "blob" || !oid) seed.skipped.push(`${path} (mode ${mode})`);
@@ -283,13 +341,53 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
   });
 }
 
+/** What commit `sha` of the agent's folder holds for a run, as seedOf reads main: a run's seed, read again. In the
+ *  agent's queue, through agentFolder. */
+export const seedAt = (data: string, agentId: string, sha: string): Promise<Seed> =>
+  withAgentRepo(data, agentId, async () => readSeed(homeOf(data, agentId), await agentFolder(data, agentId), sha));
+/** The active notes of a seed, parsed. */
+export const activeOf = (seed: Pick<Seed, "notes">): LearnedNote[] => Object.entries(seed.notes).flatMap(([file, text]) => {
+  const note = parseNoteFile(file, text);
+  return Array.isArray(note) ? [] : [note];
+});
+
 /** Test seams, tests only: once a part of an agent's learning folder is made (before its check), before a run's
- *  learned files are written, and once its pin is in place. */
+ *  learned files are written, once its pin is in place, before what its end-of-run turn wrote is checked, and as each
+ *  git call starts (its arguments). */
 export const learningTestHooks: {
+  git?: (args: readonly string[]) => void;
   afterMkdir?: (dir: string) => Promise<void> | void;
   beforePin?: (runDir: string) => Promise<void> | void;
   afterPin?: (runDir: string) => Promise<void> | void;
+  beforePropose?: (runDir: string) => Promise<void> | void;
 } = {};
+
+/** As the run in `runDir` settles after its end-of-run turn ended, before it reads ended and before a follow-up can
+ *  open it again: its copy, `work/.learning/` as the turn left it, moved whole to `<run dir>/learning-turn/` with one
+ *  rename on the run's own filesystem, so nothing the run does after its end reaches what is checked. The move takes
+ *  whatever is there, a link or a file included, never following one; harvest refuses those. A snapshot already there
+ *  stays (a server that went after the move); a copy the turn removed is an empty snapshot. `work` itself must be a
+ *  folder, never a link the move would reach through. Throws when the move fails. */
+export async function snapshotLearned(runDir: string): Promise<void> {
+  const snapshot = join(runDir, LEARNED_SNAPSHOT);
+  if (await lstat(snapshot).then(() => true, (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? false : Promise.reject(error)))) return;
+  await refuseLink(runDir, join(runDir, "work"));
+  try {
+    await rename(join(runDir, "work", LEARNED_DIR), snapshot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await mkdir(snapshot, { mode: 0o700 });
+  }
+}
+
+/** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. */
+export async function layLearned(dir: string, seed: Seed): Promise<void> {
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { mode: 0o700 });
+  const files = Object.entries(seed.notes);
+  if (seed.index !== undefined) files.unshift([INDEX_FILE, seed.index]);
+  for (const [file, text] of files) await writeFile(join(dir, file), text, { flag: "wx" });
+}
 
 /** Writes `seed` into the run just made in `runDir`: the index and each active note into `work/.learning/`, made fresh
  *  (whatever was there goes), then the pin, last. A write that fails leaves no `.learning/` and no pin, and throws. */
@@ -298,11 +396,7 @@ export async function pinSeed(runDir: string, work: string, seed: Seed): Promise
   const pinFile = join(runDir, LEARNING_PIN);
   try {
     await learningTestHooks.beforePin?.(runDir);
-    await rm(dir, { recursive: true, force: true });
-    await mkdir(dir, { mode: 0o700 });
-    const files = Object.entries(seed.notes);
-    if (seed.index !== undefined) files.unshift([INDEX_FILE, seed.index]);
-    for (const [file, text] of files) await writeFile(join(dir, file), text, { flag: "wx" });
+    await layLearned(dir, seed);
     const learned = seed.index === undefined ? "" : loadedIndex(seed.index);
     const pin: Pin = { seed: seed.sha, ...(learned.trim() ? { learned } : {}) };
     await writeDurable(pinFile, `${JSON.stringify(pin)}\n`);
