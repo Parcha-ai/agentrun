@@ -23,7 +23,7 @@ const REQUEST_MS = 15_000;
 export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 /** What is sealed: the tokens and all a refresh needs. */
 export type TokenSet = { tokens: OAuthTokens; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
-type Pending = { name: string; url: string; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
 
 const sdk = () => import("@modelcontextprotocol/client");
 /** The authorization server's requests: no redirect followed (a code or secret goes only where discovery said), each
@@ -53,11 +53,11 @@ export class McpSignIns {
   }
 
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
-  async start(name: string, url: URL, options: { scope?: string; client?: StoredOAuthClientInformation }): Promise<string> {
+  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation }): Promise<string> {
     const now = Date.now();
     for (const [state, entry] of this.pending) if (entry.expires <= now || this.pending.size >= MAX_PENDING) this.pending.delete(state);
     const state = randomBytes(32).toString("base64url");
-    const entry: Pending = { name, url: url.href, ...(options.scope ? { scope: options.scope } : {}), kind: options.client ? "pre-registered" : "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
+    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.client ? "pre-registered" : "dynamic", ...(options.client ? { client: options.client } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const provider = this.provider(entry, { state, redirect: (to) => void (opened = to) });
     try {
@@ -71,7 +71,8 @@ export class McpSignIns {
     return opened.href;
   }
 
-  /** The callback's sign-in, by its state: once, and only within ten minutes of its start. */
+  /** The callback's sign-in, by its state: once, and only within ten minutes of its start. `was` is the server's save
+   *  when it started (null for none), so a sign-in the owner since replaced or forgot is not written back. */
   take(state: string | null): Pending {
     const entry = state ? this.pending.get(state) : undefined;
     if (state) this.pending.delete(state);

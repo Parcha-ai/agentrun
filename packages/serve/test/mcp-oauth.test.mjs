@@ -181,3 +181,20 @@ test("a run's launch refreshes a token near its expiry, once for launches at the
   assert.equal((await approve(again.body.authorization_url)).status, 302);
   assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "sealed");
 });
+
+test("a sign-in the owner since forgot or replaced is not written back: a callback after a DELETE, or after a newer sign-in landed, is refused", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t);
+  const { mcp } = await fakes(t);
+  const start = async () => (await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url })).body.authorization_url;
+  assert.equal((await approve(await start())).status, 302);
+  const older = await start();
+  const newer = await start();
+  assert.equal((await approve(newer)).headers.get("location"), "/#/settings/mcp?server=docs&sign_in=ok");
+  const late = await approve(older);
+  assert.equal(late.headers.get("location"), "/#/settings/mcp?server=docs&sign_in=failed&error=changed_meanwhile", "the older sign-in does not overwrite the newer");
+  const beforeDelete = await start();
+  assert.equal((await api("DELETE", "/settings/mcp-servers/docs")).status, 204);
+  assert.equal((await approve(beforeDelete)).headers.get("location"), "/#/settings/mcp?server=docs&sign_in=failed&error=changed_meanwhile");
+  assert.equal((await api("GET", "/settings/mcp-servers/docs")).status, 404, "a forgotten server stays forgotten");
+});

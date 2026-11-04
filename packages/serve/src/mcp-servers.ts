@@ -115,8 +115,10 @@ export class McpServers {
     const now = new Date().toISOString();
     const sealed = auth.type !== "oauth" && headers && Object.fromEntries(Object.entries(headers).map(([header, value]) => [header, seal(this.key!, Buffer.from(value, "utf8"), aad(name, header)).toString("base64")]));
     const servers = this.servers();
-    // An OAuth server keeps its token set as sealed; only a sign-in replaces it.
-    const kept = auth.type === "oauth" ? (servers[name] ?? was!).auth : { type: auth.type, ...(sealed ? { sealed, check: this.sealCheck } : {}) };
+    // An OAuth server keeps its token set as sealed (a refresh meanwhile kept); only a sign-in replaces it, and one that
+    // lands, or a PUT or DELETE, while this listed makes the listing stale: its token never goes with another URL.
+    if (auth.type === "oauth" && (!servers[name] || saving(servers[name]) !== saving(was!))) throw new ApiError("unavailable", `The server ${name} was signed in to, saved or forgotten while its tools were listed: save it again.`);
+    const kept = auth.type === "oauth" ? servers[name]!.auth : { type: auth.type, ...(sealed ? { sealed, check: this.sealCheck } : {}) };
     servers[name] = { url: url.href, auth: kept, ...listed, listed_at: now, updated_at: now };
     this.write(servers);
     return this.view(name, servers[name]);
@@ -157,7 +159,8 @@ export class McpServers {
     if (issues.length) throw invalid(issues);
     if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
     const client = typeof client_id === "string" ? { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) } : undefined;
-    return { authorization_url: await this.signIns.start(name, url!, { ...(scopes ? { scope: (scopes as string[]).join(" ") } : {}), ...(client ? { client } : {}) }) };
+    const was = this.servers()[name];
+    return { authorization_url: await this.signIns.start(name, url!, { was: was ? saving(was) : null,  ...(scopes ? { scope: (scopes as string[]).join(" ") } : {}), ...(client ? { client } : {}) }) };
   }
 
   /** GET .../oauth/callback, the browser's way back: its state's sign-in finished (the code exchanged, the token set
@@ -165,6 +168,7 @@ export class McpServers {
    *  expired. */
   async oauthCallback(query: URLSearchParams, stop?: AbortSignal): Promise<string> {
     const entry = this.signIns.take(query.get("state"));
+    const stale = (servers: Record<string, Kept>) => (servers[entry.name] ? saving(servers[entry.name]!) : null) !== entry.was;
     const back = (error?: string) => `${MCP_SETTINGS_PAGE}?server=${entry.name}&sign_in=${error ? `failed&error=${error}` : "ok"}`;
     try {
       const error = query.get("error");
@@ -172,6 +176,8 @@ export class McpServers {
       const set = await this.signIns.finish(entry, query.get("code") ?? "", query.get("iss") ?? undefined);
       const listed = await listServer(new URL(entry.url), { authorization: `Bearer ${set.tokens.access_token}` }, this.version, stop);
       const servers = this.servers();
+      // Saved, signed in to again or forgotten since this sign-in started: that stands.
+      if (stale(servers)) return back("changed_meanwhile");
       const now = new Date().toISOString();
       servers[entry.name] = { url: entry.url, auth: this.sealedSet(entry.name, set), ...listed, listed_at: now, updated_at: now };
       this.write(servers);
@@ -214,7 +220,9 @@ export class McpServers {
       const servers = this.kept();
       // Signed in again, or forgotten, while it refreshed: that stands.
       if (servers === "unreadable" || servers[name]?.auth.sealed?.oauth !== kept.auth.sealed?.oauth || (!next && !no)) return;
-      servers[name] = { ...kept, auth: next ? this.sealedSet(name, next) : { ...kept.auth, oauth: { ...kept.auth.oauth!, expired: true } } };
+      // Only the credential changes: a PUT that saved meanwhile (same token set) keeps its URL and tools.
+      const now = servers[name]!;
+      servers[name] = { ...now, auth: next ? this.sealedSet(name, next) : { ...now.auth, oauth: { ...now.auth.oauth!, expired: true } } };
       this.write(servers);
     })().finally(() => this.refreshing.delete(name));
     this.refreshing.set(name, run);
@@ -317,6 +325,8 @@ const aad = (name: string, header: string) => `mcp:${name}:${header}`;
  *  echo without its scheme. */
 const scrub = (text: string, headers: HeaderMap): string =>
   Object.values(headers).flatMap((value) => [value, /^Bearer\s+(.+)$/i.exec(value)?.[1]]).filter((value): value is string => !!value).sort((a, b) => b.length - a.length).reduce((cut, value) => cut.split(value).join("[credential]"), text);
+/** Which save of a server this is: a PUT or a sign-in makes a new one, a refresh of its token or tools does not. */
+const saving = (kept: Kept) => `${kept.url} ${kept.updated_at}`;
 const notFound = (name: string) => new ApiError("not_found", `No MCP server ${name}: GET /v2/settings/mcp-servers lists them.`);
 const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : type === "oauth" ? "auth.type" : "auth.headers", reason: "missing", message: type === "oauth" ? `${message} An OAuth server is signed in to first: POST /v2/settings/mcp-servers/{name}/oauth/start.` : message });
 const nameOf = (name: string) => {
