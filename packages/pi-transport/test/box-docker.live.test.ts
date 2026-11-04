@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -54,11 +54,13 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 	});
 
 	describe("docker boxes: a box as root, with and without dropCapabilities", () => {
-		/** What `mknod work/x c 10 130` (the watchdog's numbers) answers in a box run as 0:0 that binds a fresh directory. */
+		/** What `mknod work/x c 10 130` (the watchdog's numbers) answers in a box run as 0:0 that binds a fresh directory,
+		 *  open to every user, so a root with no capability still writes there and only the device needs one. */
 		async function mknodAsRoot(
 			dropCapabilities: boolean,
-		): Promise<{ exitCode: number; stderr: string; made: boolean }> {
+		): Promise<{ exitCode: number; stderr: string; made: boolean; wrote: boolean }> {
 			const work = mkdtempSync(join(tmpdir(), "pi-transport-caps-"));
+			chmodSync(work, 0o777);
 			const provider = dockerBoxes({ user: "0:0", ...(dropCapabilities ? { dropCapabilities } : {}) });
 			const created = await provider.create(
 				{
@@ -72,16 +74,21 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 			if (!created.ok) throw created.error;
 			const box = created.value;
 			try {
-				const started = await box.exec(["sh", "-c", "mknod /work/x c 10 130"], undefined, context);
+				const started = await box.exec(
+					["sh", "-c", "touch /work/plain && mknod /work/x c 10 130"],
+					undefined,
+					context,
+				);
 				if (!started.ok) throw started.error;
 				const finished = await finish(started.value);
 				if (!finished.ok) throw finished.error;
 				const made = lstatSync(join(work, "x"), { throwIfNoEntry: false })?.isCharacterDevice() === true;
-				return { exitCode: finished.value.exitCode, stderr: finished.value.stderr, made };
+				const wrote = lstatSync(join(work, "plain"), { throwIfNoEntry: false })?.isFile() === true;
+				return { exitCode: finished.value.exitCode, stderr: finished.value.stderr, made, wrote };
 			} finally {
 				// The node is removed in the box, as root made it; it is never opened, here or there.
 				await box
-					.exec(["rm", "-f", "/work/x"], undefined, context)
+					.exec(["rm", "-f", "/work/x", "/work/plain"], undefined, context)
 					.then((started) => (started.ok ? finish(started.value) : undefined));
 				await box.destroy(context);
 				rmSync(work, { recursive: true, force: true });
@@ -90,11 +97,12 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 
 		it("with Docker's default capabilities, root in the box can make a device node in the bound directory", async () => {
 			const kept = await mknodAsRoot(false);
-			expect([kept.exitCode, kept.made]).toEqual([0, true]);
+			expect([kept.exitCode, kept.wrote, kept.made]).toEqual([0, true, true]);
 		}, 60_000);
 
 		it("with dropCapabilities, it cannot: mknod is refused (EPERM) and no node is made", async () => {
 			const dropped = await mknodAsRoot(true);
+			expect(dropped.wrote, "root with no capability still writes a plain file there").toBe(true);
 			expect(dropped.exitCode).not.toBe(0);
 			expect(dropped.stderr).toMatch(/Operation not permitted/);
 			expect(dropped.made).toBe(false);
