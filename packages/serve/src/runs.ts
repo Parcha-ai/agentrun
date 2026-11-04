@@ -1001,7 +1001,7 @@ export class Runs {
         // A run already going is never refused a place, but one whose harness this host's memory never holds (after a
         // restart on a smaller one) is not started: said, never tried.
         const never = fresh ? undefined : neverFits(run.harness, this.memory);
-        if (never) throw new ApiError("agent_not_runnable", never, { details: { harness: run.harness } });
+        if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness: run.harness } });
         if (!fresh) this.launch(run), (launched = true);
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
@@ -1408,7 +1408,7 @@ export class Runs {
     const { memory, options: { maxRuns: max } } = this;
     const need = runMibOf(harness);
     const never = neverFits(harness, memory);
-    if (never) throw new ApiError("agent_not_runnable", never, { details: { harness } });
+    if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness } });
     for (const deadline = Date.now() + this.killAfterMs() + 1_000; ; await sleep(50)) {
       const holding = [...this.runs.values()].filter((run) => this.live(run));
       const counted = max === undefined || holding.length + this.starting < max;

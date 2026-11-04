@@ -60,7 +60,8 @@ test("a 384 MB server: claude-agent is unavailable with why in capabilities, its
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings.map((w) => [w.field, w.message]), [["definition.harness", why]]);
   const refused = await api("POST", "/agents/big/runs", { input: { content: "hi" } });
-  assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.message, refused.body.error.details.harness], [409, "agent_not_runnable", why, "claude-agent"], JSON.stringify(refused.body));
+  // The details hold the contract's blocked shape (openapi.ts): nothing unbound, nothing missing, and the harness.
+  assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.message, refused.body.error.details], [409, "agent_not_runnable", why, { unbound: [], missing: {}, harness: "claude-agent" }], JSON.stringify(refused.body));
   assert.equal(refused.headers.get("retry-after"), null);
   assert.equal((await api("POST", "/agents", agent("small"))).status, 201);
   const run = await api("POST", "/agents/small/runs", { input: { content: "hi" } });
@@ -149,6 +150,6 @@ test("after a restart on a host whose memory never holds a run's harness: a run 
   await follow(api, working, ["failed"]);
   assert.deepEqual((await api("GET", `/runs/${working}`)).body.error.message, why);
   const refused = await api("POST", `/runs/${stopped}/messages`, { content: "go on" });
-  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.message], [409, "agent_not_runnable", why], JSON.stringify(refused.body));
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.message, refused.body.error?.details], [409, "agent_not_runnable", why, { unbound: [], missing: {}, harness: "claude-agent" }], JSON.stringify(refused.body));
   assert.deepEqual([(await api("GET", `/runs/${stopped}`)).body.status, (await api("GET", `/runs/${stopped}`)).body.state], ["input_required", "idle"]);
 });
