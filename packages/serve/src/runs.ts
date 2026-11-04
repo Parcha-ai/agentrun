@@ -30,7 +30,7 @@ import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV,
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
-import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
@@ -772,7 +772,7 @@ export class Runs {
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     // Its code is `spend_cap_reached: `, or with a note after it (`spend_cap_reached (out of budget): `, cap.ts); the message is
     // the words after it.
-    const capped = last?.kind === "error" ? /^spend_cap_reached(?: \([^)]*\))?: /.exec(last.text ?? "") : null;
+    const capped = last?.kind === "error" ? CAP_REFUSAL_PREFIX.exec(last.text ?? "") : null;
     if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last!.text!.slice(capped[0].length), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
     if (stopped(run)) return undefined;

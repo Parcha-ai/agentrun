@@ -92,11 +92,15 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
   return cap;
 }
 
+/** The code a cap's refusal begins with: `spend_cap_reached: `, or with a note after it, as a request it limited refuses
+ *  in (CAP_REFUSAL_CODE, "spend_cap_reached (out of budget): "). Every reader of a refusal's text (a run's end, its
+ *  learning, the spend read back) reads the code through this, never a bare prefix. */
+export const CAP_REFUSAL_PREFIX = /^spend_cap_reached(?: \([^)]*\))?: /;
+
 /** Whether `entry` is pi's answer to a request this cap refused (capModels): an error that begins spend_cap_reached. */
 const refusedHere = (entry: EntryLike): boolean => {
   const message = entry.kind === "pi.assistant" ? (entry.model?.[0] as { stopReason?: unknown; errorMessage?: unknown } | undefined) : undefined;
-  // Its code: `spend_cap_reached: `, or with a note after it, as a request it limited refuses in (CAP_REFUSAL_CODE).
-  return message?.stopReason === "error" && typeof message.errorMessage === "string" && /^spend_cap_reached(?: \([^)]*\))?: /.test(message.errorMessage);
+  return message?.stopReason === "error" && typeof message.errorMessage === "string" && CAP_REFUSAL_PREFIX.test(message.errorMessage);
 };
 
 /** Whether `entry` is pi's error for a request whose start mark could not be written (request-start.ts, MARK_NOT_WRITTEN):
