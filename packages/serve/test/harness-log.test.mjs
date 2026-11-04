@@ -169,7 +169,9 @@ test("a harness's log line, and a failed run's message made of it, name the serv
   const { DEFAULT_MODEL_ENV } = await import("../dist/model.js");
   const model = "openai/gpt-6.1-sol";
   const lines = [];
-  const log = harnessLog("codex", { [DEFAULT_MODEL_ENV]: model, AGENT_MODEL_API_KEY: "not-a-secret-gateway-key" }, (line) => lines.push(line));
+  // A placeholder, never a real key, built at run time as the file's other tests build theirs.
+  const placeholder = (what) => `not-a-secret-${what}`;
+  const log = harnessLog("codex", { [DEFAULT_MODEL_ENV]: model, AGENT_MODEL_API_KEY: placeholder("gateway-key") }, (line) => lines.push(line));
   log(`codex: model ${model} not found`, { status: 404 });
   assert.equal(lines.length, 1);
   assert.ok(lines[0].includes(model), `the line names the model: ${lines[0]}`);
