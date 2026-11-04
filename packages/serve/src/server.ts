@@ -398,7 +398,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
-    harnesses: harnesses.map((offer) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
+    // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
+    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes),
     models,
@@ -1509,7 +1510,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
-        return send(res, 200, toolKeys.view(caps.harnesses));
+        // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
+        return send(res, 200, toolKeys.view(offers));
       case "saveToolKey": {
         // Never through `idempotent`: its record keeps the body, and this body is the values. Checked against its
         // provider before it is kept: a key the provider refuses is 422, and nothing is kept.

@@ -717,7 +717,9 @@ A tool's key comes from one of two places. The server's own environment, through
 `typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
 provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
 `"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
-default model ([models](#models)); its `harnesses` are pi and the provider's own harness, of those this server runs. `GET
+default model ([models](#models)); its `harnesses` are pi and the provider's own harness (OpenRouter's, all three), of
+those this server runs or would run once the key is set, so a row names them before it is saved: one left out is one
+this server cannot run for another reason (not installed, not the pinned build, more than this host's memory). `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
 `source` (`server`, `stored` or null): never a value, nor any part of one. `unlocks` holds only what capabilities show
 this server binds, its `tools` and `workflows.decisions.providers` (as `decisions.<id>`): a key whose tools it binds
