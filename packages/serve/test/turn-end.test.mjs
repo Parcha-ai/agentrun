@@ -130,6 +130,35 @@ test("an older bridge's records: #1424's turn end with no message closes the mes
   assert.deepEqual([new Turns().open, new Turns().end()], [0, undefined], "no message named: none open, and no end");
 });
 
+// #1424's bridge writes a failed turn's error entry in one commit and its turn end, `{ key, status }`, in the next; a
+// relaunch after a crash between the two writes the end without the error. Either way the error is on the root.
+const REFUSAL = "spend_cap_reached (out of budget): Not sent: this run's cap of $0.0005 can't cover one claude-agent request (at least $0.01). Raise the cap to at least $0.01 to run it.";
+const errored = (id, text) => {
+  const entry = assistant(id, [], "error", 0);
+  entry.model[0].errorMessage = text;
+  return entry;
+};
+
+test("an older bridge's failed turn: an end with no error, #1424's `{ key, status }` or the one a relaunch writes for it, takes the error the bridge wrote on the root since the message was sent, so a cap refusal keeps its code and message", () => {
+  const first = [message(1, "a"), user(2, "hi"), sent(3, "a"), errored(4, REFUSAL)];
+  assert.deepEqual(read([...first, ended(5, { status: "failed" })]).end(), { status: "failed", answer: null, error: REFUSAL }, "#1424's turn end");
+  assert.deepEqual(read([...first, ended(5, { message: "a", status: "failed", answer: null })]).end(), { status: "failed", answer: null, error: REFUSAL }, "the relaunch's turn end");
+  // An end's own error stands.
+  assert.equal(read([...first, ended(5, { message: "a", status: "failed", answer: null, error: "codex: the turn failed" })]).end()?.error, "codex: the turn failed");
+});
+
+test("guard: an older bridge's failed turn end takes no error that is not its turn's: with no error entry in the turn it has none (decide(): run_failed \"The run failed.\"), and an earlier turn's error, before a later send, is not the later turn's", () => {
+  // No error entry in the turn: no error is borrowed, so the run fails with "The run failed." (runs.ts decide()).
+  const bare = read([message(1, "a"), user(2, "hi"), sent(3, "a"), assistant(4, [], "stop", 0.001), ended(5, { status: "failed" })]);
+  assert.deepEqual(bare.end(), { status: "failed", answer: null }, "no error entry in the turn: none borrowed");
+  assert.deepEqual(read([message(1, "a"), user(2, "hi"), sent(3, "a"), ended(4, { message: "a", status: "failed", answer: null })]).end(), { status: "failed", answer: null }, "a relaunch's end with no error entry: none");
+  // An earlier turn's error entry, written before the later message was sent, is not the later turn's.
+  const earlier = [message(1, "a"), user(2, "hi"), sent(3, "a"), errored(4, REFUSAL), ended(5, { message: "a", status: "failed", answer: null, error: REFUSAL })];
+  const later = read([...earlier, message(6, "b"), user(7, "again"), sent(8, "b"), ended(9, { status: "failed" })]);
+  assert.deepEqual(later.end(), { status: "failed", answer: null }, "#1424's end of the later turn");
+  assert.deepEqual(read([...earlier, message(6, "b"), user(7, "again"), sent(8, "b"), ended(9, { message: "b", status: "failed", answer: null })]).end(), { status: "failed", answer: null }, "a relaunch's end of the later turn");
+});
+
 test("pi's input submissions: open while queued or placed, closed by their settlement in the answer's commit; one withdrawn before it was placed had no turn", () => {
   const answer = assistant(5, [{ type: "thinking", thinking: "Nothing to add." }], "stop", 0.001);
   const queued = { id: 2, conversationId: 1, type: "input", status: "queued", requestId: "first-r1" };
