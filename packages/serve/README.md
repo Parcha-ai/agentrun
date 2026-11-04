@@ -893,7 +893,9 @@ set. Refresh tokens never leave this server: a run's launch refreshes an access 
 (one refresh at a time per server, so a rotating refresh token is spent once; one given with no expiry is taken to last an hour) and hands the run the access token
 alone. A refresh the authorization server refuses (revoked, expired) makes the server read `credential: "expired"`,
 and a preview, refresh or run says to sign in again in Settings → MCP servers. A token that expires during a run is not
-refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it.
+refreshed in that run: its calls fail as unauthorized, and the run's next launch refreshes it. A server that stops aborts any
+refresh or code exchange under way and writes nothing after; if the authorization server had already rotated that
+refresh token, the next start reads `credential: "expired"` and asks for a sign-in again.
 
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
 answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's

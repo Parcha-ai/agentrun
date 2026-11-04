@@ -21,6 +21,8 @@ export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth"] as const;
 /** A run's launch refreshes an OAuth access token that expires within this. */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
+/** How long a stop waits for the refreshes and code exchanges it aborted. */
+const CLOSE_MS = 2_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
 const UNKNOWN_EXPIRY_MS = 60 * 60_000;
 const SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
@@ -58,6 +60,10 @@ export class McpServers {
   private readonly signIns = new McpSignIns();
   /** Each OAuth server's refresh under way: one at a time, so a rotating refresh token is spent once. */
   private readonly refreshing = new Map<string, Promise<void>>();
+  /** The server's stop: aborts every refresh and code exchange under way, and from then on nothing is written. */
+  private readonly stopped = new AbortController();
+  /** The refreshes and callbacks under way, which close() waits out before the server lets its data directory go. */
+  private readonly inflight = new Set<Promise<unknown>>();
 
   constructor(data: string, env: NodeJS.ProcessEnv, private readonly version: string) {
     this.file = join(data, MCP_SERVERS_FILE);
@@ -76,6 +82,21 @@ export class McpServers {
 
   clientDocument() {
     return this.signIns.clientDocument();
+  }
+
+  /** At the server's stop, before its data directory's lock goes: every refresh and code exchange under way is aborted
+   *  and waited for (at most `boundMs`), and no write is made after. One aborted writes nothing, so the token set stays
+   *  as it was; if its authorization server had already rotated the refresh token, the next start's refresh is refused
+   *  and the server reads `credential: expired`, asking for a sign-in again. */
+  async close(boundMs = CLOSE_MS): Promise<void> {
+    this.stopped.abort();
+    await Promise.race([Promise.allSettled([...this.inflight]), new Promise((done) => setTimeout(done, boundMs).unref())]);
+  }
+
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.inflight.add(work);
+    void work.then(() => this.inflight.delete(work), () => this.inflight.delete(work));
+    return work;
   }
 
   list() {
@@ -179,14 +200,18 @@ export class McpServers {
   /** GET .../oauth/callback, the browser's way back: its state's sign-in finished (the code exchanged, the token set
    *  sealed, the tools listed and kept). Answers where to send the browser; 400 for a state that is unknown, used or
    *  expired. */
-  async oauthCallback(query: URLSearchParams, stop?: AbortSignal): Promise<string> {
+  oauthCallback(query: URLSearchParams, stop?: AbortSignal): Promise<string> {
+    return this.track(this.callback(query, AbortSignal.any([this.stopped.signal, ...(stop ? [stop] : [])])));
+  }
+
+  private async callback(query: URLSearchParams, stop: AbortSignal): Promise<string> {
     const entry = this.signIns.take(query.get("state"));
     const stale = (servers: Record<string, Kept>) => (servers[entry.name] ? saving(servers[entry.name]!) : null) !== entry.was;
     const back = (error?: string) => `${MCP_SETTINGS_PAGE}?server=${entry.name}&sign_in=${error ? `failed&error=${error}` : "ok"}`;
     try {
       const error = query.get("error");
       if (error) return back(/^[a-z_]{1,64}$/.test(error) ? error : "sign_in_failed");
-      const set = await this.signIns.finish(entry, query.get("code") ?? "", query.get("iss") ?? undefined);
+      const set = await this.signIns.finish(entry, query.get("code") ?? "", query.get("iss") ?? undefined, stop);
       const listed = await listServer(new URL(entry.url), { authorization: `Bearer ${set.tokens.access_token}` }, this.version, stop);
       const servers = this.servers();
       // Saved, signed in to again or forgotten since this sign-in started: that stands.
@@ -222,7 +247,7 @@ export class McpServers {
     const running = this.refreshing.get(name);
     if (running) return running;
     const kept = this.saved(name);
-    if (kept?.auth.type !== "oauth" || kept.auth.oauth?.expired) return Promise.resolve();
+    if (this.stopped.signal.aborted || kept?.auth.type !== "oauth" || kept.auth.oauth?.expired) return Promise.resolve();
     const opened = this.open(name, kept);
     const set = "set" in opened ? opened.set : undefined;
     // An access token whose expiry was not given is taken to last UNKNOWN_EXPIRY_MS from when it was obtained.
@@ -233,11 +258,13 @@ export class McpServers {
       let no = !set.tokens.refresh_token && !!set.expires_at && Date.parse(set.expires_at) <= Date.now();
       if (set.tokens.refresh_token) {
         try {
-          next = await refreshed(set);
+          next = await refreshed(set, this.stopped.signal);
         } catch (error) {
           no = await refused(error);
         }
       }
+      // Stopped while it waited: nothing is written, and the token set stays as it was.
+      if (this.stopped.signal.aborted) return;
       const servers = this.kept();
       // Signed in again, or forgotten, while it refreshed: that stands.
       if (servers === "unreadable" || servers[name]?.auth.sealed?.oauth !== kept.auth.sealed?.oauth || (!next && !no)) return;
@@ -246,6 +273,7 @@ export class McpServers {
       servers[name] = { ...now, auth: next ? this.sealedSet(name, next) : { ...now.auth, oauth: { ...now.auth.oauth!, expired: true } } };
       this.write(servers);
     })().finally(() => this.refreshing.delete(name));
+    this.track(run);
     this.refreshing.set(name, run);
     return run;
   }
@@ -337,6 +365,7 @@ export class McpServers {
   }
 
   private write(servers: Record<string, Kept>): void {
+    if (this.stopped.signal.aborted) throw new ApiError("unavailable", "This server is stopping: nothing more is saved. Try again once it is back.", { retry_after_ms: 1000 }, { "retry-after": "1" });
     writeDurableSync(this.file, `${JSON.stringify({ format: FORMAT, servers }, null, 2)}\n`);
   }
 }
