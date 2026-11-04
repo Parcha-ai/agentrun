@@ -395,3 +395,30 @@ test("a held key straddling the 2 KiB cut of a parked call's arguments shows no 
   const listed = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
   assert.equal(holdsPiece(JSON.stringify(listed.pending), CUT_KEY), false, "the run list's pending");
 });
+
+/** A held key for the resume case, its words none a row says itself. */
+const RESUME_KEY = ["not-a-secret", "gate-resume-key", randomBytes(6).toString("hex")].join("-");
+
+test("once a parked call with a held key in its arguments is approved, the resume message, its timeline row, the run's answer and the run list show no 8 characters of the key, on pi and codex", { timeout: 150_000 }, async (t) => {
+  withEnv(t, { PARALLEL_API_KEY: RESUME_KEY });
+  await network(t);
+  const server = await serve(t, GATE);
+  const answer = await owner(server);
+  assert.equal((await server.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  for (const harness of ["pi", "codex"]) {
+    const runId = await fetching(server.api, `resume-${harness}`, harness, `${PAGE}?k=${RESUME_KEY}`);
+    const { view } = await parked(server.api, runId);
+    assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);
+    const { message, rows, view: done } = await resumed(server.api, runId);
+    assert.match(message, /^\[tool approval\] /, `${harness}: resumed by the gate's message`);
+    // The person's own message (and the title made of it) shows as written: their redaction is a later change.
+    const [first, ...rest] = rows.filter((row) => row.kind === "user_message");
+    const shown = rows.filter((row) => row !== first);
+    assert.equal(rest.length, 1);
+    assert.equal(holdsPiece(JSON.stringify(shown), RESUME_KEY), false, `${harness}: the timeline but the person's message: ${JSON.stringify(rest[0])}`);
+    const { title: _title, ...run } = done;
+    assert.equal(holdsPiece(JSON.stringify(run), RESUME_KEY), false, `${harness}: GET /runs/{id}, final_answer included: ${JSON.stringify(run.result)}`);
+    const { title: _listed, ...listed } = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
+    assert.equal(holdsPiece(JSON.stringify(listed), RESUME_KEY), false, `${harness}: the run list`);
+  }
+});
