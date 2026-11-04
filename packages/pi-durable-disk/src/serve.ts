@@ -180,13 +180,17 @@ export type InputRecord = { readonly status: string; readonly entry?: unknown; r
 
 /** The index, in a conversation's input submissions in id order, of the newest one settled on an entry (done, or
  *  unanswered after it was placed) whose request id does not begin with `skip` (a host's own turns, as agentrun-serve's
- *  end-of-run learning turn), else -1. The one rule a door's snapshot (snapshotInputs) and a host that reads it choose
- *  the snapshot's newest settled input by. */
+ *  end-of-run learning turn), else -1. Newest is the one placed last, by its entry: pi places a steer at the running
+ *  turn's tool boundary and a follow-up only at its end, so a follow-up queued before a later steer runs after it, with
+ *  the lower id. Two whose entries are not both numbers go by id. The one rule a door's snapshot (snapshotInputs) and a
+ *  host that reads it choose the snapshot's newest settled input by. */
 export function newestSettledInput(records: readonly InputRecord[], skip?: string): number {
   let newest = -1;
   records.forEach((record, at) => {
     const own = skip === undefined || typeof record.requestId !== "string" || !record.requestId.startsWith(skip);
-    if (own && (record.status === "done" || record.status === "unanswered") && record.entry !== undefined) newest = at;
+    if (!own || (record.status !== "done" && record.status !== "unanswered") || record.entry === undefined) return;
+    const best = newest < 0 ? undefined : records[newest]!.entry;
+    if (best === undefined || typeof record.entry !== "number" || typeof best !== "number" || record.entry > best) newest = at;
   });
   return newest;
 }
