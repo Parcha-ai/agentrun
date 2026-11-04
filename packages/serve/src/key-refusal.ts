@@ -110,11 +110,14 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
   return valueMatcher(secrets)(out) ? "[redacted]" : out;
 }
 
-/** `value`, a run's workflow output, with redactedAnswer applied to each string in it, property NAMES included (a
- *  dictionary field can be keyed by anything a run wrote), its shape kept. Two names of one object that come out the same
- *  would merge one value over the other: that object is withheld whole, as "[redacted]". */
+/** `value`, a run's workflow output, with redactedAnswer applied to each string and number in it, property NAMES
+ *  included (a dictionary field can be keyed by anything a run wrote), its shape kept. Two names of one object that come
+ *  out the same would merge one value over the other: that object is withheld whole, as "[redacted]". */
 export function redactedOutput(value: unknown, secrets: readonly string[]): unknown {
   if (typeof value === "string") return redactedAnswer(value, secrets);
+  // A held value can be all digits (a gateway's key), and a record can quote it as a number: one whose digits hold a held
+  // value, by the same rule as a string's, is withheld as "[redacted]". A boolean's text is shorter than any held value.
+  if (typeof value === "number" || typeof value === "bigint") return redactedAnswer(String(value), secrets) === String(value) ? value : "[redacted]";
   if (Array.isArray(value)) return value.map((item) => redactedOutput(item, secrets));
   if (value && typeof value === "object") {
     const entries = Object.entries(value).map(([key, item]) => [redactedAnswer(key, secrets), redactedOutput(item, secrets)] as const);
