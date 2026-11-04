@@ -33,7 +33,7 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import type { Resume, RunGate } from "./tool-gate.js";
+import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
 import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
@@ -183,8 +183,10 @@ export function adapterRun(
   let halted: Error | undefined;
   // The call the gate parked, until the next message starts a turn: no request leaves meanwhile, and the turn is
   // interrupted once the call's result is in. Not a failure: the turn ends as the person's answer will resume it.
-  let parked: string | undefined;
+  let parked: ParkedCall | undefined;
   const PARKED = new Error("the turn ended: a tool call waits for a person's approval");
+  // Each call's arguments, by its id, for a park named by tool and arguments (endsTurn).
+  const argsOf = new Map<string, unknown>();
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
@@ -329,6 +331,7 @@ export function adapterRun(
     if (event.type === "text") text += event.delta;
     else if (event.type === "tool_start") {
       const call: ToolCall = { type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> };
+      argsOf.set(event.callId, event.args ?? {});
       // A call of the current request's answer after that answer's entry was written (at its first call's end): written
       // now as the answer's continuation, so its result never comes before it and the next answer never holds it.
       const request = current;
@@ -353,7 +356,7 @@ export function adapterRun(
         }).then(() => undefined),
       );
       // The parked call's result is in: its turn ends here, settled once the interrupt is done (runTurns).
-      if (event.callId === parked && !stopping) stopping = session?.interrupt();
+      if (endsTurn(parked, { callId: event.callId, tool: event.name, args: argsOf.get(event.callId) }) && !stopping) stopping = session?.interrupt();
     }
   };
 
@@ -381,6 +384,7 @@ export function adapterRun(
   /** The person's message: the session's new turn, then its entry and its end on the root. */
   const sendOf = (message: Message) => async () => {
     parked = undefined;
+    argsOf.clear();
     await message.recorded;
     taking = message.id;
     await session!.send(message.content);
@@ -608,7 +612,10 @@ export function adapterRun(
       await flush();
       // The calls that wait for a person's approval, read before any turn goes on.
       await gate?.load(durable, context, coding);
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, parked: (callId) => void (parked = callId) } : undefined) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
+      // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
+      const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match) };
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of

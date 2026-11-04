@@ -26,7 +26,7 @@ import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { realOf, workspaceRelative } from "./workspace-paths.js";
-import type { RunGate } from "./tool-gate.js";
+import type { Park, RunGate } from "./tool-gate.js";
 
 export { workspaceRelative } from "./workspace-paths.js";
 
@@ -105,9 +105,9 @@ const textOf = (content: unknown): string =>
 
 
 /** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
- *  passes, and `parked`, told the id of a call it parked, whose turn the harness ends; none (the gate's own run of an
- *  approved call), each call runs as asked. */
-export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], gated?: { gate: RunGate; parked?: (callId: string) => void }): HostTool[] {
+ *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
+ *  gate's own run of an approved call), each call runs as asked. */
+export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], gated?: { gate: RunGate; park: Park }): HostTool[] {
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.
   const stray = coding.map((tool) => tool.name).filter((name) => !BOXED_TOOLS.includes(name));
   if (stray.length) throw new Error(`the coding source holds ${stray.join(", ")}, which is no coding tool`);
@@ -129,7 +129,7 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
       inputSchema: tool.parameters as unknown as Record<string, unknown>,
       replay,
       async call(args, { callId, signal }) {
-        const refused = await gated?.gate.enter(name, args, callId, { commit: (change) => run.harness.commit(change as never, context) as never, ...(gated.parked ? { parked: gated.parked } : {}) });
+        const refused = await gated?.gate.enter(name, args, callId, gated.park);
         if (refused) {
           const answer = { text: refused.text, isError: refused.isError };
           results.set(callId, answer);

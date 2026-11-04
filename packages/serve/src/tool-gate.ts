@@ -99,8 +99,10 @@ export type PendingApproval = {
   price?: ApprovalPrice;
 };
 
-/** The run's journal commit for the call, which makes the request durable before the gate answers. */
-export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>; parked?(callId: string): void };
+/** The run's journal commit for the call, which makes the request durable before the gate answers, and who is told it
+ *  parked, so its turn ends (harness-app.ts endsTurn): by the call's id, or, where the caller cannot name it, by its tool
+ *  and its arguments' digest. */
+export type Park = { commit<T>(change: (tx: unknown) => Promise<T>): Promise<T>; parked?(callId: string): void; parkedBy?(match: { tool: string; argsDigest: string }): void };
 
 /** What a call's ask carries beyond the call. */
 export type EnterOptions = {
@@ -403,10 +405,21 @@ export class RunGate {
   }
 }
 
-// Stubs, today's rule, so the park test loads and fails on its own assertions; the next commit builds them.
-/** A parked call: by its id, or by its tool and arguments where the caller cannot name the id. */
+/** A parked call: by its id, or, where the caller cannot name it (OpenCode's MCP calls carry none), by its tool, as the
+ *  harness reports it, and its arguments' digest (argsDigest). */
 export type ParkedCall = { callId: string } | { tool: string; argsDigest: string };
-/** The digest a park by tool and arguments is matched on. */
-export const argsDigest = (_args: unknown): string => "";
-/** Whether `result` ends the turn `parked` waits in: today, the parked call's own result, by its id. */
-export const endsTurn = (parked: ParkedCall | undefined, result: { callId: string; tool: string; args: unknown }): boolean => parked !== undefined && "callId" in parked && parked.callId === result.callId;
+
+/** `value` as JSON with every object's keys sorted, so the same arguments are the same text however they were built. */
+const canonical = (value: unknown): string =>
+  Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value !== null && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}` : (JSON.stringify(value) ?? "null");
+
+/** The digest a park by tool and arguments is matched on: the sha256 of the arguments' canonical JSON, in hex. */
+export const argsDigest = (args: unknown): string => createHash("sha256").update(canonical(args ?? {})).digest("hex");
+
+/** Whether the tool result `result` ends the turn `parked` waits in (harness-app.ts asks it at each one): the parked
+ *  call's own, by its id; or, for a park by tool and arguments, the next result of that tool with those arguments. */
+export function endsTurn(parked: ParkedCall | undefined, result: { callId: string; tool: string; args: unknown }): boolean {
+  if (!parked) return false;
+  if ("callId" in parked) return parked.callId === result.callId;
+  return parked.tool === result.tool && parked.argsDigest === argsDigest(result.args);
+}
