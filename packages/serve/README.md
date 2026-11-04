@@ -869,8 +869,8 @@ its `state` is random, bound to the server's name, used once and good for 10 min
 never left this server. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
-`sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback,
-`http://127.0.0.1:<port>/v2/settings/mcp-servers/oauth/callback`.
+`sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
+plain `http` address and port it listens on.
 
 Reads show `auth.type: "oauth"`, `credential: "sealed"` and `oauth: {expires_at, scopes, client}`, where `client` is
 `pre-registered`, `metadata-document` or `dynamic`; never a token. A `PUT` with `auth: {type: "oauth"}` keeps the token

@@ -30,12 +30,12 @@ const sdk = () => import("@modelcontextprotocol/client");
  *  held to REQUEST_MS. */
 const guarded = (input: string | URL | Request, init?: RequestInit) => fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(REQUEST_MS), ...(init?.signal ? [init.signal] : [])]) });
 const expiresAt = (tokens: OAuthTokens) => (tokens.expires_in !== undefined ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : undefined);
-const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/;
+const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule CIMD is never offered from a loopback address
 
 export class McpSignIns {
   private readonly pending = new Map<string, Pending>();
   /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash. */
-  base = "http://127.0.0.1";
+  base = "http://127.0.0.1"; // key-gate: loopback-rule a placeholder until attach() names the address it listens on
 
   /** CIMD only from a public https address: an authorization server must be able to fetch the document. */
   private get metadataUrl(): string | undefined {
