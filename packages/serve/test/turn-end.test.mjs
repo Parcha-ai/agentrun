@@ -9,7 +9,8 @@ import { after, test } from "node:test";
 import { REQUEST_STARTED, runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "../dist/turn-end.js";
-import { Turns } from "../dist/turns.js";
+import { REFLECT_REQUEST, Turns } from "../dist/turns.js";
+import { snapshotInputs } from "@parcha/pi-durable-disk/internals";
 
 const ROOT = mkdtempSync(join(tmpdir(), "agentrun-turn-end-"));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -236,6 +237,40 @@ test("a follow-up queued before a steer runs after it: once its turn ends, the r
   turns.note([], [{ ...a, status: "placed", answer: undefined, answer_text: undefined }, f], undefined, 1_000);
   snapshot(turns, [a, { ...fPlaced, status: "done", answer: 11, answer_text: "Answer F." }, s]);
   assert.equal(answerOf(turns), "Answer F.", "the snapshot keeps the follow-up as the turn that ran last");
+});
+
+// The door's snapshot as the door builds it (pi-durable-disk's snapshotInputs, the run's inputs in id order): A answered;
+// F (id 3), a follow-up queued while A ran; S (id 5), a steer that settled inside A's turn; then F placed at entry 9, last.
+const raced = (f) => [
+  { id: 2, conversationId: 1, type: "input", status: "done", entry: 4, answer: 7, requestId: "first-r1", answer_text: "Answer A." },
+  { id: 3, conversationId: 1, type: "input", entry: 9, requestId: "follow-r1", ...f },
+  { id: 5, conversationId: 1, type: "input", status: "done", entry: 6, answer: 7, requestId: "steer-r1", answer_text: "Answer A." },
+];
+const F_DONE = { status: "done", answer: 11, answer_text: "Answer F." };
+const F_FAILED = { status: "unanswered", reason: "model_error", detail: "the model failed" };
+
+test("a server that starts after a follow-up placed after a steer settled reads the door's snapshot: the run's end is the follow-up's", () => {
+  const fresh = (f) => {
+    const turns = new Turns();
+    snapshot(turns, snapshotInputs(raced(f), REFLECT_REQUEST));
+    return turns;
+  };
+  assert.equal(answerOf(fresh(F_DONE)), "Answer F.", "the follow-up's answer, from the door's snapshot");
+  assert.deepEqual(fresh(F_FAILED).end(), { status: "failed", answer: null, error: "the model failed" }, "its failure");
+});
+
+test("a reconnect after the stream dropped while that follow-up ran reads its settlement from the door's snapshot, never closes it with no answer", () => {
+  const reconnect = (f) => {
+    const turns = new Turns();
+    const [a, , s] = raced(F_DONE);
+    turns.note([], [{ ...a, status: "placed", answer: undefined, answer_text: undefined }, { id: 3, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" }], undefined, 1_000);
+    turns.note([], [s, a, { id: 3, conversationId: 1, type: "input", status: "placed", entry: 9, requestId: "follow-r1" }]);
+    // The stream drops while F runs; F settles meanwhile; the reconnect reads the door's snapshot.
+    snapshot(turns, snapshotInputs(raced(f), REFLECT_REQUEST));
+    return turns;
+  };
+  assert.equal(answerOf(reconnect(F_DONE)), "Answer F.", "F's answer, not the empty answer of an input closed unread");
+  assert.deepEqual(reconnect(F_FAILED).end(), { status: "failed", answer: null, error: "the model failed" }, "its failure");
 });
 
 test("guard: inputs that ran in the order they came in end on the newest, the steer's when it came and ran last", () => {

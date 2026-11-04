@@ -32,4 +32,12 @@ describe("snapshotInputs", () => {
     // With nothing of the run's own settled, every input.
     assert.deepEqual(ids(snapshotInputs([input(2, "queued", undefined, "follow-r1"), input(3, "done", 12, "learn-reflect-r1")], "learn-reflect-")), [2, 3]);
   });
+
+  it("the newest settled input is the one placed last: a follow-up queued before a steer, run after it, is kept", () => {
+    // F (id 2), a follow-up, queued while A ran; S (id 3), a steer sent after it, went into A's turn at entry 12 and
+    // settled with it; then F was placed at entry 15 and settled last. Its settlement is the run's newest.
+    const records = [input(1, "done", 10), input(2, "done", 15), input(3, "done", 12)];
+    assert.deepEqual(ids(snapshotInputs(records)), [2, 3], "F, the input placed last, and every one after it by id");
+    assert.deepEqual(ids(snapshotInputs([input(1, "done", 10), input(2, "unanswered", 15), input(3, "done", 12)])), [2, 3], "and so when F failed or was stopped");
+  });
 });

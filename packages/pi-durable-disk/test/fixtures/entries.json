@@ -278,6 +278,7 @@
       "runPath",
       "sandboxName",
       "sandboxStatus",
+      "snapshotInputs",
       "sweepSandboxes",
       "unmountClaim"
     ],
