@@ -32,7 +32,7 @@ export const skill = ({ name = "find-policies", description = "Find a store's re
   `---\nname: ${name}\ndescription: ${description}\n---\n# Find policies\n\nOpen /policies/ first, then the footer links.\n`;
 
 /** A workflow draft with one model node; `tools` are the tools it names. */
-export const workflow = ({ name = "find-policies", tools = ["web_fetch"], node = "agent" } = {}) => JSON.stringify({
+export const workflow = ({ name = "find-policies", tools = [], node = "agent" } = {}) => JSON.stringify({
   v: 2,
   name,
   schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] } },

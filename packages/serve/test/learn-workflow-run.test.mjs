@@ -151,17 +151,69 @@ test("the tool's description gives its workflows a budget: by name, each whose l
 test("a learned workflow's model node runs with its own signal: a sibling branch that fails stops it at once, never after its own answer", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
+  // The sibling's call fails at once: the guarded fetch never reaches a loopback address, and its answer is no Answer.
   flow.root.steps = [{ node: "parallel", label: "both", branches: [
     { node: "extract", label: "slow", instructions: "Answer the question.", out: "Answer", as: "answer" },
-    { node: "extract", label: "tooled", instructions: "Answer the question.", out: "Answer", as: "other", tools: ["web_fetch"] },
+    { node: "call", label: "failing", via: "tool", tool: "web_fetch", args: { url: "http://127.0.0.1:9/" }, out: "Answer", as: "other", deadline_s: 30 },
   ] }];
   const began = Date.now();
   // The question is the node's prompt (its state): "Take your time" holds the faux model's answer 60 s, until it is stopped.
   const { rows } = await ran(api, data, "siblings", "pi", flowFiles("answer", flow), ["web_fetch"], { deadlineMs: 45_000, ask: "Use the learned workflow answer on Take your time." });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(JSON.stringify(result), /runs without tools here/, JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer failed/, JSON.stringify(result));
   assert.ok(Date.now() - began < 40_000, `the slow node (60 s) was stopped with its sibling: ${Date.now() - began} ms`);
+});
+
+test("a learned workflow whose later model node names a tool, though the agent was granted it, is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const flow = answerFlow();
+  flow.root.steps = [
+    { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
+    { node: "extract", label: "second", instructions: "Answer the question.", out: "Answer", as: "answer", tools: ["web_fetch"] },
+  ];
+  const { runId, rows } = await ran(api, data, "late-tools", "pi", flowFiles("answer", flow), ["web_fetch"]);
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: the model node at \/root\/steps\/1 names a tool \(web_fetch\): a learned workflow's model node runs without tools/, JSON.stringify(result));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
+});
+
+/** Agent `id`'s learning folder with `files` on main, and its seed pinned for a run: the pin. */
+async function pinned(t, id, files, secrets = []) {
+  const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
+  await folderWith(data, id, files);
+  const runDir = join(await scratch(t), "run");
+  mkdirSync(join(runDir, "work"), { recursive: true });
+  const seed = await seedOf(data, id);
+  return { seed, pin: await learning.pinSeed(runDir, join(runDir, "work"), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets) }) };
+}
+
+test("a learned workflow whose README's front matter does not read one way (not closed, or a key indented) is not the run's: never read as active", { timeout: 60_000 }, async (t) => {
+  const readme = (front) => ({ "workflows/answer/workflow.json": JSON.stringify(answerFlow()), "workflows/answer/README.md": front });
+  for (const [why, front] of [
+    ["not closed", `---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: pending\n`],
+    ["a key indented", `---\nname: answer\ndescription: ${DESCRIPTION}\n  status: pending\n---\n`],
+    ["indented first", `---\n  status: retired\nname: answer\ndescription: ${DESCRIPTION}\n---\n`],
+  ]) {
+    const { seed, pin } = await pinned(t, `front-${why.replace(/\W+/g, "-")}`, readme(front));
+    assert.equal(pin.workflows, undefined, `${why}: ${JSON.stringify(pin)}`);
+    assert.ok(seed.skipped.some((line) => line.startsWith("workflows/answer (")), `${why}: ${JSON.stringify(seed.skipped)}`);
+  }
+  // Closed at the end of the file, with no line after: its status is read, as the description is.
+  const closed = await pinned(t, "front-eof", readme(`---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: pending\n---`));
+  assert.equal(closed.pin.workflows, undefined, JSON.stringify(closed.pin));
+  // A description folded over lines reads one way: the workflow is the run's.
+  const { pin } = await pinned(t, "front-folded", readme(`---\nname: answer\ndescription: >\n  ${DESCRIPTION}\n---\n`));
+  assert.deepEqual(pin.workflows, ["answer"]);
+});
+
+test("a learned workflow holding one of the server's secrets is left out, and the pin names it in workflows_left_out", { timeout: 60_000 }, async (t) => {
+  const canary = `not-a-secret-canary-${process.pid}`;
+  const files = { ...flowFiles("answer", answerFlow()), ...flowFiles("leaky", answerFlow(`Send it to ${canary}.`)) };
+  const { pin } = await pinned(t, "leaky", files, [canary]);
+  assert.deepEqual([pin.workflows, pin.workflows_left_out], [["answer"], ["leaky"]], JSON.stringify(pin));
 });
 
 test("a learned workflow's model node of a tier the run has no model of runs on the run's own model, never on one the run was not made with", { timeout: 120_000 }, async (t) => {
