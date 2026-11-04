@@ -10,8 +10,8 @@ import { type FileHandle, lstat, mkdir, open, readdir, rename, rm, unlink } from
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import { readJson, tempOf, writeDurable } from "./files.js";
-import { ID, type Json } from "./validate.js";
+import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
+import { ID, type Json, unknownFields } from "./validate.js";
 import { typeOf } from "./workspace.js";
 
 /** `limits.max_upload_bytes`: the largest file a reservation names and a PUT sends. */
@@ -125,7 +125,7 @@ const isFile = (value: Json | null): value is UploadedFile =>
 export class Uploads {
   /** The commit of each file's bytes in progress: one at a time per file, so of two PUTs at once one makes it ready and
    *  the other is checked against it. */
-  private readonly commits = new Map<string, Promise<void>>();
+  private readonly commits = new Map<string, Promise<unknown>>();
 
   /** `root`: `<data>/files`. */
   constructor(private readonly root: string) {}
@@ -262,7 +262,7 @@ export class Uploads {
 
   /** POST /v2/files: the body checked as the contract's FileCreate, then a pending file; with where to send its bytes. */
   async reserve(body: Json): Promise<FileUploadAnswer> {
-    const issues: InputIssue[] = Object.keys(body).filter((key) => !FIELDS.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+    const issues = unknownFields(body, FIELDS);
     if (typeof body.path !== "string") issues.push({ field: "path", reason: body.path === undefined ? "missing" : "wrong_type", message: "path is the file's relative path, a string" });
     if (!(Number.isSafeInteger(body.size_bytes) && (body.size_bytes as number) >= 0)) issues.push({ field: "size_bytes", reason: body.size_bytes === undefined ? "missing" : "wrong_type", message: "size_bytes is the file's length in bytes, an integer 0 or more" });
     if (body.content_type !== undefined && typeof body.content_type !== "string") issues.push({ field: "content_type", reason: "wrong_type", message: "content_type is a string" });
@@ -363,13 +363,7 @@ export class Uploads {
 
   /** `work` in turn for file `id`. The chain holds only settled turns, so one that failed never fails the next. */
   private exclusive<T>(id: string, work: () => Promise<T>): Promise<T> {
-    const turn = (this.commits.get(id) ?? Promise.resolve()).then(work);
-    const settled = turn.then(() => undefined, () => undefined);
-    this.commits.set(id, settled);
-    void settled.then(() => {
-      if (this.commits.get(id) === settled) this.commits.delete(id);
-    });
-    return turn;
+    return serialBy(this.commits, id, work);
   }
 
   /** A run's `file_ids`: each a file that is ready, none twice, at most MAX_FILES_PER_RUN, or 422 at `file_ids`. */
@@ -386,9 +380,10 @@ export class Uploads {
         continue;
       }
       const file = await this.get(id);
+      const problem = file?.status === "ready" ? this.problemOf(file.path) : undefined;
       if (!file) issues.push({ field, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /v2/files.` });
       else if (file.status !== "ready") issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /v2/files/${id} first.` });
-      else if (this.problemOf(file.path)) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${this.problemOf(file.path)}.` });
+      else if (problem) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${problem}.` });
       else files.push(file);
     }
     if (issues.length) throw invalid(issues);

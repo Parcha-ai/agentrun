@@ -8,7 +8,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
-import { foldSession, openDrive } from '@parcha/agentrun-kernel/kernel';
+import { foldSession, openDrive, pendingSubmissions } from '@parcha/agentrun-kernel/kernel';
 import { NativeJournal, toolBridge, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { CODEX_INSTALL, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-harness-codex';
@@ -490,4 +490,134 @@ test("the adapter ends an aborted turn only through the kernel's abortedOutcome,
   const source = readFileSync(new URL('../src/adapter.ts', import.meta.url), 'utf8');
   assert.match(source, /abortedOutcome\(current\.signal, io\.signal\)/);
   assert.doesNotMatch(source, /status:\s*"interrupted"/);
+});
+
+test("a turn its session interrupted (a stop) is open to the next process; settled, it ends interrupted, sends nothing and stays ended, and the next message is a turn of its own", async () => {
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:stop', label: 'w', system: [], tools: [wait], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { adapter: codex } = adapter(['call wait {}']);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  await reached;
+  const ending = a.turnEnd();
+  await a.interrupt();
+  assert.equal((await ending).status, 'interrupted');
+  await a.close();
+
+  const { adapter: again } = adapter([]);
+  const b = await again.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn', 'the stopped turn is open to the next process');
+  await b.settleOpenTurn();
+  assert.equal(b.state, 'idle');
+  await b.send('and now?');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+
+  const { adapter: later } = adapter([]);
+  const c = await later.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(c.state, 'idle', 'settled for good: no open turn for the process after');
+  await c.close();
+});
+
+test("a turn stopped before its prompt was placed: settled, its prompt is withdrawn, a later open finds no open turn and writes no second end, and the next message runs alone", async () => {
+  const spec = { key: 'step:early', label: 'early', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const folded = async () => foldSession(spec.key, await store.read(spec.key));
+  const openOn = async (codex) => codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  const { adapter: first } = adapter([]);
+  const a = await openOn(first);
+  await a.send('go');
+  // The stop lands at once: before the harness has started the app-server and placed the prompt.
+  const ending = a.turnEnd();
+  await a.interrupt();
+  assert.equal((await ending).status, 'interrupted');
+  await a.close();
+  const stopped = await folded();
+  const go = stopped.submissions.find((s) => s.text === 'go');
+  assert.ok(go && !stopped.placed.has(go.id), 'setup: the stop landed before the prompt was placed');
+
+  const { adapter: next, provider: nextModel } = adapter([]);
+  const b = await openOn(next);
+  assert.equal(b.state, 'open_turn', 'setup: the stopped turn is open to the next process');
+  await b.settleOpenTurn();
+  const pendingAfterSettle = pendingSubmissions(await folded()).map((s) => s.text);
+  await b.close();
+
+  // The process after it: serve's open settles a stopped turn it finds open, as here.
+  const { adapter: later, provider: laterModel } = adapter([]);
+  const c = await openOn(later);
+  const laterOpen = c.state;
+  if (c.state === 'open_turn') await c.settleOpenTurn();
+  const ends = transcriptOf(await folded()).filter((r) => r.data?.type === 'turn').map((r) => r.data.status);
+  await c.send('and now?');
+  assert.equal((await c.turnEnd()).status, 'completed');
+  await c.close();
+  const ended = await folded();
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  // What the model was asked: the stand-in says each message it is sent back as an echo, through the provider.
+  const modelSaw = [...nextModel.seen, ...laterModel.seen].map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
+  assert.deepEqual(
+    { pendingAfterSettle, laterOpen, ends, placed, modelSaw },
+    { pendingAfterSettle: [], laterOpen: 'idle', ends: ['interrupted'], placed: ['and now?'], modelSaw: ['echo: and now?'] },
+    "the stopped turn's prompt is withdrawn at its settle: no later open finds it open or ends it again, and the next message is the only one sent",
+  );
+});
+
+test("a turn stopped before its prompt was placed, then a message in the same process: the session reads open_turn after the stop, its settle withdraws the prompt, and the message runs alone", async () => {
+  const spec = { key: 'step:early-here', label: 'early', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const folded = async () => foldSession(spec.key, await store.read(spec.key));
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  // The stop lands at once: before the harness has started the app-server and placed the prompt.
+  const ending = a.turnEnd();
+  await a.interrupt();
+  assert.equal((await ending).status, 'interrupted');
+  const stopped = await folded();
+  const go = stopped.submissions.find((s) => s.text === 'go');
+  assert.ok(go && !stopped.placed.has(go.id), 'setup: the stop landed before the prompt was placed');
+  // As serve's stop does: a turn the session still holds open after the interrupt is settled there.
+  const afterStop = a.state;
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = await folded();
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
+  assert.deepEqual(
+    { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), placed, modelSaw },
+    { afterStop: 'open_turn', pending: [], placed: ['and now?'], modelSaw: ['echo: and now?'] },
+    'the stopped prompt is never sent: the stop leaves the turn open to settle, and the next message is the only one sent',
+  );
+});
+
+test("a runner's pause before the node's prompt was placed: the next process resumes the node with its own prompt, not the nudge", async () => {
+  const store = memorySessionStore();
+  const request = { kind: 'agent', label: 'q', system: [], user: 'The node asks this.', schema: SCHEMAS.Out, tools: [], step: { sessionId: 'paused', attempt: 0, earlierSessionIds: [] } };
+  // The first process pauses its runner the moment the node's prompt is in the session, before the harness places it.
+  const { adapter: first } = adapter([]);
+  let runner;
+  const pausing = { ...first, open: async (...args) => {
+    const session = await first.open(...args);
+    return Object.create(session, { send: { value: async (text) => { await session.send(text); await runner.stop({ drainMs: 0 }); } } });
+  } };
+  runner = createHarnessRunner(pausing, { store });
+  await assert.rejects(runner({ ...request }), (error) => error.reason === 'aborted');
+  const key = 'step:paused';
+  const paused = foldSession(key, await store.read(key));
+  assert.deepEqual(pendingSubmissions(paused).map((s) => s.text), [request.user], "setup: the node's prompt is in the session, unplaced");
+
+  const { adapter: next } = adapter(['call submit {"value":{"answer":"resumed"}}']);
+  assert.deepEqual(await createHarnessRunner(next, { store })({ ...request }), { answer: 'resumed' });
+  const resumed = foldSession(key, await store.read(key));
+  const placed = resumed.submissions.filter((s) => resumed.placed.has(s.id)).map((s) => s.text);
+  assert.equal(placed[0], request.user, 'the paused node resumes with its own prompt');
 });

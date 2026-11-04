@@ -157,10 +157,13 @@ export function startReason(error: unknown): string {
   return fix ? `${message.replace(/\.$/, "")}; ${RESTART[fix]}.` : message;
 }
 
-/** A HarnessUnavailable for an adapter's own setup `error`, said as `said` with its install line made npx's where serve
- *  runs from npx (installHint): installing is its fix unless the line became npx's, which restarts AgentRun itself. */
-function unavailable(error: unknown, said: string, npmLine: string | undefined, spec: string, npx: boolean, env: NodeJS.ProcessEnv): HarnessUnavailable {
-  const hinted = npmLine ? installHint(said, npmLine, spec, npx, env) : said;
+/** A HarnessUnavailable for an adapter's own setup `error`: its message, with the line that installs the harness when it
+ *  names none, and with the adapter's own install line (`pinned`) made npx's where serve runs from npx (installHint):
+ *  installing is its fix unless the line became npx's, which restarts AgentRun itself. */
+function unavailable(harness: string, error: unknown, pinned: { npmLine: string; spec: string } | undefined, npx: boolean, env: NodeJS.ProcessEnv): HarnessUnavailable {
+  const message = (error as Error).message;
+  const said = message.includes("npm install") ? message : `${message} (${INSTALL[harness]})`;
+  const hinted = pinned ? installHint(said, pinned.npmLine, pinned.spec, npx, env) : said;
   return new HarnessUnavailable(hinted, hinted === said ? fixOf(error) : undefined);
 }
 
@@ -398,9 +401,8 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
     adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions("claude-agent", env) });
   } catch (error) {
-    const message = (error as Error).message;
-    const said = message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`;
-    throw unavailable(error, said, claude.CLAUDE_AGENT_SDK_VERSION ? claude.CLAUDE_AGENT_SDK_INSTALL : undefined, `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}`, npx, env);
+    const pinned = claude.CLAUDE_AGENT_SDK_INSTALL && claude.CLAUDE_AGENT_SDK_VERSION ? { npmLine: claude.CLAUDE_AGENT_SDK_INSTALL, spec: `@anthropic-ai/claude-agent-sdk@${claude.CLAUDE_AGENT_SDK_VERSION}` } : undefined;
+    throw unavailable("claude-agent", error, pinned, npx, env);
   }
   if (refused !== undefined) throw refused;
   return adapter;
@@ -421,9 +423,7 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
     try {
       codex.verifyCodex();
     } catch (error) {
-      const message = (error as Error).message;
-      const said = message.includes("npm install") ? message : `${message} (${INSTALL.codex})`;
-      throw unavailable(error, said, codex.CODEX_INSTALL, `@openai/codex@${codex.CODEX_VERSION}`, npx, env);
+      throw unavailable("codex", error, { npmLine: codex.CODEX_INSTALL, spec: `@openai/codex@${codex.CODEX_VERSION}` }, npx, env);
     }
   }
   // The id as the provider's endpoint names it (codexProvider): a gateway's own name for the model as model.ts chose it,
