@@ -1,7 +1,9 @@
 import { harnessSteers, type MessageFeatures, NO_MESSAGES } from "./runState";
 
 /** Where reading a run's agent (for its harness) stands. */
-export type HarnessRead = { state: "loading" } | { state: "read"; id: string | undefined } | { state: "failed" };
+/** `place`: the revision's `definition.place` as it names it (none for the server's default), for the run page's mark of
+ *  a run its start narrowed to the server. */
+export type HarnessRead = { state: "loading" } | { state: "read"; id: string | undefined; place?: unknown } | { state: "failed" };
 
 /** What the run page may offer as a message, from the run's harness and the server's capabilities. While the harness is
  *  not known, nothing is offered. Once read, a steer only where that harness steers mid-turn. When the agent could not be
@@ -15,7 +17,7 @@ export function messageOffer(
   return { messages: caps.features.messages, steers: harnessSteers(harness.id, caps.harnesses) };
 }
 
-type RevisionPage = { revisions: { revision: string; definition: { harness?: string } }[]; next_cursor: string | null };
+type RevisionPage = { revisions: { revision: string; definition: { harness?: string; place?: unknown } }[]; next_cursor: string | null };
 
 /** Reads the harness of the revision a run started from (`run.revision`), not the agent's current one: an edit after
  *  the run started never changes how that run takes a message. Read (none named is the default, pi) or failed: a
@@ -29,7 +31,7 @@ export async function readHarness(
     do {
       const page: RevisionPage = await v2.listRevisions(run.agent_id, cursor);
       const own = page.revisions.find((r) => r.revision === run.revision);
-      if (own) return { state: "read", id: own.definition.harness };
+      if (own) return { state: "read", id: own.definition.harness, ...(own.definition.place !== undefined ? { place: own.definition.place } : {}) };
       cursor = page.next_cursor;
     } while (cursor);
   } catch {

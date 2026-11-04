@@ -146,6 +146,17 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message(faux.toolCall("write", { path: "a.md", content: "a" }), { stopReason: "toolUse" });
     return import("node:fs").then(({ writeFileSync }) => (writeFileSync(signalWait[1], ""), slow(faux, 60_000, "Done slowly.")));
   }
+  // Review F3: an answer; a follow-up whose turn says something with a call, then holds (the person stops it); a last
+  // follow-up answered with nothing (as a /compact is).
+  if (first.includes("Answer, reread, then compact.")) {
+    if (users.length === 1) return faux.message("Report written.");
+    if (users.length === 2) return results === 0 ? faux.message([faux.text("Let me reread the report first."), faux.toolCall("read", { path: "report.md" })], { stopReason: "toolUse" }) : slow(faux, 60_000, "Reread it.");
+    return faux.message("");
+  }
+  // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
+  // answered in a run of its own.
+  const held = /Hold the answer until (\S+)\./.exec(first)?.[1];
+  if (held) return users.length > 1 ? faux.message("Answer 2.") : untilExists(held).then(() => faux.message("Answer 1."));
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   // An answer of nothing: one empty thinking block and one empty text block, a stop with no tool call.
   if (first.includes("Answer with nothing")) return faux.message([faux.thinking(""), faux.text("")]);
@@ -173,6 +184,8 @@ export default function reply(context, faux) {
   // "Answer once <file> exists.": the test says when, by making the file.
   const once = /^Answer once (\S+) exists\.$/.exec(first);
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
+  // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
+  if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   return faux.message(`On ${last}: done.`);

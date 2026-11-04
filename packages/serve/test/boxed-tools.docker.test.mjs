@@ -17,9 +17,11 @@ const LIVE = process.env.AGENTRUN_SERVE_LIVE_DOCKER === "1";
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-// Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
+// Values planted in the server's environment, each one no box may hold: an unnamed key, OpenAI's, and the four keys a
+// tester runs everything with: OpenRouter's (which a harness may be handed under another name), Monid's, Parallel's and
+// Browserbase's. A box is searched for each value, so a key handed on under any name is found.
 const planted = (name) => `planted-${name}-sentinel`;
-const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
+const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("openai"), OPENROUTER_API_KEY: planted("openrouter"), MONID_API_KEY: planted("monid"), PARALLEL_API_KEY: planted("parallel"), BROWSERBASE_API_KEY: planted("browserbase") };
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_", "HOSTNAME"];
 
@@ -59,7 +61,7 @@ async function noSecretIn(text, server) {
   for (const [name, value] of Object.entries({ ...SENTINELS, token: server.token, door })) assert.ok(!text.includes(value), `${name} reached the box`);
 }
 
-test("live Docker (pi): bash, write, read and edit run in the box; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
+test("live Docker (pi): bash runs in the box, and write, read and edit on the work/ it binds; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
   withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker" });
   const server = await serve(t, { faux: PROBE });
   const { api, data } = server;

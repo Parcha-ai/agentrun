@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
+import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
 import { client, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -19,9 +20,11 @@ const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const NO_SHELL = "<harness>\n[error] Tool bash is not available\n</harness>";
-// Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
+// Values planted in the server's environment, each one no box may hold: an unnamed key, OpenAI's, and the four keys a
+// tester runs everything with: OpenRouter's (which a harness may be handed under another name), Monid's, Parallel's and
+// Browserbase's. A box is searched for each value, so a key handed on under any name is found.
 const planted = (name) => `planted-${name}-sentinel`;
-const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
+const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("openai"), OPENROUTER_API_KEY: planted("openrouter"), MONID_API_KEY: planted("monid"), PARALLEL_API_KEY: planted("parallel"), BROWSERBASE_API_KEY: planted("browserbase") };
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 // What a shell adds to its own environment, and what pi-transport's local box adds (its marker and private TMPDIR).
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_"];
@@ -82,7 +85,7 @@ async function noSecretIn(text, server) {
   for (const [name, value] of Object.entries({ ...SENTINELS, token: server.token, door })) assert.ok(!text.includes(value), `${name} reached the box`);
 }
 
-test("demo (pi): in a Docker place read, write, edit and bash run in the run's box; bash's out.txt shows in the run's files; the box's environment is the fixed one, with no key or token", { timeout: 120_000 }, async (t) => {
+test("demo (pi): in a Docker place bash runs in the run's box, and read, write and edit on this machine's work/ that the box binds; bash's out.txt shows in the run's files; the box's environment is the fixed one, with no key or token", { timeout: 120_000 }, async (t) => {
   const server = await boxed(t);
   const { api, data } = server;
   assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true, reason: "a faux box (tests)" });
@@ -136,7 +139,10 @@ test("demo (pi): in a Docker place read, write, edit and bash run in the run's b
     mounts: [{ source: join(data, "runs", run.run_id, "work"), target: "/run/agentrun/run/work" }],
     labels: { "agentrun.run": run.run_id, "agentrun.box": "run" }, network: "none", maxLifetimeMs: 86_400_000,
   });
-  assert.ok(execs(data).length >= plan.length, "every call ran a command in the box");
+  // bash's calls ran in the box, one command each; read, write and edit ran none where they run here (bound-files.ts),
+  // and at least one each where this host reaches directories by path.
+  if (writesHeld()) assert.equal(execs(data).length, plan.filter((step) => step.tool === "bash").length, JSON.stringify(execs(data)));
+  else assert.ok(execs(data).length >= plan.length, "every call ran a command in the box");
   const view = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual(view.place, SANDBOX);
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
@@ -224,7 +230,7 @@ test("bash is a 422 on an agent whose place is the runner (named or by default);
   // The browser writes work/ from this machine by path, which a box's command could turn through a link: runner only.
   const browser = await api("POST", "/agents", { definition: { id: "browsing", name: "browsing", instructions: "Probe.", tools: ["bash", "browser"], place: SANDBOX } });
   assert.deepEqual([browser.status, browser.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
-  assert.match(browser.body.error.fields[0].message, /runs on the runner only/);
+  assert.match(browser.body.error.fields[0].message, /^browser does not run in a sandbox place yet/);
   // And a place that tries to open the box's network is no place.
   const open = await api("POST", "/agents", { definition: { id: "open", name: "open", instructions: "Probe.", tools: ["bash"], place: { ...SANDBOX, network: "open" } } });
   assert.deepEqual([open.status, open.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.place", "not_allowed"]]]);

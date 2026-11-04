@@ -15,8 +15,8 @@ const FAUX_MAX_OUTPUT = 16_384;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 
 /** A server whose runs go to a fresh Responses endpoint answering `text` with `tokens` each way, at `price`. */
-async function gateway(t, { price, text = "42", tokens = 10 }) {
-  const endpoint = await responsesEndpoint(t, text, tokens);
+async function gateway(t, { price, text = "42", tokens = 10, incomplete = false }) {
+  const endpoint = await responsesEndpoint(t, text, tokens, { incomplete });
   withEnv(t, { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "cap-model", AGENT_MODEL_PRICE: price }, GATEWAY_VARS);
   const server = await serve(t, { faux: undefined });
   const posts = () => endpoint.asked.filter((line) => line.startsWith("POST ")).length;
@@ -108,6 +108,16 @@ test("a response that costs more than its worst case is stopped by the server af
   assert.deepEqual([run.status, run.error?.code, posts()], ["failed", "spend_cap_reached", 1], JSON.stringify(run));
   assert.equal(run.cost.usd, 2);
   assert.deepEqual(run.result, { output: null, final_answer: "The answer is 42." }, "the answer the cap stopped is kept");
+});
+
+test("a response that stops at its length and costs past the cap is stopped after it, and its text is the answer kept", async (t) => {
+  // The same $2 response as above, cut at its max output tokens (pi's stopReason "length": text, no tool call). The
+  // timeline shows it as the run's newest answer row (a text_block); the answer the cap keeps is that text.
+  const { api, posts } = await gateway(t, { price: "1,1", text: "The answer, cut at its length.", tokens: 1_000_000, incomplete: true });
+  const run = await ended(api, (await start(api, "over-cut", "What is six times seven?", { max_cost_usd: 0.05 })).run_id);
+  assert.deepEqual([run.status, run.error?.code, posts()], ["failed", "spend_cap_reached", 1], JSON.stringify(run));
+  assert.equal(run.cost.usd, 2);
+  assert.deepEqual(run.result, { output: null, final_answer: "The answer, cut at its length." }, "the answer the cap stopped is kept, cut as it was");
 });
 
 const GROUPS = ["meter", "agent", "key", "day", "region"];

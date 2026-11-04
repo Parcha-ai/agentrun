@@ -1,11 +1,19 @@
 // The faux harness's script for serve's tests: one action per paid request, across the session's turns, by what the
 // agent's instructions say. The script is read again at every open, so what a later process does can depend on a file.
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 
 /** Told the options the harness's own adapter would be built with (serve's adapters.ts): filed, for a test to see. */
 export function opened(harness, options) {
   if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ harness, options })}\n`);
 }
+
+/** An answer of 3,000 characters, longer than the 2,000 a run's summary keeps; its end says it was not cut. */
+export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
+
+/** The faux harness's `{ cut: true }` (a request admitted, never answered) that writes `signal` the moment the request is
+ *  admitted: the faux adapter asks whether an action is a cut right after the request's beforeRequest has passed (and
+ *  asks "hang" and "halt" before it), so the file exists only once the session holds the request. */
+const cutSignalled = (signal) => new Proxy({ cut: true }, { has(target, key) { if (key === "cut") writeFileSync(signal, ""); return key in target; } });
 
 export function script(spec) {
   const text = spec.system.join("\n");
@@ -29,6 +37,9 @@ export function script(spec) {
     return [{ call: "write", args: { path: `${runDir}/work/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
   }
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
+  // Reads a file the run was given (an upload, copied into its inputs/), then says so.
+  const upload = /Read the upload (\S+)\./.exec(text)?.[1];
+  if (upload) return [{ call: "read", args: { path: upload }, usd: 0.001 }, { say: "Read the upload.", usd: 0.001 }];
   if (/Write then read\./.test(text)) return [{ call: "write", args: { path: "note.txt", content: "hello from the tool" }, usd: 0.001 }, { call: "read", args: { path: "note.txt" }, usd: 0.001 }, { say: "Read back.", usd: 0.001 }];
   // Paths at the workspace's edge: one out of it, a file that is not there, then a write into it.
   if (/Touch the edges\./.test(text)) return [{ call: "write", args: { path: "../escape.md", content: "out" }, usd: 0.001 }, { call: "read", args: { path: "missing.md" }, usd: 0.001 }, { call: "write", args: { path: "sub/ok.md", content: "in" }, usd: 0.001 }, { say: "Touched.", usd: 0.001 }];
@@ -52,6 +63,18 @@ export function script(spec) {
   // One request that costs more than its run's cap allows: a native search's input is held at an allowance, not a bound.
   if (/Overspend\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.5 }, { say: "Not sent.", usd: 0.001 }];
   // A chat whose second turn has a request of unknown price.
+  // A follow-up whose turn makes one request and shows nothing, as the Claude CLI's /compact does (a summary request, no
+  // text): the turn ends with no answer row after the person's message.
+  // F2: a request admitted (the signal file says so) and never answered: the turn holds until it is cancelled.
+  const unanswered = /Hold a request unanswered \(signal (\S+)\)\./.exec(text)?.[1];
+  if (unanswered) return [cutSignalled(unanswered)];
+  // The same, after an answer past the store's 2,000-character summary: the run's answer is the whole of it.
+  if (/The second turn answers nothing, after a long answer\./.test(text)) return [{ say: LONG_ANSWER, usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
+  if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
+  // A turn that holds in its own process (fetch_page waits for the file, faux-web-hold.mjs), answers, then answers the
+  // follow-up the person sent meanwhile in a turn of its own.
+  const held = /Hold the answer until (\S+)\./.exec(text)?.[1];
+  if (held) return [{ call: "fetch_page", args: { url: `http://public.example/hold?until=${encodeURIComponent(held)}` }, usd: 0.001 }, { say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
   const chat = /Wait for (\S+), then answer the chat\./.exec(text)?.[1];

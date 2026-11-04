@@ -7,12 +7,20 @@
 // A run whose place is a box gets codingSource's instead: pi's own read, write, edit and bash, each call made on the
 // box's environment (run-box.ts), so the shell exists only in the box. One source feeds pi's tool table (tools.ts,
 // app.ts) and another harness's host tools (host-tools.ts).
+//
+// Where the box binds the run's work/ from this machine and the confinement holds directory handles (Docker on Linux),
+// read, write and edit run on this machine instead, on the bind's source (bound-files.ts): a command in the box costs
+// far more than a file read. bash always runs in the box, and every tool of any other box (or of any host that reaches
+// directories by path) does too.
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
+import { FileError } from "@earendil-works/pi-durable/env";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
+import { boundFiles } from "./bound-files.js";
 import { BOX_WORK, type Place } from "./place.js";
 import { asGivenRefusals, refuseOutsideWorkspace } from "./workspace-paths.js";
+import { writesHeld } from "./workspace.js";
 
 // pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
 // hold apart from this package's own: the extension crosses that boundary as a value, typed on this side.
@@ -29,8 +37,15 @@ export const BOXED_TOOLS: readonly string[] = ["read", "write", "edit", "bash"];
 export type CodingSource = { readonly extension: Extension; readonly tools: readonly ToolRegistration[] };
 
 /** The environment a boxed tool's call runs on: the run's box's (run-box.ts). `hostWork`: the run's own work/ on this
- *  machine, the source the box binds at BOX_WORK. */
-export type BoxedEnv = { env(context: Context): Promise<unknown>; hostWork?: string };
+ *  machine, the source the box binds at BOX_WORK; `bound`, whether the box's provider binds it there (Docker does). */
+export type BoxedEnv = { env(context: Context): Promise<unknown>; hostWork?: string; bound?(): Promise<boolean>; leftEnded?(context: Context): Promise<void> };
+
+/** A failed call's error with what the file environment said, where pi's message gives only its code (edit's "Error
+ *  code: permission_denied."), so the model reads why and what it can do. */
+const withCause = (error: unknown): unknown => {
+  const cause = (error as { cause?: unknown } | null)?.cause;
+  return error instanceof Error && cause instanceof FileError && !error.message.includes(cause.message) ? new Error(`${error.message} ${cause.message}`, { cause }) : error;
+};
 
 /** A boxed file tool's path as the box names it, or undefined when it leaves the box's work dir (`~` and `file:`
  *  included). A path under the run's own host work dir (another harness's cwd can name one) is the same file at
@@ -49,6 +64,7 @@ export function boxPath(path: string, hostWork?: string): string | undefined {
 export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
   if (place.mode === "runner") return { extension: CodingTools, tools: CodingTools.tools ?? [] };
   if (!box) throw new Error("a run whose place is a box needs its box for its coding tools");
+  const here = box.hostWork && writesHeld() ? boundFiles(box.hostWork) : undefined;
   const tools = asGivenRefusals((pis.tools ?? []).filter((tool) => BOXED_TOOLS.includes(tool.name)).map((tool): ToolRegistration => ({
     ...tool,
     execute: async (args, api, context) => {
@@ -58,6 +74,12 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
       const inBox = typeof path === "string" ? boxPath(path, box.hostWork) : undefined;
       if (typeof path === "string" && inBox === undefined) refuseOutsideWorkspace(path);
       const given = inBox === undefined ? args : { ...(args as object), path: inBox };
+      // read, write and edit on this machine's work/, where the box binds it; no box is made for them. A box an earlier
+      // process left has its left commands killed first, so none of them changes work/ under these tools.
+      if (here && tool.name !== "bash" && (await box.bound?.()) === true) {
+        await box.leftEnded?.(context);
+        return tool.execute(given as typeof args, { ...api, env: here as typeof api.env }, context).catch((error: unknown) => Promise.reject(withCause(error)));
+      }
       return tool.execute(given as typeof args, { ...api, env: (await box.env(context)) as typeof api.env }, context);
     },
   })));
