@@ -828,3 +828,16 @@ test("web_search reads as a search, in the past tense: the query scrubbed and cu
   assert.match(first, /^\S+\s+Searched the web 3 times: "acme anvils", "see https:\/\/x\.example\/a\?token=… for d\.\.\."\s+3 ok$/);
   assert.equal(foldLabel("web_search", [{ input: "a", output: null }]), 'Searched the web 1 times: "a"');
 });
+
+test("a run's process that opened again after the last one ended unfinished is a row of its own, from its entry: after a crash, or after the server stopped", () => {
+  const time = (s) => Date.UTC(2026, 9, 15, 20, 14, 0) + s * 1000;
+  const resumed = (after, s) => ({ kind: "agentrun.run_resumed", id: 900 + s, conversationId: 1, data: { generation: 2, after, at: time(s) } });
+  const entries = [user("hi", 0), assistant([{ type: "text", text: "a" }], 1), resumed("crash", 5), assistant([{ type: "text", text: "b" }], 6), resumed("server_stop", 9)];
+  const rows = timelineOf(entries);
+  const marks = (list) => list.filter((r) => r.kind === "phase").map((r) => [r.summary, r.timestamp]);
+  assert.deepEqual(marks(rows), [["Resumed after a crash", new Date(time(5)).toISOString()], ["Resumed after the server stopped", new Date(time(9)).toISOString()]], "each at the time its process opened");
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.02, requests: 2 }, "a mark is no request");
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "snapshot", entries }]);
+  assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
+});

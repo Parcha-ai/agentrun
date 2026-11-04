@@ -39,6 +39,7 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
@@ -182,6 +183,12 @@ export type Run = {
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
+  /** Whether, in the run's entries, an answer that ended its request (stopReason "stop") comes after the person's newest
+   *  message: the turn that took the message answered it, though perhaps with nothing it shows (noteAnswer). */
+  answeredMessage?: boolean;
+  /** The messages a claude-agent or codex run's door accepted and has not sent yet, by id (MESSAGE with no MESSAGE_END in
+   *  its entries, noteAnswer): each still waits for its turn, also when this server started after it was accepted. */
+  waiting?: Set<string>;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
@@ -270,8 +277,33 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
       run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
       if (reflects(run.meta.reflect, value.id)) continue;
     }
-    if (!isObject(value) || value.kind !== "pi.assistant" || !Array.isArray(value.model) || !isObject(value.model[0])) continue;
-    const content = value.model[0].content;
+    if (!isObject(value) || typeof value.kind !== "string") continue;
+    // A message a claude-agent or codex run accepted, and its end (harness-app.ts): one with no end still waits.
+    if (value.kind === MESSAGE || value.kind === MESSAGE_END) {
+      const id = isObject(value.data) && typeof value.data.id === "string" ? value.data.id : undefined;
+      if (id !== undefined && value.kind === MESSAGE) (run.waiting ??= new Set()).add(id);
+      else if (id !== undefined) run.waiting?.delete(id);
+      continue;
+    }
+    // The person's message, as the timeline shows one (a user entry: pi's, or a host's own kind), or their sign-in: no
+    // answer has followed it yet.
+    const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
+    if (value.kind === "agent.handover" || (first?.role === "user" && (value.kind === "pi.user" || !value.kind.startsWith("pi.")))) run.answeredMessage = false;
+    // A claude-agent or codex turn's end (harness-app.ts): its turn took the message and answered it, if it completed.
+    if (value.kind === TURN_END) {
+      if (isObject(value.data) && value.data.status === "completed") run.answeredMessage = true;
+      continue;
+    }
+    if (value.kind !== "pi.assistant" || !first) continue;
+    // An answer, as the timeline shows one (timeline.ts): a request that ended without an error or an abort and called no
+    // tool, whatever else stopped it (its length, max output tokens, too). Never commentary that came with a call.
+    if (first.stopReason === "error" || first.stopReason === "aborted") continue;
+    if (Array.isArray(first.content) && first.content.some((block) => isObject(block) && block.type === "toolCall")) continue;
+    // pi's own stop answer ends its turn (one commit with the run's end). The bridge's entries (api "agentrun-adapter")
+    // never say so: a request without content is written alike whether it is a cost, a cut, an interruption or an answer.
+    if (first.stopReason === "stop" && first.api !== ADAPTER_API) run.answeredMessage = true;
+    // The answer's text: an answer's, never commentary that came with a call.
+    const content = first.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
     if (text) run.answerText = text;
   }
@@ -315,7 +347,7 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
-const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => (r.kind === "final_answer" || r.kind === "text_block") && r.agent_label !== LEARNING_LABEL)?.text ?? null;
+const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
 // A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
@@ -726,11 +758,21 @@ export class Runs {
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
+    // A message accepted and not sent yet waits for its turn: a server started after it counts none submitted, and a turn's
+    // end before it is no end of the run (harness-app.ts writes a turn's end, then sends the next message).
+    if (run.waiting?.size) return undefined;
+    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote): nothing completes it meanwhile.
+    if (run.cancel) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
+    if (stopped(run)) return undefined;
+    // Its newest row is the answer; or the person's message, which an answer that ended its request follows in the entries
+    // (the Claude CLI's /compact: a summary request, no text): its turn took it and is over, and the earlier answer stands.
+    // From the entries' own order, never from when the door said idle.
+    if (answerOf(run.rows) || (last?.kind === "user_message" && run.answeredMessage === true)) return { outcome: "completed" };
+    return undefined;
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -1802,7 +1844,10 @@ export class Runs {
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
     const answer = answerOf(run.rows);
-    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
+    // A run that ended on the person's message, which its turn answered with nothing it shows (decide()), answered with its
+    // newest answer: the whole text (answerText, read from the entries again on a later server), never the line the store
+    // keeps, which is cut.
+    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : status === "completed" ? (lastAnswer(run) ?? row?.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
     const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
     const endedAt = TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null;

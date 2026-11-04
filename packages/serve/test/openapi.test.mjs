@@ -82,6 +82,25 @@ test("the contract's operations are as vendored; this server's own are added and
     // for whether it is required and what it says, and the rest as vendored.
     assert.ok(doc.info["x-agentrun-serve"].changed.includes(`${method.toUpperCase()} ${path}`), `${op.operationId} is listed as changed`);
     for (const mark of Object.values(changes)) assert.match(mark, /^[a-z]+\/\d+$/);
+    if (op.operationId === "createFile") {
+      // upload/2: the contract's JSON body kept as the first choice and the raw bytes beside it; its parameters kept, then
+      // path, content_type and sha256; its responses kept but for 201's description, and 415 added; the rest as vendored.
+      assert.deepEqual(Object.keys(changes).sort(), ["parameters", "requestBody", "responses"]);
+      assert.deepEqual(Object.keys(op.requestBody.content), ["application/json", "application/octet-stream", "*/*"]);
+      assert.deepEqual(op.requestBody.content["application/json"], original.requestBody.content["application/json"]);
+      assert.equal(op.requestBody.required, original.requestBody.required);
+      assert.deepEqual(op.parameters.slice(0, original.parameters.length), original.parameters);
+      assert.deepEqual(op.parameters.slice(original.parameters.length).map((p) => [p.name, p.in, p.required]), [["path", "query", false], ["content_type", "query", false], ["sha256", "query", false]]);
+      const { description: _d, ...created } = op.responses["201"];
+      const { description: _e, ...vendoredCreated } = original.responses["201"];
+      assert.deepEqual(created, vendoredCreated, "201's answer is the contract's FileUpload");
+      assert.deepEqual(Object.keys(op.responses).filter((code) => !(code in original.responses)), ["415"]);
+      for (const code of Object.keys(original.responses).filter((code) => code !== "201")) assert.deepEqual(op.responses[code], original.responses[code], code);
+      const { requestBody: _a, parameters: _b, responses: _c, ...same } = rest;
+      const { requestBody: _f, parameters: _g, responses: _h, ...vendoredSame } = original;
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "createFile is the contract's but for upload/2");
+      continue;
+    }
     if (op.operationId === "getTimeline") {
       // A page's limit: the contract's parameters, then this server's one, and the rest as vendored.
       assert.deepEqual(Object.keys(changes), ["limit"]);

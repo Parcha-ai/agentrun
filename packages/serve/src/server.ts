@@ -194,11 +194,14 @@ const SESSION_S = SESSION_MS / 1000;
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
  *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
- *  from the page's own origin (page.ts). Only a PUT carries it: a PUT is never a CORS-simple request, so a page of
- *  another origin cannot send one without a preflight, which this server never answers. */
+ *  with the page's own Origin (page.ts). Only a PUT or a POST carries it. The Origin is the lock: a browser sends it with
+ *  every cross-origin request and every POST and PUT, and a page cannot set it, so a page of another origin, even on this
+ *  host's other ports (which the cookie's SameSite does not tell apart), never gets the session for a raw write. A PUT
+ *  from another origin needs a preflight besides, which this server never answers; a raw POST does not, so a raw POST
+ *  route only stores bytes (`POST /files`): nothing runs until a JSON request names them. */
 export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
-  | { method: "PUT"; pattern: RegExp; name: string; capability?: string; raw: true };
+  | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
@@ -234,8 +237,11 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
-  { method: "POST", pattern: /^\/files$/, name: "createFile" },
+  { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
+  { method: "GET", pattern: /^\/files$/, name: "listFiles" },
+  { method: "GET", pattern: /^\/files\/([^/]+)$/, name: "getFile" },
   { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", raw: true },
+  { method: "DELETE", pattern: /^\/files\/([^/]+)$/, name: "deleteFile" },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
@@ -259,7 +265,7 @@ export const ROUTES: readonly Route[] = [
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
 /** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
-export const takesBytes = (method: string | undefined, path: string): boolean => method === "PUT" && ROUTES.some((r) => r.raw === true && r.method === "PUT" && r.pattern.test(path));
+export const takesBytes = (method: string | undefined, path: string): boolean => (method === "PUT" || method === "POST") && ROUTES.some((r) => r.raw === true && r.method === method && r.pattern.test(path));
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
 /** A workflow run's title: its agent's name and a few words of its input, never the input's JSON ("Batch review: 20
@@ -1098,7 +1104,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
     const matching = ROUTES.filter((r) => r.pattern.test(path));
-    if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
+    // `/v2` twice: a path an answer gives (upload.url, a Location) appended to the /v2 base, where it starts at the root.
+    if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, caps);
@@ -1310,12 +1317,39 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
       }
       case "createFile": {
+        // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
+        // contract's JSON reservation, its bytes sent after with PUT /files/{file_id}.
+        if (url.searchParams.has("path") || !isJson(req)) {
+          const received = await uploads.take(url.searchParams, req.headers["content-type"], req);
+          try {
+            const answer = await idempotent(req, "/files", received.fingerprint, async () => ({ status: 201, body: await received.commit() }));
+            return send(res, answer.status, answer.body, answer.headers);
+          } finally {
+            await received.discard();
+          }
+        }
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await uploads.reserve(body) }));
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "uploadFile":
         return send(res, 200, await uploads.receive(id, req));
+      case "listFiles": {
+        // This server's own: its uploads, newest first, a page at a time, so an id is never lost with the answer that gave it.
+        const limit = limitOf(url.searchParams.get("limit"));
+        const offset = cursorOf(url.searchParams.get("cursor"));
+        const ids = await uploads.ids();
+        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => uploads.get(fileId)))).filter((file) => file !== null);
+        return send(res, 200, { files, next_cursor: nextCursor(offset + limit, ids.length) });
+      }
+      case "getFile": {
+        const file = await uploads.get(id);
+        if (!file) throw new ApiError("not_found", `no file ${id}: GET /v2/files lists the files this server keeps`);
+        return send(res, 200, file);
+      }
+      case "deleteFile":
+        await uploads.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {

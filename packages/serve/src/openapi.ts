@@ -289,7 +289,33 @@ const RPC_ANSWER = {
   type: "object", required: ["jsonrpc", "id"],
   properties: { jsonrpc: { const: "2.0" }, id: { type: ["string", "number", "null"] }, result: {}, error: { type: "object", required: ["code", "message"], properties: { code: { type: "integer" }, message: { type: "string" } } } },
 };
+/** GET /files's answer: a page of this server's uploads, newest first. */
+const FILE_LIST = { type: "object", additionalProperties: false, required: ["files", "next_cursor"], properties: { files: { type: "array", items: ref("schemas/File") }, next_cursor: { type: ["string", "null"] } } };
+
 const EXTENSIONS: Record<string, Record<string, Json>> = {
+  "/files": {
+    get: {
+      operationId: "listFiles", tags: ["files"], summary: "This server's uploads, newest first",
+      description: "Every file reserved or sent here, pending or ready, a page at a time, so a file whose id was lost is found again. A run that copied a file keeps its copy whatever happens to the upload.",
+      parameters: [ref("parameters/Limit"), ref("parameters/Cursor")],
+      responses: { "200": json(FILE_LIST, "One page of files, newest first."), ...errors(400, 401, 429, 500) },
+      "x-agentrun-serve": "files/1",
+    },
+  },
+  "/files/{file_id}": {
+    get: {
+      operationId: "getFile", tags: ["files"], summary: "An upload's record",
+      description: "The file as POST /files answered it, with its status now: `pending` until its bytes arrive, then `ready` with their `sha256`.",
+      responses: { "200": json(ref("schemas/File"), "The file."), ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "files/1",
+    },
+    delete: {
+      operationId: "deleteFile", tags: ["files"], summary: "Delete an upload",
+      description: "Removes the file and its bytes, pending or ready. A run that already copied it into its workspace keeps its copy; a run started after names it in vain (`422` at `file_ids`).",
+      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "files/1",
+    },
+  },
   "/mcp": {
     post: {
       operationId: "callMcp", tags: ["local"], summary: "The MCP endpoint: this API's tools, for a coding agent",
@@ -903,6 +929,22 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   timeline.parameters = [...(timeline.parameters as Json[]), { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } }];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1" };
   changed.push("GET /runs/{run_id}/timeline");
+  // upload/2: POST /files also takes a file's bytes in one call (`path` in the query, the bytes the body), answered as
+  // a reservation is with the file ready; and `upload.url` is a path from the server's root, `/v2/files/{file_id}`.
+  const createFile = (doc.paths["/files"] as Json).post as Json & { requestBody: Json & { content: Record<string, Json> }; parameters: Json[]; responses: Record<string, Json> };
+  createFile.requestBody.description = "Without `path` in the query: the contract's JSON reservation (application/json, FileCreate), its bytes sent after with PUT /files/{file_id}. With `path` in the query: the file's bytes themselves, in any type, application/json included (a multipart form is 415), sent in one call, the length the body's and the hash its own.";
+  Object.assign(createFile.requestBody.content, structuredClone(RAW));
+  const query = (name: string, description: string, schema: Json) => ({ name, in: "query", required: false, description, schema });
+  createFile.parameters = [
+    ...createFile.parameters,
+    query("path", "With the file's bytes as the body: the file's path (FilePathString). Its presence makes the body the file.", ref("schemas/FilePathString")),
+    query("content_type", "With `path`: the file's type. Absent, the request's own type when it names one (not application/octet-stream, not application/x-www-form-urlencoded), else the path's extension's, else application/octet-stream.", { type: "string" }),
+    query("sha256", "With `path`: the hash the bytes must have (`422 input_invalid` at sha256 when they do not).", { type: "string", pattern: "^[0-9a-f]{64}$" }),
+  ];
+  createFile.responses["201"] = { ...createFile.responses["201"], description: "The file and where to send its bytes; sent in one call, the file is ready. `upload.url` is a path from the server's root (`/v2/files/{file_id}`): resolve it against the server's address, do not append it to the `/v2` base." };
+  createFile.responses["415"] = ref("responses/UnsupportedMediaType");
+  createFile["x-agentrun-serve-changed"] = { requestBody: "upload/2", parameters: "upload/2", responses: "upload/2" };
+  changed.push("POST /files");
   // models/2: capabilities' `models.source` takes on the values this server answers with that the contract's enum (managed,
   // chatgpt, env, faux) lacks, `gateway` and `providers`. A client that validates against the contract's enum refuses them,
   // so the widening is a mark of its own, each value listed, as RunStatus's `paused` is.

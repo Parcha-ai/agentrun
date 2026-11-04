@@ -93,6 +93,11 @@ const abortedCall = (entry: EntryLike) => {
   return Array.isArray(diagnostics) && diagnostics.some((diagnostic) => obj(diagnostic)?.code === "aborted");
 };
 
+/** Written on the root as a run's process opens to go on with a run its last process left unfinished: `after` is `crash`
+ *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
+ *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
+export const RUN_RESUMED = "agentrun.run_resumed";
+
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
   conversationId?: number;
@@ -512,6 +517,10 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+    } else if (entry.kind === RUN_RESUMED) {
+      const data = obj(entry.data);
+      if (typeof data?.at === "number" && Math.abs(data.at) <= 8.64e15) stamp = data.at;
+      add(make("phase", conv, base, { summary: data?.after === "crash" ? "Resumed after a crash" : "Resumed after the server stopped" }));
     } else if (entry.kind === "agent.handover") {
       const data = obj(entry.data);
       const [state, reason, tag] = [str(data?.state), str(data?.reason), str(data?.session)];
