@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, mergesOf, objects, onMain, reflectRows, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { client, scratch, serve, withEnv } from "./support.mjs";
+import { learningTestHooks } from "../dist/learning.js";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const TABLES = note("Prefers tables", "The user reads results as tables");
@@ -383,4 +384,28 @@ test("under the launcher's custody, a note that holds the model key it handed ov
   const shown = JSON.stringify([view, rows, (await api("GET", "/runs")).body, learning]);
   assert.ok(!shown.includes(key), "the key is nowhere the run is shown");
   await stop();
+});
+
+test("a second message to a run that learns, sent while the first one opens it again, waits for that opening: it is never sent before the run's notes are laid again in its work", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("twice", { plan: [["fine.md", note("Fine", "A rule the run learned")]] }));
+  const runId = await started(api, "twice");
+  settled((await ended(api, runId)).view, (await ended(api, runId)).rows, "merged");
+  // The first message opens the run again, and is held inside that opening (where its notes are laid again).
+  let entered, release;
+  const inside = new Promise((resolve) => (entered = resolve));
+  const gate = new Promise((resolve) => (release = resolve));
+  learningTestHooks.beforeReopen = async () => { entered(); await gate; };
+  t.after(() => { delete learningTestHooks.beforeReopen; release(); });
+  const first = api("POST", `/runs/${runId}/messages`, { content: "One more thing." });
+  await inside;
+  // A second message meanwhile: it waits for the opening, so it has no answer while the opening is held.
+  let second = null;
+  const sent = api("POST", `/runs/${runId}/messages`, { content: "And another." }).then((r) => (second = r));
+  await sleep(1500);
+  assert.equal(second, null, "the second message was taken before the run's opening ended");
+  release();
+  const [a, b] = await Promise.all([first, sent]);
+  assert.deepEqual([a.status, b.status], [202, 202], JSON.stringify([a.body, b.body]));
+  await ended(api, runId);
 });
