@@ -124,6 +124,23 @@ test("preview tells a server that wants a credential (bearer or OAuth), one that
   assert.equal(redirected.body.error.fields[0].field, "url");
   assert.equal(redirected.body.error.fields[0].reason, "redirect");
   assert.deepEqual(target.log, [], "a redirect is never followed, so the credential never goes where it points");
+  const leakyHop = await plain(t, (req, res) => { res.writeHead(302, { location: `https://elsewhere.example/mcp?token=${token}` }); res.end(); });
+  const leakyRedirect = await preview(`${leakyHop}/mcp`, { type: "bearer", token });
+  assert.equal(leakyRedirect.body.error.fields[0].reason, "redirect");
+  holdsNone(JSON.stringify(leakyRedirect.body), token, "a redirect's refusal");
+  assert.match(leakyRedirect.body.error.fields[0].message, /token=\[credential\]/, "where it points is named, the token cut");
+  // A server that speaks JSON-RPC but fails every request, echoing the bare token in its error.
+  const echo = await plain(t, async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const id = JSON.parse(body || "{}").id ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: `token ${token} is not allowed here` } }));
+  });
+  const echoed = await preview(`${echo}/mcp`, { type: "bearer", token });
+  assert.equal(echoed.status, 424, JSON.stringify(echoed.body));
+  holdsNone(JSON.stringify(echoed.body), token, "an upstream failure's message");
+  assert.match(echoed.body.error.message, /\[credential\]/, "the server's words are kept, the token cut");
 });
 
 test("PUT seals the credential: reads say `sealed` and never hold it, nor does the file; a PUT without one keeps it; refresh says what was added, removed and changed; DELETE forgets", async (t) => {
@@ -178,6 +195,10 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.deepEqual((await api("GET", "/settings/mcp-servers/fake")).body.tools.map((tool) => tool.name).sort(), ["add", "delete_thing", "multiply", "slow_write"]);
   holdsNone(JSON.stringify(refreshed.body) + readFileSync(file, "utf8"), token, "after a refresh");
 
+  for (const inherited of ["constructor", "tostring"]) {
+    assert.equal((await api("GET", `/settings/mcp-servers/${inherited}`)).status, 404, `${inherited} is no saved server`);
+    assert.equal((await api("DELETE", `/settings/mcp-servers/${inherited}`)).status, 404);
+  }
   assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 204);
   assert.equal((await api("GET", "/settings/mcp-servers/fake")).status, 404);
   assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 404);

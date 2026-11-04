@@ -106,7 +106,8 @@ export class McpServers {
     const servers = this.servers();
     const now = servers[name];
     if (!now) throw notFound(name);
-    if (now.url !== was.url) throw new ApiError("unavailable", `The server ${name} was changed while its tools were listed: refresh it again.`);
+    // A PUT while listing (another URL, another account's credential) makes this listing stale: never kept.
+    if (canonical([now.url, now.auth, now.updated_at]) !== canonical([was.url, was.auth, was.updated_at])) throw new ApiError("unavailable", `The server ${name} was changed while its tools were listed: refresh it again.`);
     const before = new Map(now.tools.map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     servers[name] = { ...now, ...listed, listed_at: new Date().toISOString() };
@@ -175,7 +176,7 @@ export class McpServers {
   private kept(): Record<string, Kept> | "unreadable" {
     try {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-      return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? ({ ...doc.servers } as Record<string, Kept>) : "unreadable";
+      return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? (Object.assign(Object.create(null), doc.servers) as Record<string, Kept>) : "unreadable";
     } catch (error) {
       return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : "unreadable";
     }
@@ -194,6 +195,10 @@ export class McpServers {
 }
 
 const aad = (name: string, header: string) => `mcp:${name}:${header}`;
+/** `text` with every credential value cut out: each header's value, and a bearer's token alone, which a server may
+ *  echo without its scheme. */
+const scrub = (text: string, headers: HeaderMap): string =>
+  Object.values(headers).flatMap((value) => [value, /^Bearer\s+(.+)$/i.exec(value)?.[1]]).filter((value): value is string => !!value).sort((a, b) => b.length - a.length).reduce((cut, value) => cut.split(value).join("[credential]"), text);
 const notFound = (name: string) => new ApiError("not_found", `No MCP server ${name}: GET /v2/settings/mcp-servers lists them.`);
 const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : "auth.headers", reason: "missing", message });
 
@@ -311,11 +316,11 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   const redirect = seen.find((one) => one.status >= 300 && one.status < 400);
   if (redirect) {
     const to = redirect.headers.get("location");
-    return invalid([{ field: "url", reason: "redirect", message: `The MCP server answered ${redirect.status}${to ? `, pointing to ${new URL(to, url).href}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.` }]);
+    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${to ? `, pointing to ${new URL(to, url).href}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, headers) }]);
   }
   const denied = seen.find((one) => one.status === 401 || one.status === 403);
   if (denied) {
-    const auth = await authAsked(url, denied.headers, sdk);
+    const auth = await authAsked(url, denied.headers, deadline, sdk);
     const sent = Object.keys(headers).length > 0;
     const asks = auth === "oauth" ? "It signs in with OAuth, which is not here yet; a bearer token or headers it accepts work." : "Send a bearer token or the headers it takes.";
     return new ApiError("auth_required", `The MCP server ${sent ? "refused the credential sent" : "asks for a credential"} (HTTP ${denied.status}). ${asks}`, { details: { auth, status: denied.status } });
@@ -329,16 +334,16 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${url.href} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
   if (deadline.aborted || timedOut(error)) return upstream(`The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
-  const said = Object.values(headers).reduce((text, value) => text.split(value).join("[credential]"), error instanceof Error ? error.message : String(error));
+  const said = scrub(error instanceof Error ? error.message : String(error), headers);
   return upstream(`The MCP server failed to list its tools: ${said.slice(0, 300)}`);
 }
 
 /** What a 401 or 403 asks for: `oauth` when the server names protected-resource metadata (its WWW-Authenticate, or a
  *  well-known document naming an authorization server), else `bearer`. The probe sends no credential. */
-async function authAsked(url: URL, headers: globalThis.Headers, sdk: typeof import("@modelcontextprotocol/client")): Promise<"oauth" | "bearer"> {
+async function authAsked(url: URL, headers: globalThis.Headers, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client")): Promise<"oauth" | "bearer"> {
   if (sdk.extractWWWAuthenticateParams(new Response(null, { headers })).resourceMetadataUrl) return "oauth";
   try {
-    const probe = (input: string | URL | Request, init?: RequestInit) => fetch(input, { ...init, redirect: "manual", signal: AbortSignal.timeout(5_000) });
+    const probe = async (input: string | URL | Request, init?: RequestInit) => capped(await fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]) }), () => {});
     const metadata = await sdk.discoverOAuthProtectedResourceMetadata(url, undefined, probe);
     return metadata.authorization_servers?.length ? "oauth" : "bearer";
   } catch {
