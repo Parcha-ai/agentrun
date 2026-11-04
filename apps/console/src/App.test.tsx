@@ -553,6 +553,23 @@ describe("App, the no-model bar", () => {
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
+  it("names the server's default model and asks for its provider's key, with no OpenRouter promise, where AGENT_MODEL is set without its key", async () => {
+    serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }));
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("No model yet. This server's default model is anthropic/claude-sonnet-5-5: add its provider's key in Settings → Model keys, and it takes effect at once. Or set it where AgentRun starts, and restart.");
+    expect(bar(host)?.querySelector("a")?.textContent).toBe("add its provider's key in Settings → Model keys");
+    expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
+  });
+
+  it("names the server's default model and says to set its provider's key and restart where the server can't keep a key", async () => {
+    serve(() => ({ source: "providers", default: "anthropic/claude-sonnet-5-5", ready: false, needs: "key" }), true, "unavailable");
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("No model yet. This server's default model is anthropic/claude-sonnet-5-5: set its provider's key where AgentRun starts, and restart.");
+    expect(bar(host)?.querySelector("a")).toBeNull();
+  });
+
   it("names AGENT_MODEL when it is the problem, has no Settings link where the server keeps no keys, and is not on the first screen, which has the key card", async () => {
     serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), false);
     const host = await mount("#/runs");
