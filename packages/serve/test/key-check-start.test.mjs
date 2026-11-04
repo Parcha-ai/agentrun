@@ -12,7 +12,8 @@ import { calls as bbCalls, KEY as BB_KEY, release as releaseBrowserbase } from "
 import { calls as monidCheckCalls } from "./fixtures/faux-monid-check.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { client, scratch, serve, withEnv } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { client, FAUX, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -103,4 +104,33 @@ test("the start's check never holds up the start: with Browserbase not answering
   const row = await checked(api, "browserbase");
   assert.equal(row.check?.state, "refused", JSON.stringify(row));
   assert.equal((await client(baseUrl)("GET", "/capabilities")).body.tools.find((tool) => tool.name === "browser").available, false);
+});
+
+test("a check fake that does not load leaves the server up: the key's row says its check could not start, and no rejection goes unhandled", async (t) => {
+  withEnv(t, { BROWSERBASE_API_KEY: wrong(), BROWSERBASE_PROJECT_ID: "proj-1" }, KEYS);
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(String(reason?.message ?? reason));
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const missing = join(await scratch(t), "no-such-check-fake.mjs");
+  const { api, baseUrl } = await serve(t, { fauxBrowserbase: missing });
+  const row = await checked(api, "browserbase");
+  assert.equal(row.check?.state, "not_checked", JSON.stringify(row));
+  assert.match(row.check.reason, /^Browserbase's key could not be checked: its check did not start \(/, row.check.reason);
+  await new Promise((go) => setTimeout(go, 200));
+  assert.equal((await client(baseUrl)("GET", "/capabilities")).status, 200, "the server is still up");
+  assert.deepEqual(unhandled, [], "no rejection went unhandled");
+});
+
+test("a start that fails to listen sends no key check: the check starts only once the server listens", async (t) => {
+  withEnv(t, { BROWSERBASE_API_KEY: wrong(), BROWSERBASE_PROJECT_ID: "proj-1" }, KEYS);
+  const { createServer } = await import("node:net");
+  const taken = createServer();
+  await new Promise((go) => taken.listen(0, "127.0.0.1", go));
+  t.after(() => new Promise((go) => taken.close(go)));
+  const before = bbCalls.length;
+  const data = join(await scratch(t), "agents");
+  await assert.rejects(startServe({ data, port: taken.address().port, faux: FAUX, fauxBrowserbase: FAUX_BROWSERBASE, drainTimeout: "5s" }), (error) => error.code === "EADDRINUSE");
+  await new Promise((go) => setTimeout(go, 300));
+  assert.deepEqual(bbCalls.slice(before), [], "no request reached the provider's check");
 });
