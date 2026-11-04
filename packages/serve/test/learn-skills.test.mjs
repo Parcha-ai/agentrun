@@ -205,3 +205,13 @@ test("a skill is laid with name and description alone in its front matter, whate
   assert.equal(laid, "---\nname: find-policies\ndescription: Find a store's refund and shipping policies\n---\n1. Collect the tickets.\n");
   assert.equal(servedSkill(skill({ description: "Use when: a case asks" })).split("\n")[2], 'description: "Use when: a case asks"');
 });
+
+test("a skill's quoted description is read as the text it quotes, so serving a served skill changes nothing", () => {
+  const front = (description) => `---\nname: find-policies\ndescription: ${description}\n---\nDo the job.\n`;
+  // Double-quoted with escapes, single-quoted with a doubled quote, and a plain line that must be quoted when served.
+  for (const [raw, text] of [['"Use when: a case says \\"refund\\""', 'Use when: a case says "refund"'], ["'Use when: it''s a refund'", "Use when: it's a refund"], ['Use when: a path has a \\ in it', "Use when: a path has a \\ in it"]]) {
+    const once = servedSkill(front(raw));
+    assert.equal(servedSkill(once), once, `served twice is served once: ${raw}`);
+    assert.equal(JSON.parse(once.split("\n")[2].slice("description: ".length)), text, `the description is the text it quotes: ${raw}`);
+  }
+});

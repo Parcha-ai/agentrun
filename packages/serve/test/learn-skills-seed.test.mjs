@@ -14,6 +14,7 @@ import { claudeSkillCheck } from "../dist/adapters.js";
 import { homeOf } from "../dist/files.js";
 // One namespace, so each test reads what it needs of it as it runs.
 import * as learning from "../dist/learning.js";
+import { servedSkill } from "../dist/learn/skills.js";
 import { systemOf } from "../dist/skills.js";
 import { ended, git } from "./learn-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -272,4 +273,19 @@ test("a learned skill's bytes are counted as the run is given it (servedSkill), 
   assert.equal(one.files["SKILL.md"], '---\nname: quoted\ndescription: "Use when: a case asks"\n---\nDo the job.\n', "the text the run is given");
   assert.equal(one.bytes, Buffer.byteLength(one.files["SKILL.md"]), "counted as it is laid, not as main holds it");
   assert.notEqual(one.bytes, Buffer.byteLength(QUOTED));
+});
+
+test("a learned skill with escapes in its quoted description is laid as it was counted: the text read is the text written", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  mkdirSync(join(repo, "skills", "refund"), { recursive: true });
+  writeFileSync(join(repo, "skills", "refund", "SKILL.md"), '---\nname: refund\ndescription: "Use when: a case says \\"refund\\""\n---\nDo the job.\n');
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const { skills } = await learning.readSkills(repo, repo, git(repo, ["rev-parse", "main"]).trim());
+  const [one] = skills;
+  // laySkills writes servedSkill(text): the same bytes as the counted text, not more.
+  assert.equal(servedSkill(one.files["SKILL.md"]), one.files["SKILL.md"]);
+  assert.equal(one.bytes, Buffer.byteLength(servedSkill(one.files["SKILL.md"])));
+  assert.match(one.files["SKILL.md"], /^description: "Use when: a case says \\"refund\\""$/m);
 });
