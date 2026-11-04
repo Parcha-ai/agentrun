@@ -140,6 +140,35 @@ test("a paid call the run's stop cuts short, or one that times out, counts at wh
   assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.002000, and with \$0\.003000 spent the run would pass its cap of \$0\.0045: the run is out of budget\.$/);
 });
 
+test("a paid call monid answers FAILED with no cost, or whose answer is lost, counts at what it was held at too: every charge a call does not say is held, whatever cut it short", async (t) => {
+  // Each request's worst case is $0.001 and each monid run is held at its $0.001 quote: $0.0035 holds two runs and a
+  // request, not a $0.002 one.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 0.0035, 0);
+  t.after(() => useSpend(undefined));
+  const hold = { usd: 0.001, basis: "the price monid_inspect quoted" };
+  // /broken runs, then FAILS on its second read, its waits skipped: monid says nothing of a charge.
+  const failed = await paidCall("monid_run", () => monidRun("/broken", { sleep: async () => {} }), chargeOf, hold);
+  assert.match(failed.result?.error ?? JSON.stringify(failed), /failed inside monid \(FAILED\)/);
+  const next = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the FAILED call counts at its $0.001 hold, never unknown: the next request goes");
+  sent[0].end(0);
+  await next.result();
+  await settled();
+  // Sent, and its answer lost on the way back: it may have gone ahead at monid.
+  const lost = await paidCall("monid_run", () => monidRun("/person/enrich", { fetch: async () => { throw new Error("offline"); } }), chargeOf, hold);
+  assert.match(lost.result?.error ?? JSON.stringify(lost), /offline: the run may have gone ahead at monid/);
+  const after = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 2, "the two calls at their holds, $0.002, and this request's $0.001 fit the $0.0035 cap");
+  sent[1].end(0);
+  await after.result();
+  await settled();
+  const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 2, "not sent");
+  assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.002000, and with \$0\.002000 spent the run would pass its cap of \$0\.0035: the run is out of budget\.$/);
+});
+
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */
 const bound = (ctx) => Buffer.byteLength(JSON.stringify(ctx), "utf8");
 
