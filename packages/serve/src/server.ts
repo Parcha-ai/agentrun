@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -17,18 +18,18 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
-import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, ownedByIdentity } from "./home-path.js";
+import { DATA_ENV, HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
+import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
-import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
+import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
-import { type Place, placesOf, resolvePlace } from "./place.js";
+import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
@@ -140,7 +141,8 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
-  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else from this host's memory: host.ts); over it, 429. */
+  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
+   *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
   /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
   minFreeBytes?: number;
@@ -172,7 +174,8 @@ export type ServeOptions = {
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; close(): Promise<void> };
+/** `boxesLine`: what the start's banner says of the boxes, in words (place.ts boxesLine). */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; boxesLine: string; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -194,11 +197,14 @@ const SESSION_S = SESSION_MS / 1000;
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
  *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
- *  from the page's own origin (page.ts). Only a PUT carries it: a PUT is never a CORS-simple request, so a page of
- *  another origin cannot send one without a preflight, which this server never answers. */
+ *  with the page's own Origin (page.ts). Only a PUT or a POST carries it. The Origin is the lock: a browser sends it with
+ *  every cross-origin request and every POST and PUT, and a page cannot set it, so a page of another origin, even on this
+ *  host's other ports (which the cookie's SameSite does not tell apart), never gets the session for a raw write. A PUT
+ *  from another origin needs a preflight besides, which this server never answers; a raw POST does not, so a raw POST
+ *  route only stores bytes (`POST /files`): nothing runs until a JSON request names them. */
 export type Route =
   | { method: string; pattern: RegExp; name: string; capability?: string; raw?: never }
-  | { method: "PUT"; pattern: RegExp; name: string; capability?: string; raw: true };
+  | { method: "PUT" | "POST"; pattern: RegExp; name: string; capability?: string; raw: true };
 export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
@@ -234,8 +240,11 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
-  { method: "POST", pattern: /^\/files$/, name: "createFile" },
+  { method: "POST", pattern: /^\/files$/, name: "createFile", raw: true },
+  { method: "GET", pattern: /^\/files$/, name: "listFiles" },
+  { method: "GET", pattern: /^\/files\/([^/]+)$/, name: "getFile" },
   { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", raw: true },
+  { method: "DELETE", pattern: /^\/files\/([^/]+)$/, name: "deleteFile" },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
@@ -262,8 +271,12 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
 
+/** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
+ *  learning/). */
+const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
+
 /** Whether the request to `path` (under /v2) is a PUT of a route marked `raw`. */
-export const takesBytes = (method: string | undefined, path: string): boolean => method === "PUT" && ROUTES.some((r) => r.raw === true && r.method === "PUT" && r.pattern.test(path));
+export const takesBytes = (method: string | undefined, path: string): boolean => (method === "PUT" || method === "POST") && ROUTES.some((r) => r.raw === true && r.method === method && r.pattern.test(path));
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
 /** A workflow run's title: its agent's name and a few words of its input, never the input's JSON ("Batch review: 20
@@ -315,20 +328,22 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
 function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const models = modelSource(env);
+  // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
+  const memory = hostMemory();
   return {
     backend: "local",
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
-    /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses,
+    /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
+    harnesses: harnesses.map((offer) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes),
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
-    tools: toolsView(env, toolSettings).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    tools: toolsView(env, toolSettings, noBoxReason(boxes)).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -381,7 +396,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       max_upload_bytes: MAX_UPLOAD_BYTES,
       max_files_per_run: MAX_FILES_PER_RUN,
       max_message_chars: MAX_MESSAGE,
-      max_concurrent_runs: maxRuns,
+      // pi's: the smallest run, so the most at once. A heavier harness fits fewer (harnesses[].max_concurrent_runs).
+      max_concurrent_runs: Math.min(maxRuns, runsThatFit(DEFAULT_HARNESS, memory)),
       timeline_max_wait_ms: MAX_WAIT_MS,
       timeline_page_rows: PAGE_ROWS,
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
@@ -469,10 +485,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
    *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
   const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken];
-  const base = { ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
+  // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
+  // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
+  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev };
+  const checkFetch = async (id: string): Promise<typeof fetch | undefined> => {
+    if (!options.faux) return fetch;
+    const fake = fakes[id];
+    return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : undefined;
+  };
+  // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
+  const stopping = new AbortController();
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
@@ -523,6 +549,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   stops.push(() => webhooks.close());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
+  // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
+  // temp file found now is a crashed one's.
+  const swept = await uploads.sweep();
+  if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
@@ -922,7 +952,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  the name check holds for the spellings it knows, and this for any other a disk takes. */
   async function notHostOwned(home: string, rel: string, agentId: string, write: boolean): Promise<void> {
     const owned = await ownedByIdentity(home, rel);
-    if (owned) throw hostOwnedRefusal(owned, agentId, write);
+    if (owned) throw hostOwnedRefusal(owned, agentId, write, ownedReadAt(agentId));
   }
 
   /** A write to the home or a removal from it refused (workspace.ts), as its answer. */
@@ -1105,7 +1135,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
     const matching = ROUTES.filter((r) => r.pattern.test(path));
-    if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
+    // `/v2` twice: a path an answer gives (upload.url, a Location) appended to the /v2 base, where it starts at the root.
+    if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, caps);
@@ -1259,7 +1290,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "readHomeFile": {
         await needAgent(id);
-        const rel = homePath(second!, id, false);
+        const rel = homePath(second!, id, false, ownedReadAt(id));
         const home = await homeDir(id, false);
         if (!home) throw new ApiError("not_found", "no such file");
         await notHostOwned(home, rel, id, false);
@@ -1317,12 +1348,39 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return sendFile(req, res, url, join(run.dir, "work"), checkedPath(decodedPath(second!), "the run's own, not a file it wrote"), "a tool in the run's box");
       }
       case "createFile": {
+        // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
+        // contract's JSON reservation, its bytes sent after with PUT /files/{file_id}.
+        if (url.searchParams.has("path") || !isJson(req)) {
+          const received = await uploads.take(url.searchParams, req.headers["content-type"], req);
+          try {
+            const answer = await idempotent(req, "/files", received.fingerprint, async () => ({ status: 201, body: await received.commit() }));
+            return send(res, answer.status, answer.body, answer.headers);
+          } finally {
+            await received.discard();
+          }
+        }
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await uploads.reserve(body) }));
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "uploadFile":
         return send(res, 200, await uploads.receive(id, req));
+      case "listFiles": {
+        // This server's own: its uploads, newest first, a page at a time, so an id is never lost with the answer that gave it.
+        const limit = limitOf(url.searchParams.get("limit"));
+        const offset = cursorOf(url.searchParams.get("cursor"));
+        const ids = await uploads.ids();
+        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => uploads.get(fileId)))).filter((file) => file !== null);
+        return send(res, 200, { files, next_cursor: nextCursor(offset + limit, ids.length) });
+      }
+      case "getFile": {
+        const file = await uploads.get(id);
+        if (!file) throw new ApiError("not_found", `no file ${id}: GET /v2/files lists the files this server keeps`);
+        return send(res, 200, file);
+      }
+      case "deleteFile":
+        await uploads.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getUsage":
         return send(res, 200, await usage(url));
       case "getStats": {
@@ -1333,11 +1391,18 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       case "listToolKeys":
         return send(res, 200, toolKeys.view(caps.harnesses));
-      case "saveToolKey":
-        // Never through `idempotent`: its record keeps the body, and this body is the values.
-        toolKeys.save(id, await bodyOf(req));
+      case "saveToolKey": {
+        // Never through `idempotent`: its record keeps the body, and this body is the values. Checked against its
+        // provider before it is kept: a key the provider refuses is 422, and nothing is kept.
+        const body = await bodyOf(req);
+        const check = await toolKeys.check(id, body, checkFetch, stopping.signal);
+        // A server that began to close stores nothing: it may have released its lock, and another server may hold this
+        // directory and its keys by now.
+        if (stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the key was not saved.");
+        toolKeys.save(id, body, check);
         await keysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
       case "deleteToolKey":
         toolKeys.remove(id);
         await keysChanged();
@@ -1472,10 +1537,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env)),
     async close() {
       // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
       // after close.
       closing = true;
+      stopping.abort();
       for (const worker of workers.keys()) worker.postMessage("stop");
       await Promise.all([...workers.values()].map((w) => w.exit));
       await importing;

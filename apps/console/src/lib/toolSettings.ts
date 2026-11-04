@@ -8,6 +8,12 @@ export const HARNESS_ORDER = ["pi", "claude-agent", "codex"] as const;
  *  settings; and whether it runs here at all, with the server's reason when not (a provider of `off`, say). */
 export type ToolChoice = { name: string; providers: string[]; provider: string; default_provider: string; resolves: Record<string, string>; available: boolean; reason?: string };
 
+/** Older tool names a revision may still grant, and the capability each one is, as the server has them
+ *  (packages/serve/src/tool-plane.ts, LEGACY_NAMES): `fetch_page` runs, and resolves, as web_fetch. */
+const LEGACY_NAMES: Readonly<Record<string, string>> = { fetch_page: "web_fetch" };
+/** The capability a granted tool name is: its legacy target, else itself. */
+export const capabilityOf = (name: string): string => LEGACY_NAMES[name] ?? name;
+
 /** The capabilities that have a provider choice, in the server's order: `capabilities.tools` entries that carry one. */
 export function toolChoices(raw: unknown): ToolChoice[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolChoice[] => {

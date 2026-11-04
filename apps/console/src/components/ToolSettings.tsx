@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, withProvider } from "@/lib/toolSettings";
+import { capabilityOf, HARNESS_ORDER, issuesFor, providerHelp, providerLabel, resolution, type ToolChoice, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/agentForm";
 import type { ToolSettings } from "@/lib/v2";
@@ -82,7 +82,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, value
   issues: Record<string, string>;
   onChange: (next: ToolSettings) => void;
 }) {
-  const rows = choices.filter((c) => tools.includes(c.name) || !c.available);
+  // A grant under a legacy name (fetch_page) is its capability's (web_fetch): that row is its.
+  const granted = new Set(tools.map(capabilityOf));
+  const rows = choices.filter((c) => granted.has(c.name) || !c.available);
   if (!rows.length) return null;
   const saved = (agent?.definition.tool_settings ?? {}) as ToolSettings;
   const { byTool, rest } = issuesFor(issues, "definition.tool_settings", rows.map((t) => t.name));
@@ -98,7 +100,7 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, value
           const own = (value[t.name]?.provider ?? null) !== (saved[t.name]?.provider ?? null);
           // The agent's word holds only for the provider it was read for, the one the select shows: a server pick changed
           // since capabilities were read (another tab) leaves capabilities' word, which goes with the select.
-          const read = agent?.tools?.find((x) => x.name === t.name);
+          const read = agent?.tools?.find((x) => capabilityOf(x.name) === t.name);
           const known = read && read.provider === (value[t.name]?.provider ?? t.provider) ? read.resolved : undefined;
           const savedModel = (model ?? "") === ((agent?.definition.model as string | undefined) ?? "");
           if (!own && harness === (agent?.definition.harness ?? "pi") && savedModel && known) return <Resolves value={known} prefix={`${harness}: `} />;
