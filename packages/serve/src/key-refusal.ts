@@ -44,14 +44,22 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
-/** The longest error text redaction reads, in UTF-8 bytes; a longer one is shown whole as "[redacted]". */
-const REDACT_MAX = 1 << 20;
+/** The most of a run's error serve ever shows: a Timeline row's text, cut at 2000 characters (pi-durable-agent's
+ *  CAPS.text; its summary at 500), which the error box reads too. */
+const SHOWN = 2000;
 
 /** `text`, a run's error as serve shows it, with no held secret in it: the one rule learning's checker uses
  *  (learn/secrets.ts redactSecrets: each value as written, JSON-escaped, base64 at each offset, hex and percent-encoded,
- *  and secret-shaped text), over `secrets`, the values the server holds and handed its run. */
+ *  and secret-shaped text), over `secrets`, the values the server holds and handed its run.
+ *
+ *  Only the head serve can show is read: SHOWN characters, plus room for the longest held value in its widest encoded
+ *  form (6 times it, for JSON's \uXXXX; percent is 3, hex 2, base64 4/3) and 16 more. A key whose start the cut can show
+ *  starts before SHOWN, so it ends inside that head and is found whole; one that starts later is never shown. So a long
+ *  error costs no more to redact than a short one, whatever it holds. */
 export function redacted(text: string, secrets: readonly string[]): string {
-  return redactSecrets(text, secrets, REDACT_MAX);
+  const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
+  const head = text.length > SHOWN + 6 * longest + 16 ? text.slice(0, SHOWN + 6 * longest + 16) : text;
+  return redactSecrets(head, secrets, Buffer.byteLength(head));
 }
 
 /** A provider's 401 as each harness puts it, at the start of the run's error:
