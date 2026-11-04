@@ -806,8 +806,8 @@ not known, so not cut, and the import says so.
 
 ## MCP servers
 
-Add a remote MCP server once, with its credential, and see its tools before you keep it. Agents granting its tools
-come in a later version; this is the API that saves the server.
+Add a remote MCP server once, with its credential, and see its tools before you keep it. An agent that grants one of
+its tools calls it on pi and on claude-agent ([below](#agents-call-a-servers-tools)).
 
 ```sh
 curl -X POST "$BASE/v2/settings/mcp-servers/preview" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -883,6 +883,39 @@ refreshed in that run: its calls fail as unauthorized, and the run's next launch
 `test/fixtures/fake-mcp-server.mjs` is a loopback MCP server for trying this: `startFakeMcp({era, token, oauth})`
 answers `{url, log, tools, close}`; it serves `add`, `slow_write`, `delete_thing` and `paid`, and logs each request's
 method, tool and whether an `Authorization` header came, never its value.
+
+### Agents call a server's tools
+
+An agent grants a saved server's tool by its catalog name, `mcp:<server>/<tool>`, in `definition.tools`
+(`"tools": ["mcp:github/list_issues"]`). A save checks each one against the server's saved tools: a server that is not
+saved, or a tool it did not list, is `422` naming the server's tools, and so is a name whose wire name,
+`mcp__<server>__<tool>`, is over 52 characters. pi and claude-agent run them (`features.mcp_client.harnesses`); on
+another harness the save warns that they are not bound there yet, and a run is refused. Until the tool gate lands, a
+grant means the tool runs.
+
+- **Pinned.** A run's first launch keeps each granted tool as the server listed it when you saved it (its description
+  and schema) and the server's URL then, in the run's directory (`mcp-tools.json`). A refresh or a new save never
+  changes a running agent's tools. If the server's URL has changed since, that run's calls answer "the server's
+  address changed since this run started" and nothing is sent, the new credential least of all.
+- **The credential.** A run whose revision grants a server's tool is handed that server's credential at each launch
+  (so a new one counts at the next), over its secrets pipe, never its environment; a run that grants none of a
+  server's tools gets none of it. It stays in the run's process: no harness's CLI, file or log holds it, and a run
+  that writes it into a learned note is refused by the secret scan.
+- **pi** binds each granted tool in the run's process as `mcp__<server>__<tool>`, with the pinned description and
+  schema, and calls the server from there.
+- **claude-agent** uses the Claude CLI's own MCP client: one HTTP server entry per granted server at the session's
+  model proxy, `/mcp/<server>`, behind the session's key, sent over the CLI's stdin (never its arguments), with only
+  those servers (`strictMcpConfig`) and only the granted tools allowed. The proxy answers the MCP exchange itself and
+  makes the call with the credential. The CLI's tool search is off in such a session, so the granted tools are
+  offered whole. A server the CLI cannot connect to fails the turn, never a turn without its tools.
+- **A call** goes to the pinned URL alone: no redirect is followed, at most 4 MiB is read, and it may take 120 s. The
+  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
+  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential; update it
+  in Settings → MCP servers"; another failure names the server and the HTTP status, never a header. A stop, or a
+  client that goes away, cancels the call at the server. A call a crash cut off is answered interrupted on the
+  resumed run and never sent again.
+- **The timeline** shows each call as `<server> · <tool>`.
 
 ## Webhooks
 

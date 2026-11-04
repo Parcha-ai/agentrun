@@ -43,6 +43,29 @@ export interface HostTool {
   call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
 }
 
+/** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
+export interface McpTool {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+}
+
+/** What an MCP tool call answers the model: its text, and whether the tool said it failed. */
+export interface McpCallResult {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+}
+
+/** A session's remote MCP servers: each one's granted tools, and the call that reaches them through the host, which holds
+ *  their credentials. A harness with its own MCP client points it at the session's model proxy (`/mcp/<server>`). */
+export interface SessionMcp {
+  servers: readonly { name: string; tools: readonly McpTool[] }[];
+  /** Never throws: a failure is an `isError` result the model reads. `callId` is the harness's id for the call. */
+  call(server: string, tool: string, args: Record<string, unknown>, context: { signal: AbortSignal; callId?: string }): Promise<McpCallResult>;
+}
+
 /** One durable record of a session, in the order it was appended. */
 export interface SessionRecord {
   kind: string;
@@ -78,6 +101,8 @@ export interface SessionSpec {
   system: string[];
   /** Exactly these tools; the harness's own stay off. */
   tools: HostTool[];
+  /** The remote MCP servers it may call, for a harness that has its own MCP client. */
+  mcp?: SessionMcp;
   context: "fresh" | "fork";
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];

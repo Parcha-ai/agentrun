@@ -576,7 +576,13 @@ export function adapterRun(
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // An MCP call's result is kept by its call id too, for the root's record of it, as a host tool's is.
+      const mcp = spec.mcp && { ...spec.mcp, call: async (...args: Parameters<NonNullable<SessionSpec["mcp"]>["call"]>) => {
+        const result = await spec.mcp!.call(...args);
+        if (args[3].callId) results.set(args[3].callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true });
+        return result;
+      } };
+      session = await adapter.open({ ...spec, ...(mcp ? { mcp } : {}), tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of

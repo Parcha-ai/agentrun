@@ -9,6 +9,6 @@ export type { HostSkill, SkillFileList } from "./skill-files.js";
 export type { HarnessRunReason } from "./errors.js";
 export { HOST_RESULT_MAX_CHARS } from "./types.js";
 export type {
-  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, HarnessEvent, HostTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage,
-  NodeRequest, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,
+  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, HarnessEvent, HostTool, McpCallResult, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage,
+  NodeRequest, SessionIO, SessionMcp, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,
 } from "./types.js";

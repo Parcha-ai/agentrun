@@ -3,6 +3,8 @@
 export { ANTHROPIC_IMAGE_TOKENS_MAX, ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS, ASSUMED_TOOL_PROMPT_TOKENS, INPUT_OVERHEAD_APIS, OPENAI_IMAGE_TOKENS_MAX, providerInputOverhead, type InputShape } from "./overhead.js";
 export { hostHeaderProblems, inputTokensMaxOf, matchRoute, parseStrict, providerIdsOf, ProxyRefusal, reportedCostOf, sameKey, startModelProxy } from "./proxy.js";
 export type { ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRequest, ProxyRoute, ProxyUsage } from "./proxy.js";
+export { MCP_ROUTE_VERSIONS, mcpRoute } from "./mcp-route.js";
+export type { McpHandler, McpRouteOptions } from "./mcp-route.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
 export { addressBytes, checkAddress, EGRESS_RANGES } from "./egress-table.js";

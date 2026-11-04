@@ -187,10 +187,16 @@ export class McpServers {
     }
   }
 
-  /** A run's launch: the server's credential as headers, an OAuth access token refreshed first when it expires within
-   *  `margin`. Undefined when it takes none, none opens, or its sign-in expired. */
+  /** A run's launch: the server's credential as headers (headers), an OAuth access token refreshed first when it
+   *  expires within `margin`. Undefined when it takes none, none opens, or its sign-in expired. */
   async headersForRun(name: string, margin = REFRESH_MARGIN_MS): Promise<HeaderMap | undefined> {
     await this.freshen(name, margin);
+    return this.headers(name);
+  }
+
+  /** The saved server's credential, opened, for a run's launch: its headers; undefined when it has none, none that opens,
+   *  or an OAuth sign-in that expired. */
+  headers(name: string): HeaderMap | undefined {
     const kept = this.saved(name);
     if (!kept || kept.auth.type === "none" || kept.auth.oauth?.expired) return undefined;
     const opened = this.open(name, kept);

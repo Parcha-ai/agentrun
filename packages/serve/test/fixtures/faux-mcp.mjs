@@ -1,0 +1,15 @@
+// A faux model for mcp-run.test.mjs: "Call <tool> with <json>" makes one call of that tool, then it answers with what the
+// tool said; "Report the MCP credentials" answers the names of the servers whose credential this process was handed.
+const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+
+export default function reply(context, faux) {
+  const last = context.messages.at(-1);
+  if (last?.role === "toolResult") return faux.message(`The tool said: ${textOf(last)}`);
+  const asked = textOf(context.messages.findLast((m) => m.role === "user"));
+  const call = /^Call (\S+) with (\{.*\})$/s.exec(asked);
+  if (call) return faux.message(faux.toolCall(call[1], JSON.parse(call[2])), { stopReason: "toolUse" });
+  if (asked === "Report the MCP credentials") {
+    return import(new URL("../../dist/secrets.js", import.meta.url).href).then(({ mcpCredentials }) => faux.message(`Held: ${JSON.stringify(Object.keys(mcpCredentials()).sort())}`));
+  }
+  return faux.message("Answered.");
+}
