@@ -12,7 +12,7 @@ import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
-import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
+import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
@@ -20,7 +20,7 @@ import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
+import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeWhole } from "./files.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -260,6 +260,8 @@ export type Run = {
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
+  /** The store has it running and it has no serve.json: its server went down before it was set up, so it never launched. */
+  notSetUp?: boolean;
   /** Its files being copied into its work/ before its first launch, until they are: nothing launches it meanwhile (a
    *  request that would waits for it), and nothing but a cancel settles it. */
   preparing?: Promise<void>;
@@ -466,8 +468,10 @@ export function statusOf(run: Run): { status: Status; state: State } {
 
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
-/** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. */
-export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; trigger?: RunTrigger; inputs?: (work: string) => Promise<unknown> };
+/** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. `origin`:
+ *  the store's key for what asked (an Idempotency-Key's, a trigger's firing): a key that already started a run gets that
+ *  run. `trigger`: the trigger and firing that started it. */
+export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; trigger?: RunTrigger; inputs?: (work: string) => Promise<unknown>; origin?: RunOrigin };
 
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
@@ -726,6 +730,7 @@ export class Runs {
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
+    run.notSetUp = row.state === "running" && !existsSync(join(dir, RUN_META));
     const record = await this.record(run);
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
@@ -1630,7 +1635,10 @@ export class Runs {
     // A cancel during the end-of-run turn ends the run's learning, never its job: the run keeps the outcome it had.
     if (run.cancel && !reflecting(run)) ended = run.kind === "workflow" ? await this.workflowEnd(run, workflowEnding(record) ?? { status: "stopped" }) : { outcome: "cancelled" };
     else if (run.finishing) ended = { outcome: run.finishing };
-    else if (run.launching && gone) {
+    else if (run.notSetUp && gone) {
+      run.error = { code: "run_failed", message: "The server went down while it set the run up, before it saved the run's input; the run never started, and a new one can.", retryable: false, details: { reason: SETUP_LOST } };
+      ended = { outcome: "failed" };
+    } else if (run.launching && gone) {
       run.error = { code: "run_failed", message: "The server went down while it started the run's process, which never came up; it is not started again, since starting it may be what took the server down.", retryable: false, details: { reason: LAUNCH_LOST } };
       ended = { outcome: "failed" };
     } else if (exited && !released && code !== null && code !== 0) {
@@ -1889,7 +1897,9 @@ export class Runs {
     const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
     // A run that learns: its seed read before it is made (learning-run.ts).
     const pin = await this.learning.onStart(entry.agent.id, revision);
-    const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
+    const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id, ...(options.origin ? { origin: options.origin } : {}) })).catch((error) => storeError(error, "revision"));
+    // Only another writer of the store gets here first under the same origin: its run is the one asked for, set up by it.
+    if (started.existing) return (await this.get(started.runId))!;
     const at = new Date().toISOString();
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),

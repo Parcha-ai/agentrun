@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
-import { LAUNCH_LOST } from "./files.js";
+import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
@@ -1177,8 +1177,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   RunError: {
     details: {
       type: "object", additionalProperties: false, required: ["reason"],
-      properties: { reason: { enum: [LAUNCH_LOST] } },
-      description: `Why the run failed, when its code alone does not say: \`${LAUNCH_LOST}\`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again.`,
+      properties: { reason: { enum: [LAUNCH_LOST, SETUP_LOST] } },
+      description: `Why the run failed, when its code alone does not say: \`${LAUNCH_LOST}\`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again; \`${SETUP_LOST}\`, the server went down after the run was made and before it was set up, so it never started.`,
       "x-agentrun-serve": "launch/1",
     },
   },

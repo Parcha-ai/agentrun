@@ -2,13 +2,16 @@
 // still replay, and a carry back that a busy home put off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
+import { openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { stable } from "../dist/validate.js";
 import { ledgerOf, reflectRows } from "./learn-support.mjs";
 import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
 
@@ -373,6 +376,64 @@ test("Idempotency-Key answers outlive a restart for the retention capabilities s
   assert.deepEqual([replay.status, replay.headers.get("idempotent-replayed"), replay.body], [201, "true", first.body]);
   assert.equal((await api("POST", "/agents", agent("other"), key)).body.error.code, "idempotency_mismatch");
   assert.equal((await api("GET", "/capabilities")).body.limits.idempotency_ttl_s, 86_400);
+});
+
+test("a run create retried after its server was killed before it saved the key answers the run it made, which completes: one run, and another body under the key is idempotency_mismatch", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  assert.equal((await first.api("POST", "/agents", agent("calc"))).status, 201);
+  // A directory where the key's file is written first: no save lands, so the kill leaves what a kill between the run's
+  // start and the save leaves, a run in the store and no key on disk.
+  const partial = join(data, ".idempotency.json.partial");
+  await mkdir(partial);
+  const body = { input: { content: "Answer soon." } };
+  const key = { "idempotency-key": "create-1" };
+  const created = await first.api("POST", "/agents/calc/runs", body, key);
+  assert.equal(created.status, 202, JSON.stringify(created.body));
+  const runId = created.body.run_id;
+  await untilState(first.api, runId, ["working", "working"]);
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const pid = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+  t.after(() => alive(pid) && process.kill(pid, "SIGKILL"));
+  assert.equal(existsSync(join(data, ".idempotency.json")), false, "no key was saved");
+  await rm(partial, { recursive: true });
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const retried = await api("POST", "/agents/calc/runs", body, key);
+  assert.deepEqual([retried.status, retried.headers.get("idempotent-replayed"), retried.headers.get("location"), retried.body.run_id], [202, "true", `/v2/runs/${runId}`, runId]);
+  assert.equal((await api("POST", "/agents/calc/runs", { input: { content: "Another." } }, key)).body.error.code, "idempotency_mismatch");
+  assert.deepEqual((await api("GET", "/agents/calc/runs")).body.runs.map((run) => run.run_id), [runId], "one run");
+  await follow(api, runId, ["completed"]);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
+});
+
+test("a run its server went down before setting up is failed by the next start as server_lost_at_setup, never launched; the create retried under its key answers it", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX });
+  assert.equal((await client(one.baseUrl, one.token)("POST", "/agents", agent("calc"))).status, 201);
+  await one.close();
+  // What a kill right after the store's insert leaves: the run's row and its origin (the create's key slot and body,
+  // hashed), its directory seeded, and no serve.json.
+  const body = { input: { content: "Answer soon." } };
+  const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+  const store = openStore(data);
+  const { runId, dir } = await store.startRun({ agent: "calc", origin: { key: `idk_${sha256("/agents/calc/runs\nsetup-1").slice(0, 32)}`, fingerprint: sha256(stable(body)) } });
+  store.close();
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const { last } = await follow(api, runId, ["failed"]);
+  assert.equal(last.status, "failed");
+  const read = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([read.error.code, read.error.details], ["run_failed", { reason: "server_lost_at_setup" }]);
+  assert.equal(existsSync(join(dir, "run.json")), false, "never launched");
+  assert.equal(storeRun(data, runId).state, "failed");
+  const retried = await api("POST", "/agents/calc/runs", body, { "idempotency-key": "setup-1" });
+  assert.deepEqual([retried.status, retried.headers.get("idempotent-replayed"), retried.body.run_id, retried.body.status], [202, "true", runId, "failed"]);
+  assert.equal((await api("GET", "/agents/calc/runs")).body.runs.length, 1, "one run");
 });
 
 test("a carry back that finds the store busy is tried again until it lands, so the run still ends final", async (t) => {
