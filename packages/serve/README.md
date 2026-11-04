@@ -1607,7 +1607,8 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 - An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
   environment's key-shaped variables and the keys saved on this server, the secrets this server made and keeps (its API
-  token, its door token, its sign-in secret, and its webhook's signing secret when the seal key opens it), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
+  token, its door token, its sign-in secret, and its webhook's signing secret when the seal key opens it; when it does
+  not, the CLI's import says so once, on stderr, and goes on), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
   distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
