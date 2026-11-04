@@ -1043,6 +1043,28 @@ limit is one for everyone: ten wrong tries in 15 minutes, from anyone, keep the 
 token still works for scripts meanwhile). Serve it over https where you can: on plain http a browser sends the session
 cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
+## Importing your sessions
+
+`agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
+`~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
+CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
+this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
+only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
+
+- `--dry-run` lists what it would import and writes nothing.
+- `--from claude-code,codex,pi` picks the sources.
+- `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
+  deleted. Each such folder is still its own agent, with no instructions or skills to read.
+- `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.
+- `--verbose` lists each file it leaves out, and why.
+
+The dry run and the import both end by counting what they left out, by why, with the flag that brings each kind in:
+
+```
+left out: 84 sessions from folders that no longer exist (--include-deleted imports them too)
+left out: 2 sessions still being written: they come in next time
+```
+
 ## A run's life
 
 1. `POST /agents/{id}/runs` starts the run in the store (`startRun`, which pins the revision and seeds
