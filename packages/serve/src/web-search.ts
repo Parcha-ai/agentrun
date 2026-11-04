@@ -25,7 +25,7 @@ import { FAUX_ENV } from "./model.js";
 import { exaSearch, FAUX_EXA_ENV } from "./exa-keyless.js";
 import { hostedSearch } from "./hosted-search.js";
 import { PaidRefused } from "./paid-calls.js";
-import { planeOf } from "./tool-plane.js";
+import { planeOf, whyUnavailable } from "./tool-plane.js";
 import { type Extract, parallelOf, WEB_FETCH_TOOL } from "./web-fetch.js";
 
 export const WEB_SEARCH_TOOL = "web_search";
@@ -113,7 +113,7 @@ export async function webSearch(args: Record<string, unknown>, parallel: Extract
 export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unknown>, signal?: AbortSignal): Promise<Search> {
   const plane = planeOf(env);
   if (plane.web_search === "parallel") return webSearch(args, parallelOf(env), signal);
-  if (plane.web_search !== "native" && plane.web_search !== "exa-keyless") return { error: `web_search does not run here: ${plane.web_search?.replace(/^unavailable: /, "") ?? "no provider was resolved for it"}` };
+  if (plane.web_search !== "native" && plane.web_search !== "exa-keyless") return { error: `web_search does not run here: ${plane.web_search === undefined ? "no provider was resolved for it" : whyUnavailable(plane.web_search)}` };
   const { query, n } = searchArgs(args);
   if (!query) return { error: "web_search needs a query" };
   if (plane.web_search === "native") return hostedSearch(query, n, plane.model, signal);

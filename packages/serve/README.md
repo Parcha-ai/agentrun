@@ -63,6 +63,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
+| `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. The server keeps its data directory until its runs' processes have exited (up to this and a second), and says so as it stops; a server started on the same `--data` meanwhile waits for it, saying so, then starts. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -241,10 +242,12 @@ of a process that is gone is not trusted.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
-which binds the run's `work/` and nothing else, with no network and no key. Its `read`, `write` and `edit` work on that
-same `work/`: on this server, where the box binds it and this server holds directory handles (Docker on Linux), else in
-the box. The agent's loop, its log, its model calls and every key stay on the server. An agent says so in its [place](#place); the server
-says which [boxes](#boxes) it has; [a run in a Docker box](#a-run-in-a-docker-box) is what the container gets;
+which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it; either has no network and
+no key. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
+on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
+box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
+Daytona sandbox gets;
 [the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
 end to end. The [published image](#in-the-published-image) cannot host boxes yet.
 
@@ -316,6 +319,48 @@ go through `work/` by path.
   `work/`) and when the run is archived. A start destroys every such container whose run has ended or is archived; one
   of a run this data directory does not know is left to its 24-hour lifetime.
 
+### A run in a Daytona box
+
+With `AGENTRUN_BOXES=daytona` and `DAYTONA_API_KEY`, a run whose place is `{"mode": "sandbox", "box": "daytona"}` gets one
+Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with the same tools, path rules, environment,
+`bash` and labels as a Docker box. What differs (its `read`, `write` and `edit` run in the sandbox, as its `bash` does,
+since nothing binds `work/` there):
+
+- The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
+  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes a call for
+  a run only with that run's own door token (`DIR/runs/<id>/door-token`, handed to that run's process alone) and adds
+  the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
+  refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
+  it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
+- Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
+  fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
+  override, so a run there gets no Daytona box.
+- A sandbox cannot bind `work/`. The server copies `work/` into it at `/run/agentrun/run/work` when it makes it, and
+  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
+  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
+  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
+  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
+  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run, which the server alone
+  writes; the run's process notes each file it copied in, in `box-mirrored.jsonl` beside it, and a copy back counts
+  those as held by both sides, so an edit the box makes to one comes back.
+- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
+  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
+  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
+  that brought nothing reached) keeps the sandbox, says so in the log (`event=box_kept` with its id), and lets the run
+  end with what did come back. A start pulls a run it finds waiting for the person, and copies back, then destroys, the
+  sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
+- A kept sandbox has Daytona's auto-delete turned off (a sandbox is made with auto-delete at 0, which deletes it as it
+  stops) and is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
+  Daytona's default snapshot, at Daytona's storage price) and no compute; its files stay. The next start wakes it, copies
+  back again, and destroys it once that copy is whole; else its 24-hour lifetime ends it. To remove one sooner, delete
+  the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
+- A run's sandbox that Daytona stopped, paused (a sandbox class that pauses when idle, while the run waits for its
+  person) or archived (a stopped one it moved away) is started again, an archived one restored, when the server next
+  needs it: for the run's next tool call, a copy back, or the start's sweep. One still stopping, pausing or archiving
+  is waited for (a minute at most) first. It is never replaced by a new one, so
+  what only it holds stays.
+- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
+
 ### The box's image
 
 `AGENTRUN_DOCKER_IMAGE` names the image every Docker box starts from, `debian:bookworm-slim` by default: a shell and
@@ -345,8 +390,8 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 
 ### Boxes
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker` boxes ([place](#place)); the
-others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes
+([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -447,7 +492,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `edit` | Edit a file in the run's `work/` | nothing | yes, no |
 | `bash` | Run a shell command in the run's box, from its `work/`: pi's `{command, timeout?}`, 300 s when the call names no timeout | an agentic definition whose place is a sandbox ([Sandbox](#sandbox)) | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, offset?, next_offset?, html_chars?, converted?, links, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
@@ -475,21 +520,26 @@ redirect to one are all refused, as is any scheme but http(s). A URL on a port o
 a part of the page's text: about `max_chars` characters from `offset` (20,000 by default, at least 200, at most
 50,000; a quote or a line break counts two, as the JSON answer holds it, and a part holds one character at least, so
 it always advances), its length as `chars`. A part that is not the whole page says so: `truncated` while more follows,
-`next_offset` where it begins, `original_chars` the page's whole length where it is known (Parallel's extract gives it
-only for a page shorter than it was asked for), and for an agent a line after the JSON says which characters these are
-and the call that reads on. A page whose HTML is longer than 1,000,000 characters (scripts and styles aside) is cut
-before it is read: every part gives `html_chars`, the page's whole length, and no `original_chars`, its text is the
-start of the page, and the last part's line says `The page was cut at 1,000,000 characters of HTML before reading; the
-rest wasn't read.` `converted: "text"` says the text is the page's plain text, its conversion to markdown having run
-out of time. The links, absolute http(s) only, come with the part at offset 0: at most 200, in 20,000
-characters. A refusal or a failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent
-reads why, and a workflow can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via:
-"tool", tool: "web_fetch"` gets it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by
-default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
-run starts (`409`).
+`next_offset` where it begins, `original_chars` the page's whole length where it is known, and for an agent a line
+after the JSON says which characters these are and the call that reads on. A page whose HTML is longer than 1,000,000
+characters (scripts and styles aside) is cut before it is read: every part gives `html_chars`, the page's whole
+length, and no `original_chars`, its text is the start of the page, and the last part's line says `The page was cut at
+1,000,000 characters of HTML before reading; the rest wasn't read.` `converted: "text"` says the text is the page's
+plain text, its conversion to markdown having run out of time. A page is read to its first 1,000,000 characters: an
+`offset` at or past them is refused, and the last part a read reaches of a longer page has `beyond_read`. The links,
+absolute http(s) only, come with the part at offset 0: at most 200, in 20,000 characters, with `links_omitted`
+counting those left out. A page is fetched once a run, at the first call for its URL, through either provider, and the
+run keeps what it read of its last 8 pages by the URL asked for: every later part of that URL comes from it, with no
+request, so a page's parts are always one read's. Through Parallel that is one billed extract a page a run, asked for
+its first 1,000,001 characters (the extract has no offset: its text always starts at the page's start). A refusal or a
+failure is a Page with `ok: false` and `refused` or `error`, never a thrown error: an agent reads why, and a workflow
+can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool", tool: "web_fetch"` gets
+it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
+shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
 
-On another harness, every host tool's result stays under the host's bound of 120,000 characters
-(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
+On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
+(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
+saying where it was cut, and flags the call `truncated`. Each CLI adapter tells its CLI to pass a result that long to
 the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
 to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
@@ -579,9 +629,9 @@ Every provider answers one shape, `{provider, query, results: [{url, title, snip
 naming the one that served it (`native`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
 the model reads ends with one line asking it to cite the URL of each result it relies on.
 
-`web_fetch` answers a Page with `via`; a text cut at 60,000 characters says so, `truncated: true`
-with `original_chars`, its whole length, where it is known (Parallel cuts a page itself and gives none; no paging). With Parallel picked the page is read through Parallel's
-extract (`POST https://api.parallel.ai/v1/extract`, its full content as the text, about $0.001 a URL) and `via` is
+`web_fetch` answers a Page with `via`, a part of the page at a time (`offset`, `max_chars`, as above). With Parallel
+picked the page is read through Parallel's extract (`POST https://api.parallel.ai/v1/extract`, its full content as the
+text, about $0.001 an extract, one a page a run) and `via` is
 `"parallel"`, with status 200 and the absolute links of its markdown; when Parallel lists the URL in its errors, answers
 with no content, a 5xx or not within 60 s, it is the guarded direct fetch, `via: "direct"`, with `parallel` saying why
 Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
@@ -641,7 +691,8 @@ run's records before it is sent, held at the price an earlier `monid.inspect` of
 at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
-never $0: the run's cost reads `null`, and under a cap every later request is refused, as for any spend no one knows;
+never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
+a crash-cut mark does, so the run goes on while its cap allows, in its process and in one opened again from its store;
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
 cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
 price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
@@ -1162,13 +1213,26 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
 
 - `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
   commit, however `main` moves on.
-- The first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own) go into the run's
-  instructions after the agent's, under `# Learned`, with one line saying the notes are in `.learning/`, to open one
-  when it applies, and that only what the run answers when it is asked at the end is kept. That is pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md`
-  and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project settings off, so a
-  `.claude/` in the work never loads), and no skill is learned.
-- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh, for the run to read; a
-  superseded or retired note is not.
+- What the agent learned goes into the run's instructions after the agent's, under `# Learned`, so a run reads it
+  whatever its tools: an agent with no `read` tool still follows its notes. Only active notes are served: a note with
+  any other status is never there, whole or by its index line (one a hand edit left in `MEMORY.md` is dropped), and is
+  not counted toward the budget. Each active note is there whole (its
+  `## name (file.md)`, its description, then its text), the one changed last on `main` first (a merge or a person's
+  edit; then by name), while they all fit the server's learning budget (`--learning-budget`, 8000 bytes by default).
+  Past it, the run reads the first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own),
+  then the notes changed last, whole, while they fit what is left; the rest are named only in the index, and an agent
+  with the `read` tool is told they are in `.learning/`, to open one when it applies (one without is not). A line
+  before them says to follow a note when it applies. `# Learned` opens, for every run that learns, notes or none, with
+  what the run is told of learning: that only what it answers when it is asked at the end is kept, never a file it
+  writes, so it tells the person it will keep what they ask it to remember, and that a secret is never kept. A run with
+  nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
+  as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
+  `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
+  settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
+  reads (`section`), so a resume or a follow-up reads the same; a pin an earlier server wrote, the index alone
+  (`learned`), is read as that server gave it.
+- `MEMORY.md` and the active notes are copied into the run's `work/.learning/`, made fresh and cut of the server's
+  secrets the same way, for the run to read; a note that is not active is not, and neither is its line in the index.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -1441,7 +1505,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
   and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
   CSP allows this origin only.
-- Each run's door listens on loopback and takes only the server's door token.
+- Each run's door listens on loopback and takes only that run's own door token (`DIR/runs/<id>/door-token`, 0600, made
+  at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
   server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
   the boxes' keys either ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool the key unlocks

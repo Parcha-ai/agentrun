@@ -80,6 +80,15 @@ test('host verification exceptions stop immediately and preserve original failur
   assert.equal(seen.turns, 1);
   assert.equal(seen.disposed, true);
 });
+test('a review that rejects without words still rejects: submit says it gave no reason, the session goes on, and the rejected candidate is never the result', async () => {
+  for (const verdict of [{ accepted: false }, { accepted: false, message: null }, { accepted: false, message: '' }, { accepted: false, message: '  \n ' }]) {
+    const { options, seen } = scripted([{ count: 1 }, { count: 2 }]);
+    const value = await createPiRunner(options)({ ...request, review: async v => (v.count === 2 ? { accepted: true } : verdict) });
+    assert.deepEqual(value, { count: 2 }, `never the rejected candidate: ${JSON.stringify(verdict)}`);
+    assert.deepEqual([seen.results[0].content[0].text, seen.results[0].details.accepted], ['Rejected: the review rejected it without saying why. Correct the result and call submit again.', false], JSON.stringify(verdict));
+    assert.equal(seen.results.length, 2, 'the session went on to a second submission');
+  }
+});
 test('turn and submission limits reject instead of returning a draft', async () => {
   let run = scripted([undefined, undefined, undefined], { maxTurns: 2 });
   await assert.rejects(createPiRunner(run.options)(request), e => e instanceof PiRunError && e.reason === 'turn_limit');

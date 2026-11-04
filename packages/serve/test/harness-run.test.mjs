@@ -166,7 +166,7 @@ test("a request whose price is unknown makes the run's cost unknown, never 0", {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "unpriced", "Price unknown.");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 1 });
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null);
 });
 
@@ -196,7 +196,7 @@ test("a request admitted and cut by a crash is booked once, unknown: on resume t
   await killRun(data, runId);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "After the cut.");
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 3 }, "the first, the cut one (unknown), and the one after: once each");
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 3, so_far_usd: 0.006, unpriced: 1 }, "the first, the cut one (unknown), and the one after: once each");
   assert.equal(storeCount(data, runId, "adapter.request"), 3);
 });
 
@@ -216,7 +216,7 @@ test("a run cancelled while its harness's request is out, and never opened again
   }
   assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
   const { rows } = await follow(api, runId, ["cancelled"], { deadlineMs: 55_000 });
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 2 }, "the first at its cost, and the cut one, its cost unknown");
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 2, so_far_usd: 0.002, unpriced: 1 }, "the first at its cost, and the cut one, its cost unknown");
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "the carried-back cost is unknown, never the first request's alone");
 });
 
@@ -244,7 +244,7 @@ test("a run opened again whose new opening has a request of unknown price reads 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.deepEqual(usageOf(rows), { usd: null, requests: 4 });
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 4, so_far_usd: 0.003, unpriced: 1 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
 
@@ -697,3 +697,28 @@ test("a read refused outside the run names the path it was given, as given, on p
   refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi"));
   assert.ok(refused.every((row) => !JSON.stringify(row).includes("not for the agent")));
 });
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`a ${harness} run cancelled while its host web_search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known`, { timeout: 90_000 }, async (t) => {
+    const calls = join(await scratch(t), "parallel.jsonl");
+    // The faux Parallel answers the search after 2 s, so the cancel lands while the host tool's call is under way.
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:2000" });
+    const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxParallel: FAUX_PARALLEL });
+    assert.equal((await api("POST", "/agents", agent(`stopped-${harness}`, { harness, instructions: "Search the web for widgets delaware and say what you found.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }))).status, 201);
+    const run = await api("POST", `/agents/stopped-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    for (const end = Date.now() + 30_000; !(await readFile(calls, "utf8").catch(() => "")).includes('"path":"/v1/search"'); ) {
+      assert.ok(Date.now() < end, "the search reached Parallel");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status, 202);
+    await follow(api, run.body.run_id, ["cancelled", "failed", "completed"], { deadlineMs: 60_000 });
+    let paid = [];
+    for (const end = Date.now() + 15_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
+      paid = paidOf(data, run.body.run_id);
+      if (paid.some(([kind]) => kind === "agentrun.tool_cost")) break;
+    }
+    assert.deepEqual(paid, [["agentrun.tool_started", "web_search", 0.001], ["agentrun.tool_cost", "web_search", 0.001]], "marked, and settled though its turn was stopped");
+    assert.notEqual((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, null, "the run's cost is known");
+  });
+}

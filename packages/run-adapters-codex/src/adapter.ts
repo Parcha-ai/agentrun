@@ -15,7 +15,7 @@ import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblem
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { CODEX_VERSION } from "./binary.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
@@ -101,10 +101,10 @@ function kernelTool(tool: HostTool): KernelTool {
 
 /** The adapter's event for a harness live event, if it has one. */
 function adapterEvent(event: unknown): AdapterEvent | undefined {
-  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown };
+  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; truncated?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
   if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
-  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true };
+  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true, ...(e.truncated === true ? { truncated: true as const } : {}) };
   return undefined;
 }
 
@@ -224,7 +224,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const open = () => openDrive({ writer, signal: io.signal, live });
       let drive = await open();
       const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+      // A turn is open while the session holds input no turn placed, or a turn with no end (its recovery note).
+      const holdsTurn = (folded: typeof initial) => Boolean(recoveryNote(folded)) || pendingSubmissions(folded).length > 0;
+      let state: AdapterSession["state"] = holdsTurn(initial)
         ? "open_turn"
         : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
 
@@ -245,6 +247,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             outcome = current.signal.aborted
               ? abortedOutcome(current.signal, io.signal)
               : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
+            // A stop that landed before this turn ran (while send() was still recording its prompt) found no turn to stop,
+            // and reads the session as it was: the turn is open now, its prompt pending, so it reads open_turn.
+            if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
           io.onEvent({ type: "turn_end", status: outcome.status });
           return outcome;
@@ -271,6 +276,14 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to settle");
+          await ready();
+          // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
+          // and the next turn carries no recovery of this one. Nothing is sent.
+          await settleTurn(drive);
+          state = "idle";
+        },
         async turnEnd() {
           if (!running) throw new Error("agentrun-harness-codex: no turn is in flight");
           return running;
@@ -278,6 +291,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         async interrupt() {
           drive.halt?.(new SessionHalt("interrupted"));
           await running?.catch(() => {});
+          // The turn it stopped is still open in the session (an interrupt writes no end, and a prompt it stopped before
+          // the harness placed it is still pending): open_turn, so a host that is done with it settles it here.
+          if (holdsTurn(drive.state())) state = "open_turn";
         },
         async close() {
           if (closed) return;

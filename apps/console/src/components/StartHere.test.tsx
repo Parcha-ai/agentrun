@@ -58,6 +58,21 @@ describe("StartHere", () => {
     expect(h.match(/AGENT_MODEL</g)).toHaveLength(2);
     expect(h).not.toContain('href="#/settings/keys"');
     expect(h).not.toContain(">Try it<");
+    expect(h).toContain("Then reload this page, and the templates here run in one click.");
+  });
+  // QA: with the key card on screen above it (the server keeps keys), the step told the person to restart the server
+  // with AGENT_MODEL and reload. The card saves a key with no restart, so the step points at it instead.
+  it("points at the key card above when the server keeps keys, with no env advice and no reload", () => {
+    const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }], keyCard: true });
+    expect(h).toContain("Add a model key");
+    expect(h).toContain("Add a model key in the card above, and the templates here run in one click.");
+    for (const gone of ["AGENT_MODEL", "ANTHROPIC_API_KEY", "agentrun-serve", "reload"]) expect(h).not.toContain(gone);
+    expect(h).not.toContain(">Try it<");
+  });
+  it("leaves the templates alone when a harness has a model, key card or not", () => {
+    const h = html({ keyCard: true });
+    expect(h.match(/>Try it</g)).toHaveLength(3);
+    expect(h).not.toContain("card above");
   });
   it("names the imported history when there is some, with a way to browse it", () => {
     expect(html({ imported: 6 })).toContain("6 imported sessions");
