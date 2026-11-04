@@ -308,7 +308,7 @@ test('every paid request forwarded is booked once: its usage when it says it; an
   }
 });
 
-test("a client that hangs up once it has read the usage the provider reported (the stream still open) is booked at that usage, and a hang-up before any usage at an unknown cost", async (t) => {
+test("a client that hangs up once it has read the usage the provider reported (the stream still open) is booked at that usage, and a hang-up before any usage at an unknown cost, with the bytes it was sent", async (t) => {
   // The provider sends its usage and then holds the stream open until the proxy aborts it; the client leaves at once.
   const holding = (text) => async (_url, init) => new Response(new ReadableStream({
     start(c) { c.enqueue(new TextEncoder().encode(text)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
@@ -329,10 +329,14 @@ test("a client that hangs up once it has read the usage the provider reported (t
   await settled(reported.hooks);
   assert.deepEqual(reported.hooks.after, [{ input: 11, output: 4, cacheRead: 0, usd: 0.001, estimated: true }], 'the usage the provider reported is booked');
 
-  const silent = await proxy(t, { fetch: holding('data: {"delta":"hi"}\n\n') });
+  // A piece outside ASCII: what it was sent is counted in bytes, never characters.
+  const piece = 'data: {"delta":"hé ✓ 思考"}\n\n';
+  const silent = await proxy(t, { fetch: holding(piece) });
   await hangUp(silent.p.url, 'without usage');
   await settled(silent.hooks);
-  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }], 'no usage seen: an unknown cost');
+  // The client left part way: the booking also says what it was sent (the one piece's bytes), which a host counts it by.
+  assert.ok(Buffer.byteLength(piece) > piece.length);
+  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(piece) }], 'no usage seen: an unknown cost, with what streamed');
 });
 
 test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {

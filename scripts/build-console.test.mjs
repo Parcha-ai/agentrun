@@ -18,6 +18,8 @@ function repo(t) {
   const lock = (version) => JSON.stringify({ lockfileVersion: 3, packages: { '': { name: 'console' }, 'node_modules/vite': { version }, 'node_modules/@esbuild/darwin-arm64': { version: '0.21.5', optional: true } } });
   put('apps/console/package-lock.json', lock('5.4.21'));
   put('packages/dsl/src/graph.ts', 'export const g = 1;\n');
+  put('packages/pi-durable-agent/src/timeline/labels.ts', 'export const nameOf = (t) => t;\n');
+  put('packages/pi-browser/src/core/contract.ts', 'export const BROWSER_TOOL_NAMES = ["run"];\n');
   const asked = [];
   const run = (args, cwd) => {
     asked.push(args.join(' '));
@@ -49,6 +51,13 @@ test('a changed source rebuilds; a file touched but unchanged does not; a change
   r.asked.length = 0;
   r.put('packages/dsl/src/graph.ts', 'export const g = 2;\n');
   assert.equal(r.build(), 'built', 'the DSL sources the console imports are its inputs too');
+  r.asked.length = 0;
+  // The timeline library's tool names and pi-browser's tool list, which the Timeline imports from their sources.
+  r.put('packages/pi-durable-agent/src/timeline/labels.ts', 'export const nameOf = (t) => `${t}!`;\n');
+  assert.equal(r.build(), 'built', "the timeline library's labels the console imports are its inputs too");
+  r.asked.length = 0;
+  r.put('packages/pi-browser/src/core/contract.ts', 'export const BROWSER_TOOL_NAMES = ["run", "snapshot"];\n');
+  assert.equal(r.build(), 'built', "pi-browser's tool list the console imports is its input too");
   r.asked.length = 0;
   r.put('apps/console/package-lock.json', r.lock('5.4.22'));
   assert.equal(r.build(), 'built');

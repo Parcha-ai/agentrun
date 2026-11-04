@@ -239,3 +239,15 @@ describe("AgentEditor, tool settings for an agent granting fetch_page", () => {
     expect(page.row("web_fetch")!.textContent).toContain("pi: Parallel");
   });
 });
+
+// On a phone (375 px) the provider table is wider than the screen: it scrolls in a box of its own, never the page.
+describe("AgentEditor, the tool settings on a narrow screen", () => {
+  it("holds the provider table in a box that scrolls sideways", async () => {
+    const page = await open(agentWith());
+    const table = page.host.querySelector("section[aria-label=\"Tool settings\"] table")!;
+    expect(table.parentElement!.className.split(" ")).toContain("overflow-x-auto");
+    // Positioned, so the header's screen-reader "Reset" (absolute, sr-only) is placed inside the box and scrolls with it:
+    // unpositioned, it hung past the box and widened the page to 427 px.
+    expect(table.parentElement!.className.split(" ")).toContain("relative");
+  });
+});

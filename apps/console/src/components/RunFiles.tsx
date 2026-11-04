@@ -47,6 +47,11 @@ export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { fi
   }, []);
   // A link in a Markdown file can open another file in this viewer: Copied belongs to the file it was said of.
   useEffect(() => setCopied(false), [file.path]);
+  // The dimmed area around the file is the dialog itself (the file's panel sits inside it): a click that starts and ends
+  // there closes it, as the console's other overlays do. One that starts or ends inside keeps it: a drag either way sends
+  // its click to the dialog (the nearest element both ends are in), so where the press and the release were is checked.
+  const pressedOutside = useRef(false);
+  const releasedOutside = useRef(false);
   const kind = viewKind(file);
   const open = openLinkedFile((path) => { const f = files.find((x) => x.path === path); if (f) onOpen?.(f); });
   const download = () => {
@@ -57,6 +62,9 @@ export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { fi
   };
   return (
     <dialog ref={dialog} aria-label={file.path} onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onMouseDown={(e) => { pressedOutside.current = e.target === e.currentTarget; }}
+      onMouseUp={(e) => { releasedOutside.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (pressedOutside.current && releasedOutside.current && e.target === e.currentTarget) onClose(); pressedOutside.current = releasedOutside.current = false; }}
       className="m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-foreground backdrop:bg-black/60 md:p-8">
       <div className="mx-auto flex h-full w-full max-w-5xl flex-col border bg-background">
         <header className="flex items-center gap-3 border-b px-4 py-2.5">
