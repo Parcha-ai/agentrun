@@ -579,3 +579,66 @@ describe("pages past the first", () => {
     expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Used in 3 of the latest 6 runs");
   });
 });
+
+describe("the Learning tab's skills and workflows", () => {
+  const SKILL_FILE = "skills/find-policies/SKILL.md";
+  const DRAFT_FILE = "workflows/check-refunds/workflow.json";
+  const README_FILE = "workflows/check-refunds/README.md";
+  const SKILL_TEXT = "---\nname: find-policies\ndescription: Find a store's policies\n---\n# Find policies\n\n1. Open the policies page first.\n";
+  const learned = (status: { skill?: "active" | "pending"; workflow?: "active" | "pending" } = {}) => view({
+    skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: status.skill ?? "active", run: "run-b", bytes: 92, etag: '"skill-v1"' }],
+    workflows: [{ name: "check-refunds", file: DRAFT_FILE, readme: README_FILE, description: "Checks a store's refund window", status: status.workflow ?? "active", run: "run-a", bytes: 640, etag: '"readme-v1"' }],
+  } as Partial<AgentLearning>);
+  const reads = async (file: string) => ({ note: file === SKILL_FILE ? SKILL_TEXT : '{"v": 2, "name": "check-refunds"}\n', etag: `"v-${file}"` });
+
+  it("lists the skills and the workflows it learned beside the notes: name, description and the run that kept each, opening to its text", async () => {
+    const t = await open(agent(true), { learning: async () => learned(), read: reads });
+    const skills = t.host.querySelector('section[aria-label="Skills it learned"]') as HTMLElement;
+    const workflows = t.host.querySelector('section[aria-label="Workflows it learned"]') as HTMLElement;
+    expect(skills?.textContent).toContain("Skills it learned");
+    expect(workflows?.textContent).toContain("Workflows it learned");
+    const skill = t.card("find-policies")!;
+    expect(skills.contains(skill)).toBe(true);
+    expect(skill.textContent).toContain("Find a store's policies");
+    expect(skill.textContent).toContain("Learned in");
+    expect(skill.querySelector('a[href="#/runs/run-b"]')?.textContent).toBe("brooklinen.com");
+    const flow = t.card("check-refunds")!;
+    expect(workflows.contains(flow)).toBe(true);
+    expect(flow.querySelector('a[href="#/runs/run-a"]')?.textContent).toBe("taylorstitch.com");
+    // Its text, read when opened.
+    expect(t.calls.some((c) => c.startsWith(`read ${SKILL_FILE}`))).toBe(false);
+    await t.click(/^Show the skill find-policies$/);
+    expect(t.calls).toContain(`read ${SKILL_FILE}`);
+    expect(skill.textContent).toContain("Open the policies page first.");
+    await t.click(/^Show the workflow check-refunds$/);
+    expect(t.calls).toContain(`read ${DRAFT_FILE}`);
+    expect(flow.textContent).toContain('"name": "check-refunds"');
+    // No edit and no retire: a skill or a workflow is a run's to change.
+    expect(t.button(/^Edit find-policies$/)).toBeUndefined();
+    expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+  });
+
+  it("an agent with none shows neither section, and an older server's answer without them breaks nothing", async () => {
+    const t = await open(agent(true));
+    expect(t.host.querySelector('section[aria-label="Skills it learned"]')).toBeNull();
+    expect(t.host.querySelector('section[aria-label="Workflows it learned"]')).toBeNull();
+    expect(t.text()).toContain("What it has learned");
+  });
+
+  it("one that waits for the owner's OK says so, and on a server that approves from the console Approve is one click on its version: a skill's SKILL.md, a workflow's README", async () => {
+    const t = await open(agent(true), { learning: async () => learned({ skill: "pending", workflow: "pending" }), caps: { learning: { pending: true, approve: true } } });
+    expect(t.calls).toContain("capabilities");
+    const skill = t.card("find-policies")!;
+    expect(skill.textContent).toContain("Waits for your OK");
+    await t.click(/^Approve find-policies$/);
+    expect(t.calls).toContain(`approve ${SKILL_FILE} "skill-v1"`);
+    await t.click(/^Approve check-refunds$/);
+    expect(t.calls).toContain(`approve ${README_FILE} "readme-v1"`);
+  });
+
+  it("without the owner's password sign-in, one that waits says why, and there is no Approve", async () => {
+    const t = await open(agent(true), { learning: async () => learned({ skill: "pending" }), caps: { learning: { pending: true, approve: false, approve_needs: "password" } } });
+    expect(t.card("find-policies")!.textContent).toContain("Approving needs your password sign-in.");
+    expect(t.button(/^Approve find-policies$/)).toBeUndefined();
+  });
+});
