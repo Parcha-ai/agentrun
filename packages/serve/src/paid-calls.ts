@@ -68,10 +68,13 @@ let rootRecord: Ledger["record"] | undefined;
 export const settleIn = (record: Ledger["record"] | undefined): void => {
   rootRecord = record;
 };
+/** A settle of `kind` written to the run's root (settleIn), when that is set; else undefined, for the caller's own commit.
+ *  monid.run's settle goes here too. */
+export const settleOnRoot = (kind: string, data: Record<string, string | number | null>): Promise<void> | undefined => rootRecord?.(kind, data);
 
 /** The ledger of a tool call: its id, and its commits to the run's store. Its mark (TOOL_STARTED) is the call's own
  *  commit, so a stopped turn sends nothing new; its settle goes to the run's root when that is set (settleIn). */
-const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => (kind === TOOL_COST && rootRecord ? rootRecord(kind, data) : api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)) });
+const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)) });
 
 /** `tool` with each call's paid requests booked under it: its execute runs with the call's ledger set. */
 export function booking<T extends ToolRegistration>(tool: T): T {
