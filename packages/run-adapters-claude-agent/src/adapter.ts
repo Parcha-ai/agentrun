@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { NativeJournal, recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
@@ -482,6 +482,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to recover");
           await ready();
           void run();
+        },
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to settle");
+          await ready();
+          // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
+          // and the next turn carries no recovery of this one. Nothing is sent.
+          const journal = new NativeJournal(drive);
+          journal.message({ type: "turn", status: "interrupted" });
+          await journal.flush();
+          state = "idle";
         },
         async turnEnd() {
           if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
