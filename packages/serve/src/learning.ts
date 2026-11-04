@@ -24,7 +24,7 @@
 import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, posix, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, valueMatcher, type Verdict } from "./learn/index.js";
 import { homeOf, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
@@ -494,17 +494,29 @@ const linesShown = (text: string, shown: Shown) => text.split("\n").map(shown.te
 
 /** A note's file an index line links to. */
 const LINKED = /\]\(([^)\s]+)\)/;
+/** Every link's target on an index line: `<…>` or up to a space or `)`. */
+const LINKS = /\]\(\s*(?:<([^>\n]*)>|([^)\s]+))/g;
 
-/** `seed`'s index as a run is given it: each line that links to a file main holds and that is no active note (a
- *  pending, superseded or retired one, or one not read) left out, so it is never served or counted. The host's index
- *  names none; a hand edit might. A line naming a file main does not hold stays. */
+/** The files an index line links to, each as the folder's path to it: its #fragment dropped, percent-decoded, and
+ *  normalized at the folder's top, so `./x.md`, `/x.md` and `a/../x.md` are all x.md. */
+const linkedFiles = (entry: string): string[] => [...entry.matchAll(LINKS)].map((link) => {
+  const target = (link[1] ?? link[2]!).split("#")[0]!;
+  let decoded = target;
+  try {
+    decoded = decodeURIComponent(target);
+  } catch {
+    // Not percent-encoded right: taken as written.
+  }
+  return posix.normalize(decoded).replace(/^(?:\.?\/)+/, "");
+});
+
+/** `seed`'s index as a run is given it: each line with a link, any of them in any spelling (linkedFiles), to a file main
+ *  holds that is no active note (a pending, superseded or retired one, or one not read) left out, so it is never served
+ *  or counted. The host's index names none; a hand edit might. A line naming only files main does not hold stays. */
 function servedIndex(seed: Seed): string | undefined {
   if (seed.index === undefined) return undefined;
   const held = new Set(seed.files);
-  return seed.index.split("\n").filter((entry) => {
-    const file = LINKED.exec(entry)?.[1];
-    return !(file !== undefined && held.has(file) && !Object.hasOwn(seed.notes, file));
-  }).join("\n");
+  return seed.index.split("\n").filter((entry) => !linkedFiles(entry).some((file) => held.has(file) && !Object.hasOwn(seed.notes, file))).join("\n");
 }
 
 /** Lays `seed`'s index and active notes in `dir`, made fresh: whatever was there goes. The index names the active notes
