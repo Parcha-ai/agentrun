@@ -523,7 +523,7 @@ test("a turn its session interrupted (a stop) is open to the next process; settl
   await c.close();
 });
 
-test("a turn stopped before its prompt was placed: settled, its prompt is withdrawn, a later open finds no open turn and writes no second end, and the next message runs alone", async () => {
+test("a turn stopped before its prompt was placed: settled, its prompt stays in the conversation: a later open finds no open turn and writes no second end, and the next message's turn carries it", async () => {
   const spec = { key: 'step:early', label: 'early', system: [], tools: [], context: 'fresh' };
   const store = memorySessionStore();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
@@ -562,13 +562,16 @@ test("a turn stopped before its prompt was placed: settled, its prompt is withdr
   // What the model was asked: the stand-in says each message it is sent back as an echo, through the provider.
   const modelSaw = [...nextModel.seen, ...laterModel.seen].map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
   assert.deepEqual(
-    { pendingAfterSettle, laterOpen, ends, placed, modelSaw },
-    { pendingAfterSettle: [], laterOpen: 'idle', ends: ['interrupted'], placed: ['and now?'], modelSaw: ['echo: and now?'] },
-    "the stopped turn's prompt is withdrawn at its settle: no later open finds it open or ends it again, and the next message is the only one sent",
+    { pendingAfterSettle, laterOpen, ends, follows: placed.at(-1) },
+    { pendingAfterSettle: [], laterOpen: 'idle', ends: ['interrupted'], follows: 'and now?' },
+    "the stopped turn is settled: no later open finds it open or ends it again",
   );
+  // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.
+  assert.equal(modelSaw.length, 1, `one turn, the follow-up's: ${JSON.stringify(modelSaw)}`);
+  assert.match(modelSaw[0], /go[\s\S]*and now\?/, "the follow-up's turn has the stopped prompt, before the follow-up");
 });
 
-test("a turn stopped before its prompt was placed, then a message in the same process: the session reads open_turn after the stop, its settle withdraws the prompt, and the message runs alone", async () => {
+test("a turn stopped before its prompt was placed, then a message in the same process: the session reads open_turn after the stop, and the message's turn carries the stopped prompt", async () => {
   const spec = { key: 'step:early-here', label: 'early', system: [], tools: [], context: 'fresh' };
   const store = memorySessionStore();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
@@ -593,10 +596,13 @@ test("a turn stopped before its prompt was placed, then a message in the same pr
   const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
   const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
   assert.deepEqual(
-    { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), placed, modelSaw },
-    { afterStop: 'open_turn', pending: [], placed: ['and now?'], modelSaw: ['echo: and now?'] },
-    'the stopped prompt is never sent: the stop leaves the turn open to settle, and the next message is the only one sent',
+    { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), follows: placed.at(-1) },
+    { afterStop: 'open_turn', pending: [], follows: 'and now?' },
+    'the stop leaves the turn open to settle, and nothing is left pending',
   );
+  // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.
+  assert.equal(modelSaw.length, 1, `one turn, the follow-up's: ${JSON.stringify(modelSaw)}`);
+  assert.match(modelSaw[0], /go[\s\S]*and now\?/, "the follow-up's turn has the stopped prompt, before the follow-up");
 });
 
 test("a runner's pause before the node's prompt was placed: the next process resumes the node with its own prompt, not the nudge", async () => {
@@ -622,7 +628,7 @@ test("a runner's pause before the node's prompt was placed: the next process res
   assert.equal(placed[0], request.user, 'the paused node resumes with its own prompt');
 });
 
-test("an interrupt that lands while send() is still recording the prompt: the session reads open_turn after the stopped turn, and the next message is sent alone", async () => {
+test("an interrupt that lands while send() is still recording the prompt: the session reads open_turn after the stopped turn, and the next message's turn carries the stopped prompt", async () => {
   const spec = { key: 'step:abort-submit', label: 'abort', system: [], tools: [], context: 'fresh' };
   const store = memorySessionStore();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
@@ -659,8 +665,11 @@ test("an interrupt that lands while send() is still recording the prompt: the se
   const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
   const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
   assert.deepEqual(
-    { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), placed, modelSaw },
-    { afterStop: 'open_turn', pending: [], placed: ['and now?'], modelSaw: ['echo: and now?'] },
-    'a stop during the prompt\'s record leaves the turn open to settle, and the stopped prompt is never sent',
+    { afterStop, pending: pendingSubmissions(ended).map((s) => s.text), follows: placed.at(-1) },
+    { afterStop: 'open_turn', pending: [], follows: 'and now?' },
+    'the stop leaves the turn open to settle, and nothing is left pending',
   );
+  // The stopped prompt stays in the conversation: the follow-up's turn carries it, and it never runs as a turn of its own.
+  assert.equal(modelSaw.length, 1, `one turn, the follow-up's: ${JSON.stringify(modelSaw)}`);
+  assert.match(modelSaw[0], /go[\s\S]*and now\?/, "the follow-up's turn has the stopped prompt, before the follow-up");
 });

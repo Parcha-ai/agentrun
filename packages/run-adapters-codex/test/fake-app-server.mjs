@@ -62,6 +62,8 @@
  * - a project config (`<cwd>/.codex/config.toml`) is read only when
  *   `config.toml` trusts the cwd, and its `developer_instructions` then show
  *   in every echo (`[project config: …]`);
+ * - `FAKE_CODEX_START_MS` answers `initialize` that many ms late, as a slow
+ *   start does: the drive places no prompt before it;
  * - `FAKE_CODEX_LAG=1` writes a call's `function_call` line only after the
  *   drive answered it (Codex's rollout writer is asynchronous);
  * - `escalate <command>` asks for its approval with `additionalPermissions`;
@@ -387,7 +389,8 @@ async function handle(m) {
   const p = m.params ?? {};
   switch (m.method) {
     case 'initialize':
-      return reply({ userAgent: 'fake-app-server/0', codexHome: home });
+      // FAKE_CODEX_START_MS: app-server takes that long to start (the drive places nothing before it has).
+      return void setTimeout(() => reply({ userAgent: 'fake-app-server/0', codexHome: home }), Number(process.env.FAKE_CODEX_START_MS ?? 0));
     case 'initialized':
       return;
     case 'thread/start': {
