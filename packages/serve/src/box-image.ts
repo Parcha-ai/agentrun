@@ -6,21 +6,26 @@
 // Once docker answers its probe (boxes.ts), the server asks Docker for the image (`docker image inspect`). When Docker has
 // it (the built one with this recipe's hash), the box is ready. When not, the server builds or pulls it once, in the
 // background, within BUILD_TIMEOUT_MS or PULL_TIMEOUT_MS: docker is then available and preparing ("building the box
-// image (...)", "pulling <image>"), and ready once the image is in. A build or pull that fails, or does not finish in
-// time, makes docker unavailable with the reason, until a restart tries again. Docker's own output is never in a reason,
-// as for the probes: the reason says what kind of failure it was, and what to do. The build reaches the network (the base
-// image, apt); a box never does (`--network none`, run-box.ts).
+// image (...)", "pulling <image>"), and ready once the image is in. A build or pull that fails is tried once more,
+// RETRY_AFTER_MS later, docker preparing meanwhile with why ("trying once more: <the failure>"); one that fails again, or
+// does not finish in time, makes docker unavailable with the reason, until a restart tries again. Docker's own output
+// is never in a reason, as for the probes: the reason says what kind of failure it was, and what to do. The build
+// reaches the network (the base image, apt); a box never does (`--network none`, run-box.ts).
 //
 // The state is written to IMAGE_STATE_FILE in the data directory at each change, for the run's processes: a run's first
 // box create reads it there (awaitImage, from run-box.ts) and, while the image is coming, waits for it, with one row on
-// the run's timeline, instead of a `docker run` that pulls inside the tool call. A server that went away mid-way leaves
-// the file saying preparing until its deadline, past which a run creates its box as it did before this file existed.
+// the run's timeline, instead of a `docker run` that pulls inside the tool call. Each record names its writer, the server
+// (its pid and start time). A server that went away mid-way (killed, or closed while the image came) leaves the file
+// saying preparing: a run that reads it once that writer is gone (the check box/sweep.ts makes of a box record's writer),
+// or past its deadline where the writer cannot be told (no /proc), stops waiting and fails its call in words that say to
+// restart the server, which builds or pulls the image again; never the `docker run` of an image that is not there.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
+import { startTimeOf, writerGone } from "./box/sweep.js";
 import { BOX_KEYS, type BoxOffer } from "./boxes.js";
 
 /** The setting that names another image for Docker boxes than this server's own. */
@@ -60,6 +65,8 @@ export const INSPECT_TIMEOUT_MS = 5_000;
 /** How long past the pull's deadline a run still waits on a file that says preparing: the server's own timer ends the
  *  pull at the deadline, so only a server that is gone leaves the file saying preparing after it. */
 export const STALE_AFTER_MS = 30_000;
+/** How long after a failed build or pull it is tried once more. */
+export const RETRY_AFTER_MS = 5_000;
 /** How long the server's close waits for the image's last record to be saved, so a docker that hangs cannot hold it. */
 export const CLOSE_WAIT_MS = 5_000;
 /** How often a waiting run reads the file again. */
@@ -68,8 +75,9 @@ const POLL_MS = 250;
 /** The image's state: `ready`; `preparing` while the server pulls it; `unavailable`, with why. */
 export type ImageState = { state: "ready" } | { state: "preparing"; reason: string } | { state: "unavailable"; reason: string };
 /** The file's record: the image, its state, and while it is coming, the time it is stopped by (`until`, epoch ms) and
- *  the timeline row a run that waits for it writes (`row`). */
-export type ImageRecord = { image: string; state: ImageState["state"]; reason?: string; until?: number; row?: string };
+ *  the timeline row a run that waits for it writes (`row`). `writer`: the server that wrote it, its pid and start time,
+ *  where /proc gives that. */
+export type ImageRecord = { image: string; state: ImageState["state"]; reason?: string; until?: number; row?: string; writer?: { pid: number; startTime: string } };
 
 export type DockerImage = {
   readonly image: string;
@@ -105,32 +113,42 @@ const span = (ms: number) => (ms >= 60_000 && ms % 60_000 === 0 ? `${ms / 60_000
 const exitOf = (answer: Answer) => (typeof answer.code === "number" ? `exit ${answer.code}` : answer.code);
 const UNREACHABLE = /dial tcp|no such host|i\/o timeout|connection refused|network is unreachable|TLS handshake timeout|Client\.Timeout|Temporary failure resolving|Could not resolve|Could not connect/i;
 
-/** Why the build of the default image failed, in words that hold none of Docker's output, and the next step. */
-function buildFailure(answer: Answer, timeoutMs: number): string {
+/** A failure in words that hold none of Docker's output: what happened, and the next step. */
+type Failure = { cause: string; next: string };
+const reasonOf = (failure: Failure) => `${failure.cause}: ${failure.next}`;
+
+/** Why the build of the default image failed, and the next step. */
+function buildFailure(answer: Answer, timeoutMs: number): Failure {
   const next = `set ${DOCKER_IMAGE_ENV} to an image this machine has, or restart the server to build it again`;
-  if (answer.code === "timeout") return `the build of the box image did not finish within ${span(timeoutMs)}: ${next}`;
-  if (/no space left on device/i.test(answer.stderr)) return `the build of the box image ran out of disk space: free some, then restart the server`;
+  if (answer.code === "timeout") return { cause: `the build of the box image did not finish within ${span(timeoutMs)}`, next };
+  if (/no space left on device/i.test(answer.stderr)) return { cause: "the build of the box image ran out of disk space", next: "free some, then restart the server" };
   // A base that could not be fetched for want of a network says so in both ways: the network is the cause.
-  if (UNREACHABLE.test(answer.stderr)) return `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt): ${next}`;
-  if (/pull access denied|manifest unknown|not found: manifest|failed to resolve source metadata|failed to fetch anonymous token/i.test(answer.stderr)) return `the build of the box image could not pull its base, python:3.12-slim: ${next}`;
-  if (/Unable to locate package|has no installation candidate|E: Package/i.test(answer.stderr)) return `apt could not install what the box image needs (git, curl, nodejs, ripgrep): ${next}`;
-  return `docker build of the box image failed (${exitOf(answer)}): ${next}`;
+  if (UNREACHABLE.test(answer.stderr)) return { cause: "the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt)", next };
+  if (/pull access denied|manifest unknown|not found: manifest|failed to resolve source metadata|failed to fetch anonymous token/i.test(answer.stderr)) return { cause: "the build of the box image could not pull its base, python:3.12-slim", next };
+  if (/Unable to locate package|has no installation candidate|E: Package/i.test(answer.stderr)) return { cause: "apt could not install what the box image needs (git, curl, nodejs, ripgrep)", next };
+  return { cause: `docker build of the box image failed (${exitOf(answer)})`, next };
 }
 
-/** Why a pull failed, in words that hold none of Docker's output, and the next step. */
-function pullFailure(image: string, answer: Answer, timeoutMs: number): string {
+/** Why a pull failed, and the next step. */
+function pullFailure(image: string, answer: Answer, timeoutMs: number): Failure {
   const see = `run \`docker pull ${image}\` on this machine to see why, then restart the server`;
-  if (answer.code === "timeout") return `the pull of ${image} did not finish within ${span(timeoutMs)}: run \`docker pull ${image}\` on this machine, then restart the server`;
-  if (/pull access denied|unauthorized|authentication required|denied:/i.test(answer.stderr)) return `the registry refused the pull of ${image} (no such repository, or it needs a docker login): ${see}`;
-  if (/manifest unknown|manifest for .* not found|not found: manifest/i.test(answer.stderr)) return `the registry has no ${image}: name an image it has in AGENTRUN_DOCKER_IMAGE, then restart the server`;
-  if (UNREACHABLE.test(answer.stderr)) return `the registry could not be reached to pull ${image}: ${see}`;
-  return `docker pull ${image} failed (${exitOf(answer)}): ${see}`;
+  if (answer.code === "timeout") return { cause: `the pull of ${image} did not finish within ${span(timeoutMs)}`, next: `run \`docker pull ${image}\` on this machine, then restart the server` };
+  if (/pull access denied|unauthorized|authentication required|denied:/i.test(answer.stderr)) return { cause: `the registry refused the pull of ${image} (no such repository, or it needs a docker login)`, next: see };
+  if (/manifest unknown|manifest for .* not found|not found: manifest/i.test(answer.stderr)) return { cause: `the registry has no ${image}`, next: "name an image it has in AGENTRUN_DOCKER_IMAGE, then restart the server" };
+  if (UNREACHABLE.test(answer.stderr)) return { cause: `the registry could not be reached to pull ${image}`, next: see };
+  return { cause: `docker pull ${image} failed (${exitOf(answer)})`, next: see };
 }
 
-/** Writes the record for the run's processes, whole or not at all. */
+/** This process, as a record names its writer: its pid and start time, where /proc gives that (Linux). */
+function self(): Pick<ImageRecord, "writer"> {
+  const startTime = startTimeOf(process.pid);
+  return startTime ? { writer: { pid: process.pid, startTime } } : {};
+}
+
+/** Writes the record for the run's processes, whole or not at all, naming this server as its writer. */
 async function record(data: string, value: ImageRecord): Promise<void> {
   const file = join(data, IMAGE_STATE_FILE);
-  await writeFile(`${file}.partial`, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  await writeFile(`${file}.partial`, `${JSON.stringify({ ...value, ...self() })}\n`, { mode: 0o600 });
   await rename(`${file}.partial`, file);
 }
 
@@ -163,10 +181,11 @@ const labelsOf = (stdout: string): Record<string, string> => {
 
 /**
  * The image's readiness on this server: asked of Docker now (within INSPECT_TIMEOUT_MS), and when Docker has none (or,
- * for the default, has one of another recipe), built from BOX_RECIPE or pulled, in the background, once, within its
- * bound. `onChange` is told each state after the first. The record in the data directory follows the state.
+ * for the default, has one of another recipe), built from BOX_RECIPE or pulled, in the background, within its bound; a
+ * try that fails, but not for want of time, is made once more, `retryAfterMs` later. `onChange` is told each state after
+ * the first. The record in the data directory follows the state.
  */
-export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: string, options: { pullTimeoutMs?: number; buildTimeoutMs?: number; inspectTimeoutMs?: number; onChange?: (state: ImageState, ms: number) => void; warn?: (message: string) => void } = {}): Promise<DockerImage> {
+export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: string, options: { pullTimeoutMs?: number; buildTimeoutMs?: number; inspectTimeoutMs?: number; retryAfterMs?: number; onChange?: (state: ImageState, ms: number) => void; warn?: (message: string) => void } = {}): Promise<DockerImage> {
   const built = image === DEFAULT_DOCKER_IMAGE;
   const timeoutMs = built ? (options.buildTimeoutMs ?? BUILD_TIMEOUT_MS) : (options.pullTimeoutMs ?? PULL_TIMEOUT_MS);
   let state: ImageState;
@@ -186,14 +205,30 @@ export async function dockerImage(env: NodeJS.ProcessEnv, data: string, image: s
     return { image, state: () => settled, settled: Promise.resolve(settled), close: async () => undefined };
   }
   const started = Date.now();
-  await write({ until: started + timeoutMs, row: built ? `Preparing the box image: building it (${RECIPE_HAS})…` : `Preparing the box image: pulling ${image}…` });
+  const row = built ? `Preparing the box image: building it (${RECIPE_HAS})…` : `Preparing the box image: pulling ${image}…`;
+  await write({ until: started + timeoutMs, row });
+  const retryAfterMs = options.retryAfterMs ?? RETRY_AFTER_MS;
   // The build's network is Docker's default, for the base image and apt; a box made from it has none (run-box.ts).
-  const made = built
+  const attempt = (): Promise<Answer> => built
     ? buildContext(env, image, timeoutMs, controller.signal).catch((error: Error) => ({ code: (error as NodeJS.ErrnoException).code ?? error.name, stdout: "", stderr: "" }))
     : docker(env, ["pull", "--quiet", image], timeoutMs, { signal: controller.signal });
-  const settled = made.then(async (answer) => {
+  const failure = (answer: Answer) => (built ? buildFailure(answer, timeoutMs) : pullFailure(image, answer, timeoutMs));
+  const settled = attempt().then(async (first) => {
+    let answer = first;
+    // One try more, after a pause, for a failure that may pass (the network, the registry); not for one that already
+    // took the whole bound.
+    if (answer.code !== 0 && answer.code !== "timeout" && !controller.signal.aborted) {
+      state = { state: "preparing", reason: `trying once more: ${failure(answer).cause}` };
+      // A record of the retry that cannot be saved leaves the first try's: a run keeps waiting on it, as this server
+      // that wrote it still runs (a named writer decides, not its deadline). Removed, it would send a waiting run to a
+      // `docker run` of an image that is not there yet.
+      await write({ until: Date.now() + retryAfterMs + timeoutMs, row });
+      options.onChange?.(state, Date.now() - started);
+      await sleep(retryAfterMs, controller.signal).catch(() => undefined);
+      if (!controller.signal.aborted) answer = await attempt();
+    }
     if (controller.signal.aborted) return state;
-    state = answer.code === 0 ? { state: "ready" } : { state: "unavailable", reason: built ? buildFailure(answer, timeoutMs) : pullFailure(image, answer, timeoutMs) };
+    state = answer.code === 0 ? { state: "ready" } : { state: "unavailable", reason: reasonOf(failure(answer)) };
     // A final state that cannot be written leaves no record: a run then makes its box as it would with none, never
     // waiting on the `preparing` the record last said.
     await record(data, { image, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }).catch(async (error: NodeJS.ErrnoException) => {
@@ -240,9 +275,10 @@ const sleep = (ms: number, signal: AbortSignal | undefined) =>
 
 /**
  * Before a run's box is made from `image`: returns once the server's record says the image is ready, or says nothing
- * of it (no record, another image, a record past its deadline); waits while it says the image is being pulled, telling
- * `note` once, as the run's timeline row; and throws, with the server's reason, when the pull failed. A cancel of
- * `context` ends the wait.
+ * of it (no record, another image); waits while it says the image is being built or pulled, telling `note` once, as the
+ * run's timeline row; and throws, with the server's reason, when that failed, and saying to restart the server when the
+ * server that was making it is gone (its writer, or where that cannot be told, its deadline). A cancel of `context`
+ * ends the wait.
  */
 export async function awaitImage(data: string, image: string, context: Context, note: (summary: string) => Promise<void> | void): Promise<void> {
   let noted = false;
@@ -250,7 +286,13 @@ export async function awaitImage(data: string, image: string, context: Context, 
     const at = await recordIn(data);
     if (!at || at.image !== image || at.state === "ready") return;
     if (at.state === "unavailable") throw new Error(`its image ${image} is not ready: ${at.reason ?? "the server could not make it ready"}`);
-    if (typeof at.until !== "number" || Date.now() > at.until + STALE_AFTER_MS) return;
+    if (typeof at.until !== "number") return;
+    // Its writer named, that decides: a server that runs is still making the image. Only where it cannot be told does
+    // the deadline.
+    if (at.writer ? writerGone(at.writer) : Date.now() > at.until + STALE_AFTER_MS) {
+      const making = image === DEFAULT_DOCKER_IMAGE ? ["building", "build"] : ["pulling", "pull"];
+      throw new Error(`its image ${image} is not ready: the server stopped while ${making[0]} it: restart the server to ${making[1]} it again`);
+    }
     if (!noted) {
       noted = true;
       await Promise.resolve(note(at.row ?? `Preparing the box image ${image}…`)).catch(() => undefined);
