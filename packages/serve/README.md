@@ -1317,8 +1317,11 @@ left out: 2 sessions still being written: they come in next time
    agentic run waiting for an answer waits without one, until a message). A carry back that finds the store held by
    another writer is tried again with backoff, and at the next start.
 
-An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), written before
-the answer is sent, so a retry after a restart gets the first answer.
+An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), saved once the
+work is done and before the answer is sent, so a retry after a restart gets the first answer; a server that goes down
+between the work and the save loses it, and a save that fails still answers. A run create's key is also kept with its
+run in the agent store, written with the run itself, so a retry after any restart, or after that day, gets that run (as
+it is now, marked `Idempotent-Replayed: true`), and another body under the key is still `409 idempotency_mismatch`.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
