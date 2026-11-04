@@ -55,3 +55,13 @@ test("kr-3: a pi run whose gateway refuses its key (401) fails with the key name
   assert.equal(run.error?.message, "The gateway at AGENT_MODEL_BASE_URL refused AGENT_MODEL_API_KEY (401: User not found): set it where AgentRun starts.", JSON.stringify(run.error));
   assert.ok(!JSON.stringify(run).includes(KEY), "the key is nowhere in the run");
 });
+
+test("kr-4: a key the provider echoes across the cut at 200 characters leaves no part of itself in the error", async () => {
+  const { keyRefusal, runKeyOf } = await import("../dist/key-refusal.js");
+  const secretPart = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6";
+  const key = `not-a-secret-${secretPart}`;
+  // The key starts at the detail's 176th character, so the 200-character cut falls inside it.
+  const said = keyRefusal(`401 {"error":{"message":"${"y".repeat(175)} ${key} is not a valid key here"}}`, runKeyOf(ONLY), [key]);
+  assert.ok(said?.startsWith("OpenRouter refused OPENROUTER_API_KEY (401: "), said);
+  for (let at = 0; at + 8 <= secretPart.length; at++) assert.ok(!said.includes(secretPart.slice(at, at + 8)), `"${secretPart.slice(at, at + 8)}" of the key is in: ${said}`);
+});

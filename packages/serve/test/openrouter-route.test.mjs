@@ -176,3 +176,56 @@ test("or-6: a server with only OPENROUTER_API_KEY runs every harness, each with 
     assert.deepEqual(saved.body.warnings ?? [], [], `${id}: ${JSON.stringify(saved.body.warnings)}`);
   }
 });
+
+test("or-9: on OpenRouter's key alone, the host's AGENT_MODEL named on OpenRouter is the model claude-agent and codex run, not their key's default; Anthropic's native id on claude-agent's wire", async () => {
+  const claudeHost = { ...ONLY, AGENT_MODEL: "openrouter/anthropic/claude-haiku-5.5" };
+  const { hostModel } = await import("../dist/model.js");
+  assert.equal(hostModel(claudeHost, "default", "claude-agent"), "openrouter/anthropic/claude-haiku-5.5", "the host's model, not OpenRouter's Sonnet default");
+  const claude = adapters.claudeModel(claudeHost, undefined);
+  assert.deepEqual(claude, { model: { provider: "openrouter", modelId: "anthropic/claude-haiku-5.5" } });
+  assert.deepEqual(view(adapters.claudeProvider(claudeHost, claude.model)), { origin: "https://openrouter.ai/api", auth: "bearer", key: KEY, model: "claude-haiku-5-5", priced: { provider: "openrouter", id: "anthropic/claude-haiku-5.5" } });
+  const codexHost = { ...ONLY, AGENT_MODEL: "openrouter/openai/gpt-6.1-sol" };
+  assert.equal(hostModel(codexHost, "default", "codex"), "openrouter/openai/gpt-6.1-sol", "the host's model, not OpenRouter's GPT-6 Sol default");
+  assert.deepEqual(await adapters.codexModel(codexHost, undefined), { model: { provider: "openrouter", modelId: "openai/gpt-6.1-sol" } });
+  // Another vendor's model on OpenRouter is not the harness's: it takes its own default, as before.
+  assert.equal(hostModel(codexHost, "default", "claude-agent"), "anthropic/claude-sonnet-5.5");
+  assert.equal(hostModel(claudeHost, "default", "codex"), "openai/gpt-6-sol");
+});
+
+test("or-10: a server on OpenRouter's key alone names the host's OpenRouter model as each harness's default, and a revision naming one there saves clean and runs it", { timeout: 60_000 }, async (t) => {
+  const standIn = join(await scratch(t), "codex-stand-in.mjs");
+  await copyFile(STAND_IN, standIn);
+  withEnv(t, { ...ONLY, AGENT_MODEL: "openrouter/anthropic/claude-haiku-5.5", AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn] }) }, SOURCES);
+  const { api } = await serve(t, { faux: undefined });
+  const harnesses = (await api("GET", "/capabilities")).body.harnesses;
+  assert.equal(harnesses.find((h) => h.id === "claude-agent").default_model, "openrouter/anthropic/claude-haiku-5.5");
+  assert.equal(harnesses.find((h) => h.id === "codex").default_model, "openai/gpt-6-sol", "an Anthropic model is not codex's: its own default");
+  for (const [id, definition] of [["claude-or", { harness: "claude-agent", model: "openrouter/anthropic/claude-opus-5" }], ["codex-or", { harness: "codex", model: "openrouter/openai/gpt-6.1-sol" }]]) {
+    const saved = await api("POST", "/agents", agent(id, definition));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.deepEqual(saved.body.warnings ?? [], [], `${id}: ${JSON.stringify(saved.body.warnings)}`);
+  }
+});
+
+test("or-11: claude-agent on the host's OpenRouter model sends Anthropic's native id for it through OpenRouter", { timeout: 60_000 }, async (t) => {
+  process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
+  const host = { ...ONLY, AGENT_MODEL: "openrouter/anthropic/claude-haiku-5.5" };
+  const messages = await fakeAnthropic({ reply: () => ({ text: "ok" }) });
+  t.after(() => messages.close());
+  const seen = [];
+  const upstream = async (url, init) => {
+    seen.push({ url: String(url), model: JSON.parse(init.body).model });
+    const { pathname, search } = new URL(url);
+    return fetch(`${messages.url}${pathname.replace(/^\/api/, "")}${search}`, init);
+  };
+  const real = await import("@parcha/agentrun-harness-claude");
+  const sessions = join(await scratch(t), "sessions");
+  const sdk = fakeSdk({ remoteModel: true, script: [SUBMIT] });
+  const load = async () => ({ ...real, claudeAgentAdapter: (options) => real.claudeAgentAdapter({ ...options, sdk, standIn: { command: process.execPath }, sessionsDir: sessions, fetch: upstream }) });
+  const chosen = adapters.claudeModel(host, undefined);
+  const adapter = await adapters.claudeOf(host, { model: chosen.model, models: { getModel: () => undefined } }, load);
+  const result = await runWorkflow(doc, {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] }) });
+  assert.equal(result.status, "complete", JSON.stringify(result.error ?? null));
+  assert.ok(seen.length >= 1);
+  for (const request of seen) assert.deepEqual(request, { url: "https://openrouter.ai/api/v1/messages?beta=true", model: "claude-haiku-5-5" });
+});
