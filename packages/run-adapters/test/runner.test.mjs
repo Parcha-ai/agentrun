@@ -461,6 +461,26 @@ test("a request booked at nothing (admitted, never sent) keeps the spend known, 
   assert.deepEqual(records.filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data.usd), [0, 0.5]);
 });
 
+test("a host's output limit that is no whole number of tokens above 0 refuses the request, final, with nothing sent or booked; only an absent limit sends it with none", async () => {
+  // Each limit's outcome: how the node ended, the requests sent, and the requests booked.
+  const outcomes = [];
+  for (const outputTokensMax of [1500.5, 0, -1, NaN]) {
+    const store = memorySessionStore();
+    const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'sent' } }] });
+    const runNode = createHarnessRunner(adapter, { store, beforeRequest: () => ({ outputTokensMax }) });
+    const ended = await runNode(stepRequest()).then(() => 'answered', (error) => (error.reason === 'refused' && error.final === true ? 'refused, final' : `${error.reason}: ${error.message}`));
+    outcomes.push([outputTokensMax, ended, adapter.requests, (await store.read('step:s1')).filter((r) => r.kind === RUNNER_RECORDS.request).length]);
+  }
+  assert.deepEqual(outcomes, [[1500.5, 'refused, final', 0, 0], [0, 'refused, final', 0, 0], [-1, 'refused, final', 0, 0], [NaN, 'refused, final', 0, 0]]);
+  // A whole number above 0 goes out with the request; a verdict with no limit sends it with none.
+  for (const [verdict, limit] of [[{ outputTokensMax: 1500 }, 1500], [{ holdUsd: 0.5 }, undefined], [undefined, undefined]]) {
+    const store = memorySessionStore();
+    const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'sent' } }] });
+    assert.deepEqual(await createHarnessRunner(adapter, { store, beforeRequest: () => verdict })(stepRequest()), { answer: 'sent' });
+    assert.deepEqual((await store.read('step:s1')).filter((r) => r.kind === FAUX_RECORDS.request).map((r) => r.data.outputTokensMax), [limit], JSON.stringify(verdict));
+  }
+});
+
 test("a paid request booked at an unknown cost leaves the node's spend unknown from then on", async () => {
   const asked = [];
   const runNode = createHarnessRunner(plannedAdapter([{ before: true }, { after: null }, { before: true }, { after: 0.5 }, { before: true }]), { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });

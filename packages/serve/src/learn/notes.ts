@@ -59,16 +59,24 @@ export function parseNoteFile(file: string, text: string): LearnedNote | string[
   return { file, name: fields.get("name")!, description: fields.get("description")!, type: type as NoteType, status: status as NoteStatus, superseded_by: by, supersedes, keys: [...fields.keys()], body: lf.slice(head[0].length) };
 }
 
-/** `text`, a note's file, as the host leaves it when note `by` supersedes it: `status: superseded` and `superseded_by`
- *  in its front matter, in place of any it had; the rest as it was, with LF line ends. */
-export function supersede(text: string, by: string): string {
-  if (!NOTE_FILE.test(by)) throw new Error("superseded_by must be a note's file name");
+/** `text`, a note's file, with `lines` in its front matter in place of any `status` or `superseded_by` it had; the rest as
+ *  it was, with LF line ends. */
+function marked(text: string, lines: readonly string[]): string {
   const lf = text.replace(/\r\n/g, "\n");
   const head = FRONT.exec(lf);
   if (!head || head.index !== 0) throw new Error("the note has no front matter");
   const kept = head[1]!.split("\n").filter((line) => !/^(?:status|superseded_by):/.test(line));
-  return `---\n${[...kept, "status: superseded", `superseded_by: ${by}`].join("\n")}\n---\n${lf.slice(head[0].length)}`;
+  return `---\n${[...kept, ...lines].join("\n")}\n---\n${lf.slice(head[0].length)}`;
 }
+
+/** `text`, a note's file, as the host leaves it when note `by` supersedes it: `status: superseded` and `superseded_by`. */
+export function supersede(text: string, by: string): string {
+  if (!NOTE_FILE.test(by)) throw new Error("superseded_by must be a note's file name");
+  return marked(text, ["status: superseded", `superseded_by: ${by}`]);
+}
+
+/** `text`, a note's file, as the host leaves it when a person retires it: `status: retired`, and no `superseded_by`. */
+export const retire = (text: string): string => marked(text, ["status: retired"]);
 
 /** The active ones of `notes`, by file name. */
 export function activeNotes(notes: Iterable<LearnedNote>): LearnedNote[] {

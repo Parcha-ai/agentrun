@@ -28,7 +28,7 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
+import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -132,6 +132,9 @@ export function adapterRun(
   if (plane.web_search === "native") tools = tools.filter((name) => name !== WEB_SEARCH_TOOL);
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
+  // That `refused` is the cap's, not the cancel's: its error entry gets a start mark of its own first, as pi's does, so the
+  // run's usage counts no request for it.
+  let capRefused = false;
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
@@ -139,16 +142,20 @@ export function adapterRun(
   const inFlight = holdsInFlight();
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
-    const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
-    if (answer) {
+    const byCancel = cancelled();
+    const answer = byCancel ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
+    if (answer && "refuse" in answer) {
       refused = answer.refuse;
+      capRefused = !byCancel;
       return answer;
     }
-    // Admitted: the worst case the cap holds for it, which the runner records, and counts it at if its cost never
-    // comes in.
-    const hold = cap?.worstOf?.(request);
+    // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
+    // at): the worst case the cap holds for it, which the runner records, and counts it at if its cost never comes in.
+    const limit = answer?.outputTokensMax;
+    const hold = cap?.worstOf?.({ ...request, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
     inFlight.admitted(hold);
-    return hold === undefined ? undefined : { holdUsd: hold };
+    if (hold === undefined && limit === undefined) return undefined;
+    return { ...(hold === undefined ? {} : { holdUsd: hold }), ...(limit === undefined ? {} : { outputTokensMax: limit }) };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */
@@ -388,13 +395,19 @@ export function adapterRun(
           // fails on this error, as a pi run does; a message waiting behind it is still sent, and when that turn completes,
           // the run completes with its answer, this failure kept in the timeline.
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
+          const unsent = refused !== undefined && capRefused;
           refused = undefined;
+          capRefused = false;
           const pending = open.size > 0;
           // The turn's end, in the commit of its last entries (flush's one commit): the run's end is read from it alone
           // (turns.ts). A turn the instance's own stop cut gets none: the next open resumes it.
           const cut = draining && why === undefined && status === "interrupted";
           await flush(true, cut ? undefined : async (tx) => {
-            if (why !== undefined) await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
+            if (why !== undefined) {
+              // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true } });
+              await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
+            }
             const data: TurnEndData = {
               key: spec.key, ...(taking === undefined ? {} : { message: taking }), status: why === undefined ? status : "failed",
               answer: why === undefined && status === "completed" ? (answer ?? null) : null, ...(why === undefined ? {} : { error: why }), cost: pending ? "pending" : "booked",

@@ -83,7 +83,7 @@ test("a request whose response began and then ended on an error counts at its ho
   const second = run.streamSimple(outputOnly, context);
   const answer = await settled(second.result(), 300);
   assert.equal(sent.length, 1, "not sent: $0.001 counted for the first and $0.001 held pass the cap");
-  assert.match(answer?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached: .*could cost up to \$0\.001000, and with \$0\.001000 spent/);
+  assert.match(answer?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
   // After a crash: its marks and pi's error entry for it read back at the hold, never at the $0.00001 that had streamed.
   assert.equal(round(spentIn(storeOf(t, [...marks, entryOf(overloaded)]))), 0.001);
   assert.deepEqual(marks.map((m) => m.kind), [REQUEST_STARTED, REQUEST_ENDED], "its end is marked, before pi has its result");
@@ -169,7 +169,7 @@ test("in this process, a model stream that throws after its response began count
   await settle();
   const refused = await run.streamSimple(outputOnly, context).result();
   assert.equal(after.calls, 1, "the second request was not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached: .*with \$0\.001000 spent/);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
   const before = { calls: 0 };
   const early = await capped(throwing(false, before), 0.0015);
   for (const turn of [1, 2]) {
@@ -252,7 +252,7 @@ test("after a crash, an error's end mark always takes its own request's entry, h
 });
 
 test("after a crash, an error for a request that never left counts nothing: the cap's refusal, a mark not written, a cancelled run's refusal", (t) => {
-  const capRefusal = entryOf({ ...refusedAtHttp, errorMessage: "spend_cap_reached: the next model request was not sent. It could cost up to $0.001000." });
+  const capRefusal = entryOf({ ...refusedAtHttp, errorMessage: "spend_cap_reached (out of budget): Not sent: the run has spent $0.05 of its $0.055 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.06 to run it." });
   assert.equal(round(spentIn(storeOf(t, [started(0.1), entryOf(message(0.05)), started(undefined, { capRefused: true }), capRefusal]))), 0.05);
   assert.equal(round(spentIn(storeOf(t, [started(0.1), entryOf(message(0.05)), entryOf({ ...refusedAtHttp, errorMessage: `${NOT_WRITTEN} (SQLITE_BUSY)` })]))), 0.05, "a mark not written, after a request answered");
   const cancel = entryOf({ ...refusedAtHttp, errorMessage: "the run was cancelled: the model request was not sent" });
@@ -286,5 +286,5 @@ test("a summary that ended on an error after its response began counts at its ho
   await settle();
   const second = await settled(run.completeSimple(outputOnly, context), 300);
   assert.equal(sent.length, 1, "not sent");
-  assert.match(second?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached: .*with \$0\.001000 spent/);
+  assert.match(second?.errorMessage ?? "(still waiting: it was sent)", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
 });
