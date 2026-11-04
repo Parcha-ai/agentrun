@@ -48,3 +48,23 @@ test(`pi: a run stopped mid-request, then followed up, shows no "Resumed" phase:
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
   assert.deepEqual(resumedRows(rows), [], `stopped and followed up in the same process: no "Resumed" phase: ${shown(rows)}`);
 });
+
+test(`pi: a run stopped mid-request whose process then went, followed up, shows no "Resumed" phase: its turn had ended`, { timeout: 240_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("stopped-gone", {}))).status, 201);
+  // Its first request answers only after a minute: the turn is mid-request when the stop comes.
+  const runId = (await api("POST", "/agents/stopped-gone/runs", { input: { content: "Take your time." } })).body.run_id;
+  await until("the run works", async () => { const { status, state } = (await api("GET", `/runs/${runId}`)).body; return status === "working" && state === "working"; });
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
+  // The stopped run's process goes (killed, as a crash would take it): a run that waits for the person waits without one.
+  const pid = recordOf(data, runId)?.holder?.pid;
+  assert.ok(pid, "setup: the stopped run's process is known");
+  process.kill(pid, "SIGKILL");
+  await until("the run's process is gone", () => { try { process.kill(pid, 0); return false; } catch { return true; } });
+  // The follow-up opens the run in a new process: its turn had ended at the stop, so nothing is resumed.
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Go on." })).status, 202);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
+  assert.notEqual(recordOf(data, runId)?.holder?.pid, pid, "setup: the follow-up ran in a new process");
+  assert.deepEqual(resumedRows(rows), [], `stopped, its process gone, then followed up: no "Resumed" phase: ${shown(rows)}`);
+});
