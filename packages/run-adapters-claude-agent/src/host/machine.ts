@@ -202,10 +202,11 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       },
       fetch: async (input, init) => {
         const answer = await (options.proxy.fetch ?? fetch)(input, init);
-        // A paid request the provider answers 401 is the key refused: said to the harness once, with the provider's words.
+        // A paid request the provider answers 401 is the key refused: said to the harness once, with the provider's words
+        // (what of its body comes within REFUSAL_WAIT_MS, never waiting on one that does not end).
         if (answer.status === 401 && route.onKeyRefused && !refused && new URL(String(input instanceof Request ? input.url : input)).pathname.endsWith("/v1/messages")) {
           refused = true;
-          route.onKeyRefused(refusalDetail(await answer.clone().text().catch(() => "")));
+          route.onKeyRefused(refusalDetail(await bodyStart(answer)));
         }
         return answer;
       },
@@ -247,13 +248,44 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
   };
 }
 
+/** How much of a refusal's body is read for its words, and how long it is waited for: the turn ends either way. */
+const REFUSAL_BYTES = 4096;
+const REFUSAL_WAIT_MS = 2000;
+
+/** The start of `answer`'s body, from a copy (the client still reads the original whole): at most REFUSAL_BYTES, and
+ *  what came within REFUSAL_WAIT_MS. */
+async function bodyStart(answer: Response): Promise<string> {
+  const reader = answer.clone().body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  let timer: NodeJS.Timeout | undefined;
+  const waited = new Promise<undefined>((resolve) => (timer = setTimeout(resolve, REFUSAL_WAIT_MS, undefined)));
+  try {
+    while (text.length < REFUSAL_BYTES) {
+      const next = await Promise.race([reader.read(), waited]);
+      if (!next || next.done) break;
+      text += decoder.decode(next.value, { stream: true });
+    }
+  } catch {
+    // What came is what is said.
+  } finally {
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+  }
+  return text.slice(0, REFUSAL_BYTES);
+}
+
 /** The provider's words in a 401's body: its error's message (Anthropic's `{error: {message}}`, OpenRouter's too), else
- *  the text; the first line, at most 200 characters. */
+ *  the text, or a cut body's message; the first line, at most 200 characters. */
 export function refusalDetail(text: string): string {
   let said: unknown = text;
   try {
     const body = JSON.parse(text) as { error?: { message?: unknown } | string; message?: unknown };
     said = typeof body.error === "object" ? body.error?.message : body.error ?? body.message ?? text;
-  } catch {}
+  } catch {
+    // A body cut before its end: its message, if that much came; never the raw JSON.
+    said = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text)?.[1] ?? (text.trimStart().startsWith("{") ? "" : text);
+  }
   return String(typeof said === "string" ? said : text).split("\n")[0]!.trim().slice(0, 200);
 }
