@@ -52,6 +52,25 @@ test("a risky rule the user asked for waits for its owner: merged as status pend
   assert.ok(existsSync(join(copyOf(data, next), "answer-in-tables.md")) && !existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
 });
 
+test("a risky rule the run worked out itself waits for the owner too: the grader names it Risky and calls it a keep, and it is merged pending with the run's origin, in no MEMORY.md and no later run's copy", { timeout: 150_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("seller", { instructions: "Answer the question.\nGrade: risky paperdepot24-first.md.", plan: PLAN, once: true }));
+  const { view, rows } = await ended(api, await started(api, "seller", "Find the cheapest office paper."));
+  settled(view, rows, "merged");
+  assert.deepEqual(view.learning.pending, [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }], "it waits");
+  assert.deepEqual((view.learning.learned ?? []).map((note) => note.file), ["answer-in-tables.md"], "only the safe one is learned");
+  const repo = repoOf(data, "seller");
+  const held = git(repo, ["show", "main:paperdepot24-first.md"]);
+  assert.match(held, /\nstatus: pending\n---\n/);
+  assert.doesNotMatch(held, /origin:/, "the run's own: no origin line");
+  assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables", "only the active note is in the index");
+  const next = await started(api, "seller");
+  await ended(api, next);
+  assert.ok(!readFileSync(join(data, "runs", next, "learning.json"), "utf8").includes("paperdepot24"), "its index names no pending note");
+  assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
+});
+
 test("a pending note waits until a person acts on it: a retire takes it out of the folder's waiting list, as it retires an active note, and capabilities say a risky rule waits", { timeout: 150_000 }, async (t) => {
   const { api, runId, data, repo } = await learnedPending(t);
   assert.deepEqual((await api("GET", "/capabilities")).body.learning, { grade_model: null, pending: true });

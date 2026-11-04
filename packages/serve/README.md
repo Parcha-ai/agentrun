@@ -1033,10 +1033,10 @@ grade spends is in no run's totals: it is kept on the run's learning, and counte
 A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each with its `origin` (`you`
 for what the user asked in their own words, `run` for what the run worked out), each note they supersede marked
 `status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
-in line. A risky rule the user asked for (to trust a site or a seller, skip or loosen an approval or a check, or send
-money or data to an account) is merged as `status: pending`: in no `MEMORY.md` and no run's copy, to wait for its
-owner's OK, and named on the run's learning (`pending: [{file, name}]`, detail "Waiting for your OK: <name>.", after
-what it learned when it kept one too).
+in line. A risky rule (to trust a site or a seller, skip or loosen an approval or a check, or send money or data to
+an account), whether the user asked for it or the run worked it out, is merged as `status: pending`: in no `MEMORY.md`
+and no run's copy, to wait for its owner's OK, and named on the run's learning (`pending: [{file, name}]`, detail
+"Waiting for your OK: <name>.", after what it learned when it kept one too).
 `GET /capabilities` says so (`learning.pending: true`). Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
 the commit the merge was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
 merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is

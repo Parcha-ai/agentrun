@@ -43,7 +43,7 @@ letter or digit, then `.md`, and never `MEMORY.md`.
 | `description` | yes | one line that says when the note applies; it is the note's index line |
 | `type` | yes | `user`, `feedback`, `project` or `reference`, Claude Code's four |
 | `supersedes` | no | the notes it replaces, `[old.md, other.md]` or one bare file name |
-| `status` | no, host only | `superseded`, `retired` or `pending` (a risky rule the user asked for, waiting for their OK); absent, the note is active |
+| `status` | no, host only | `superseded`, `retired` or `pending` (a risky rule, waiting for its owner's OK); absent, the note is active |
 | `superseded_by` | no, host only | the note that replaced it, on a superseded note |
 | `origin` | no, host only | `you`, kept from what the user asked in their own words, or `run`, what the run worked out; absent, `run` |
 
@@ -129,13 +129,14 @@ the agent to keep from what a page told it to. So the prompt is bounded by the c
 folder holds: `GRADE_CAPS.prompt`, 200,000 characters, half what a completion takes.
 
 Each note's decision is `keep`, `pending` or `drop`, with its `origin`, `you` or `run`. A note the rubric drops is
-dropped. A risky rule the user asked for in their own words (one that widens trust in a site or a seller, skips or
-loosens an approval or a check, or names an account or a destination for money or data) is `pending`: kept, with
-`status: pending`, and in no index, so no run reads it until a person approves it. Every other note is kept. The
-user is the agent's owner, so a risky request is never silently dropped; it waits.
+dropped. A risky rule (one that widens trust in a site or a seller, skips or loosens an approval or a check, or names
+an account or a destination for money or data) is `pending`, whether the user asked for it in their own words or the
+run worked it out: kept, with `status: pending`, and in no index, so no run reads it until a person approves it. A
+note the grader keeps and names `Risky` is pending too. Every other note is kept. The user is the agent's owner, so a
+risky rule is never silently dropped and never served on its own; it waits.
 `parseVerdict` reads one verdict with one item per new note and fails closed: an answer it cannot read, a missing or
-extra item, a decision or an origin out of its list, a pending note that is not the user's, or a merge with a note
-dropped is no merge. Every note merges, or none does.
+extra item, a decision or an origin out of its list, or a merge with a note dropped is no merge. Every note merges, or
+none does.
 
 A separate injection screen is the host's option, only with a judge independent of the agent's model.
 

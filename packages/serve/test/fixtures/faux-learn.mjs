@@ -17,7 +17,8 @@
 // into `.learning/`, one write a request, then says "Written.": a follow-up that changes the run's copy.
 // The server's grader is answered here too, on the agent's own model, by what the instructions say: "Grade: drop." keeps
 // no note, "Grade: drop <file>." keeps every note but that one and merges none, "Grade: pending <file>." keeps that one
-// to wait for its owner's OK (decision pending, origin you) and the rest, "Grade: sly." says merge and keeps
+// to wait for its owner's OK (decision pending, origin you) and the rest, "Grade: risky <file>." keeps that one as the
+// run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: sly." says merge and keeps
 // none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason that names
 // <text>; anything else keeps every note. With
@@ -85,11 +86,13 @@ function grade(prompt, faux) {
   const dropped = /Grade: drop (\S+\.md)\./.exec(rules)?.[1];
   // "Grade: pending <file>.": that note is a risky rule the user asked for, kept to wait for their OK.
   const waits = /Grade: pending (\S+\.md)\./.exec(rules)?.[1];
+  // "Grade: risky <file>.": a risky rule the run worked out itself, which the grader keeps and names Risky.
+  const risky = /Grade: risky (\S+\.md)\./.exec(rules)?.[1];
   const kept = (file) => keep && file !== dropped;
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
-    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : { file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : "It is about one case." })),
+    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : { file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : "It is about one case." })),
   }));
 }
 
