@@ -19,7 +19,7 @@ import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
+import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, writeWhole } from "./files.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
 import { labelled, LearningRuns, type Reflect, reflecting, reflects, type TurnOrigin, withLearning } from "./learning-run.js";
@@ -40,8 +40,9 @@ import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
-import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
-import { keyRefusal, runKeyOf } from "./key-refusal.js";
+import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { MIN_SECRET } from "./learn/secrets.js";
+import { keyRefusal, redacted, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
 import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
@@ -178,6 +179,8 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
 /** One run as this server holds it. */
 export type Run = {
   id: string;
+  /** The values of the secrets each launch handed its process: what its errors never show, a key rotated since included. */
+  handed?: Set<string>;
   agentId: string;
   kind: RevisionKind;
   revision: string;
@@ -211,6 +214,8 @@ export type Run = {
   finishStop?: boolean;
   /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
   reopening?: Promise<void>;
+  /** A follow-up to a run whose turn had ended is on its way: a launch it makes opens the run for it (FOLLOW_UP_OPEN_ENV). */
+  followUpOpen?: true;
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
@@ -648,6 +653,11 @@ export class Runs {
   /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
    *  stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
+   *  launch, so a test can hold a reopen there. */
+  beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
+  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
 
   private get store() {
     return this.options.agents.store;
@@ -818,7 +828,7 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteTurns(run, entries, submissions);
-    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir) }));
+    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -839,7 +849,9 @@ export class Runs {
    *  only, never the run's own rows, which its cost and its answer are read from. */
   private show(run: Run): void {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    const rows = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions);
+    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions);
+    // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
+    const rows = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
     if (run.log.sync(withLearning(rows, run.meta.learning, this.learning.shown()), run.keep)) run.updatedAt = new Date().toISOString();
   }
 
@@ -872,16 +884,53 @@ export class Runs {
     // the words after it.
     const capped = CAP_REFUSAL_PREFIX.exec(message);
     if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: message.slice(capped[0].length), retryable: false } };
-    return { outcome: "failed", error: { code: "run_failed", message: this.plainKey(run, message) ?? message, retryable: false } };
+    return { outcome: "failed", error: { code: "run_failed", message: this.errorWords(run, message) ?? message, retryable: false } };
+  }
+
+  /** A run's error as a person reads it, in its error box and on its Timeline row alike: a refused key in plain words
+   *  (plainKey), else the harness's text with no loopback address (withoutLoopback: Codex names serve's own proxy). */
+  private errorWords(run: Run, text: string | undefined): string | undefined {
+    return text ? this.shown(run, this.plainKey(run, text) ?? text) : text;
+  }
+
+  /** An error row as served: its summary and text in errorWords' terms. The run's own rows, which its status reads, keep
+   *  what the harness said. */
+  private servedError(run: Run, row: TimelineEvent): TimelineEvent {
+    const plain = this.plainKey(run, row.text ?? undefined);
+    if (plain) {
+      const words = this.shown(run, plain);
+      return { ...row, summary: words, text: words };
+    }
+    return { ...row, ...(row.summary ? { summary: this.shown(run, row.summary) } : {}), ...(row.text ? { text: this.shown(run, row.text) } : {}) };
+  }
+
+  /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
+   *  no loopback address. */
+  private shown(run: Run, text: string): string {
+    return withoutLoopback(redacted(text, this.refusedValues(run)));
+  }
+
+  /** The timeline's redaction of `run`'s error rows, applied before a row is cut (timelineOf's `redact`), so a cut never
+   *  leaves the head of a key. */
+  private redactor(run: Run): (text: string) => string {
+    return (text) => redacted(text, this.refusedValues(run));
+  }
+
+  /** Every secret value `run`'s errors never show, as learning's checker holds them (learning-run.ts refused): this
+   *  server's secrets wherever its launcher put them and the keys saved on it, what each launch handed the run, and the
+   *  server's own tokens. */
+  private refusedValues(run: Run): string[] {
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(run.handed ?? []), this.options.token, this.options.doorToken];
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
    *  harness's route sends, by this server's settings and keys, and no secret's value. */
   private plainKey(run: Run, text: string | undefined): string | undefined {
-    if (!text) return undefined;
+    // A workflow's nodes run on their own tiers' models, and its error row does not say which one failed: naming the
+    // default tier's key could name the wrong one, so its error keeps the provider's own words.
+    if (!text || run.kind === "workflow") return undefined;
     const env = withSecrets(process.env, "all", this.options.storedKeys);
-    const secrets = SECRET_NAMES.map((name) => env[name]).filter((value): value is string => typeof value === "string");
-    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), secrets);
+    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), this.refusedValues(run));
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -1197,7 +1246,7 @@ export class Runs {
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
-    const reducer = timelineReducer({ path: rowPaths(run.dir) });
+    const reducer = timelineReducer({ path: rowPaths(run.dir), redact: this.redactor(run) });
     // `inputs=1`: the snapshot carries pi's newest input submissions, the settlements its turns end on (turns.ts).
     const up = await fetch(new URL(`/events?inputs=1&skip=${encodeURIComponent(REFLECT_REQUEST)}`, door), { signal, headers: { ...this.headers(run), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
@@ -1354,8 +1403,10 @@ export class Runs {
     this.needs.set(run.revision, await needsOf(revision));
   }
 
-  private launch(run: Run): void {
+  private launch(run: Run, followUp = run.followUpOpen === true): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
+    // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
+    run.followUpOpen = undefined;
     // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts). Each launch path
     // reads its revision's needs first (pinNeeds); one that did not hands no tool key. Which keys, from the keys this
     // server holds now (its launcher's and the saved ones, never its environment, which under the launcher holds none),
@@ -1367,6 +1418,12 @@ export class Runs {
     const secrets = handover(handed, this.options.storedKeys);
     // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
     this.learning.onLaunch(run, handed);
+    // And for what its errors show (refusedValues): each value handed, kept past a key's rotation.
+    run.handed ??= new Set();
+    for (const name of handed) {
+      const value = secret(name, this.options.storedKeys);
+      if (value && value.length >= MIN_SECRET) run.handed.add(value);
+    }
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
@@ -1390,6 +1447,9 @@ export class Runs {
     const harness = run.tooling?.harness ?? DEFAULT_HARNESS;
     const defaultModel = run.tooling && !run.tooling.model && harness !== "claude-agent" ? hostModel(served, "default", harness) : undefined;
     if (defaultModel) env[DEFAULT_MODEL_ENV] = defaultModel;
+    // Opened for a person's follow-up to a run whose turn had ended: nothing it resumes was cut (app.ts markResumed).
+    delete env[FOLLOW_UP_OPEN_ENV];
+    if (followUp) env[FOLLOW_UP_OPEN_ENV] = "1";
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
@@ -1872,6 +1932,7 @@ export class Runs {
   }
 
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
+    await this.beforeSubmit?.(run.id, content);
     const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
@@ -1909,6 +1970,10 @@ export class Runs {
     const working = status === "queued" || (status === "working" && state === "working");
     const mode = working ? (steers ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
+    // A follow-up to a run the person stopped, whose process has gone: its turn had ended, so the process this message
+    // starts resumes nothing. With its process live the message starts none, and a relaunch after that process dies
+    // under the message is a crash's, which keeps its row.
+    if (status === "input_required" && state === "idle" && !this.live(run)) run.followUpOpen = true;
     run.submitted++;
     this.refresh(run);
     try {
@@ -1917,6 +1982,8 @@ export class Runs {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);
       throw error;
+    } finally {
+      run.followUpOpen = undefined;
     }
     return { mode, messageId };
   }
@@ -1953,6 +2020,9 @@ export class Runs {
         storeError(error, "run");
       }
       run.outcome = undefined;
+      // With its outcome cleared the run reads open. Messages wait for this reopen (message()), so its launch below is
+      // the follow-up's; set here, with the outcome, whichever launch comes first carries the flag (launch() takes it).
+      run.followUpOpen = true;
       run.settled = false;
       run.endedAt = undefined;
       run.error = undefined;
@@ -1960,8 +2030,10 @@ export class Runs {
       run.relaunches = 0;
       // A run that learns finds its agent's notes in its work again (learning-run.ts).
       await this.learning.onReopen(run);
+      await this.beforeReopenLaunch?.(run.id);
       this.refresh(run);
-      this.launch(run);
+      // Opened for the follow-up: the run had answered, so its open resumes nothing.
+      this.launch(run, true);
     } finally {
       // Launched, it holds its place as a live run.
       release();
