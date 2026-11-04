@@ -510,6 +510,17 @@ describe("notes that wait for the owner's OK", () => {
     expect(box.textContent).toContain("Approving needs your password sign-in. Until then it stays out of every run.");
     expect(box.textContent).not.toContain("Approving here comes in the next update");
   });
+  it("an approve that landed, then a re-read that failed, leaves Approve usable again, never stuck on Approving", async () => {
+    let n = 0;
+    const t = await open(agent(true), { learning: async () => { if (n++ === 1) throw new ClientError(503, "unavailable", "The server is restarting."); return waitingView(); }, caps: APPROVES });
+    await t.click(/^Approve Trust/);
+    expect(t.calls).toContain(`approve ${TRUST} "card-trust"`);
+    expect(n).toBe(2);
+    expect(t.text()).toContain("Couldn't refresh the notes");
+    const again = t.button(/^Approve Trust/) as HTMLButtonElement;
+    expect(again.textContent).toBe("Approve");
+    expect(again.disabled).toBe(false);
+  });
   it("there is no such section when no note waits, and the capabilities are not even read", async () => {
     const t = await open(agent(true), { caps: APPROVES });
     expect(t.host.querySelector('section[aria-label="Waiting for your OK"]')).toBeNull();
@@ -668,6 +679,22 @@ describe("the Learning tab's skills and workflows", () => {
     expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(1);
   });
 
+  it("an approve that landed, then a re-read that failed, leaves the skill's Approve usable again, never stuck on Approving", async () => {
+    let n = 0;
+    let fail!: (e: unknown) => void;
+    const t = await open(agent(true), { learning: () => (n++ === 0 ? Promise.resolve(learned({ skill: "pending" })) : new Promise<AgentLearning>((_, reject) => { fail = reject; })), read: reads, caps: { learning: { pending: true, approve: true } } });
+    await t.click(/^Approve find-policies$/);
+    expect(t.calls).toContain(`approve ${SKILL_FILE} "skill-v1"`);
+    // While the tab reads the list again, it stays Approving.
+    const during = t.button(/^Approve find-policies$/) as HTMLButtonElement;
+    expect([during.textContent, during.disabled]).toEqual(["Approving", true]);
+    await act(async () => { fail(new ClientError(503, "unavailable", "The server is restarting.")); });
+    await settle();
+    expect(t.text()).toContain("Couldn't refresh the notes");
+    const after = t.button(/^Approve find-policies$/) as HTMLButtonElement;
+    expect([after.textContent, after.disabled]).toEqual(["Approve", false]);
+  });
+
   describe("retiring one", () => {
     it("an active skill has Retire: it asks first, in the notes' words, and retires on the listing's version of its SKILL.md, with no read", async () => {
       let n = 0;
@@ -709,6 +736,25 @@ describe("the Learning tab's skills and workflows", () => {
       await t.click(/^Retire find-policies$/);
       await t.click(/^Yes, retire$/);
       expect(t.calls).toContain(`retire ${SKILL_FILE} "v-${SKILL_FILE}"`);
+    });
+
+    it("a retire that landed stays Retiring while the tab reads the list again; a re-read that fails leaves Retire usable", async () => {
+      let n = 0;
+      let fail!: (e: unknown) => void;
+      const t = await open(agent(true), { learning: () => (n++ === 0 ? Promise.resolve(learned()) : new Promise<AgentLearning>((_, reject) => { fail = reject; })), read: reads });
+      await t.click(/^Retire find-policies$/);
+      await t.click(/^Yes, retire$/);
+      expect(t.calls).toContain(`retire ${SKILL_FILE} "skill-v1"`);
+      const during = t.button(/^Retiring$/) as HTMLButtonElement;
+      expect(during, "the confirm says Retiring while the list is read again").toBeTruthy();
+      expect(during.disabled).toBe(true);
+      expect(t.button(/^Retire find-policies$/)).toBeUndefined();
+      await act(async () => { fail(new ClientError(503, "unavailable", "The server is restarting.")); });
+      await settle();
+      expect(t.text()).toContain("Couldn't refresh the notes");
+      expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+      const after = t.button(/^Retire find-policies$/) as HTMLButtonElement;
+      expect([after.textContent, after.disabled]).toEqual(["Retire", false]);
     });
 
     it("a draft workflow is retired by its README, never its workflow.json, and moves under Earlier workflows", async () => {
