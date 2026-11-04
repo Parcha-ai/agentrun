@@ -16,7 +16,7 @@ import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type 
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
-import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
+import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
@@ -481,7 +481,7 @@ export type RunsOptions = { agents: Agents; token: string; /** The server's save
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
-export type RunNotify = (event: (typeof WEBHOOK_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
+export type RunNotify = (event: (typeof RUN_EVENTS)[number], run: RunNotice & { status: Status }, marker: string) => Emitted;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */

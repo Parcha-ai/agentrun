@@ -17,9 +17,13 @@ import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import type { TriggerFailed } from "./triggers.js";
 import { isObject, unknownFields } from "./validate.js";
 
-export const WEBHOOK_EVENTS = ["run.needs_input", "run.ended"] as const;
+/** A run's two notices, which runs.ts tells. */
+export const RUN_EVENTS = ["run.needs_input", "run.ended"] as const;
+/** Every message type a webhook is sent: a run's notices, and a trigger's failed firing (triggers.ts). */
+export const WEBHOOK_EVENTS = [...RUN_EVENTS, "trigger.failed"] as const;
 /** The message types: a run's two notices, and the test send's. */
 export const MESSAGE_TYPES = [...WEBHOOK_EVENTS, "webhook.test"] as const;
 type MessageType = (typeof MESSAGE_TYPES)[number];
@@ -180,7 +184,7 @@ export class Webhooks {
    *  a webhook is set and on, and kept in the ledger in the same write. `marker` makes its webhook-id: the same moment,
    *  seen again after a restart, has the same id, which is a receiver's idempotency key. An end before the ledger began,
    *  before the webhook was set, or past the outbox's day counts as sent. */
-  emit(type: (typeof WEBHOOK_EVENTS)[number], run: RunNotice, marker: string): Emitted {
+  emit(type: (typeof RUN_EVENTS)[number], run: RunNotice, marker: string): Emitted {
     if (this.closed) return "closed";
     this.told.add(run.run_id);
     const ends = type === "run.ended";
@@ -203,6 +207,17 @@ export class Webhooks {
       const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
       this.schedule(this.enqueue(id, type, data), 0);
     }
+    return this.unsaved ? "unsaved" : "queued";
+  }
+
+  /** A trigger's failed firing (triggers.ts), queued once: its webhook-id is made from the firing's key, so the same
+   *  failure told again, by a later server too, is the same message. Its trigger keeps whether it was queued. */
+  emitTrigger(failed: TriggerFailed, firingKey: string): Emitted {
+    if (this.closed) return "closed";
+    const config = this.config();
+    if (!config || config.disabled) return "off";
+    const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
+    if (!this.messages.some((m) => m.id === id)) this.schedule(this.enqueue(id, "trigger.failed", failed), 0);
     return this.unsaved ? "unsaved" : "queued";
   }
 
