@@ -100,8 +100,8 @@ export default function reply(context, faux) {
     const since = context.messages.length - 1 - context.messages.findLastIndex((m) => m.role === "user");
     return since === 0 ? faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" }) : faux.message("Fetched again.");
   }
-  // Runs monid's /slow, which holds until it is stopped; then says so.
-  if (first.includes("Run monid's /slow.")) return results === 0 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
+  // Runs monid's /slow, which holds until it is stopped; then, or on a follow-up (the run stopped), says so.
+  if (first.includes("Run monid's /slow.")) return results === 0 && users.length === 1 ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/slow" }), { stopReason: "toolUse" }) : faux.message("Ran.");
   // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
   if (first.includes("Search the web for ")) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
