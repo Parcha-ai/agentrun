@@ -594,7 +594,7 @@ export function adapterRun(
       // ends interrupted, and the run waits for the person (turns.ts), never answered "". The end names the message the
       // turn took, as every turn end does.
       const restored: TurnStatus | undefined = session.state === "idle" && unended ? (stopped ? "interrupted" : unended.failed ? "failed" : unended.answer !== null ? "completed" : "interrupted") : undefined;
-      const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, status, answer: status === "completed" ? unended!.answer : null } satisfies TurnEndData }))));
+      const restore = (status: TurnStatus) => later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: TURN_END, data: { key: spec.key, message: unended!.message, status, answer: status === "completed" ? unended!.answer : null } satisfies TurnEndData }))));
       // A turn the session holds open is the last message's, resumed now.
       if (session.state === "open_turn" && unended) taking = unended.message;
       queue.push(...accepted.values());
