@@ -73,7 +73,7 @@ test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, 
   assert.ok(!existsSync(join(data, "mcp-servers.json")), "a preview stores nothing");
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] });
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.mcp_client, { routes: true, transports: ["streamable-http"], auth: ["none", "bearer", "headers"], at_rest: "sealed" });
+  assert.deepEqual(caps.features.mcp_client, { routes: true, transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth"], at_rest: "sealed" });
 });
 
 test("preview tells a server that wants a credential (bearer or OAuth), one that is not MCP, one that is down, and one that redirects apart", async (t) => {
@@ -202,7 +202,7 @@ test("what is refused before any connection: no seal key for a credential (409),
   }
   const oauth = await api1("PUT", "/settings/mcp-servers/signin", { url: open.url, auth: { type: "oauth" } });
   assert.equal(oauth.status, 422);
-  assert.deepEqual([oauth.body.error.fields[0].field, oauth.body.error.fields[0].reason], ["auth.type", "not_yet"]);
+  assert.deepEqual([oauth.body.error.fields[0].field, oauth.body.error.fields[0].reason], ["auth.type", "missing"], "an OAuth server is signed in to first (mcp-oauth.test.mjs)");
   const cleartext = await api1("POST", "/settings/mcp-servers/preview", { url: "http://mcp.example.com/mcp" });
   assert.equal(cleartext.status, 422);
   assert.deepEqual([cleartext.body.error.fields[0].field, cleartext.body.error.fields[0].reason], ["url", "not_https"]);

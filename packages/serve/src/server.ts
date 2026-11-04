@@ -307,6 +307,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
   { method: "DELETE", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "deleteMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/refresh$/, name: "refreshMcpServer" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/([^/]+)\/oauth\/start$/, name: "startMcpOAuth" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/callback$/, name: "mcpOAuthCallback" },
+  { method: "GET", pattern: /^\/settings\/mcp-servers\/oauth\/client\.json$/, name: "mcpOAuthClient" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
@@ -1291,6 +1294,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
+    // An MCP server's OAuth sign-in: the browser coming back from its authorization server carries no token (the state
+    // it brings is the check, mcp-oauth.ts), and the client metadata document is for that server to fetch.
+    if (found.name === "mcpOAuthCallback") return void res.writeHead(302, { location: await mcpServers.oauthCallback(url.searchParams, stopping.signal), "cache-control": "no-store" }).end();
+    if (found.name === "mcpOAuthClient") return send(res, 200, mcpServers.clientDocument(), { "cache-control": "public, max-age=3600" });
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -1583,6 +1590,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await mcpServers.save(id, await bodyOf(req), stopping.signal));
       case "refreshMcpServer":
         return send(res, 200, await mcpServers.refresh(id, stopping.signal));
+      case "startMcpOAuth":
+        return send(res, 200, await mcpServers.oauthStart(id, await bodyOf(req)));
       case "deleteMcpServer":
         mcpServers.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
@@ -1726,6 +1735,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
+  mcpServers.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;

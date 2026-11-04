@@ -14,6 +14,7 @@ import { BOX_IDS, BOX_STATES } from "./boxes.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 import { NOT_YET, PICKABLE, PROVIDERS } from "./tool-plane.js";
@@ -221,7 +222,16 @@ const MCP_SERVER_VIEW = {
   properties: {
     name: { type: "string" }, url: { type: "string", format: "uri" },
     auth: { type: "object", additionalProperties: false, required: ["type"], properties: { type: { enum: [...MCP_AUTH_TYPES] }, headers: { type: "array", items: { type: "string" }, description: "For `headers`: the names of the headers kept (lowercase), never a value." } } },
-    credential: { enum: ["sealed", "seal_key_missing", "unreadable", null], description: "`sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value." },
+    credential: { enum: ["sealed", "seal_key_missing", "unreadable", "expired", null], description: "`sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again; `expired`: an OAuth sign-in whose refresh the authorization server refused (revoked or expired): sign in again. Null for `auth.type` none. Never a value." },
+    oauth: {
+      type: "object", additionalProperties: false, required: ["scopes", "client"],
+      properties: {
+        expires_at: { type: "string", format: "date-time", description: "When the access token expires; a run's launch refreshes it within 5 minutes of then." },
+        scopes: { type: "array", items: { type: "string" }, description: "The scopes granted." },
+        client: { enum: ["pre-registered", "metadata-document", "dynamic"], description: "How this server is the authorization server's client: the owner's own client id, this server's client metadata document (CIMD, from a public https address only), or dynamic registration." },
+      },
+      description: "For `auth.type` oauth: the sign-in, never a token.",
+    },
     ...MCP_LISTING,
     listed_at: { type: "string", format: "date-time", description: "When its tools were last listed (a PUT or a refresh)." },
     updated_at: { type: "string", format: "date-time", description: "When it was last saved." },
@@ -230,7 +240,7 @@ const MCP_SERVER_VIEW = {
 const MCP_AUTH = {
   type: "object", additionalProperties: false, required: ["type"],
   properties: {
-    type: { enum: [...MCP_AUTH_TYPES, "oauth"], description: `\`none\`; \`bearer\` (\`token\`, sent as \`Authorization: Bearer <token>\`); \`headers\` (each named header and its value). \`oauth\` is refused: 422 input_invalid, reason not_yet.` },
+    type: { enum: [...MCP_AUTH_TYPES], description: `\`none\`; \`bearer\` (\`token\`, sent as \`Authorization: Bearer <token>\`); \`headers\` (each named header and its value); \`oauth\`, with no credential in the body: the server is signed in to first (POST /settings/mcp-servers/{name}/oauth/start), and a PUT keeps the sealed token set.` },
     token: { type: "string", minLength: 1, maxLength: 8192 },
     headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192 }, description: "Header names a credential may go in: not Host, Content-Type, Accept, Content-Length, Connection, Transfer-Encoding, Last-Event-ID or an Mcp- header the transport sets." },
   },
@@ -799,6 +809,33 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `With its saved URL and sealed credential. \`added\` and \`removed\` are tool names; \`changed\` names a tool whose title, description, schemas or annotations differ. ${MCP_CONNECTS}`,
       parameters: [MCP_NAME],
       responses: { "200": json(closed({ added: { type: "array", items: { type: "string" } }, removed: { type: "array", items: { type: "string" } }, changed: { type: "array", items: { type: "string" } }, server: MCP_SERVER_VIEW }), "What changed, and the server now."), ...errors(401, 404, 409, 422, 429, 500, 503), ...MCP_FAILED },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/{name}/oauth/start": {
+    post: {
+      operationId: "startMcpOAuth", tags: ["local"], summary: "Start signing in to an MCP server with OAuth: the page the owner opens",
+      description: `Discovers the server's authorization server (RFC 9728, then RFC 8414) with the official MCP SDK, and its client: the \`client_id\` (and \`client_secret\`) given; else this server's client metadata document, when this server's address is public https and the authorization server takes one; else dynamic registration. PKCE S256, and the RFC 8707 \`resource\` is the server's URL. Answers \`authorization_url\` for the owner to open; the authorization server sends the browser back to GET /settings/mcp-servers/oauth/callback within 10 minutes. 409 no_sealing_key with no seal key; 424 when discovery or registration fails.`,
+      parameters: [MCP_NAME],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set." } } } } } },
+      responses: { "200": json(closed({ authorization_url: { type: "string", format: "uri" } }), "The page the owner opens."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/oauth/callback": {
+    get: {
+      operationId: "mcpOAuthCallback", tags: ["local"], summary: "Where the authorization server sends the owner's browser back", security: [{}],
+      description: `Takes no credential: its \`state\` (random, used once, 10 minutes, bound to the server's name) is the check. Exchanges \`code\` with the PKCE verifier kept here, seals the token set (access and refresh tokens, expiry, scopes, the client) bound to the server's name, lists the server's tools as a PUT does and keeps them, then redirects to \`${MCP_SETTINGS_PAGE}?server=<name>&sign_in=ok\` (or \`sign_in=failed&error=<code>\`). 400 for a state that is unknown, used or expired.`,
+      parameters: ["code", "state", "iss", "error"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
+      responses: { "302": { description: "To the console's MCP servers page." }, ...errors(400, 429, 500) },
+      "x-agentrun-serve": "mcpservers/1",
+    },
+  },
+  "/settings/mcp-servers/oauth/client.json": {
+    get: {
+      operationId: "mcpOAuthClient", tags: ["local"], summary: "This server's OAuth client metadata document", security: [{}],
+      description: "Its own URL is its client id (CIMD): `redirect_uris` is the callback, `token_endpoint_auth_method` none. Readable without a credential, for an authorization server to fetch.",
+      responses: { "200": json({ type: "object" }, "The document."), ...errors(429, 500) },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
