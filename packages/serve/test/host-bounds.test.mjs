@@ -28,6 +28,7 @@ import { codingSource, CodingTools } from "../dist/coding-tools.js";
 import * as pages from "../dist/fetch-page.js";
 import * as hosts from "../dist/host-tools.js";
 import { CLIP, monidText } from "../dist/monid.js";
+import { LEARNED_CLIP, learnedText, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import * as web from "../dist/web-fetch.js";
 import * as search from "../dist/web-search.js";
 
@@ -77,6 +78,9 @@ test("every host tool's largest result is within the host's result bound, which 
   const monid = [await monidText({ runId: "r".repeat(80), output: '"'.repeat(3 * CLIP) }, work, "run"), await monidText({ runId: "w".repeat(80), output: wide.repeat(3 * CLIP) }, work, "run")];
   for (const name of ["monid.discover", "monid.inspect", "monid.run"]) keep(name, ...monid);
 
+  // learned_workflow: a workflow's output far past LEARNED_CLIP, as JSON (quotes escaped), and in three-byte text.
+  keep("learned_workflow", learnedText(JSON.stringify({ out: '"'.repeat(3 * LEARNED_CLIP) })), learnedText(JSON.stringify({ out: wide.repeat(3 * LEARNED_CLIP) })));
+
   // pi's read, write and edit on the runner, and bash in a box, through the host tools' own call: past pi's limits.
   const env = new NodeExecutionEnv({ cwd: work });
   const run = { env: async () => env };
@@ -112,7 +116,9 @@ test("every host tool's largest result is within the host's result bound, which 
 
   // Every host tool, as the Claude Agent adapter lists it to its CLI (its tool server's tools/list, read by an MCP
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
-  const all = hosts.hostTools({ ...run, claim: { work } }, Object.keys(hosts.REPLAY), ctx, new Map(), box.tools);
+  // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow (app.ts).
+  const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) } });
+  const all = hosts.hostTools({ ...run, claim: { work } }, Object.keys(hosts.REPLAY), ctx, new Map(), box.tools, [learned]);
   assert.deepEqual(all.map((tool) => tool.name).sort(), Object.keys(hosts.REPLAY).map((name) => name.replace(".", "_")).sort(), "every host tool, under its wire name");
   const server = await claude.toolServer("hands", all.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), async () => ({ content: [] }));
   const [near, far] = InMemoryTransport.createLinkedPair();

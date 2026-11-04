@@ -41,6 +41,18 @@ export type LearnedWorkflowRun = {
   complete?: Complete;
 };
 
+/** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
+ *  host's result bound, which each CLI is told to pass whole (host-bounds.test). */
+export const LEARNED_CLIP = 60_000;
+
+/** `text`, a learned workflow's output as JSON, cut at LEARNED_CLIP characters (never inside a surrogate pair), saying
+ *  so. */
+export function learnedText(text: string): string {
+  if (text.length <= LEARNED_CLIP) return text;
+  const end = /[\uD800-\uDBFF]/.test(text[LEARNED_CLIP - 1] ?? "") ? LEARNED_CLIP - 1 : LEARNED_CLIP;
+  return `${text.slice(0, end)}\n[the workflow's output is cut at ${end} of ${text.length} characters]`;
+}
+
 /** What a learned workflow's model node is refused with when it names a tool: it runs in a session of its own here. */
 export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without tools here";
 
@@ -138,7 +150,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, ...(signal ? { signal } : {}) } as never);
     if (result.status !== "complete") return refuse(`it ended ${result.status}`);
-    return { text: JSON.stringify(result.output ?? null), isError: false };
+    return { text: learnedText(JSON.stringify(result.output ?? null)), isError: false };
   } catch (error) {
     if (signal?.aborted) throw error;
     return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}`, isError: true };
