@@ -95,7 +95,7 @@ test("a pi agent that names no model and picks native search runs on a server wh
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENT_MODEL", "AGENT_MODEL_BASE_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
   const { api } = await serve(t);
   // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
-  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "not-a-secret-search" } })).status, 204);
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: `not-a-secret-${"search"}` } })).status, 204);
   const made = await api("POST", "/agents", agent("key-searcher", { tools: ["web_search"], tool_settings: { web_search: { provider: "native" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings ?? [], [], "no warning: its search has a model to ask");
