@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunFiles } from "./RunFiles";
 import { RunHeader } from "./RunHeader";
 import { RunsList } from "./RunsList";
@@ -17,9 +17,8 @@ const run: Run = {
 const text = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(el).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
 describe("the console's times, in the viewer's zone (Puerto Rico, UTC-4)", () => {
-  let was: string | undefined;
-  beforeAll(() => { was = process.env.TZ; process.env.TZ = "America/Puerto_Rico"; });
-  afterAll(() => { if (was === undefined) delete process.env.TZ; else process.env.TZ = was; });
+  beforeEach(() => { vi.stubEnv("TZ", "America/Puerto_Rico"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
 
   it("the run header", () => {
     const t = text(createElement(RunHeader, { run, agentName: "Calc" }));
