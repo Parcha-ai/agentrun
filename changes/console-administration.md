@@ -21,3 +21,7 @@ The API playground keeps its request and response tabs vertically centered at th
 Tab indicators use straight underlines throughout the console, including the API playground's request, response and language tabs.
 
 Application choices, run-state filters and API playground selectors use dark menus with clear selected options, keyboard navigation and viewport-aware placement.
+
+Console reads keep pending data distinct from empty results. Navigation and pagination ignore stale responses, activity lists deduplicate runs, and pinned Playground routes retain their requested agent. Editor validation follows current tool grants and revision identity; unsupported history actions stay hidden. Failed sends and clipboard operations preserve usable controls and report their failure. Start and message submissions reject duplicate in-flight actions while retaining retry drafts and request identity. Workflow outputs retain valid false, zero and empty-string values. Agent fields have accessible names, and input composition does not submit a message.
+
+Local owner sessions label their global sign-out explicitly. Production builds reject console fixture, sample, mock, story and test modules.

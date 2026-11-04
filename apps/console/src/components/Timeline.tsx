@@ -56,10 +56,12 @@ function Row({ row, last }: { row: TimelineRow; last: boolean }) {
 }
 
 /** The run's live timeline as a step list: newest last, older steps folded behind "N earlier steps". */
-export function Timeline({ rows, live, fold = 6 }: { rows: TimelineRow[]; live: boolean; fold?: number }) {
+export function Timeline({ rows, live, fold = 6, loading = false, unavailable = false }: { rows: TimelineRow[]; live: boolean; fold?: number; loading?: boolean; unavailable?: boolean }) {
   const [all, setAll] = useState(false);
   const hidden = all ? 0 : Math.max(0, rows.length - fold);
   const shown = rows.slice(hidden);
+  if (!rows.length && unavailable) return <Working title="Timeline unavailable" note="Reconnect to read the run's recorded steps." spin={false} />;
+  if (!rows.length && loading) return <Working title="Reading the timeline" note="Recorded steps appear when the server responds." />;
   if (!rows.length) return <Working title={live ? "The run is starting" : "Nothing on the timeline"} note={live ? "Steps appear here as the agent works." : "This run recorded no steps."} spin={live} />;
   return (
     <div>

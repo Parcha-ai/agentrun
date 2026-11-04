@@ -14,11 +14,15 @@ const file: RunFile = { path: "report.txt", content_type: "text/plain", size_byt
 
 describe("RunDetail's native lifecycle controls", () => {
   it.each([
-    { label: "complete", content: "Divided by 7", shown: "Divided by 7" },
-    { label: "truncated", content: "Explain the calculation and show each step. ".repeat(60), shown: `${"Explain the calculation and show each step. ".repeat(60).slice(0, 1997)}...` },
-  ])("keeps a failed follow-up draft, then opens its timeline and acknowledges acceptance until its new $label message arrives", async ({ content, shown }) => {
+    { label: "complete", content: "Divided by 7", shown: "Divided by 7", rejects: false },
+    { label: "truncated", content: "Explain the calculation and show each step. ".repeat(60), shown: `${"Explain the calculation and show each step. ".repeat(60).slice(0, 1997)}...`, rejects: false },
+    { label: "rejected callback", content: "Try this follow-up again", shown: "Try this follow-up again", rejects: true },
+  ])("submits duplicate activations once, keeps a failed follow-up draft, then acknowledges acceptance until its new $label message arrives", async ({ content, shown, rejects }) => {
     const old: TimelineRow = { id: "old", seq: 1, kind: "user_message", summary: `You: ${shown}`, text: shown, timestamp: run.created_at, tool_name: null };
-    const onMessage = vi.fn<(_text: string) => Promise<boolean>>().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    let refuse!: (value: boolean) => void;
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<boolean>((resolve, fail) => { refuse = resolve; reject = fail; });
+    const onMessage = vi.fn<(_text: string) => Promise<boolean>>().mockReturnValueOnce(pending).mockResolvedValueOnce(true);
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     const render = async (rows: TimelineRow[], enabled = true) => {
@@ -38,11 +42,17 @@ describe("RunDetail's native lifecycle controls", () => {
     await type();
     expect(send().disabled).toBe(true);
     await render([old]);
-    await act(async () => { send().click(); });
+    await act(async () => { send().click(); send().click(); });
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(send().disabled).toBe(true);
+    await act(async () => { if (rejects) reject(new Error("Connection interrupted")); else refuse(false); });
     expect(tab("Report").getAttribute("aria-selected")).toBe("true");
     expect(draft().value).toBe(content);
     expect(host.textContent).not.toContain("Sent.");
-    await act(async () => { send().click(); });
+    expect(send().disabled).toBe(false);
+    if (rejects) expect(host.querySelector('[role="alert"]')?.textContent).toContain("Connection interrupted");
+    await act(async () => { send().click(); send().click(); });
+    expect(onMessage).toHaveBeenCalledTimes(2);
     expect(tab("Timeline").getAttribute("aria-selected")).toBe("true");
     expect(draft().value).toBe("");
     expect(host.textContent).toContain("Sent.");
@@ -63,6 +73,28 @@ describe("RunDetail's native lifecycle controls", () => {
     await act(async () => { accept(true); });
     expect(tab("Timeline").getAttribute("aria-selected")).toBe("true");
     expect(host.textContent).not.toContain("Sent.");
+  });
+
+  it.each([
+    { isComposing: true, keyCode: 13 },
+    { isComposing: false, keyCode: 229 },
+  ])("keeps Enter in the input method while composing ($isComposing/$keyCode)", async (composition) => {
+    const onMessage = vi.fn().mockResolvedValue(true);
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, { run, agentName: "Writer", messages: { ...NO_MESSAGES, follow_up: true }, harnessSteers: false, rows: [], files: [], onMessage })); });
+    const draft = host.querySelector<HTMLTextAreaElement>("#composer")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(draft, "東京について");
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { draft.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...composition })); });
+    expect(onMessage).not.toHaveBeenCalled();
+    expect(draft.value).toBe("東京について");
+    await act(async () => { draft.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith("東京について");
+    expect(draft.value).toBe("");
   });
 
   it.each([
@@ -87,6 +119,14 @@ describe("RunDetail's native lifecycle controls", () => {
   });
 });
 
+it.each([false, 0, ""])("shows a completed workflow's output %j without claiming it gave no answer", async (output) => {
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => { root!.render(createElement(RunDetail, { run: { ...run, kind: "workflow", result: { output } }, agentName: "Workflow", messages: NO_MESSAGES, harnessSteers: false, rows: [], files: [] })); });
+  expect(host.querySelector("pre")?.textContent).toBe(JSON.stringify(output));
+  expect(host.textContent).not.toContain("This run gave no answer.");
+});
+
 describe("RunDetail's files", () => {
   it("previews supported images and downloads their original binary bytes", async () => {
     const original = await new Response(new Uint8Array([0x89, 0xff, 0x00]), { headers: { "content-type": "image/png" } }).blob();
@@ -101,7 +141,7 @@ describe("RunDetail's files", () => {
     expect(urls.mock.calls[0][0]).toBe(original);
   });
 
-  it("surfaces a failed authenticated read and retries without closing the file", async () => {
+  it.each(["unavailable", "denied"])("retries a failed file read and reports %s clipboard access without losing the file", async (clipboard) => {
     let reads = 0;
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
@@ -114,5 +154,17 @@ describe("RunDetail's files", () => {
     expect(host.querySelector("dialog pre")?.textContent).toBe("Report");
     expect(host.querySelector('dialog [role="alert"]')).toBeNull();
     expect(reads).toBe(2);
+    const writeText = vi.fn().mockRejectedValueOnce(new Error("Copy permission denied")).mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: clipboard === "denied" ? { writeText } : undefined });
+    const copy = () => [...host.querySelectorAll<HTMLButtonElement>("dialog button")].find((button) => button.textContent?.trim() === "Copy")!;
+    await act(async () => { copy().click(); });
+    expect(host.querySelector('dialog [role="alert"]')).toBeTruthy();
+    expect(host.querySelector("dialog pre")?.textContent).toBe("Report");
+    expect(host.querySelector("dialog")?.textContent).not.toContain("Copied");
+    vi.stubGlobal("navigator", { clipboard: { writeText: writeText.mockReset().mockResolvedValue(undefined) } });
+    await act(async () => { copy().click(); });
+    expect(host.querySelector('dialog [role="alert"]')).toBeNull();
+    expect(host.querySelector("dialog")?.textContent).toContain("Copied");
+    expect(writeText).toHaveBeenLastCalledWith("Report");
   });
 });

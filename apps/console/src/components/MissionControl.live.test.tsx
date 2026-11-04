@@ -44,6 +44,26 @@ async function open(analytics: boolean) {
 }
 
 describe("Mission Control's range, against the server", () => {
+  it("shows a transitioning run once using the recent snapshot when status reads overlap", async () => {
+    const current = { run_id: "moving", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "input_required", state: "waiting", title: "Waiting for the user",
+      created_at: new Date().toISOString(), ended_at: null, result: null, error: null, cost: null, archived_at: null };
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: {} });
+      if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      if (u.pathname === "/v2/stats") return json(200, { ...stats(false), runs: { total: 1, active: 0, needs_input: 1, failed: 0, status_unknown: 0 } });
+      const status = u.searchParams.get("status");
+      return json(200, { runs: status === "working" ? [{ ...current, status, state: "working" }] : !status || status === "input_required" ? [current] : [], next_cursor: null });
+    });
+    location.hash = "";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    expect(host.querySelector('section[aria-label="Active work"] a[href="#/runs/moving"]')).toBeNull();
+    expect(host.querySelectorAll('section[aria-label="Needs attention"] a[href="#/runs/moving"]')).toHaveLength(1);
+  });
+
   it("asks for the last 30 days first, then 7 days, then all, then one agent's runs", async () => {
     const { host, asked, wait } = await open(true);
     const from = (search: string) => new URLSearchParams(search).get("from");

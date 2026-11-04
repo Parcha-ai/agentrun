@@ -19,12 +19,15 @@ export type RunDetailProps = {
   /** Whether the run's harness steers mid-turn (`harnessSteers`): on one that does not, a working run takes a follow_up. */
   harnessSteers: boolean;
   rows: TimelineRow[];
+  timelineLoading?: boolean;
+  timelineUnavailable?: boolean;
   files: RunFile[];
   /** Reads a file's text (the authenticated bytes from /v2/runs/{id}/files/{path}). */
   readFile?: (file: RunFile) => Promise<string>;
   readFileBlob?: (file: RunFile) => Promise<Blob>;
   filesComplete?: boolean;
   filesTruncated?: boolean;
+  filesLoading?: boolean;
   filesSupported?: boolean;
   openFile?: RunFile | null;
   actions?: RunActions;
@@ -39,7 +42,7 @@ export type RunDetailProps = {
 type Tab = "graph" | "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, readFileBlob, filesComplete = true, filesTruncated = false, filesSupported = true, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, timelineLoading = false, timelineUnavailable = false, files, readFile, readFileBlob, filesComplete = true, filesTruncated = false, filesLoading = false, filesSupported = true, openFile = null, actions, onMessage, tab: initial, graphView, costText }: RunDetailProps) {
   const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review, run);
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [accepted, setAccepted] = useState<{ text: string; prior: Set<string> } | null>(null);
@@ -79,7 +82,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   useEffect(() => { if (filesSupported && openFile && (readFile || readFileBlob)) void show(openFile); }, [openFile, filesSupported]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!filesSupported) { close(); if (tab === "files") setTab("timeline"); } }, [filesSupported]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(filesSupported ? [["files", `Files ${files.length}`] as [Tab, string]] : [])];
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(filesSupported ? [["files", filesLoading ? "Files" : `Files ${files.length}`] as [Tab, string]] : [])];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
@@ -111,11 +114,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {view.needsYou && <NeedsYou waiting={waiting} />}
           {tab === "report" && <RunResult run={run} rows={rows} />}
           {tab === "report" && !run.result && !view.final && <Working title="Writing the answer" note="The answer appears here when the run finishes. Follow it on the timeline." spin={view.live} />}
-          {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
+          {tab === "report" && view.final && !run.result?.final_answer && run.result?.output == null && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
-          {tab === "timeline" && <Timeline rows={rows} live={view.live} />}
-          {tab === "files" && <RunFiles files={files} complete={filesComplete} truncated={filesTruncated} onOpen={show} />}
+          {tab === "timeline" && <Timeline rows={rows} live={view.live} loading={timelineLoading} unavailable={timelineUnavailable} />}
+          {tab === "files" && <RunFiles files={files} complete={filesComplete} truncated={filesTruncated} loading={filesLoading} onOpen={show} />}
         </div>
       </div>}
       {view.canMessage && (

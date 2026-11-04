@@ -14,6 +14,8 @@ Agent revision bodies use native agentic/workflow definitions and text skill bun
 
 Mission Control combines whole-store statistics with bounded operational lists. Pagination and freshness are explicit. Active work, human input, failure, useful results and unknown usage remain distinct.
 
+Production records come through the typed client. Fixture and sample modules belong to tests and stories. Pending reads, unavailable data and empty results have distinct states; navigation retires earlier reads before they can replace the current selection. A failed command preserves its draft and retry state. Revision identity comes from the agent record, and workflow validation includes the current tool grants.
+
 ## Design and source inventory
 
 | Surface | Public implementation and provenance |

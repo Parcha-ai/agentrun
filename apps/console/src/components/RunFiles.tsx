@@ -7,7 +7,8 @@ import type { RunFile } from "@/lib/v2";
 import { viewKind } from "@/lib/viewing";
 
 /** The run's FILES tab: what it wrote, in the server's path order, each opened in the viewer. */
-export function RunFiles({ files, complete = true, truncated = false, onOpen }: { files: RunFile[]; complete?: boolean; truncated?: boolean; onOpen: (file: RunFile) => void }) {
+export function RunFiles({ files, complete = true, truncated = false, loading = false, onOpen }: { files: RunFile[]; complete?: boolean; truncated?: boolean; loading?: boolean; onOpen: (file: RunFile) => void }) {
+  if (loading) return <section aria-busy="true"><p className="border px-4 py-8 text-center font-mono text-[13px] text-muted-foreground" role="status">Reading the files...</p></section>;
   const total = files.reduce((n, f) => n + f.size_bytes, 0);
   return (
     <section>
@@ -36,6 +37,17 @@ export function RunFiles({ files, complete = true, truncated = false, onOpen }: 
 /** Authenticated file bytes, downloaded intact. Supported media render locally; HTML is sanitized in a sandbox. */
 export function ArtifactViewer({ file, text, blob, error, onRetry, onClose }: { file: RunFile; text: string | null; blob?: Blob; error?: string; onRetry?: () => void; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  useEffect(() => { setCopied(false); setCopyError(null); }, [file.path, text]);
+  const copy = async () => {
+    if (text === null) return;
+    setCopied(false); setCopyError(null);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable.");
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch (e) { setCopyError(e instanceof Error ? e.message : String(e)); }
+  };
   const dialog = useRef<HTMLDialogElement>(null);
   // A native modal dialog: focus moves in and stays in, the page behind is inert, Escape closes it, and focus goes back
   // to what opened it on close.
@@ -61,9 +73,10 @@ export function ArtifactViewer({ file, text, blob, error, onRetry, onClose }: { 
           <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close"><X aria-hidden /></Button>
           <FileText className="size-4 text-muted-foreground" aria-hidden />
           <span className="min-w-0 flex-1 truncate font-mono text-[13px]">{file.path}</span>
-          <Button size="sm" disabled={text === null || !["markdown", "text", "html"].includes(kind)} onClick={async () => { if (text !== null) { await navigator.clipboard?.writeText(text); setCopied(true); } }}><Copy aria-hidden /> {copied ? "Copied" : "Copy"}</Button>
+          <Button size="sm" disabled={text === null || !["markdown", "text", "html"].includes(kind)} onClick={() => void copy()}><Copy aria-hidden /> {copied ? "Copied" : "Copy"}</Button>
           {url ? <a href={url} download={file.path.split("/").pop()} className="inline-flex items-center gap-2 border px-3 py-2 text-[12px]"><Download className="size-4" aria-hidden /> Download</a> : <Button size="sm" disabled><Download aria-hidden /> Download</Button>}
         </header>
+        {copyError && <p className="border-b px-4 py-3 text-[13px] text-destructive-text" role="alert">File could not be copied: {copyError}</p>}
         <div className="min-h-0 flex-1 overflow-auto px-6 py-8 md:px-16">
           {error ? <div role="alert"><p className="text-[13px] text-destructive-text">{error}</p><Button size="sm" className="mt-3" onClick={onRetry}>Try again</Button></div> : text === null ? <p className="font-mono text-[13px] text-muted-foreground">Loading the file...</p>
             : kind === "image" && url ? <img src={url} alt={file.path} className="mx-auto max-h-full max-w-full" />

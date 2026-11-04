@@ -16,7 +16,7 @@ test('the browser boundary refuses private integrations in dependencies and emit
   assert.doesNotThrow(() => assertBrowserText('fetch("/v2/agents")', 'assets/app.js'));
 });
 
-test('the guarded bundle emits canonical notices once for code, asset sources and inlined fonts, with notices in its public manifest', async (t) => {
+test('the guarded bundle refuses nonproduction console modules and emits canonical notices once in its public manifest', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'console-boundary-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const put = async (file, text) => { await mkdir(join(root, file, '..'), { recursive: true }); await writeFile(join(root, file), text); };
@@ -31,8 +31,18 @@ test('the guarded bundle emits canonical notices once for code, asset sources an
   const plugin = consoleBoundary();
   plugin.configResolved({ root });
   const emitted = [];
+  for (const file of [
+    'src/fixtures/capabilities.json', 'src/components/AgentAnalytics.sample.ts', 'src/sample.ts',
+    'src/components/MissionControl.stories.tsx', 'src/components/MissionControl.test.tsx',
+    'src/__mocks__/client.ts', 'src/lib/client.spec.ts', 'src/fixtures/recorded.json?url',
+  ]) {
+    assert.throws(() => plugin.generateBundle.call({ emitFile: (item) => emitted.push(item) }, {}, {
+      'assets/index.js': { type: 'chunk', fileName: 'assets/index.js', code: '', moduleIds: [join(root, file)] },
+    }), /Nonproduction console module/);
+  }
+  assert.equal(emitted.length, 0);
   plugin.generateBundle.call({ emitFile: (file) => emitted.push(file) }, {}, {
-    'assets/index.js': { type: 'chunk', fileName: 'assets/index.js', code: '', moduleIds: [`${root}/node_modules/clsx/index.js`] },
+    'assets/index.js': { type: 'chunk', fileName: 'assets/index.js', code: '', moduleIds: [`${root}/src/components/MissionControl.tsx`, `${root}/src/lib/exampleInput.ts`, `${root}/node_modules/clsx/test/mock.js`] },
     'assets/index.css': { type: 'asset', fileName: 'assets/index.css', source: '', originalFileNames: ['node_modules/dompurify/dist/purify.css'] },
     'assets/font.woff2': { type: 'asset', fileName: 'assets/font.woff2', source: '', originalFileNames: ['node_modules/@fontsource/jetbrains-mono/files/font.woff2'] },
   });

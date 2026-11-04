@@ -20,7 +20,7 @@ export function Wordmark() {
 /** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item has orange text and a tinted background),
  *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. Settings shows only when `settings`
  *  (the server has a settings page to open). */
-export function Shell({ active, settings = true, agents = true, runs = true, onNavigate, onSignOut, extensions = [], activeExtension, onExtensionNavigate, children }: { active: Section; settings?: boolean; agents?: boolean; runs?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; extensions?: readonly { id: string; label: string; path: string }[]; activeExtension?: string; onExtensionNavigate?: (path: string) => void; children: ReactNode }) {
+export function Shell({ active, settings = true, agents = true, runs = true, onNavigate, onSignOut, signOutLabel = "Sign out", extensions = [], activeExtension, onExtensionNavigate, children }: { active: Section; settings?: boolean; agents?: boolean; runs?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; signOutLabel?: string; extensions?: readonly { id: string; label: string; path: string }[]; activeExtension?: string; onExtensionNavigate?: (path: string) => void; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
@@ -41,7 +41,7 @@ export function Shell({ active, settings = true, agents = true, runs = true, onN
             className={cn("flex items-center gap-2.5 p-3 text-left text-[13px] hover:bg-accent", activeExtension === id && "bg-primary/[0.06] font-semibold text-primary")}><Puzzle className="size-4" aria-hidden /> {label}</button>)}
         </nav>
         {onSignOut && <button type="button" onClick={onSignOut} className="caps mt-4 flex items-center gap-2.5 border px-3 py-2.5 text-[12px] hover:bg-accent md:mt-auto">
-          <LogOut className="size-4" aria-hidden /> Sign out
+          <LogOut className="size-4" aria-hidden /> {signOutLabel}
         </button>}
       </aside>
       <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>

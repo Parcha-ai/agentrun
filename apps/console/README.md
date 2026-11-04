@@ -15,6 +15,8 @@ node packages/serve/dist/cli.js --data ./local-agentrun-data --port 7340 \
 
 Open the setup URL printed by the server. The console signs in through the server's HttpOnly session cookie; the setup code leaves the address. `AGENTRUN_ACCOUNTS=0` uses the server's local token bootstrap instead. Never paste a credential into an external coding-agent handoff or screenshot.
 
+The standalone local owner's sign-out ends every owner browser session. Embedded applications supply their own sign-out behavior through the provider.
+
 For UI development, run `npm ci --ignore-scripts` and `npm run dev` here. The dev server binds to loopback and proxies `/v2` to `AGENTRUN_URL` or the native server's default loopback port. `AGENTRUN_TOKEN` can authenticate that development proxy. The static production build uses only same-origin `/v2` requests.
 
 ## Embed the shared console

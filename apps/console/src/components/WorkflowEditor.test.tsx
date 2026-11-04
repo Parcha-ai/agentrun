@@ -36,6 +36,20 @@ describe("WorkflowEditor", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(validate).toHaveBeenCalledTimes(2);
   });
+  it("checks unchanged JSON again after its tool grants change without keeping a stale valid result", async () => {
+    vi.useFakeTimers();
+    const text = JSON.stringify(wf(["a"]), null, 2);
+    const validate = vi.fn(async ({ tools }: { workflow: unknown; tools?: string[] }) => ({ ok: !!tools?.includes("read"), issues: tools?.includes("read") ? [] : [{ path: "/root", code: "tool_not_granted", message: "The read tool is not granted." }], warnings: [] }));
+    await mount({ text, onText: () => {}, tools: ["read"], validate });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(box.textContent).toContain("checked by the server");
+    await act(async () => { root!.render(createElement(WorkflowEditor, { text, onText: () => {}, tools: [], validate })); });
+    expect(box.textContent).toContain("checking...");
+    expect(box.textContent).not.toContain("checked by the server");
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(validate).toHaveBeenLastCalledWith({ workflow: wf(["a"]), tools: [] }, expect.any(AbortSignal));
+    expect(box.textContent).toContain("The read tool is not granted.");
+  });
   it("read-only shows the graph marked against the current revision, takes no edit, asks no check and lists no problems", async () => {
     vi.useFakeTimers();
     const validate = vi.fn(async () => ({ ok: true, issues: [], warnings: [] }));

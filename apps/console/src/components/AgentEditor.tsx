@@ -95,7 +95,8 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
   const starting = creating && isStarter(f.harness);
   const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
-  const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
+  const current = agent ? { revision: agent.revision, version: agent.definition.version } : revisions.find((r) => r.current);
+  const isCurrent = (revision: Revision) => revision.revision === current?.revision;
   const maySave = (creating ? caps.agents?.create : caps.agents?.update) !== false;
   const steps = STEPS.filter((s) => !((creating || caps.agents?.revisions === false) && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools"));
   const at = Math.max(0, steps.findIndex((s) => s.id === selectedStep));
@@ -192,10 +193,10 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
           {step === "context" && (
             <div className="max-w-3xl space-y-6">
               <Field label="Name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
-                <input value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" className={cn(input, !creating && "text-muted-foreground")} />
+                <input aria-label="Name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
               <Field label="Description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
-                <input value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
+                <input aria-label="Description" value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
               {starting ? (
                 <Field label="Workflow">
@@ -211,7 +212,7 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
                 <Field label="Instructions" required error={fieldError("instructions")} warning={fieldWarning("instructions")}
                   aside={<span className="flex">{(["Preview", "Edit"] as const).map((m) => <button key={m} type="button" onClick={() => setPreview(m === "Preview")} className={cn("caps border px-2.5 py-1 text-[11px]", (m === "Preview") === preview ? "border-foreground bg-foreground text-background" : "text-muted-foreground")}>{m}</button>)}</span>}>
                   {preview ? <article className="report min-h-64 border p-4" dangerouslySetInnerHTML={{ __html: markdown(f.instructions || "") }} />
-                    : <textarea value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
+                    : <textarea aria-label="Instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
                   <p className="mt-2 font-mono text-[11px] text-muted-foreground">{(f.instructions ?? "").length} characters</p>
                 </Field>
               )}
@@ -299,7 +300,7 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
               )}
               {!workflow && !starting && (
                 <Field label="Model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
-                  <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
+                  <input aria-label="Model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
               )}
             </div>
@@ -325,8 +326,8 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
                   <span className="caps w-14 text-[12px]">rev {r.version}</span>
                   <span className="min-w-0 flex-1 text-[14px]">{r.note ?? <span className="text-muted-foreground">No note</span>}</span>
                   <span className="font-mono text-[11px] text-muted-foreground">{when(r.created_at)}</span>
-                  {workflow && !r.current && r.definition?.workflow !== undefined && <Button size="sm" variant="ghost" onClick={() => setViewing(r)} aria-label={`View rev ${r.version}`}><Eye aria-hidden /> View</Button>}
-                  {r.current ? <Chip tone="success">Current</Chip> : caps.agents?.update !== false && <Button size="sm" onClick={() => onMakeCurrent?.(r.revision)} disabled={!onMakeCurrent}>Make current</Button>}
+                  {workflow && !isCurrent(r) && r.definition?.workflow !== undefined && <Button size="sm" variant="ghost" onClick={() => setViewing(r)} aria-label={`View rev ${r.version}`}><Eye aria-hidden /> View</Button>}
+                  {isCurrent(r) ? <Chip tone="success">Current</Chip> : caps.agents?.update !== false && <Button size="sm" onClick={() => onMakeCurrent?.(r.revision)} disabled={!onMakeCurrent}>Make current</Button>}
                 </li>
               ))}
             </ul>

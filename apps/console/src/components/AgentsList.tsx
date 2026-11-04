@@ -10,7 +10,7 @@ export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: s
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
-export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, permissions = {} }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; permissions?: { create?: boolean; update?: boolean; archive?: boolean } }) {
+export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, permissions = {} }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; permissions?: { create?: boolean; update?: boolean; archive?: boolean; runs?: boolean } }) {
   const [q, setQ] = useState("");
   const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
@@ -24,8 +24,8 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
         {permissions.archive !== false && <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>}
         {!archived && permissions.create !== false && <Button size="lg" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
       </div>
-      {error ? <p className="border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>
-        : !agents ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading agents...</p>
+      {error && <p className="mb-4 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>}
+      {!agents ? (error ? null : <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading agents...</p>)
         : !shown.length ? (
           <div className="border px-4 py-12 text-center">
             <p className="font-mono text-[13px] text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>
@@ -43,7 +43,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   );
 }
 
-function AgentCard({ agent: a, actions, permissions }: { agent: Agent; actions: AgentsListActions; permissions: { update?: boolean; archive?: boolean } }) {
+function AgentCard({ agent: a, actions, permissions }: { agent: Agent; actions: AgentsListActions; permissions: { update?: boolean; archive?: boolean; runs?: boolean } }) {
   const Icon = a.kind === "workflow" ? Workflow : Bot;
   const archived = !!a.archived_at;
   return (
@@ -67,7 +67,7 @@ function AgentCard({ agent: a, actions, permissions }: { agent: Agent; actions: 
         </div>
         <div className="flex shrink-0 items-center gap-2 self-end">
           {permissions.update !== false && <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>}
-          <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>
+          {permissions.runs !== false && <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>}
           {permissions.archive !== false && <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
             {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
           </Button>}

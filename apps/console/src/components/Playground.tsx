@@ -71,6 +71,7 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
     return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined } : undefined;
   }, [result]);
   const [sending, setSending] = useState(false);
+  const inFlight = useRef(false);
   const keys = useMemo(() => keeper(), []);
   const built = startBody(kind, { text, revision: revision || agent?.revision, effort, maxCostUsd: cap });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text };
@@ -79,10 +80,19 @@ export function Playground({ agents, revisions = [], revisionsError, efforts, or
   const code = lang === "curl" ? curlFor(origin, agentId, body, key, apiBase)
     : `const res = await fetch(${JSON.stringify(runStartUrl(origin, agentId, apiBase))}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
-    if (!built.ok || !onSend || unresolved || sending) return;
+    if (!built.ok || !onSend || unresolved || sending || inFlight.current) return;
+    inFlight.current = true;
     setSending(true);
-    const r = await submitStart(keys, agentId, built.body, onSend);
-    setSending(false); setResult(r); setPane("response");
+    const startedAt = performance.now();
+    try {
+      setResult(await submitStart(keys, agentId, built.body, onSend));
+    } catch (e) {
+      setResult(startFailure(e, Math.round(performance.now() - startedAt)));
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+      setPane("response");
+    }
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (

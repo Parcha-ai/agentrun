@@ -16,6 +16,8 @@ describe("route", () => {
     expect(route("#/runs")).toEqual({ section: "runs" });
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
+    expect(route("#/runs/bad%escape")).toEqual({ section: "runs", run: "bad%escape" });
+    expect(route("#/agents/bad%escape/edit")).toEqual({ section: "agents", agent: "bad%escape", edit: true });
   });
   it("keeps the agent and pinned revision in a run handoff's playground link", () => {
     expect(route("#/playground?agent=agent%20one&revision=rev-two")).toEqual({ section: "playground", startAgent: "agent one", startRevision: "rev-two" });
@@ -319,6 +321,40 @@ describe("App, explicitly restricted listings", () => {
 // Archive on a run's page hides it from the runs list and keeps it among the archived runs; the list's filters ask the
 // server with its own parameters, and the address keeps them.
 describe("App, archiving a run and filtering the runs list", () => {
+  it("keeps an old page's failure from replacing a new filter's rows or releasing its pending page", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const row = (id: string): Run => ({ run_id: id, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "failed", state: "idle", title: id,
+      created_at: new Date().toISOString(), ended_at: null, result: null, error: null, cost: null, archived_at: null });
+    let failOld!: () => void, finishNew!: () => void;
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json(200, { harnesses: [], features: {} });
+      if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      if (u.searchParams.get("cursor") === "old") return new Promise<Response>((resolve) => { failOld = () => resolve(json(503, { error: { code: "unavailable", message: "Old page failed", retryable: true } })); });
+      if (u.searchParams.get("cursor") === "new") return new Promise<Response>((resolve) => { finishNew = () => resolve(json(200, { runs: [row("Filtered tail")], next_cursor: null })); });
+      return json(200, { runs: [row(u.searchParams.has("status") ? "Filtered head" : "Original head")], next_cursor: u.searchParams.has("status") ? "new" : "old" });
+    });
+    location.hash = "#/runs";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === label)!;
+    await act(async () => { button("Load more").click(); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Runs in one state"]')!.click(); });
+    await act(async () => { document.querySelector<HTMLElement>('[role="option"][aria-label="Failed"]')!.click(); });
+    expect(host.textContent).toContain("Filtered head");
+    expect(button("Load more").disabled).toBe(false);
+    await act(async () => { button("Load more").click(); });
+    await act(async () => { failOld(); });
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.textContent).toContain("Filtered head");
+    expect(button("Loading").disabled).toBe(true);
+    await act(async () => { finishNew(); });
+    expect(host.textContent).toContain("Filtered tail");
+    expect(host.textContent).not.toContain("Original head");
+  });
+
   it("Archive moves the run out of the default list into the archived one; the state filter asks the server", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const run = { run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "What is two and two?", created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: { final_answer: "4" }, error: null, cost: null, archived_at: null as string | null };
@@ -375,6 +411,49 @@ describe("App, archiving a run and filtering the runs list", () => {
 });
 
 describe("App, an agent's address", () => {
+  it.each([false, true])("keeps a newer pinned playground agent with an existing selection loaded: %s", async (loaded) => {
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    const agent = (id: string): Agent => ({ agent_id: id, kind: "agentic", revision: `${id}-revision`, revisions: 1, archived_at: null,
+      definition: { version: 1, name: `${id} agent`, instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
+    let version = "old";
+    const pending: ((response: Response) => void)[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const u = new URL(url, "http://serve.test");
+      if (u.pathname === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (u.pathname === "/v2/capabilities") return json({ harnesses: [{ id: "pi", available: true }], features: {} });
+      if (u.pathname.endsWith("/revisions")) return json({ revisions: [], next_cursor: null });
+      if (u.searchParams.has("archived")) return json({ agents: [], next_cursor: null });
+      if ((version === "old" && !loaded) || (version === "new" && loaded)) return new Promise<Response>((resolve) => pending.push(resolve));
+      return json({ agents: [agent(version)], next_cursor: null });
+    });
+    location.hash = "#/playground?agent=old";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(App)); });
+    let loading = host.textContent;
+    const selected = () => host.querySelector('[role="combobox"][aria-label="Agent"]')?.textContent;
+    if (loaded) {
+      expect(selected()).toContain("old agent");
+      await act(async () => {
+        const task = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Task"]')!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(task, "Use the selected agent");
+        task.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect([...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Send request"))?.disabled).toBe(false);
+    }
+    version = "new";
+    await act(async () => { location.hash = "#/playground?agent=new"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+    if (loaded) {
+      loading = host.textContent;
+      expect([...host.querySelectorAll("button")].some((button) => button.textContent?.includes("Send request"))).toBe(false);
+      await act(async () => { for (const resolve of pending) resolve(json({ agents: [agent("new")], next_cursor: null })); });
+    }
+    expect(selected()).toContain("new agent");
+    if (!loaded) await act(async () => { for (const resolve of pending) resolve(json({ agents: [agent("old")], next_cursor: null })); });
+    expect(selected()).toContain("new agent");
+    expect(loading).toContain("Loading agents");
+  });
+
   it("opens the agent's page, and /edit opens its editor", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };

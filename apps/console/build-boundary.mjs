@@ -28,6 +28,17 @@ export function packageRoot(id) {
   return packageDirOf(id.replaceAll('\\', '/')) ?? null;
 }
 
+function assertProductionModule(id, app) {
+  const source = `${join(app, 'src').replaceAll('\\', '/')}/`;
+  const resolved = id.replaceAll('\\', '/').replace(/^\0/, '').split(/[?#]/)[0];
+  if (!resolved.startsWith(source)) return;
+  const file = resolved.slice(source.length);
+  if (/(?:^|\/)(?:__)?(?:fixtures?|samples?|mocks?|stories|story|tests?)(?:__)?(?:\/|\.|$)/i.test(file)
+    || /\.(?:fixtures?|samples?|mocks?|stories|story|tests?|spec)\.[^/]+$/i.test(file)) {
+    throw new Error(`Nonproduction console module in browser bundle: src/${file}`);
+  }
+}
+
 function assertBundledLicense(root) {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assertBundledPackage(pkg.name);
@@ -50,6 +61,7 @@ export function consoleBoundary() {
       for (const item of Object.values(bundle)) {
         const ids = item.type === 'chunk' ? item.moduleIds : (item.originalFileNames ?? []).map((name) => isAbsolute(name) ? name : join(app, name));
         for (const id of ids) {
+          assertProductionModule(id, app);
           const root = packageRoot(id);
           if (root && existsSync(join(root, 'package.json'))) roots.add(root);
         }

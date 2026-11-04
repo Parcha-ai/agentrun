@@ -20,13 +20,14 @@ import type { Run, RunStatus } from "@/lib/v2";
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
 type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: "keys"; startAgent?: string; startRevision?: string };
+const addressId = (text: string) => { try { return decodeURIComponent(text); } catch { return text; } };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
-  if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
+  if (m) return { section: "runs", run: addressId(m[1]) };
   if (h === "#/agents/new") return { section: "agents", agent: null };
   m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
-  if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
+  if (m) return { section: "agents", agent: addressId(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) {
     const q = new URLSearchParams(h.split("?")[1]);
@@ -164,10 +165,11 @@ export function AgentRunConsole() {
     if (!caps || caps.features.runs?.list === false || where.section !== "runs" || where.run) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
     const n = ++asked.current;
-    setRuns(null); setError(null);
+    setRuns(null); setCursor(null); setMore(false); setError(null);
     (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, null, runsFilter) : v2.listRuns(50, null, runsFilter))
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
+    return () => { asked.current++; };
   }, [v2, where, caps]);
   // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
   const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
@@ -181,17 +183,26 @@ export function AgentRunConsole() {
   const [pick, setPick] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const agentsAsked = useRef(0);
   useEffect(() => {
+    const n = ++agentsAsked.current;
     if (!caps || caps.features.agents?.list === false || where.section !== "playground") return;
     setStartError(null);
     allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents)
       .then((a) => {
+        if (n !== agentsAsked.current) return;
         setAgents(a);
         // Keep the pick only while it is an active agent: one archived since is not offered, so not picked either.
         const active = a.filter((x) => !x.archived_at);
+        if (where.startAgent && !active.some((x) => x.agent_id === where.startAgent)) {
+          setPick(null);
+          setStartError("The requested agent is unavailable or archived. Select an active agent from the Agents page.");
+          return;
+        }
         setPick((p) => (where.startAgent && active.some((x) => x.agent_id === where.startAgent) ? where.startAgent : p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
       })
-      .catch((e) => setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)));
+      .catch((e) => { if (n === agentsAsked.current) setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)); });
+    return () => { agentsAsked.current++; };
   }, [v2, where.section, where.startAgent, retry, caps]);
   useEffect(() => {
     if (!caps || caps.features.runs?.list === false || where.section !== "mission") return;
@@ -221,7 +232,7 @@ export function AgentRunConsole() {
     ])
       .then(([s, r, pages]) => {
         if (!live || n !== missionAsked.current) return;
-        const activity = appendRuns(pages.flatMap((p) => p.runs), r.runs);
+        const activity = appendRuns(r.runs, pages.flatMap((p) => p.runs));
         const reviews = activity.filter((run) => run.status === "completed" && run.review).length;
         setMission(missionFrom(s, r.runs, { nextCursor: r.next_cursor, readAt: Date.now(), activity, activityComplete: pages.every((p) => !p.next_cursor) && reviews >= (s.runs.needs_review ?? 0) }));
         setMissionError(null);
@@ -259,7 +270,7 @@ export function AgentRunConsole() {
     <Shell active={where.section} settings agents={caps?.features.agents?.list !== false} runs={caps?.features.runs?.list !== false} extensions={extensionRoutes} activeExtension={extension?.id} onExtensionNavigate={go} onNavigate={nav} onSignOut={signOut ? () => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       signOut().catch((e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
-    } : undefined}>
+    } : undefined} signOutLabel={session.kind === "local-owner" ? "Sign out everywhere" : undefined}>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {capabilitiesError && <p className="border-b px-5 py-3 text-[13px] text-destructive-text" role="alert">Capabilities could not be read: {capabilitiesError.message}</p>}
       {extension ? extension.render(context) : where.section === "settings" ? settingsPage : !caps ? <p role="status" className="p-8 font-mono text-[13px] text-muted-foreground">{capabilitiesError ? "Server capabilities are unavailable. Open Settings to retry." : "Reading server capabilities..."}</p>
@@ -270,7 +281,7 @@ export function AgentRunConsole() {
         : where.section === "playground" && caps.features.agents?.list === false
         ? <p role="status" className="p-8">Agent selection is unavailable on this server.</p>
         : where.section === "playground" && startError
-        ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
+        ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agent selection could not be loaded: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "mission"
         ? <MissionControl view={mission} error={missionError} canCreate={caps.features.agents?.create !== false} filesSupported={caps.features.files?.read !== false} onRetry={() => setMissionTry((n) => n + 1)} onRefresh={() => setMissionTry((n) => n + 1)} loadingMore={missionMore}
             onMore={mission?.nextCursor ? () => {
@@ -281,8 +292,8 @@ export function AgentRunConsole() {
             } : undefined}
             scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }} />
         : where.section === "playground"
-        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} revisionsError={revsError} efforts={efforts} origin={location.origin} apiBase={new URL(v2.endpoint, location.href).href} agentId={pick ?? undefined} revision={where.startRevision} onAgent={(id) => { setPick(id); go(`#/playground?agent=${encodeURIComponent(id)}`); }} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
-            live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
+        ? agents && (!where.startAgent || pick === where.startAgent) ? <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} revisionsError={revsError} efforts={efforts} origin={location.origin} apiBase={new URL(v2.endpoint, location.href).href} agentId={pick ?? undefined} revision={where.startRevision} onAgent={(id) => { setPick(id); go(`#/playground?agent=${encodeURIComponent(id)}`); }} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+            live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} /> : <p role="status" className="p-8 font-mono text-[13px] text-muted-foreground">Loading agents...</p>
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} capabilities={caps} go={go} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} capabilities={caps} defaultModel={editorCaps.defaultModel} modelSource={caps?.models?.source} efforts={efforts} go={go} />
@@ -291,7 +302,15 @@ export function AgentRunConsole() {
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
-            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            onMore={cursor ? () => {
+              if (more) return;
+              const n = asked.current;
+              setMore(true);
+              (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter))
+                .then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } })
+                .catch((e) => { if (n === asked.current) setError(String(e)); })
+                .finally(() => { if (n === asked.current) setMore(false); });
+            } : undefined} />}
     </Shell>
   );
 }

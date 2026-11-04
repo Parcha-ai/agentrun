@@ -10,7 +10,7 @@ const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { k
 
 /** The agents on the live server: the list, or the archived ones (`#/agents?archived=true`), every page of them. */
 export function AgentsPage({ v2, archived, go, capabilities }: { v2: Client; archived: boolean; go: (hash: string) => void; capabilities?: Capabilities | null }) {
-  const permissions = { create: capabilities?.features.agents?.create, update: capabilities?.features.agents?.update, archive: capabilities?.features.archive?.agents };
+  const permissions = { create: capabilities?.features.agents?.create, update: capabilities?.features.agents?.update, archive: capabilities?.features.archive?.agents, runs: capabilities?.features.runs?.list };
   const mayList = capabilities?.features.agents?.list !== false && (!archived || permissions.archive !== false);
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +33,7 @@ export function AgentsPage({ v2, archived, go, capabilities }: { v2: Client; arc
         onOpen: (id) => go(agentHash(id)),
         onEdit: (id) => { if (permissions.update !== false) go(agentHash(id, "edit")); },
         onNew: () => { if (permissions.create !== false) go("#/agents/new"); },
-        onRuns: (id) => go(agentHash(id, "runs")),
+        onRuns: (id) => { if (permissions.runs !== false) go(agentHash(id, "runs")); },
         onArchive: async (id, archive) => { if (permissions.archive === false) return; try { await (archive ? v2.archiveAgent(id) : v2.unarchiveAgent(id)); load(); } catch (e) { setError(problemOf(e).message); } },
       }} />}
     </>

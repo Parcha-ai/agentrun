@@ -21,8 +21,9 @@ const asApiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApi
 export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: string; caps: Capabilities | null; agentName: (id: string) => string }) {
   const [run, setRun] = useState<Run | null>(null);
   const [rows, setRows] = useState<TimelineRow[]>([]);
+  const [timelineRead, setTimelineRead] = useState(false);
   const [files, setFiles] = useState<RunFile[]>([]);
-  const [fileState, setFileState] = useState({ complete: true, truncated: false });
+  const [fileState, setFileState] = useState({ complete: false, truncated: false, loading: true });
   const [disconnected, setDisconnected] = useState<ApiError | null>(null);
   const [pendingCommand, setPendingCommand] = useState<"stop" | "cancel" | null>(null);
   const checkpoint = useRef<TimelineCheckpoint>({ rows: [] }).current;
@@ -50,8 +51,8 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     const k = fileReads.begin();
     await Promise.all([
       v2.getRun(runId).then((r) => { if (runReads.current(n)) setRun(r); }).catch((e) => { if (runReads.current(n)) setError(asApiError(e)); }),
-      filesSupported ? v2.listFiles(runId).then((f) => { if (fileReads.current(k)) { setFiles(f.files); setFileState({ complete: f.complete, truncated: f.truncated }); } })
-        .catch((e) => { if (fileReads.current(k)) { setFileState({ complete: false, truncated: false }); setError(asApiError(e)); } })
+      filesSupported ? v2.listFiles(runId).then((f) => { if (fileReads.current(k)) { setFiles(f.files); setFileState({ complete: f.complete, truncated: f.truncated, loading: false }); } })
+        .catch((e) => { if (fileReads.current(k)) { setFileState({ complete: false, truncated: false, loading: false }); setError(asApiError(e)); } })
       : Promise.resolve(),
     ]);
   };
@@ -62,9 +63,9 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     follow(v2, runId, {
       signal: ctl.signal, checkpoint, waitMs: caps?.features.timeline?.long_poll === false ? 0 : 25000,
       // A tool round can write files while the run stays working: re-read them when a new tool result lands.
-      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current && filesSupported) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) { setFiles(f.files); setFileState({ complete: f.complete, truncated: f.truncated }); } }).catch((e) => { if (fileReads.current(k)) { setFileState({ complete: false, truncated: false }); setError(asApiError(e)); } }); } },
+      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current && filesSupported) { toolResults.current = n; const k = fileReads.begin(); void v2.listFiles(runId).then((f) => { if (fileReads.current(k)) { setFiles(f.files); setFileState({ complete: f.complete, truncated: f.truncated, loading: false }); } }).catch((e) => { if (fileReads.current(k)) { setFileState({ complete: false, truncated: false, loading: false }); setError(asApiError(e)); } }); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
-      onPage: (p) => { setDisconnected(null); if (p.final || (p.status === "input_required" && p.state === "idle")) setPendingCommand(null); const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
+      onPage: (p) => { setDisconnected(null); if (!p.has_more) setTimelineRead(true); if (p.final || (p.status === "input_required" && p.state === "idle")) setPendingCommand(null); const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setDisconnected(asApiError(e)); });
     return () => ctl.abort();
   }, [runId, follows, filesSupported, caps?.features.timeline?.long_poll]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -107,7 +108,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} canPause={caps?.features.runs?.pause_workflow_runs !== false} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
-        rows={rows} files={files} filesSupported={filesSupported} filesComplete={fileState.complete} filesTruncated={fileState.truncated} readFileBlob={(f) => v2.readFileBlob(runId, f.path)} onMessage={message}
+        rows={rows} timelineLoading={!timelineRead && !disconnected} timelineUnavailable={!timelineRead && !!disconnected} files={files} filesSupported={filesSupported} filesComplete={fileState.complete} filesTruncated={fileState.truncated} filesLoading={fileState.loading} readFileBlob={(f) => v2.readFileBlob(runId, f.path)} onMessage={message}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: caps?.features.archive?.runs === false ? undefined : () => void archive(), supported: { stop: caps?.features.runs?.stop, cancel: caps?.features.runs?.cancel }, busy }} />
     </div>
   );

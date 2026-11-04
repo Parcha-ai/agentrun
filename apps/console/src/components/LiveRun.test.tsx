@@ -31,6 +31,28 @@ it.each(["agentic", "workflow"] as const)("hides disabled file and graph routes 
   expect([...host.querySelectorAll('[role="tab"]')].some((tab) => tab.textContent === "Graph")).toBe(false);
 });
 
+it("does not claim missing history or files before their initial reads arrive", async () => {
+  let complete!: (value: { run_id: string; files: []; complete: boolean; truncated: boolean }) => void;
+  const pending = new Promise<{ run_id: string; files: []; complete: boolean; truncated: boolean }>((resolve) => { complete = resolve; });
+  let timeline!: (page: TimelinePage) => void;
+  const pendingTimeline = new Promise<TimelinePage>((resolve) => { timeline = resolve; });
+  const v2 = { getRun: async () => at("completed", false), getTimeline: async () => pendingTimeline, listRevisions: async () => ({ revisions: [], next_cursor: null }), listFiles: async () => pending };
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => { root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })); });
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((tab) => tab.textContent === "Timeline")!.click(); });
+  expect(host.textContent).toContain("Reading the timeline");
+  expect(host.textContent).not.toContain("This run recorded no steps.");
+  await act(async () => { timeline(final("completed")); });
+  expect(host.textContent).toContain("This run recorded no steps.");
+  await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((tab) => tab.textContent?.startsWith("Files"))!.click(); });
+  expect(host.textContent).toContain("Reading the files...");
+  expect(host.textContent).not.toContain("This run wrote no files.");
+  await act(async () => { complete({ run_id: "r1", files: [], complete: true, truncated: false }); });
+  expect(host.textContent).not.toContain("Reading the files...");
+  expect(host.textContent).toContain("This run wrote no files.");
+});
+
 describe("LiveRun's Archive", () => {
   it("an answer that says the run still works never puts back a state the page has read since; the run is read again", async () => {
     let reads = 0, archived = false;

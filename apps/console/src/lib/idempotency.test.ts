@@ -37,7 +37,7 @@ describe("sendOnce", () => {
 describe("appendRuns", () => {
   it("adds the next page's runs once: a run the offset cursor sends again is not repeated", () => {
     const r = (id: string) => ({ run_id: id }) as never;
-    expect(appendRuns([r("a"), r("b")], [r("b"), r("c")]).map((x: { run_id: string }) => x.run_id)).toEqual(["a", "b", "c"]);
+    expect(appendRuns([r("a"), r("a"), r("b")], [r("b"), r("c"), r("c")]).map((x: { run_id: string }) => x.run_id)).toEqual(["a", "b", "c"]);
   });
 });
 

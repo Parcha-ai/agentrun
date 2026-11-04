@@ -79,6 +79,38 @@ it.each([0, 409, 422])("keeps input and request identity after a %s response, th
   expect(page.went).toEqual(["run-1"]);
 });
 
+it("submits once for synchronous duplicate activations and releases a rejected request for retry with the same draft and identity", async () => {
+  const calls: { id: string; body: StartBody; key: string }[] = [];
+  let reject!: (reason: Error) => void;
+  const pending = new Promise<never>((_resolve, fail) => { reject = fail; });
+  const page = await open("agentic", [], { onSend: async (id, body, key) => {
+    calls.push({ id, body, key });
+    if (calls.length === 1) return pending;
+    return { status: 202, ms: 0, body: { run_id: "run-1" }, runId: "run-1" };
+  } });
+  page.type("Keep this request.");
+  await act(async () => {
+    const send = page.button(/^Send request$/);
+    send.click();
+    send.click();
+  });
+  expect(calls).toHaveLength(1);
+  expect(page.button(/^Sending$/).disabled).toBe(true);
+  await act(async () => { reject(new Error("Connection interrupted")); });
+  expect(page.host.querySelector("textarea")!.value).toBe("Keep this request.");
+  expect(page.host.querySelector('[role="alert"]')?.textContent).toContain("Connection interrupted");
+  expect(page.button(/^Send request$/).disabled).toBe(false);
+  await act(async () => {
+    const send = page.button(/^Send request$/);
+    send.click();
+    send.click();
+  });
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).toEqual(calls[0]);
+  await page.click(/^Open this run$/);
+  expect(page.went).toEqual(["run-1"]);
+});
+
 it("does not submit malformed workflow input and preserves the invalid draft", async () => {
   const page = await open("workflow");
   page.type("{ not JSON");
