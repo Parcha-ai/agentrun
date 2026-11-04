@@ -1837,6 +1837,10 @@ export class Runs {
       // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
       // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
       if (run.finishing && !run.outcome) await this.waitWhile(() => Boolean(run.finishing && !run.outcome), 100, "The run's end is still being written");
+      // A run another message is opening again is answered once that opening is done: reopen() clears the run's end
+      // before it lays the run's notes again (learning-run.ts onReopen), and a message read meanwhile would launch the run
+      // before they are back.
+      if (run.reopening) await run.reopening.catch(() => undefined);
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     } while (run.stopping);
     const steers = this.steers(run);
