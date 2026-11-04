@@ -63,13 +63,15 @@ export async function syncDir(path: string): Promise<void> {
 /** Writes `text` (or bytes) to `path` whole and durably: the temporary file is synced before the rename, and the
  *  directory after it, so once this resolves a crash, even of the machine, leaves the new text in place, never the old or
  *  none. `temp` is the temporary file, created only if nothing is there yet: a link planted at it is never written through.
- *  Answers the stats of the file it wrote, read before the rename: a write of `path` that lands after it is not them. */
-export async function writeDurable(path: string, text: string | Uint8Array, mode = 0o600, temp = tempOf(path)): Promise<Stats> {
+ *  Answers the stats of the file it wrote, read before the rename: a write of `path` that lands after it is not them.
+ *  `exact`: the file gets `mode` itself, whatever this process's umask takes away (set on its handle, never by path). */
+export async function writeDurable(path: string, text: string | Uint8Array, mode = 0o600, temp = tempOf(path), exact = false): Promise<Stats> {
   // Its own temporary file: a box's record can be let go by two settlements at once (a run's archive and its agent's).
   const bytes = typeof text === "string" ? Buffer.from(text) : text;
   const file = await open(temp, "wx", mode);
   let stats: Stats;
   try {
+    if (exact) await file.chmod(mode);
     // Every byte, or an error: a short write (a disk nearly full) is never synced and renamed as if whole.
     for (let at = 0; at < bytes.length; ) {
       const { bytesWritten } = await file.write(bytes, at, bytes.length - at);

@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: ci
+---
+serve's test helper `follow()` returns as soon as the run's timeline reaches the status it waits for. For a status that is not an end (`working`, `input_required`), it used to ask for one more page to confirm the status, and that long poll only answers early on a change, so each such follow waited out its whole 2 s. A page already carries the run's status and every row up to it, so the first page with nothing more to come is enough. Ends still wait for the final page. About 25 follows across the run, capacity, cap, recovery, stop, box and webhook tests are each about 2 s faster. Two tests that leaned on the extra 2 s now wait on state: the webhook test of a run adopted while it waits reads the outbox until every notice is sent, instead of sleeping 500 ms before counting ids, and the test of a reply that resolves only after its stop also checks the rows the next server reads after a restart, where the turn's process has ended, so a kept reply cannot be missed.

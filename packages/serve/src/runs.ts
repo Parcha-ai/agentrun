@@ -20,6 +20,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
+import { rowPaths } from "./workspace-paths.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
@@ -36,6 +37,8 @@ import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
+import { firstMessage } from "./run-manifest.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
@@ -174,6 +177,12 @@ export type Run = {
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
+  /** Whether, in the run's entries, an answer that ended its request (stopReason "stop") comes after the person's newest
+   *  message: the turn that took the message answered it, though perhaps with nothing it shows (noteAnswer). */
+  answeredMessage?: boolean;
+  /** The messages a claude-agent or codex run's door accepted and has not sent yet, by id (MESSAGE with no MESSAGE_END in
+   *  its entries, noteAnswer): each still waits for its turn, also when this server started after it was accepted. */
+  waiting?: Set<string>;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
@@ -194,8 +203,9 @@ export type Run = {
   costUsd?: number | null;
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
-  /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
-  decisions?: Record<string, unknown>[];
+  /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
+   *  when they cannot be read: its timeline's usage row then reads unknown. */
+  decisions?: Record<string, unknown>[] | null;
   /** How many of a workflow run's llm calls' answers its node log held when its rows were last read: their cost is in its
    *  rows (each a REQUEST_COST entry, committed before its answer is logged), so its graph counts only the later ones. */
   llmRead?: number;
@@ -256,8 +266,33 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries). */
 function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
-    if (!isObject(value) || value.kind !== "pi.assistant" || !Array.isArray(value.model) || !isObject(value.model[0])) continue;
-    const content = value.model[0].content;
+    if (!isObject(value) || typeof value.kind !== "string") continue;
+    // A message a claude-agent or codex run accepted, and its end (harness-app.ts): one with no end still waits.
+    if (value.kind === MESSAGE || value.kind === MESSAGE_END) {
+      const id = isObject(value.data) && typeof value.data.id === "string" ? value.data.id : undefined;
+      if (id !== undefined && value.kind === MESSAGE) (run.waiting ??= new Set()).add(id);
+      else if (id !== undefined) run.waiting?.delete(id);
+      continue;
+    }
+    // The person's message, as the timeline shows one (a user entry: pi's, or a host's own kind), or their sign-in: no
+    // answer has followed it yet.
+    const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
+    if (value.kind === "agent.handover" || (first?.role === "user" && (value.kind === "pi.user" || !value.kind.startsWith("pi.")))) run.answeredMessage = false;
+    // A claude-agent or codex turn's end (harness-app.ts): its turn took the message and answered it, if it completed.
+    if (value.kind === TURN_END) {
+      if (isObject(value.data) && value.data.status === "completed") run.answeredMessage = true;
+      continue;
+    }
+    if (value.kind !== "pi.assistant" || !first) continue;
+    // An answer, as the timeline shows one (timeline.ts): a request that ended without an error or an abort and called no
+    // tool, whatever else stopped it (its length, max output tokens, too). Never commentary that came with a call.
+    if (first.stopReason === "error" || first.stopReason === "aborted") continue;
+    if (Array.isArray(first.content) && first.content.some((block) => isObject(block) && block.type === "toolCall")) continue;
+    // pi's own stop answer ends its turn (one commit with the run's end). The bridge's entries (api "agentrun-adapter")
+    // never say so: a request without content is written alike whether it is a cost, a cut, an interruption or an answer.
+    if (first.stopReason === "stop" && first.api !== ADAPTER_API) run.answeredMessage = true;
+    // The answer's text: an answer's, never commentary that came with a call.
+    const content = first.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
     if (text) run.answerText = text;
   }
@@ -300,7 +335,7 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
-const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
+const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
 // A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
@@ -638,15 +673,16 @@ export class Runs {
     const entries = read.flatMap((r) => (run.kind === "workflow" || r.conversation === root ? [r.entry] : []));
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-      // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
-      try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
+      // Decisions it cannot read add no rows, and leave the served usage row's total unknown, as the run's cost read
+      // does (readDecisionCost): never its model nodes' total alone.
+      try { run.decisions = durableDecisions(file); } catch { run.decisions = null; }
       run.llmRead = (await readNodeLog(run.dir)).filter((line) => line.t === "effect.end" && line.tool === "llm" && line.status === "done").length;
     }
     // Its decision requests count with its model requests: each receipt's tokens, or unmetered without them.
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteAnswer(run, entries);
-    this.take(run, timelineOf(entries as never, { settled: true }));
+    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -659,7 +695,7 @@ export class Runs {
     for (const row of arrived) run.users.add(row.id);
     run.submitted = Math.max(0, run.submitted - arrived.length);
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    if (run.log.sync(run.decisions?.length ? withDecisions(run.rows, run.decisions) : run.rows, keep)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions), keep)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
 
@@ -676,11 +712,21 @@ export class Runs {
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
+    // A message accepted and not sent yet waits for its turn: a server started after it counts none submitted, and a turn's
+    // end before it is no end of the run (harness-app.ts writes a turn's end, then sends the next message).
+    if (run.waiting?.size) return undefined;
+    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote): nothing completes it meanwhile.
+    if (run.cancel) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
+    if (stopped(run)) return undefined;
+    // Its newest row is the answer; or the person's message, which an answer that ended its request follows in the entries
+    // (the Claude CLI's /compact: a summary request, no text): its turn took it and is over, and the earlier answer stands.
+    // From the entries' own order, never from when the door said idle.
+    if (answerOf(run.rows) || (last?.kind === "user_message" && run.answeredMessage === true)) return { outcome: "completed" };
+    return undefined;
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -867,7 +913,8 @@ export class Runs {
   }
 
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
-    const reducer = timelineReducer();
+    // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
+    const reducer = timelineReducer({ path: rowPaths(run.dir) });
     const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
@@ -1116,7 +1163,8 @@ export class Runs {
     if (run.kind !== "agentic" || usersOf(run.rows) > 0 || typeof first !== "string") return;
     run.submitted = 1;
     this.refresh(run);
-    void this.submit(run, first, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+    // As it was first sent: the run never took it, so its work/inputs/ is as its start left it.
+    void firstMessage(first, join(run.dir, "work")).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
   }
 
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
@@ -1450,7 +1498,8 @@ export class Runs {
     }
     this.launch(run);
     if (revision.kind === "workflow") return run;
-    void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
+    // The first message names the files given to the run (run-manifest.ts), on every harness.
+    void firstMessage(options.input.content as string, started.workspace).then((content) => this.submit(run, content, "followUp", `first-${run.id}`, READY_TIMEOUT_MS)).catch((error: Error) => {
       run.submitted = 0;
       // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
       if (run.outcome || run.finishing || run.cancel) return;
@@ -1731,7 +1780,10 @@ export class Runs {
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
     const answer = answerOf(run.rows);
-    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
+    // A run that ended on the person's message, which its turn answered with nothing it shows (decide()), answered with its
+    // newest answer: the whole text (answerText, read from the entries again on a later server), never the line the store
+    // keeps, which is cut.
+    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : status === "completed" ? (lastAnswer(run) ?? row?.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
     const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
     const endedAt = TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null;
