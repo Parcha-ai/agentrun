@@ -241,6 +241,7 @@ test("a pull a box's archive stops (unreadable) is not a whole copy: the run end
   assert.equal(readFileSync(fake.pathOf(kept, "run/agentrun/run/work/out.txt"), "utf8"), "kept");
   assert.ok(existsSync(join(data, "runs", run.run_id, BOX_SYNC_FILE)), "the mark of what did come back is kept");
   assert.equal(fake.sandboxes.get(kept).autoStopInterval, 15, "a kept box stops after 15 idle minutes: its disk stays, its compute stops");
+  assert.equal(fake.sandboxes.get(kept).autoDeleteInterval, -1, "and is never deleted as it stops (a box is made with auto-delete 0, which would)");
 });
 
 test("a kept box that Daytona stopped is woken by the next start, pulled once its copy reads, and destroyed", { timeout: 180_000 }, async (t) => {
@@ -255,8 +256,10 @@ test("a kept box that Daytona stopped is woken by the next start, pulled once it
   await first.close();
   assert.equal(fake.sandboxes.size, 1, "kept");
   const [kept] = fake.sandboxes.values();
-  // 15 idle minutes later Daytona stopped it; its archive reads again.
-  kept.state = "stopped";
+  // 15 idle minutes later Daytona stops it, as Daytona stops a box: one whose auto-delete is 0 goes with its stop.
+  fake.idle(kept.id);
+  assert.equal(fake.sandboxes.size, 1, "the kept box survives its idle stop, its files with it");
+  assert.equal(kept.state, "stopped");
   fake.state.hostile = false;
   const second = await serve(t, { data, faux: PROBE });
   await until(() => fake.sandboxes.size === 0, "the start's sweep of the kept box");
@@ -280,6 +283,29 @@ test("a run found waiting at a start is pulled then: a turn's end whose pull fai
   await follow(second.api, run.run_id, ["input_required"], { deadlineMs: 60_000 });
   await until(async () => (await fileList(second.api, run.run_id)).includes("turn1.txt"), "the start's pull of a waiting run");
   assert.equal(fake.sandboxes.size, 1, "the box lives while the run waits");
+});
+
+test("a run's box that Daytona paused while the run waited is started again, never replaced: the next turn runs in the same box", { timeout: 180_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  const data = join(await scratch(t), "agents");
+  withEnv(t, { AGENTRUN_BOXES: "daytona", DAYTONA_API_KEY: KEY, DAYTONA_API_URL: fake.url });
+  const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+  const firstApi = client(first.baseUrl, first.token);
+  assert.equal((await firstApi("POST", "/agents", { definition: { id: "sleeper", name: "sleeper", instructions: "Probe.", place: DAYTONA, tools: ["bash", "ask_person"] } })).status, 201);
+  const run = await probe(firstApi, "sleeper", [{ tool: "bash", args: { command: "printf one > turn1.txt; printf only-in-the-box > box-only.txt" } }, { tool: "ask_person", args: { question: "Go on?" } }, { tool: "bash", args: { command: "cat box-only.txt > turn2.txt" } }]);
+  await follow(firstApi, run.run_id, ["input_required"], { deadlineMs: 120_000 });
+  await fileList(firstApi, run.run_id);
+  await first.close();
+  const [box] = fake.sandboxes.values();
+  // An hour on, Daytona paused it (a class that pauses when idle); what only the box holds is still there.
+  await writeFile(fake.pathOf(box.id, "run/agentrun/run/work/box-only.txt"), "written after the last pull");
+  fake.pause(box.id);
+  const second = await serve(t, { data, faux: PROBE });
+  assert.equal((await second.api("POST", `/runs/${run.run_id}/messages`, { content: "Yes." })).status, 202);
+  await follow(second.api, run.run_id, ["completed"], { deadlineMs: 120_000 });
+  const created = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox");
+  assert.equal(created.length, 1, "no second box was made");
+  assert.equal((await second.api("GET", `/runs/${run.run_id}/files/turn2.txt`)).body, "written after the last pull", "the next turn ran in the same box");
 });
 
 test("a Daytona that does not block a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {

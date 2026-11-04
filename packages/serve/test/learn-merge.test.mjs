@@ -216,6 +216,27 @@ test("a turn that adds nothing is dropped as empty, and the run's answer stands"
   assert.equal(git(repoOf(data, "idle"), ["rev-list", "--count", "main"]), "1");
 });
 
+test("a note that holds the run's own door token is refused as secret_value: no git object and nothing the run shows holds it", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  const go = join(await scratch(t), "go");
+  await made(api, learner("doorman", { instructions: `Reflect once ${go} exists.`, plan: [["fine.md", note("Fine", "A rule beside the token")]] }));
+  const runId = await started(api, "doorman");
+  for (let i = 0; !reflectRows((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).some((row) => row.kind === "user_message"); i++) {
+    assert.ok(i < 600, "the turn is asked");
+    await sleep(50);
+  }
+  // The token the run's own door takes, written into its notes as a turn with a shell could.
+  const token = readFileSync(join(data, "runs", runId, "door-token"), "utf8").trim();
+  writeFileSync(join(copyOf(data, runId), "door.md"), note("Door", `The door takes ${token}`));
+  writeFileSync(go, "");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "dropped", "checker");
+  const { learning } = await savedOf(data, runId);
+  assert.ok(learning.problems.some((problem) => problem.rule === "secret_value" && problem.path === "door.md"), JSON.stringify(learning.problems));
+  assert.ok(!objects(repoOf(data, "doorman")).includes(token), "no git object holds the token");
+  assert.ok(!JSON.stringify([view, rows, learning]).includes(token));
+});
+
 test("a link in the run's copy, to a file or a folder, is refused and never followed: its target's text is nowhere", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   const outside = await scratch(t);

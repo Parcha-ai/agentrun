@@ -32,8 +32,10 @@ const BOX_PATH = /(^|[\s'"=:])(\/run\/agentrun|\/tmp\/pi-transport)(?=[/'"\s]|$)
  * answers 500 to first; `failListings`, which listings of a box's directory (the sync layer's `find`, counted from 1:
  * a seed's, then each pull's) it answers 500 to. `state.redirect` ({ from, status, location }): a toolbox call to path
  * `from` is answered with that redirect, as a box that took its toolbox's port could answer. `state.hostile` (default
- * true when `hostileTar` is given) turns the lying `tar` off and on. A sandbox's `autoStopInterval` is what the last
- * autostop call set; a stopped sandbox starts again on `/start`.
+ * true when `hostileTar` is given) turns the lying `tar` off and on. A sandbox keeps the `autoDeleteInterval` it was
+ * made with or last set, and `autoStopInterval`: as Daytona does, a stop of one whose auto-delete is 0 deletes it.
+ * `idle(id)` is Daytona's idle stop, `pause(id)` a pause; `/start` starts a stopped or paused sandbox, and a toolbox call
+ * to one that is not started is refused.
  */
 export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, failDeletes = 0, failListings = [] } = {}) {
   const root = join(await scratch(t), "daytona");
@@ -57,6 +59,13 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     chmodSync(join(hostileBin, "tar"), 0o755);
   }
   const boxDir = (id) => join(root, id);
+  /** A stop as Daytona makes it: a sandbox whose auto-delete is 0 is deleted. */
+  const stop = (sandbox) => {
+    if (sandbox.autoDeleteInterval === 0) {
+      sandboxes.delete(sandbox.id);
+      rmSync(boxDir(sandbox.id), { recursive: true, force: true });
+    } else sandbox.state = "stopped";
+  };
   const inBox = (id, text) => text.replace(BOX_PATH, (_, before, path) => `${before}${boxDir(id)}${path}`);
   const info = (sandbox, single = false) => ({
     id: sandbox.id, state: sandbox.state, labels: sandbox.labels, cpu: 1, memory: 1, disk: 3, sandboxClass: "container",
@@ -82,6 +91,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     });
 
   const toolbox = async (sandbox, route, url, body, type, res) => {
+    if (sandbox.state !== "started") return json(res, 409, { message: `sandbox is ${sandbox.state}` });
     if (state.redirect && url.pathname === state.redirect.from) return void res.writeHead(state.redirect.status, { location: state.redirect.location }).end();
     const path = inBox(sandbox.id, url.searchParams.get("path") ?? "");
     if (route === "process/execute") {
@@ -129,7 +139,7 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     const sandbox = id === undefined ? undefined : sandboxes.get(id);
     if (id === undefined && method === "POST") {
       const spec = JSON.parse(body.toString("utf8"));
-      const made = { id: randomUUID(), state: "started", labels: spec.labels ?? {}, env: spec.env ?? {}, spec, ...(spec.networkBlockAll === true && state.blocks ? { networkBlockAll: true } : {}) };
+      const made = { id: randomUUID(), state: "started", labels: spec.labels ?? {}, env: spec.env ?? {}, spec, autoDeleteInterval: spec.autoDeleteInterval ?? -1, autoStopInterval: spec.autoStopInterval ?? 15, ...(spec.networkBlockAll === true && state.blocks ? { networkBlockAll: true } : {}) };
       mkdirSync(boxDir(made.id));
       sandboxes.set(made.id, made);
       return json(res, 200, info(made));
@@ -141,7 +151,11 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     }
     if (!sandbox) return json(res, 404, { statusCode: 404, message: "sandbox not found" });
     if (segments[3] === "toolbox-proxy-url") return json(res, 200, { url: `${base}/toolbox` });
-    if (segments[3] === "stop") return (sandbox.state = "stopped", json(res, 200, {}));
+    if (segments[3] === "stop") {
+      if (state.failDeletes > 0) return json(res, 500, { message: "the fake refuses this stop" });
+      return (stop(sandbox), json(res, 200, {}));
+    }
+    if (segments[3] === "autodelete" && method === "POST") return (sandbox.autoDeleteInterval = Number(segments[4]), json(res, 200, {}));
     if (segments[3] === "start") return (sandbox.state = "started", json(res, 200, info(sandbox, true)));
     if (segments[3] === "autostop" && method === "POST") return (sandbox.autoStopInterval = Number(segments[4]), json(res, 200, {}));
     if (method === "DELETE") {
@@ -167,6 +181,13 @@ export async function daytonaSandboxes(t, { key, blocks = true, hostileTar, fail
     sandboxes,
     requests,
     state,
+    /** Daytona's idle stop of sandbox `id`, when its auto-stop is on. */
+    idle: (id) => {
+      const sandbox = sandboxes.get(id);
+      if (sandbox && sandbox.autoStopInterval > 0) stop(sandbox);
+    },
+    /** Daytona's pause of sandbox `id`, as a class that pauses when idle makes it. */
+    pause: (id) => void (sandboxes.get(id).state = "paused"),
     /** Where a sandbox's box path is on this machine. */
     pathOf: (id, path) => join(boxDir(id), path),
   };
