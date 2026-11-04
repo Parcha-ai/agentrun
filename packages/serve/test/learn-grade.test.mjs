@@ -1,5 +1,5 @@
 // One grader decides whether a run's checked notes join main: a bounded call on the agent's own model, read fail-closed.
-// The injection screen runs only with an independent judge (Jev). What the grade spends is kept on the run's learning
+// No injection screen runs: the grader's Planted question decides. What the grade spends is kept on the run's learning
 // and, with how its learning ended, in the learning ledger, which /v2/usage's `learning` meter reads; a call cut off at
 // its bound costs what nobody knows, never $0. A server that goes mid-grade grades the run once at its next start, and a
 // run is merged once, never twice. GET /v2/stats counts how the runs that tried to learn fared, from the ledger and the
@@ -183,42 +183,20 @@ test("with no independent judge there is no injection screen: Jev is never asked
   assert.equal(callsIn(join(dir, "calls.jsonl")).length, 1, "the grader was");
 });
 
-test("with Jev here, the screen runs first: a note it scores at or over the threshold drops the run as screen, the grader never asked, and Jev's cost is the grade's; a Jev that cannot judge drops it as screen_down", { timeout: 150_000 }, async (t) => {
+// No injection screen runs, Jev or not: a page classifier cannot see where a note came from, and a preference the user
+// stated reads like an instruction to it. The grader's Planted question decides, with what the user said in view.
+test("with Jev here no injection screen runs either: Jev is never asked, the grader alone decides, and a note the user stated as an instruction merges", { timeout: 150_000 }, async (t) => {
   const dir = await scratch(t);
   const jev = join(dir, "jev.jsonl");
   const calls = join(dir, "calls.jsonl");
   withEnv(t, { TYPESAFE_API_KEY: CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: jev, AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
-  const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
-  await made(api, learner("screened", { plan: PLAN }));
-  // The faux Jev scores every yes-or-no question 0.92: over the threshold.
-  const runId = await started(api, "screened");
-  const { view, rows } = await ended(api, runId);
-  settled(view, rows, "dropped", "screen");
-  assert.ok(callsIn(jev).length >= 1 && callsIn(jev).every((call) => call.authorized && call.pid === process.pid), "the server asked Jev, with its key");
-  assert.deepEqual(callsIn(calls), [], "the grader was never asked");
-  const { learning } = await savedOf(data, runId);
-  assert.equal(learning.verdict, undefined);
-  assert.ok(learning.cost_usd.grade > 0 && learning.tokens.grade.input === 120 * callsIn(jev).length, JSON.stringify(learning));
-  process.env.AGENTRUN_TEST_FAUX_JEV_STATUS = "503";
-  const down = await ended(api, await started(api, "screened"));
-  settled(down.view, down.rows, "dropped", "screen_down");
-  assert.deepEqual(callsIn(calls), [], "still never the grader");
-});
-
-// A Jev key a person saved on the server (the settings API) screens the notes as one in the server's environment does.
-test("a Jev key saved through the settings API, none in the environment, screens the notes: a note it scores over the threshold drops the run as screen, Jev asked on the saved key and the grader never", { timeout: 150_000 }, async (t) => {
-  const dir = await scratch(t);
-  const jev = join(dir, "jev.jsonl");
-  const calls = join(dir, "calls.jsonl");
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_JEV_CALLS: jev, AGENTRUN_TEST_FAUX_CALLS: calls }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
   const { api } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
-  assert.equal((await api("PUT", "/settings/tool-keys/typesafe", { values: { TYPESAFE_API_KEY: CANARY } })).status, 204);
-  await made(api, learner("screened", { plan: PLAN }));
-  const runId = await started(api, "screened");
-  const { view, rows } = await ended(api, runId);
-  settled(view, rows, "dropped", "screen");
-  assert.ok(callsIn(jev).length >= 1 && callsIn(jev).every((call) => call.authorized && call.pid === process.pid), "the server asked Jev, on the saved key");
-  assert.deepEqual(callsIn(calls), [], "the grader was never asked");
+  await made(api, learner("preference", { plan: PLAN }));
+  // The faux Jev scores every yes-or-no question 0.92, over the old threshold: it would have dropped this run.
+  const { view, rows } = await ended(api, await started(api, "preference"));
+  settled(view, rows, "merged");
+  assert.deepEqual(callsIn(jev), [], "Jev was never asked");
+  assert.equal(callsIn(calls).length, 1, "the grader was");
 });
 
 test("a server that goes mid-grade grades the run once at its next start; a run whose kept verdict is merged again is the merge already on main, never a second", { timeout: 180_000 }, async (t) => {

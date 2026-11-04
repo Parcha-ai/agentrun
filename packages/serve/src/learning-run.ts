@@ -731,7 +731,6 @@ export class LearningRuns {
         const gradeModel = gradeModelOf(env, this.options.gradeModel);
         const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
         kept = { cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
-        if ("file" in judged) return await end("dropped", judged.reason, judged.reason === "screen" ? said.screen : said.stopped(STOPPED.screenDown));
         if ("error" in judged) {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);
           return await end("dropped", "grade_failed", said.stopped(STOPPED.noReview));
