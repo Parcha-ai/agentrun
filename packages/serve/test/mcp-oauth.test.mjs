@@ -246,3 +246,26 @@ test("a token given with no expiry is taken to last an hour: a launch after that
   assert.equal(refreshes(), 1, "within the margin of an hour: refreshed");
   assert.ok(as.accepts(headers.authorization));
 });
+
+test("a stop never waits on a token refresh: with the authorization server hanging, a running run's abort answers at once and asks it nothing", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const { as, mcp } = await fakes(t, { expiresIn: 60 });
+  const started = await api("POST", "/settings/mcp-servers/slow/oauth/start", { url: mcp.url });
+  assert.equal((await approve(started.body.authorization_url)).status, 302);
+  assert.equal((await api("POST", "/agents", agent("writer", { tools: ["mcp:slow/slow_write"] }))).status, 201);
+  const made = await api("POST", "/agents/writer/runs", { input: { content: 'Call mcp__slow__slow_write with {"line":"x","seconds":30}' } });
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  for (let i = 0; !mcp.log.some((entry) => entry.method === "tools/call" && entry.tool === "slow_write"); i++) {
+    assert.ok(i < 600, "the run reached its call");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // Its token has under a minute left, within the refresh margin: a refresh now would wait on the hanging server.
+  as.hang();
+  const asked = as.log.filter((entry) => entry.path === "/token").length;
+  const at = Date.now();
+  const stop = await api("POST", `/runs/${made.body.run_id}/stop`);
+  assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
+  assert.ok(Date.now() - at < 5_000, `the stop answered in ${Date.now() - at} ms, not after a refresh's 15 s`);
+  assert.equal(as.log.filter((entry) => entry.path === "/token").length, asked, "the stop asked the authorization server nothing");
+});

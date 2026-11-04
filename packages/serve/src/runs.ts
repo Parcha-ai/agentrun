@@ -1302,7 +1302,7 @@ export class Runs {
   }
 
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
-  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
+  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS, refresh = false): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
     await this.sweepOnce();
@@ -1313,7 +1313,7 @@ export class Runs {
       await untilDeadline(copying, deadline);
       if (run.preparing === copying) throw new ApiError("unavailable", "the run's files are still being copied into its workspace", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
-    for (let launched = false; ; await sleep(100)) {
+    for (let launched = false, refreshed = !refresh; ; await sleep(100)) {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
       if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
@@ -1334,6 +1334,12 @@ export class Runs {
         // restart on a smaller one) is not started: said, never tried.
         const never = fresh ? undefined : neverFits(run.harness, this.memory);
         if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness: run.harness } });
+        // Its MCP tokens refreshed first when this path may (a message's, never a stop's), then looked at again: the
+        // wait may have let another path launch it.
+        if (!fresh && !refreshed) {
+          refreshed = true;
+          if (await this.mcpFresh(run)) continue;
+        }
         if (!fresh) this.launch(run), (launched = true);
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
@@ -1380,10 +1386,10 @@ export class Runs {
     }
   }
 
-  private async toDoor(run: Run, path: string, body?: Json, readyMs?: number): Promise<{ status: number; body: Json | null }> {
+  private async toDoor(run: Run, path: string, body?: Json, readyMs?: number, refresh = false): Promise<{ status: number; body: Json | null }> {
     const deadline = Date.now() + 30_000;
     for (;;) {
-      const door = await this.ensureLive(run, readyMs);
+      const door = await this.ensureLive(run, readyMs, refresh);
       const res = await fetch(new URL(path, door), {
         method: body === undefined ? "GET" : "POST",
         headers: this.headers(run, body !== undefined),
@@ -1399,16 +1405,22 @@ export class Runs {
 
   /** Reads what decides the secrets runs of `run`'s revision are handed (needsOf), once per revision: from `given` (a
    *  start's, read from the store), else from the agent store, waiting out a busy one as a run's end does. */
-  private async pinNeeds(run: Pick<Run, "id" | "revision"> & Partial<Pick<Run, "dir">>, given?: Revision): Promise<void> {
-    if (!this.needs.has(run.revision)) {
-      const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
-      this.needs.set(run.revision, await needsOf(revision));
-    }
-    // Every launch path comes here first: its MCP servers' OAuth tokens near expiry are refreshed now, in serve, so the
-    // synchronous launch hands the run a fresh access token (mcp-servers.ts headersForRun), never a refresh token.
+  private async pinNeeds(run: Pick<Run, "id" | "revision">, given?: Revision): Promise<void> {
+    if (this.needs.has(run.revision)) return;
+    const revision = given ?? (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store")));
+    this.needs.set(run.revision, await needsOf(revision));
+  }
+
+  /** Just before a launch that spawns the run's process (after pinNeeds): its MCP servers' OAuth tokens near expiry are
+   *  refreshed in serve (mcp-servers.ts headersForRun), so the synchronous launch hands it a fresh access token, never a
+   *  refresh token. Never on a path that only reaches a live process, nor on a stop's: an authorization server that is
+   *  slow to answer never holds an abort. */
+  private async mcpFresh(run: Run): Promise<boolean> {
     const source = this.options.mcpServers;
-    const pin = run.dir && source?.refresh ? this.mcpPin(run as Run, this.needs.get(run.revision)?.tools) : undefined;
-    await Promise.all(Object.keys(pin ?? {}).map((name) => source!.refresh!(name)));
+    const pin = source?.refresh ? this.mcpPin(run, this.needs.get(run.revision)?.tools) : undefined;
+    if (!pin) return false;
+    await Promise.all(Object.keys(pin).map((name) => source!.refresh!(name)));
+    return true;
   }
 
   /** `run`'s pinned MCP tools: read from its directory, or at its first launch made from the granted `tools` and the
@@ -1643,6 +1655,7 @@ export class Runs {
       const never = neverFits(run.harness, this.memory);
       if (!never && run.relaunches < MAX_RELAUNCHES) {
         await this.pinNeeds(run);
+        await this.mcpFresh(run);
         return this.relaunch(run);
       }
       run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
@@ -1903,6 +1916,7 @@ export class Runs {
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
     // Before the run is known here, so nothing launches it first.
     await this.pinNeeds(run, revision);
+    await this.mcpFresh(run);
     this.runs.set(run.id, run);
     // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
     this.show(run);
@@ -1958,7 +1972,7 @@ export class Runs {
 
   private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
     await this.beforeSubmit?.(run.id, content);
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs, true);
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
@@ -2026,6 +2040,8 @@ export class Runs {
   private async reopen(run: Run): Promise<void> {
     await this.sweepOnce();
     await this.pinNeeds(run);
+    // Before its place is taken: the launch below follows the place with no wait.
+    await this.mcpFresh(run);
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.

@@ -17,6 +17,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   const access = new Set();
   const refresh = new Map();
   const issued = [];
+  let hanging = false;
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
     const chunks = [];
@@ -58,6 +59,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       return void res.writeHead(302, { location: back.href }).end();
     }
     if (url.pathname === "/token" && req.method === "POST") {
+      if (hanging) return; // never answered: its client's own timeout ends it
       const basic = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
       const [id, secret] = basic ? Buffer.from(basic[1], "base64").toString("utf8").split(":").map(decodeURIComponent) : [form.client_id, form.client_secret];
       const client = registered.get(id);
@@ -100,6 +102,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     issued,
     accepts: (authorization) => typeof authorization === "string" && access.has(authorization.replace(/^Bearer /, "")),
     revoke: () => (refresh.clear(), access.clear()),
+    /** From now on `/token` never answers, as an authorization server that hangs. */
+    hang: () => void (hanging = true),
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
     expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),
