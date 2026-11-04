@@ -68,3 +68,26 @@ test(`pi: a run stopped mid-request whose process then went, followed up, shows 
   assert.notEqual(recordOf(data, runId)?.holder?.pid, pid, "setup: the follow-up ran in a new process");
   assert.deepEqual(resumedRows(rows), [], `stopped, its process gone, then followed up: no "Resumed" phase: ${shown(rows)}`);
 });
+
+test(`pi: two follow-ups to a run that answered, the second sent while the first's reopen is in progress, show no "Resumed" phase`, { timeout: 240_000 }, async (t) => {
+  let reached, release;
+  const atLaunch = new Promise((resolve) => (reached = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  // The first follow-up's reopen is held after the run reads open again and before it launches the run's process.
+  let holds = 0;
+  const { api, data } = await serve(t, { beforeReopenLaunch: async () => { if (holds++ === 0) { reached(); await held; } } });
+  assert.equal((await api("POST", "/agents", agent("answered-twice", {}))).status, 201);
+  const runId = (await api("POST", "/agents/answered-twice/runs", { input: { content: "hi" } })).body.run_id;
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  await until("the answered run's process let go", async () => { const r = recordOf(data, runId); return r !== null && r.status !== "running"; });
+  const first = api("POST", `/runs/${runId}/messages`, { content: "Go on." });
+  await atLaunch;
+  // Sent while the first's reopen is held: the run already reads open again.
+  const second = api("POST", `/runs/${runId}/messages`, { content: "And then?" });
+  await sleep(1_000);
+  release();
+  assert.deepEqual([(await first).status, (await second).status], [202, 202]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary).sort(), ["You: And then?", "You: Go on.", "You: hi"]);
+  assert.deepEqual(resumedRows(rows), [], `two follow-ups, the second during the first's reopen: no "Resumed" phase: ${shown(rows)}`);
+});

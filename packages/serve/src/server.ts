@@ -175,6 +175,9 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
+  /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
+   *  process is launched, so a test can hold a reopen there. */
+  beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
   /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
@@ -630,6 +633,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (relay) stops.push(() => relay.close());
   const expected = digest(`Bearer ${token}`);
   if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
+  if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };

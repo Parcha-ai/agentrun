@@ -626,6 +626,9 @@ export class Runs {
   /** A test's seam (startServe's `beforeAbort`): awaited by a stop between its mark and its abort, so a test can hold a
    *  stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
+   *  launch, so a test can hold a reopen there. */
+  beforeReopenLaunch?: (runId: string) => Promise<void> | void;
 
   private get store() {
     return this.options.agents.store;
@@ -1909,6 +1912,7 @@ export class Runs {
       run.relaunches = 0;
       // A run that learns finds its agent's notes in its work again (learning-run.ts).
       await this.learning.onReopen(run);
+      await this.beforeReopenLaunch?.(run.id);
       this.refresh(run);
       // Opened for the follow-up: the run had answered, so its open resumes nothing.
       this.launch(run, true);
