@@ -42,7 +42,7 @@ import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
-import { keyRefusal, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { keyRefusal, redacted, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
 import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
@@ -781,7 +781,7 @@ export class Runs {
   /** A run's error as a person reads it, in its error box and on its Timeline row alike: a refused key in plain words
    *  (plainKey), else the harness's text with no loopback address (withoutLoopback: Codex names serve's own proxy). */
   private errorWords(run: Run, text: string | undefined): string | undefined {
-    return text ? withoutLoopback(this.plainKey(run, text) ?? text) : text;
+    return text ? this.shown(this.plainKey(run, text) ?? text) : text;
   }
 
   /** An error row as served: its summary and text in errorWords' terms. The run's own rows, which its status reads, keep
@@ -789,10 +789,22 @@ export class Runs {
   private servedError(run: Run, row: TimelineEvent): TimelineEvent {
     const plain = this.plainKey(run, row.text ?? undefined);
     if (plain) {
-      const words = withoutLoopback(plain);
+      const words = this.shown(plain);
       return { ...row, summary: words, text: words };
     }
-    return { ...row, ...(row.summary ? { summary: withoutLoopback(row.summary) } : {}), ...(row.text ? { text: withoutLoopback(row.text) } : {}) };
+    return { ...row, ...(row.summary ? { summary: this.shown(row.summary) } : {}), ...(row.text ? { text: this.shown(row.text) } : {}) };
+  }
+
+  /** What serve shows of a run's error text, for every run kind: no held secret's value (redacted, key-refusal.ts' one
+   *  rule) and no loopback address. */
+  private shown(text: string): string {
+    return withoutLoopback(redacted(text, this.heldSecrets()));
+  }
+
+  /** The values of every secret this server holds: its environment's and its saved keys. */
+  private heldSecrets(): string[] {
+    const env = withSecrets(process.env, "all", this.options.storedKeys);
+    return SECRET_NAMES.map((name) => env[name]).filter((value): value is string => typeof value === "string");
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
@@ -802,8 +814,7 @@ export class Runs {
     // default tier's key could name the wrong one, so its error keeps the provider's own words.
     if (!text || run.kind === "workflow") return undefined;
     const env = withSecrets(process.env, "all", this.options.storedKeys);
-    const secrets = SECRET_NAMES.map((name) => env[name]).filter((value): value is string => typeof value === "string");
-    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), secrets);
+    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), this.heldSecrets());
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */

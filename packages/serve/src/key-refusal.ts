@@ -43,6 +43,12 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
+/** `text` with every held secret's value (8 characters or more; a shorter one would match ordinary words) as
+ *  [redacted]: the one redaction rule for whatever a run's error shows, a refused key's words and any other. */
+export function redacted(text: string, secrets: readonly string[]): string {
+  return secrets.reduce((out, secret) => (secret.length >= 8 ? out.split(secret).join("[redacted]") : out), text);
+}
+
 /** A provider's 401 as each harness puts it, at the start of the run's error:
  *  - pi-ai: `401: <body>` (its OpenAI-shaped APIs, OpenRouter's chat completions among them), `401 <body>` (Anthropic's
  *    SDK), or `<provider> API error (401): <body>` (its Responses API, serve's gateway's `agent-model API error (401): …`);
@@ -57,7 +63,7 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
   if (!text || !key) return undefined;
   // Every held key's value out of the whole text first: cut afterwards, a key the provider echoed across the cut would
   // keep its start in the words.
-  const said = secrets.reduce((out, secret) => (secret.length >= 8 ? out.split(secret).join("[redacted]") : out), text);
+  const said = redacted(text, secrets);
   const at = REFUSED.exec(said);
   if (!at) return undefined;
   const detail = detailOf(said.slice(at[0].length));
