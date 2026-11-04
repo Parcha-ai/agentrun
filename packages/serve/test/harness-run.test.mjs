@@ -612,7 +612,8 @@ function namesOnlyGiven(row, given, roots, who) {
   assert.equal(row.tool_status, "failed", `${who}: ${said}`);
   assert.ok((row.tool_result_preview ?? "").includes(`${given}: outside the workspace`), `${who}: the refusal names ${given} as given: ${said}`);
   for (const root of new Set(roots.flatMap((root) => [root, realpathSync(root)]))) assert.ok(!said.includes(root), `${who}: the refusal of ${given} names ${root}: ${said}`);
-  assert.doesNotMatch(said.split(given).join(""), /(?<![\w.~-])\/[\w.-]/, `${who}: the refusal of ${given} names an absolute host path: ${said}`);
+  // An absolute path starts at a "/" no name, dot or "<" comes before: pi's "</harness>", closing its error block, is none.
+  assert.doesNotMatch(said.split(given).join(""), /(?<![\w.~<-])\/[\w.-]/, `${who}: the refusal of ${given} names an absolute host path: ${said}`);
   assert.doesNotMatch(said, /resolves to/, `${who}: the refusal of ${given} names where it resolves to: ${said}`);
 }
 
