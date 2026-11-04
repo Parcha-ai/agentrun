@@ -728,7 +728,7 @@ then only how many). That is the message the harness gets, so it is the timeline
 `input` stays as it was sent. A run given no files is sent its `content` as it is. A deleted upload stays in the runs
 that copied it; a run started after names it in vain. Each upload is kept in `DIR/files/<file_id>/`, 0600. A start
 clears the temp files a crashed upload left (`.incoming.*.tmp` in `DIR/files/`, `bytes.*.tmp` in a file's folder), each
-only when it is a regular file, and logs `event=uploads_swept removed=N`. `upload.expires_at`, which the contract
+only when it is a regular file (a `DIR/files/` that is a link is not swept), and logs `event=uploads_swept removed=N`. `upload.expires_at`, which the contract
 requires, is advisory and not enforced in this release: a `PUT` after it is still taken.
 
 ## Agent home

@@ -158,8 +158,10 @@ export class Uploads {
    *  under the root, and `bytes.*.tmp` in a folder named as a file's id. Each goes only when lstat says it is a regular
    *  file: a link or anything else named like one stays, nothing is followed, and only those folders are entered, one
    *  level. A file's bytes and its record are never touched: a folder left with only its temp keeps the rest, as after a
-   *  failed PUT. Answers how many it removed. */
+   *  failed PUT. A root that is not a real directory (a link to storage another server may share) is not swept at all: the
+   *  lock covers this data directory, not where a link goes. Answers how many it removed. */
   async sweep(): Promise<number> {
+    if (!(await lstat(this.root).catch(() => null))?.isDirectory()) return 0;
     let removed = 0;
     const drop = async (path: string) => {
       if (!(await lstat(path).catch(() => null))?.isFile()) return;

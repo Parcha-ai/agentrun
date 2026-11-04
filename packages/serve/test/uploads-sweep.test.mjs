@@ -2,7 +2,7 @@
 // upload's under DIR/files/, a PUT's in its file's folder), each only when it is a regular file. A link named like one,
 // an upload's bytes and its record stay, and the start says how many it removed.
 import assert from "node:assert/strict";
-import { lstat, readFile, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
@@ -48,5 +48,25 @@ test("a start removes a crashed upload's temp files by their exact names, and no
   await server.close();
   lines.length = 0;
   server = await start();
+  assert.deepEqual(lines.filter((line) => line.includes("uploads_swept")), []);
+});
+
+test("a files/ that is a link (to storage shared with another server) is not swept: the lock covers this data directory, not the link's target", async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const shared = join(dir, "shared-files");
+  // Another server's uploads, its temps live as far as this one can know.
+  const folder = join(shared, "0190a0a0-0000-7000-8000-000000000001");
+  await mkdir(folder, { recursive: true });
+  const incoming = join(shared, ".incoming.4242.0123456789ab.tmp");
+  const putTemp = join(folder, "bytes.4242.abcdef012345.tmp");
+  await writeFile(incoming, "another server's bytes");
+  await writeFile(putTemp, "another server's");
+  await mkdir(data, { recursive: true });
+  await symlink(shared, join(data, "files"));
+  const lines = [];
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line) });
+  t.after(() => server.close());
+  assert.deepEqual([await exists(incoming), await exists(putTemp)], [true, true], "the shared folder's temps stay");
   assert.deepEqual(lines.filter((line) => line.includes("uploads_swept")), []);
 });
