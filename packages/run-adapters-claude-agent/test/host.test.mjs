@@ -650,3 +650,62 @@ test("each web search is booked at Anthropic's rate into the session's cost, str
     assert.deepEqual(asked, [undefined, undefined, undefined]);
   }
 });
+
+test("a stopped Messages request's hidden thinking, as the policy reads it from the body: its budget when thinking is enabled (Claude 4-class models stream only a summary of it); its max_tokens when thinking is adaptive; none when thinking is off", () => {
+  const hidden = (body) => policy.reasoningHidden?.(body);
+  assert.equal(hidden({ max_tokens: 32_000, thinking: { type: 'enabled', budget_tokens: 10_000 } }), 10_000, 'enabled: its budget');
+  assert.equal(hidden({ max_tokens: 32_000, thinking: { type: 'adaptive' } }), 32_000, 'adaptive: its output limit');
+  assert.equal(hidden({ max_tokens: 32_000 }), 0, 'no thinking: none');
+  assert.equal(hidden({ max_tokens: 32_000, thinking: { type: 'disabled' } }), 0, 'thinking disabled: none');
+});
+
+test("the lead's case: a Messages request thinking at budget_tokens 8,192, stopped after about 8,000 tokens of thinking streamed, is booked with its thinking budget, and counts what streamed and the allowance with nothing of the budget on top", async () => {
+  const thinker = anthropicPolicy({ model: 'claude-main', tools: [], maxOutputTokens: 32_000 });
+  // A thinking block streamed in pieces, about 8,000 bytes of thinking (each byte a token, as a stop counts them).
+  const head = 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_t","type":"message","role":"assistant","model":"claude-main","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}\n\n'
+    + 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n';
+  const piece = (text) => `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: text } })}\n\n`;
+  const stream = head + Array.from({ length: 40 }, () => piece('Let me check the ledger against the totals. '.repeat(5))).join('');
+  const streaming = async (_url, init) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(stream));
+      init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  let report;
+  const done = new Promise((resolve) => (report = resolve));
+  const proxy = await startModelProxy({ policy: thinker, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: priced, hooks: { beforeRequest: async () => {}, afterRequest: async (u) => report(u) }, fetch: streaming }, 'session-key');
+  let booked;
+  try {
+    await new Promise((resolve) => {
+      const req = request(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' } }, (res) => {
+        let read = 0;
+        res.on('data', (chunk) => {
+          read += chunk.length;
+          // The person stops once the thinking has all reached the harness.
+          if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); }
+        });
+        res.on('error', resolve);
+        res.on('close', resolve);
+      });
+      req.on('error', resolve);
+      req.end(JSON.stringify(body({ stream: true, max_tokens: 32_000, thinking: { type: 'enabled', budget_tokens: 8_192 } })));
+    });
+    booked = await done;
+  } finally {
+    await proxy.close();
+  }
+  assert.ok(booked.stoppedAfterBytes >= 8_192, `setup: about a budget's worth streamed: ${booked.stoppedAfterBytes} bytes`);
+  // The host's figure for a stop, as serve's cap counts it: 20,000 input tokens at $3 a million, and what streamed plus 1,024
+  // tokens at $15 a million, within the 32,000 tokens it was sent with.
+  const stoppedUsd = (tokens) => 20_000 * 3 / 1e6 + Math.min(32_000, tokens + 1_024) * 15 / 1e6;
+  const hold = stoppedUsd(32_000);
+  const store = memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:lead'), { key: 'chat:lead', beforeRequest: () => ({ holdUsd: hold, stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'claude-main' });
+  await booking.models.afterRequest(booked);
+  // Booked with its thinking budget, and counted at what streamed and the allowance: max(0, 8,192 - what streamed) is 0, so
+  // exactly (to the nano-dollar) stoppedUsd(what streamed), with nothing of the budget on top.
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  assert.deepEqual({ hidden: booked.stoppedHiddenTokens, counted: nano(booking.spentUsd()) }, { hidden: 8_192, counted: nano(stoppedUsd(booked.stoppedAfterBytes)) }, 'its thinking budget booked, and nothing of it counted on top of thinking that streamed');
+});

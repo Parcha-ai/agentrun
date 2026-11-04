@@ -339,6 +339,62 @@ test("a client that hangs up once it has read the usage the provider reported (t
   assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(piece) }], 'no usage seen: an unknown cost, with what streamed');
 });
 
+/** A client that sends `body` to the test route and leaves once `leave()` says so (or at its first byte when no `leave`). */
+const stopAt = (url, body, leave) => new Promise((resolve) => {
+  const { hostname, port } = new URL(url);
+  const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+    res.once('data', () => { req.destroy(); resolve(); });
+    res.on('error', resolve);
+  });
+  req.on('error', () => resolve());
+  req.end(JSON.stringify(body));
+  if (leave) void leave.then(() => { req.destroy(); resolve(); });
+});
+const settledAfter = async (hooks) => { for (let i = 0; i < 300 && hooks.after.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); };
+/** A provider that streams `text` and holds the stream open until the proxy aborts it. */
+const holdingStream = (text) => async (_url, init) => new Response(new ReadableStream({
+  start(c) { c.enqueue(new TextEncoder().encode(text)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+}), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+test("a stopped request whose policy says its reasoning is hidden (only a summary streams) is booked with that reasoning's budget beside what it was sent; one read whole, or with no hidden reasoning, says no such thing", async (t) => {
+  // The policy reads a body's hidden reasoning budget (as codex's reads its effort, and claude-agent's its thinking budget).
+  const reasoning = { ...policy, reasoningHidden: (body) => (typeof body.hidden === 'number' ? body.hidden : 0) };
+  const summary = 'data: {"delta":"**Weighing it**"}\n\n';
+  const hidden = await proxy(t, { policy: reasoning, fetch: holdingStream(summary) });
+  await stopAt(hidden.p.url, { model: 'other', input: 'hi', hidden: 8_192 });
+  await settledAfter(hidden.hooks);
+  assert.deepEqual(hidden.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(summary), stoppedHiddenTokens: 8_192 }], 'stopped: what it was sent, and its hidden reasoning budget');
+  // No hidden reasoning (the policy says 0): only what it was sent, as before.
+  const none = await proxy(t, { policy: reasoning, fetch: holdingStream(summary) });
+  await stopAt(none.p.url, { model: 'other', input: 'hi', hidden: 0 });
+  await settledAfter(none.hooks);
+  assert.deepEqual(none.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(summary) }]);
+  // Read whole: its usage, with no stop figures.
+  const whole = await proxy(t, { policy: reasoning });
+  const res = await fetch(`${whole.p.url}/v1/test?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` }, body: JSON.stringify({ model: 'other', input: 'hi', hidden: 8_192 }) });
+  await res.text();
+  await settledAfter(whole.hooks);
+  assert.equal(whole.hooks.after[0]?.stoppedHiddenTokens, undefined, 'read whole: no hidden budget');
+});
+
+test("a request its client stops before the provider's first header is booked as stopped with nothing streamed (its input and the allowance, as pi counts it), not at its whole hold; one the provider answered with an error status stays at its hold", async (t) => {
+  // The provider has not answered yet when the client leaves.
+  let asked;
+  const reached = new Promise((resolve) => (asked = resolve));
+  const silent = await proxy(t, { fetch: (_url, init) => new Promise((_resolve, reject) => { asked(); init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); }) });
+  await stopAt(silent.p.url, { model: 'other', input: 'hi' }, reached);
+  await settledAfter(silent.hooks);
+  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: 0 }], 'stopped before any header: stopped, with nothing streamed');
+  // An error status (an overload) began the answer; the client leaves part way: at its hold, as before.
+  const overloaded = await proxy(t, { fetch: async (_url, init) => new Response(new ReadableStream({
+    start(c) { c.enqueue(new TextEncoder().encode('{"error":{"type":"overloaded"')); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+  }), { status: 529, headers: { 'content-type': 'application/json' } }) });
+  await stopAt(overloaded.p.url, { model: 'other', input: 'hi' });
+  await settledAfter(overloaded.hooks);
+  assert.equal(overloaded.hooks.after.length, 1, 'booked once');
+  assert.equal(overloaded.hooks.after[0].stoppedAfterBytes, undefined, 'an error status: no stop figure, so its hold');
+});
+
 test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {
   let admit;
   const waiting = new Promise((resolve) => { admit = resolve; });

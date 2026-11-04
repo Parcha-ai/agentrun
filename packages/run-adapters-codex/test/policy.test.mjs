@@ -614,3 +614,16 @@ test("web search live: the count is the terminal event's own; an earlier event's
   assert.deepEqual(await book({}), unknown);
   assert.deepEqual(await book({ output: [reasoning] }), unknown);
 });
+
+test("a stopped Responses request's hidden reasoning, as the policy reads it from the body: its effort's budget; with no effort (or no reasoning object), its max_output_tokens, the conservative side; with effort none, none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const hidden = (body) => policy.reasoningHidden?.(body);
+  assert.deepEqual(
+    [hidden({ reasoning: { effort: 'minimal' } }), hidden({ reasoning: { effort: 'low' } }), hidden({ reasoning: { effort: 'medium', summary: 'auto' } }), hidden({ reasoning: { effort: 'high' } }), hidden({ reasoning: { effort: 'xhigh' } })],
+    [1_024, 2_048, 8_192, 16_384, 16_384],
+    'each effort, its budget',
+  );
+  assert.equal(hidden({ reasoning: { effort: 'none' } }), 0, 'effort none: no reasoning');
+  assert.equal(hidden({ reasoning: { summary: 'auto' }, max_output_tokens: 32_000 }), 32_000, 'no effort: its output limit');
+  assert.equal(hidden({ max_output_tokens: 20_000 }), 20_000, 'no reasoning object: its output limit, as the model may reason at its default');
+});

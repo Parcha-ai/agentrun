@@ -526,6 +526,107 @@ test("a stopped request counts every byte it streamed, whatever its blocks hold:
   assert.equal(await spentSaid(capped), eight(0.004 + (bytes + STOP_ALLOWANCE) * 100 / 1e6));
 });
 
+/** A gpt-5-class model on the Responses API: $1.25 a million input tokens, $10 a million output, reasoning that streams
+ *  only its summary. */
+const responsesReasoner = { ...model({ input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 }, { maxTokens: 128_000, contextWindow: 400_000 }), id: "gpt-5", api: "openai-responses", provider: "openai", reasoning: true };
+/** A Claude-class model on the Messages API, whose thinking takes a budget: $3 a million input, $15 output. */
+const budgetReasoner = { ...model({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, { maxTokens: 64_000, contextWindow: 200_000 }), id: "claude", api: "anthropic-messages", provider: "anthropic", reasoning: true };
+/** A 20 KB context: one message of 20,000 bytes. */
+const twentyKb = { messages: [{ role: "user", content: "x".repeat(20_000), timestamp: 0 }] };
+/** About 300 bytes of reasoning summary: all a Responses stream shows of thousands of reasoning tokens. */
+const SUMMARY = "**Weighing the options**\n\nI compared the two layouts, checked the totals against the ledger, and settled on the second, since it keeps the running balance in one column and the notes beside each entry, which the reader asked for; the first would split them across pages.";
+/** The thinking budget of each level, as pi-ai's defaults set it. */
+const LEVEL_BUDGET = { minimal: 1_024, low: 2_048, medium: 8_192, high: 16_384 };
+
+test("pi under a cap: a request whose reasoning is hidden, stopped after its summary streamed, counts the part of its reasoning budget that never streamed (the reader's case: a gpt-5-class model, a 20 KB context, a stop after ~10k hidden reasoning tokens, past medium's 8,192, costs about $0.106): the effort budget's figure, at least that, and never past its hold", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(responsesReasoner, twentyKb, { reasoning: "medium" });
+  const [held, most] = [sent[0].options[HELD_USD], sent[0].options.maxTokens];
+  // Its input as the cap prices it: the hold less the output it was sent with.
+  const input = held - most * 10 / 1e6;
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  const spent = await spentSaid(capped);
+  const summary = Buffer.byteLength(SUMMARY);
+  // Its input, the summary's bytes, the 1,024-token allowance, and what of medium effort's 8,192-token reasoning budget
+  // did not stream: max(0, 8,192 - the summary's bytes). So the summary and the budget together count 8,192 tokens.
+  assert.equal(spent, eight(input + (summary + STOP_ALLOWANCE + Math.max(0, LEVEL_BUDGET.medium - summary)) * 10 / 1e6), "the stop counts the unstreamed part of its reasoning budget");
+  assert.ok(spent >= 0.106, `at least what the reader's stop cost: $${spent}`);
+  assert.ok(spent <= eight(held), `never past its hold, $${held}: $${spent}`);
+});
+
+test("pi under a cap: a request whose hidden reasoning came before 8,000 bytes of answer text, then stopped, counts all it streamed and the whole unstreamed part of its reasoning budget: the text does not stand in for reasoning it never showed", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(responsesReasoner, twentyKb, { reasoning: "medium" });
+  const [held, most] = [sent[0].options[HELD_USD], sent[0].options.maxTokens];
+  const input = held - most * 10 / 1e6;
+  const text = "The ledger balances once the March entries move to April. ".repeat(140).slice(0, 8_000);
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }, { type: "text", text }], 0);
+  await request.result();
+  await settle();
+  const spent = await spentSaid(capped);
+  const summary = Buffer.byteLength(SUMMARY);
+  // The summary, the text, the allowance, and the 8,192-token budget less the summary: about 17,500 tokens of output.
+  assert.equal(spent, eight(input + (summary + Buffer.byteLength(text) + STOP_ALLOWANCE + Math.max(0, LEVEL_BUDGET.medium - summary)) * 10 / 1e6), "the text and the unstreamed reasoning both count");
+  assert.ok(spent <= eight(held), `never past its hold: $${spent}`);
+});
+
+test("pi under a cap: a reasoning model sent with no thinking level, stopped, counts its whole output limit, its hold: its reasoning is hidden and its effort unknown", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(responsesReasoner, twentyKb);
+  const held = sent[0].options[HELD_USD];
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  assert.equal(await spentSaid(capped), eight(held), "at its hold");
+});
+
+test("pi under a cap: a Messages request that thinks, stopped after a short thinking summary streamed, counts the unstreamed part of its thinking budget; stopped after about a budget's worth of thinking streamed, nothing on top; with thinking off, what streamed and the allowance only", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(budgetReasoner, twentyKb, { reasoning: "medium" });
+  const opts = sent[0].options;
+  // On a budget API the budget is part of the output it was sent with: maxTokens beside the budget, or the budget pi-ai adds.
+  const budget = opts.thinkingBudgets?.medium ?? LEVEL_BUDGET.medium;
+  const limit = opts.maxTokens + (opts.thinkingBudgets ? budget : 0);
+  const input = opts[HELD_USD] - limit * 15 / 1e6;
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  const spent = await spentSaid(capped);
+  const short = Buffer.byteLength(SUMMARY);
+  assert.equal(spent, eight(input + (short + STOP_ALLOWANCE + Math.max(0, budget - short)) * 15 / 1e6), "the stop counts the unstreamed part of its thinking budget");
+  assert.ok(spent <= eight(opts[HELD_USD]), `never past its hold: $${spent}`);
+  // The lead's case: about a budget's worth of thinking streamed (8,300 bytes against the 8,192-token budget), then a stop.
+  // The thinking is all there to count: nothing of the budget goes on top, so the stop counts its input, what streamed
+  // and the 1,024-token allowance (exactly: max(0, budget - streamed) is 0 here).
+  const visible = streamingModels();
+  const thinker = await capModels(visible.models, 1, 0);
+  const shown = thinker.streamSimple(budgetReasoner, twentyKb, { reasoning: "medium" });
+  const vo = visible.sent[0].options;
+  const vBudget = vo.thinkingBudgets?.medium ?? LEVEL_BUDGET.medium;
+  const vInput = vo[HELD_USD] - (vo.maxTokens + (vo.thinkingBudgets ? vBudget : 0)) * 15 / 1e6;
+  const thought = "Let me work through the ledger. ".repeat(260).slice(0, 8_300);
+  assert.ok(Buffer.byteLength(thought) >= vBudget, "setup: a budget's worth of thinking streamed");
+  visible.sent[0].end("aborted", [{ type: "thinking", thinking: thought }], 0);
+  await shown.result();
+  await settle();
+  assert.equal(await spentSaid(thinker), eight(vInput + (Buffer.byteLength(thought) + STOP_ALLOWANCE) * 15 / 1e6), "thinking that streamed: nothing of the budget on top");
+  // Thinking off: no hidden reasoning, as before.
+  const off = streamingModels();
+  const plain = await capModels(off.models, 1, 0);
+  const asked = plain.streamSimple(budgetReasoner, twentyKb);
+  const [held, most] = [off.sent[0].options[HELD_USD], off.sent[0].options.maxTokens];
+  off.sent[0].end("aborted", "abc", 0);
+  await asked.result();
+  await settle();
+  assert.equal(await spentSaid(plain), eight(held - most * 15 / 1e6 + (3 + STOP_ALLOWANCE) * 15 / 1e6), "thinking off: its input, 3 bytes and the allowance");
+});
+
 test("pi under a cap: a summary that fails with no answer counts at the worst case the cap held for it", async () => {
   const { models, sent } = fakeModels();
   const capped = await capModels({ ...models, completeSimple: () => Promise.reject(new Error("the connection reset")) }, 0.0015, 0);
