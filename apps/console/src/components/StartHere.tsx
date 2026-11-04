@@ -12,8 +12,7 @@ export type StartHereProps = {
   onTry: (t: Template) => Promise<string | null>;
   /** Sessions imported from this machine's coding agents, if any: history to read while nothing of the owner's has run. */
   imported?: number;
-  /** The model-key card above can save a key that gives the server its model (no model ready, keys kept sealed, and no
-   *  gateway, whose model a provider's key doesn't name): the model step points at it. */
+  /** A key saved in the model-key card above gives the server its model (App decides): the model step points at it. */
   keyCard?: boolean;
 };
 

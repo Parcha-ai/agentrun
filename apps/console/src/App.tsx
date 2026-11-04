@@ -251,6 +251,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
   const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
+  // Whether a key saved in the first screen's card (ModelKeyCard) gives this server its model, so the start-here step can
+  // point at the card: no model ready for want of a key, no AGENT_MODEL named (its provider's key may not be among the
+  // card's), no gateway (a provider's key names no gateway model), and keys kept sealed (with no seal key every save is
+  // refused). Anything else keeps the step's own setup text.
+  const keyCardSavesModel = caps?.models?.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
+    && !!caps.features?.tool_keys?.routes && caps.features.tool_keys.at_rest === "sealed";
   // The server lists its tools as objects (name, available, missing).
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
@@ -418,7 +424,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
-                  keyCard={caps?.models?.ready === false && caps.models.needs !== "model" && caps.models.source !== "gateway" && !!caps.features?.tool_keys?.routes && caps.features.tool_keys.at_rest === "sealed"} /> : undefined} />
+                  keyCard={keyCardSavesModel} /> : undefined} />
             </div>
           </div>
         : where.section === "playground"
