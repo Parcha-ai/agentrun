@@ -98,7 +98,9 @@ test("with claude-agent's own check: 900 KiB of the revision's skills and a 200 
   const { system, native } = await systemOf(learned.instructions, learned.skills, work, check);
   assert.deepEqual(native.map(({ name }) => name), ["check-units", "cite"], "the revision's and the learned one that fit are the adapter's own");
   assert.deepEqual(inlined(system), [], "none is in the prompt");
-  assert.deepEqual(learned, { instructions: "Answer.", skills: ["cite/SKILL.md", "cite/reference/data.md", "check-units/SKILL.md"] });
+  // A run with a pin learns, so it is told so under # Learned (#1542), here with nothing learned yet but its skills.
+  assert.match(learned.instructions, /^Answer\.\n\n# Learned\n\nYou learn from your runs\.[^\n]*\n\nNothing learned yet\.$/);
+  assert.deepEqual(learned.skills, ["cite/SKILL.md", "cite/reference/data.md", "check-units/SKILL.md"]);
   assert.deepEqual(pin, { seed: sha, skills: ["check-units/SKILL.md"], skills_left_out: ["big-notes"] });
   assert.deepEqual(await readPin(runDir), pin);
   assert.deepEqual(readdirSync(skillsDir(work)).sort(), ["check-units", "cite"], "the one left out is not laid");
