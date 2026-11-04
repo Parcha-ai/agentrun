@@ -1,6 +1,7 @@
 // What one host can hold, and whether it can work now. Runs are admitted by memory: each run is a process of its own,
 // and each reserves what a run of its harness takes (RUN_MIB, harness.ts) out of the memory the host has less the
-// server's own (SERVER_MIB). Health reads the agent store and the free disk under the data directory.
+// server's own (SERVER_MIB). Health reads the agent store and the free disk under the data directory. A start here opens
+// a browser only where there is one to open.
 import { statfs } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { openStoreReader } from "@parcha/pi-durable-agent";
@@ -89,3 +90,6 @@ export async function healthOf(data: string, minFreeBytes: number, fsStat: typeo
   const disk = free === undefined ? "cannot_check" : free >= minFreeBytes ? "ok" : "below_floor";
   return { status: store === "ok" && disk === "ok" ? "ok" : "failing", checks: { store, disk } };
 }
+
+/** Whether `--open` opens a browser here: not in CI, and on Linux or FreeBSD only with a display. */
+export const canOpen = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): boolean => !env.CI && (!["linux", "freebsd"].includes(platform) || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY));

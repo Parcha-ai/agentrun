@@ -84,6 +84,9 @@ export const TOOL_STARTED = "agentrun.tool_started";
  *  the answer's own entry was already in (a harness reports each call as it runs it, and its host writes an answer at its
  *  first call's end). It shows as that answer's, and is no request: no count, no cost, no tokens. */
 export const REQUEST_CONTINUED = "agentrun.request_continued";
+/** A host's own step, in its words (`summary`), such as a box waiting for its image: one `phase` row with that summary,
+ *  cut at CAPS.summary. No request, no cost; one without a summary shows nothing. */
+export const HOST_PHASE = "agentrun.phase";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 /** A side request's mark: its `request` is a label (a generation's, a harness's request number, is not). */
@@ -115,8 +118,9 @@ export type TimelineOptions = {
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
    *  to its workspace. The entries, the call's arguments and its input preview, are not changed. Default: as given. */
   path?: (path: string) => string;
-  /** What an error row says, made safe by the host before the row is cut (its secrets taken out): applied to an error
-   *  row's summary and text whole, so a cut never falls inside what it takes out. Default: as given. */
+  /** What an error row says, and what a tool's result row shows of its output, made safe by the host before the row is
+   *  cut (its secrets taken out): applied to an error row's summary and text, and to a tool's whole output before its
+   *  summary and preview are taken from it, so a cut never falls inside what it takes out. Default: as given. */
   redact?: (text: string) => string;
 };
 
@@ -400,7 +404,7 @@ function createProjector(options: TimelineOptions) {
   const calls = new Map<string, OpenCall>();
   // Results stored before their call (a harness bridge once wrote a result before the answer holding its call), by
   // `conversation:id`: the call, when it comes, takes its result and is done.
-  const early = new Map<string, { row: TimelineEvent; view: ToolResultView }>();
+  const early = new Map<string, { row: TimelineEvent; view: ToolResultView; shown: ToolResultView }>();
   const previous = new Map<number, string>();
   // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
   // the person's next message, not a steer.
@@ -448,6 +452,17 @@ function createProjector(options: TimelineOptions) {
   }
 
   const viewOf = (message: Obj): ToolResultView => ({ text: textOf(message), details: message.details, isError: message.isError === true });
+  /** Text as the host's `redact` makes it (as given without one). */
+  const redactText = (text: string): string => (options.redact && text ? options.redact(text) : text);
+  /** An outcome's words as the summary shows them: its verdict (`failed:`, `refused:`) as read, and only what follows it
+   *  redacted, so a redaction that takes the whole detail still leaves the verdict, as the row's status says. */
+  const saidOf = (text: string): string => {
+    const verdict = /^(\w+): /.exec(text);
+    return verdict ? `${verdict[1]}: ${scrubUrls(firstLine(redactText(text.slice(verdict[0].length))))}` : scrubUrls(firstLine(redactText(text)));
+  };
+  /** A result as its rows show it: its whole output redacted once, which its label, summary and preview are all taken
+   *  from (resultRow); its details and error flag as they came. */
+  const shownOf = (view: ToolResultView): ToolResultView => (options.redact && view.text ? { ...view, text: options.redact(view.text) } : view);
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
@@ -455,11 +470,15 @@ function createProjector(options: TimelineOptions) {
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
   /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
    *  outcome is read once, for the summary and the status both. */
-  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) => {
+  /** A tool's output, like an error, can carry a key its provider echoed. What its rows show of it (the call's label, the
+   *  result's summary and preview) comes from `shown`, its whole text as the host's `redact` makes it (shownOf, once per
+   *  result), before any of it is taken or cut, so none keeps a piece of a key. Whether it failed, and why, is read from
+   *  the output as it came (`view`), as its status is; only the words the summary shows of that are redacted. */
+  const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, shown: { text: string }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
     return make("tool_result", conv, rowId, {
-      summary: view.isError ? `${named} failed: ${failure(view.text)}` : outcome ? `${named}: ${scrubUrls(firstLine(outcome.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
+      summary: view.isError ? `${named} failed: ${failure(shown.text)}` : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
   };
@@ -562,9 +581,9 @@ function createProjector(options: TimelineOptions) {
           // Its result came first: it is this call's, so it reads with the call's label and sits right after it.
           if (before) {
             early.delete(`${conv}:${id}`);
-            const named = label(name, args, before.view);
+            const named = label(name, args, before.shown);
             use.summary = clean(named, caps.summary);
-            const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view);
+            const fresh = resultRow(conv, before.row.id, { name, callId: id, round }, named, before.view, before.shown);
             Object.assign(before.row, { summary: fresh.summary, tool_name: fresh.tool_name, tool_status: fresh.tool_status, seq: (use.seq ?? 0) + 0.5, ...(round === undefined ? {} : { round }) });
             rows.splice(rows.indexOf(before.row), 1);
             rows.splice(rows.indexOf(use) + 1, 0, before.row);
@@ -577,6 +596,7 @@ function createProjector(options: TimelineOptions) {
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
       const view = viewOf(message);
+      const shown = shownOf(view);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
       // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
@@ -584,14 +604,14 @@ function createProjector(options: TimelineOptions) {
       if (abortedCall(entry)) cutTurns.add(conv);
       else cutTurns.delete(conv);
       const args = call?.args ?? {};
-      const named = label(name, args, view);
+      const named = label(name, args, shown);
       if (call) {
         call.done = true;
         call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
-      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view);
-      if (!call && id) early.set(`${conv}:${id}`, { row, view });
+      const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
+      if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
       add(row);
       if (!view.isError) {
         const answer = str(args.answer);
@@ -608,7 +628,7 @@ function createProjector(options: TimelineOptions) {
         const child = obj(message.details)?.conversationId;
         if (typeof child === "number") {
           for (const row of adopt(conv, child, id, args, named)) touch(row);
-          add(make("subagent_completed", conv, `${conv}:done:${id}`, { summary: `Subagent done: ${scrubUrls(firstLine(view.text))}`, tool_use_id: id }));
+          add(make("subagent_completed", conv, `${conv}:done:${id}`, { summary: `Subagent done: ${scrubUrls(firstLine(shown.text))}`, tool_use_id: id }));
         }
       }
     } else if (entry.kind === "pi.system") {
@@ -618,6 +638,9 @@ function createProjector(options: TimelineOptions) {
       add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
     } else if (entry.kind === "pi.compaction") {
       add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+    } else if (entry.kind === HOST_PHASE) {
+      const summary = str(obj(entry.data)?.summary);
+      if (summary) add(make("phase", conv, base, { summary: firstLine(summary) }));
     } else if (entry.kind === RUN_RESUMED) {
       const data = obj(entry.data);
       if (typeof data?.at === "number" && Math.abs(data.at) <= 8.64e15) stamp = data.at;
@@ -659,10 +682,12 @@ function createProjector(options: TimelineOptions) {
     const diagnostic = Array.isArray(result.diagnostics) ? str(obj(result.diagnostics[0])?.message) : undefined;
     const text = typeof output === "string" ? output : output !== undefined ? JSON.stringify(output) : (diagnostic ?? "");
     const failed = result.isError === true;
-    const named = label(call.name, call.args, { text, details: result.details, isError: failed });
+    const view: ToolResultView = { text, details: result.details, isError: failed };
+    const shown = shownOf(view);
+    const named = label(call.name, call.args, shown);
     call.done = true;
     call.use.summary = clean(named, caps.summary);
-    const row = resultRow(conv, `${conv}:n:${id}:result`, { name: call.name, callId: id, round: call.round }, named, { text, isError: failed }, parent);
+    const row = resultRow(conv, `${conv}:n:${id}:result`, { name: call.name, callId: id, round: call.round }, named, view, shown, parent);
     rows.push(row);
     return [call.use, row];
   }
