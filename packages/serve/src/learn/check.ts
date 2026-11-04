@@ -7,10 +7,17 @@ import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
 
+/** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
+ *  each (notes.ts mergedNote). */
+const HOST_LINES = Buffer.byteLength("origin: you\nstatus: pending\n");
+
 /** Byte caps (UTF-8) and counts. Over a cap is refused, never cut. */
 export const CAPS = Object.freeze({
   /** One note's file. */
   note: 4096,
+  /** One note a run proposes: the note cap less HOST_LINES, so a run's note stays within `note` once the host merges
+   *  it, and a person can still retire it and a later run supersede it, each read and checked against `note`. */
+  runNote: 4096 - HOST_LINES,
   /** New notes in one run. */
   newNotes: 8,
   /** Notes one run's new notes supersede, together. */
@@ -77,8 +84,9 @@ function nameChecked(path: string, refused: (text: string) => boolean, add: Add)
 
 /** A note's text by itself, whoever writes it: within the cap, UTF-8, no hidden character, no secret's shape or the host's
  *  values, its front matter in shape. The note when it is. */
-function textChecked(path: string, size: number, bytes: Uint8Array | undefined, refused: (text: string) => boolean, add: Add): ProposedNote | undefined {
-  if (size > CAPS.note) return void add("too_large", `${size} bytes; the cap is ${CAPS.note}`, path);
+function textChecked(path: string, size: number, bytes: Uint8Array | undefined, refused: (text: string) => boolean, add: Add, run = false): ProposedNote | undefined {
+  const cap = run ? CAPS.runNote : CAPS.note;
+  if (size > cap) return void add("too_large", `${size} bytes; the cap is ${cap}${run ? " for a run's note" : ""}`, path);
   if (!bytes) throw new TypeError(`${path}: a change that is not a deletion carries its bytes`);
   let text: string;
   try {
@@ -129,9 +137,9 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
     if (change.status === "modified") return add("edited", "a run never edits a note: to replace one, it adds a new note that supersedes it", path);
     if (base.has(path)) return add("exists", "the folder has a note by this name", path);
-    const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add);
+    const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
-    if (note.keys.includes("status") || note.keys.includes("superseded_by")) return add("status", "a run never sets status or superseded_by: the host does, when a later note supersedes this one", path);
+    if (note.keys.includes("status") || note.keys.includes("superseded_by") || note.keys.includes("origin")) return add("status", "a run never sets status, superseded_by or origin: the host does, when it merges the note or a later one supersedes it", path);
     notes.push(note);
   };
   for (const change of changes) one(change);
@@ -141,10 +149,18 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   return { ok: problems.length === 0, problems, notes: problems.length ? [] : notes };
 }
 
+/** The notes the active ones of `notes` supersede, each by the note that supersedes it. A note that waits for its
+ *  owner's OK (`status: pending`) supersedes nothing until it is approved: what it names stays active. The one rule the
+ *  merge writes by (grade.ts mergeProposal) and its index is counted by (mergeProblems). */
+export function supersededBy(notes: readonly LearnedNote[]): Map<string, string> {
+  return new Map(notes.filter((note) => note.status === "active").flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
+}
+
 /** What stops `notes` from joining `base` as they are: a name `base` holds (`exists`), a `supersedes` that names no
  *  active note of `base` or one another new note supersedes too, or more than CAPS.supersedes notes superseded, and an
- *  index past INDEX_LINES. The checker asks it of the run's seed; the host asks it again of main at merge time, since
- *  other runs may have merged meanwhile. */
+ *  index past INDEX_LINES, counted as the merge makes it (supersededBy: a pending note adds no line and replaces none).
+ *  The checker asks it of the run's seed, where every new note is active; the host asks it again of main at merge time,
+ *  with each note as it merges it, since other runs may have merged meanwhile. */
 export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseValues: readonly string[] = []): Problem[] {
   const files = new Set(base.files);
   const active = new Set(base.active.map((note) => note.file));
@@ -160,7 +176,8 @@ export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseV
   }
   // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is.
   if (replaced.size > CAPS.supersedes) out.push({ rule: "supersedes", detail: `the new notes supersede ${replaced.size} notes; the cap is ${CAPS.supersedes} a run` });
-  const lines = active.size - [...replaced].filter((file) => active.has(file)).length + notes.length;
+  const gone = supersededBy(notes);
+  const lines = [...active].filter((file) => !gone.has(file)).length + notes.filter((note) => note.status === "active").length;
   if (lines > INDEX_LINES) out.push({ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
   return out.map((problem) => printable(problem, refuseValues));
 }

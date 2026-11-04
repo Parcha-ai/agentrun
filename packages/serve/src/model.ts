@@ -35,27 +35,53 @@ export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 /** The model providers whose key a person may save here (tool-keys.ts' `model` rows), in the order a default is taken
  *  from, each with the model a run gets on its key when neither its revision nor the host names one: the provider's
  *  capable everyday model, not its dearest (Claude Sonnet 5.5 and GPT-6.1 Sol, each $2 in and $10 out per million
- *  tokens; through OpenRouter, the same Sonnet). `harnesses`: those that run on the key, pi on any model of it and the
- *  harness that is the provider's own. */
+ *  tokens). `harnesses`: those that run on the key, pi on any model of it and the harness that is the provider's own;
+ *  OpenRouter's runs all three. `models`: a harness's own default on the key where it is not `model`. On OpenRouter:
+ *  pi's is GPT-6 Sol on pi-ai's openrouter provider (/chat/completions, the key as a bearer token, as OpenRouter's docs
+ *  name it; its Anthropic models go to /v1/messages with the key in x-api-key, which the docs do not), claude-agent's
+ *  Claude Sonnet 5.5 and codex's GPT-6 Sol, each through OpenRouter's own endpoint for the harness (adapters.ts), the ids
+ *  a live run took through OpenRouter on 2026-10-29. The row order is the order a default is taken in: a direct
+ *  provider's key wins over OpenRouter's. */
 export const MODEL_KEYS = [
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: [DEFAULT_HARNESS, "claude-agent"] },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, "codex"] },
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/anthropic/claude-sonnet-5.5", harnesses: [DEFAULT_HARNESS] },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, "claude-agent", "codex"], models: { "claude-agent": "anthropic/claude-sonnet-5.5", codex: "openai/gpt-6-sol" } },
 ] as const;
 
-/** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
- *  starts (MODEL_KEYS' fields). */
-export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${MODEL_KEYS.map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
+/** `row`'s default for `harness`: its own (`models`), else the row's. */
+const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => (row as { models?: Partial<Record<string, string>> }).models?.[harness] ?? row.model;
 
-/** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`), as it talks to
- *  Anthropic's endpoint only; codex an OpenAI model, or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL),
- *  as it takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
+/**
+ * Whether `harness` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
+ * harness's own settings is. Those win, as on a host with no OpenRouter key: the endpoint the host names
+ * (ANTHROPIC_BASE_URL for claude-agent, which needs ANTHROPIC_API_KEY; serve's gateway AGENT_MODEL_BASE_URL for codex,
+ * with AGENT_MODEL_API_KEY or none), then the vendor's own key (ANTHROPIC_API_KEY, OPENAI_API_KEY), then OpenRouter. An
+ * endpoint the host names never gets the OpenRouter key.
+ */
+export function openRouterOnly(harness: "claude-agent" | "codex", env: NodeJS.ProcessEnv): boolean {
+  if (!env.OPENROUTER_API_KEY) return false;
+  return harness === "claude-agent" ? !env.ANTHROPIC_BASE_URL && !env.ANTHROPIC_API_KEY : !env.AGENT_MODEL_BASE_URL && !env.OPENAI_API_KEY;
+}
+
+/** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
+ *  starts (MODEL_KEYS' fields), OpenRouter's named first, as its one key runs every harness. The order a default is
+ *  taken in is MODEL_KEYS' own. */
+export const ADD_A_KEY = `add a model key in Settings → Model keys, or set ${[...MODEL_KEYS].sort((a, b) => Number(b.id === "openrouter") - Number(a.id === "openrouter")).map((row) => row.field).join(", ").replace(/, ([^,]+)$/, " or $1")} where AgentRun starts.`;
+
+/** Whether `id` names `vendor`'s model on OpenRouter (`openrouter/<vendor>/<model-id>`), as pi names it and claude-agent
+ *  and codex take it (adapters.ts' claudeModel and codexProvider). */
+const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openrouter/${vendor}/[^/]+$`).test(id);
+
+/** Whether `harness` runs the model `id`: pi any; claude-agent an Anthropic model (`anthropic/...`, or Anthropic's on
+ *  OpenRouter, `openrouter/anthropic/...`), as it talks to an Anthropic Messages endpoint only; codex an OpenAI model
+ *  (`openai/...`, or OpenAI's on OpenRouter), or a gateway's own id (no provider, through AGENT_MODEL_BASE_URL), as it
+ *  takes that gateway for its OpenAI-compatible endpoint. On the faux harness every harness runs the run's model. */
 export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string): boolean {
   if (harness === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV]) return true;
   const slash = id.indexOf("/");
   const provider = slash > 0 ? id.slice(0, slash) : undefined;
-  if (harness === "claude-agent") return provider === "anthropic";
-  if (harness === "codex") return provider === "openai" || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
+  if (harness === "claude-agent") return provider === "anthropic" || onOpenRouter(id, "anthropic");
+  if (harness === "codex") return provider === "openai" || onOpenRouter(id, "openai") || (provider === undefined && Boolean(env.AGENT_MODEL_BASE_URL));
   return true;
 }
 
@@ -65,7 +91,8 @@ export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string)
  *  is: the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
   for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
-  return MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness))?.model;
+  const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness));
+  return row && rowModel(row, harness);
 }
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";
@@ -168,6 +195,8 @@ export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThin
 export type FauxHelpers = {
   /** Aborted when the turn is stopped: a slow reply resolves with `message("", { stopReason: "aborted" })`. */
   signal?: AbortSignal;
+  /** The model the request names (`faux-1`, or the id a tier's variable names). */
+  model?: string;
   message: typeof import("@earendil-works/pi-ai").fauxAssistantMessage;
   text: typeof import("@earendil-works/pi-ai").fauxText;
   thinking: typeof import("@earendil-works/pi-ai").fauxThinking;
@@ -208,7 +237,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact.
     const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}) })) as [{ id: string }, ...{ id: string }[]] });
-    const step = (async (context: unknown, options?: { signal?: AbortSignal }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
+    const step = (async (context: unknown, options?: { signal?: AbortSignal }, _state?: unknown, model?: { id?: string }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}), ...(model?.id ? { model: model.id } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
     // `cost` (USD per million tokens) prices the faux model's usage, which the faux core leaves at $0, so a run's
     // estimate and its cap can be tested; "unknown" leaves its usage with no cost, as a provider that does not price it.
@@ -247,7 +276,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     }
     return { models, model, byTier, unpriced };
   }
-  const baseUrl = env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "");
+  // One base rule for every harness (adapters.ts' gatewayBase): one trailing /v1 off, then the API under <base>/v1, so
+  // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses, as OpenRouter serves it.
+  const baseUrl = `${env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`;
   const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
   // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price. A tier's own price
   // (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a model two tiers
