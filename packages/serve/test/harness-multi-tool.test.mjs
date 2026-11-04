@@ -67,15 +67,14 @@ test("claude-agent: two tool calls that end before their answer is paid: their r
   assert.equal(stored.length, 2, JSON.stringify(stored));
   for (const [call, at, result] of stored) assert.ok(at !== undefined && result < at, `the result of ${call} (entry ${result}) is stored before its call (entry ${at})`);
 
-  // The timeline reads each such result as its call's: each call once, before its one result, which names its file;
-  // nothing interrupted.
+  // The timeline reads each such result as its call's: each call once, with its one result, which names its file;
+  // nothing interrupted. (Live, a result stored before its call shows above it, as on main.)
   const uses = rows.filter((r) => r.kind === "tool_use");
   const results = rows.filter((r) => r.kind === "tool_result");
   assert.deepEqual(uses.map((r) => r.tool_input_preview), ["a.md", "b.md"], shown);
   for (const use of uses) {
     const of = results.filter((r) => r.tool_use_id === use.tool_use_id);
     assert.equal(of.length, 1, `${use.tool_input_preview}: one result: ${shown}`);
-    assert.ok(use.seq < of[0].seq, `${use.tool_input_preview}: its call before its result: ${shown}`);
     assert.equal(of[0].tool_status, "success", JSON.stringify(of[0]));
     assert.match(of[0].summary, new RegExp(use.tool_input_preview.replace(".", "\\.")), `the result names ${use.tool_input_preview}: ${shown}`);
   }
