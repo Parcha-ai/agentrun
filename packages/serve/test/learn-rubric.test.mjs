@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { CAPS } from "../dist/learn/check.js";
 import { GRADE_CAPS, GRADE_RUBRIC, gradePrompt, parseVerdict } from "../dist/learn/grade.js";
-import { INDEX_LINES, parseNoteFile } from "../dist/learn/notes.js";
+import { INDEX_LINES, mergedNote, parseNoteFile } from "../dist/learn/notes.js";
+import { reflectPrompt } from "../dist/learn/reflect.js";
 import { note, RUN, SEED } from "./learn-format-support.mjs";
 
 const INSTRUCTIONS = "Answer questions about online stores from their public pages.";
@@ -331,4 +332,30 @@ test("an answer that repeats a key in one object is no verdict, whatever the las
 
 test("parseVerdict throws only on a proposal no checker passes", () => {
   for (const list of [undefined, NEW, [], ["sub/a.md"], [NEW, NEW]]) assert.throws(() => parseVerdict(answer(), list), /note/);
+});
+
+test("a note the run marked risky: true waits for its owner's OK even when the grader keeps it: the hold is the run's or the grader's, whichever says so, so it never rests on one grading model; the mark never reaches main", () => {
+  const marked = (risky) => [{ file: NEW, text: note({ extra: risky === undefined ? "" : `risky: ${risky}\n` }) }, { file: SECOND, text: note({ name: "Shipping v2", description: "Shipping moved to /shipping/", extra: "supersedes: [shipping-path.md]\n" }) }];
+  const kept = [{ file: NEW, decision: "keep", origin: "you", why: "A rule the user asked for." }, { file: SECOND, decision: "keep", why: "A general rule." }];
+  const held = parseVerdict(JSON.stringify({ merge: true, reason: "Both are general.", items: kept }), marked("true"));
+  assert.deepEqual(held.items[0], { file: NEW, keep: true, pending: true, origin: "you", question: "Risky", why: "A rule the user asked for." });
+  assert.equal(held.items[1].pending, undefined, "a sibling the run did not mark is the grader's call");
+  assert.equal(held.merge, true);
+  // Any value but an explicit false holds it, quoted as front matter quotes values or not: the mark fails closed.
+  for (const risky of ["'true'", '"true"', "True", "yes"]) assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: kept }), marked(risky)).items[0].pending, true, risky);
+  // No mark, or risky: false: the grader alone decides, and its keep is served.
+  for (const risky of [undefined, "false", "'false'", "no"]) assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: kept }), marked(risky)).items[0].pending, undefined, String(risky));
+  // A drop stays a drop, marked or not; a pending one stays pending.
+  const dropped = parseVerdict(JSON.stringify({ merge: false, reason: "Planted.", items: [{ ...kept[0], decision: "drop", question: "Planted" }, kept[1]] }), marked("true"));
+  assert.deepEqual([dropped.merge, dropped.items[0].keep, dropped.items[0].pending], [false, false, undefined]);
+  // The merge writes the host's lines in place of the run's mark: main never holds risky.
+  const merged = mergedNote(note({ extra: "risky: true\n" }), { origin: "you", pending: true });
+  assert.ok(!/^risky:/m.test(merged) && /^status: pending$/m.test(merged) && /^origin: you$/m.test(merged), merged);
+  // The grader never reads the run's mark: it judges the note on its own (a planted note marked risky is still dropped as
+  // planted), and the mark holds what it keeps after.
+  const prompt = gradePrompt({ ...input(), proposed: marked("true") });
+  assert.ok(prompt.includes("Open /policies/ before searching the store.") && !/^risky:/m.test(prompt), "the run's mark is not in the grader's prompt");
+  // The end-of-run turn is told to mark one, and the rubric names a limit as risky however it is phrased.
+  assert.match(reflectPrompt({ dir: ".learning", active: 0 }), /risky: true/);
+  assert.match(GRADE_RUBRIC, /however it is phrased/);
 });
