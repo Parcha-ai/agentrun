@@ -307,9 +307,11 @@ Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with 
 since nothing binds `work/` there):
 
 - The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
-  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes the door
-  token and adds the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs
-  and files). It refuses every other call (a create, a listing, a stop, a delete, another run's sandbox, any other host).
+  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes a call for
+  a run only with that run's own door token (`DIR/runs/<id>/door-token`, handed to that run's process alone) and adds
+  the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
+  refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
+  it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
 - Its network is blocked (`networkBlockAll`). A sandbox Daytona does not report blocked is deleted, and the tool call
   fails saying so. An organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot
   override, so a run there gets no Daytona box.
@@ -322,9 +324,13 @@ since nothing binds `work/` there):
 - The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
   is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
   is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
-  that brought nothing reached) keeps the sandbox, says so in the log, and lets the run end with what did come back; the
-  sandbox's 24-hour lifetime bounds it. A start pulls a run it finds waiting for the person, and copies back, then
-  destroys, the sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
+  that brought nothing reached) keeps the sandbox, says so in the log (`event=box_kept` with its id), and lets the run
+  end with what did come back. A start pulls a run it finds waiting for the person, and copies back, then destroys, the
+  sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
+- A kept sandbox is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
+  Daytona's default snapshot, at Daytona's storage price) and no compute; its files stay. The next start wakes it, copies
+  back again, and destroys it once that copy is whole; else its 24-hour lifetime ends it. To remove one sooner, delete
+  the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
 - The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
 ### The box's image
@@ -1165,7 +1171,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
   and fonts) hold no data; everything it shows comes through those routes. It loads nothing from the network, and its
   CSP allows this origin only.
-- Each run's door listens on loopback and takes only the server's door token.
+- Each run's door listens on loopback and takes only that run's own door token (`DIR/runs/<id>/door-token`, 0600, made
+  at its first launch); a run's process an older server started keeps the server-wide one (`DIR/.door-token`).
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
   server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token. It gets none of
   the boxes' keys either ([Boxes](#boxes)). A tool key reaches it only when its revision names a tool the key unlocks

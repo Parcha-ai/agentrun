@@ -206,6 +206,12 @@ function delay(ms: number, context: Context): Promise<void> {
 	});
 }
 
+/** Whether `fetch` failed on a redirect it was told not to follow (`redirect: "error"`). */
+function redirected(cause: unknown): boolean {
+	const inner = (cause as { cause?: unknown } | null)?.cause;
+	return /redirect/i.test(`${(cause as Error | null)?.message ?? ""} ${(inner as Error | null)?.message ?? ""}`);
+}
+
 function parseJson(bytes: Uint8Array): unknown {
 	const text = decoder.decode(bytes);
 	if (text === "") return null;
@@ -294,11 +300,14 @@ class Rest {
 			let failure: BoxError;
 			let retryable = true;
 			try {
+				// Never a redirect: a followed one keeps the key, and a box that holds its toolbox's port could send the call
+				// to another sandbox of the organization.
 				const response = await this.#fetch(url, {
 					method,
 					headers:
 						init.json === undefined ? this.#headers : { ...this.#headers, "Content-Type": "application/json" },
 					body: init.json === undefined ? init.form : JSON.stringify(init.json),
+					redirect: "error",
 					signal: AbortSignal.any(signals),
 				});
 				const bytes = new Uint8Array(await response.arrayBuffer());
@@ -310,6 +319,11 @@ class Rest {
 			} catch (cause) {
 				if (context.abortSignal?.aborted === true)
 					return err(new BoxError("aborted", `${what}: the call was aborted`, cause));
+				if (redirected(cause)) {
+					return err(
+						new BoxError("unknown", `${what}: Daytona answered with a redirect, which is never followed`, cause),
+					);
+				}
 				failure = new BoxError("unknown", `${what}: ${(cause as Error).message}`, cause);
 			}
 			if (!retryable || attempt >= attempts) return err(failure);

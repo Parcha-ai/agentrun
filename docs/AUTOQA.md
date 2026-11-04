@@ -288,7 +288,8 @@ the run's files go to. It gives back:
 - Serve, a Daytona place (`{mode: "sandbox", box: "daytona"}`): the server makes, seeds, pulls and destroys the run's
   sandbox with its own key (`ensureRemoteBox`, `pullRemoteBox` in `run-box.ts`; `remotePlace` in `place.ts`), the network
   blocked (`networkBlockAll`). The run's process reaches it only through the box relay (`packages/serve/src/box-relay.ts`,
-  its address in `<data>/.box-relay`), which takes the door token and sends on with the key only a read of the run's own
+  its address in `<data>/.box-relay`), which takes a run's call only with that run's own door token, follows no redirect,
+  and sends on with the key only a read of the run's own
   sandbox and its toolbox's programs and files. `work/` is copied in at the sandbox's making and back at each turn's end
   (a read of the run's files waits for that copy) and before the run's end is recorded; the mark is `box-sync.json`
   beside the run. Tests: `test/daytona-boxes.test.mjs` on `test/fixtures/fake-daytona.mjs`, a loopback Daytona.

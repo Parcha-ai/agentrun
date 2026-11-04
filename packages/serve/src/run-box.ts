@@ -97,7 +97,7 @@ export function runBox(source: BoxSource, run: { id: string; root: string; dir: 
   const filed = new Map<string, Uint8Array>();
   const open = async (context: Context): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
-    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run.id, context) : await localRunBox(await source.provider(), run, context);
+    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run.dir, run.id, context) : await localRunBox(await source.provider(), run, context);
     if (!made) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
@@ -193,10 +193,10 @@ async function localRunBox(boxes: BoxProvider, run: { id: string; root: string; 
 
 /** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's
  *  Daytona provider holds no key, and every call it makes goes to the relay, which sends it on with the server's. */
-async function relayedRunBox(root: string, runId: string, context: Context): Promise<{ box: Box; made: boolean }> {
-  const given = await relayedBox(root, runId, context.abortSignal);
+async function relayedRunBox(root: string, runDir: string, runId: string, context: Context): Promise<{ box: Box; made: boolean }> {
+  const given = await relayedBox(root, runDir, runId, context.abortSignal);
   const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
-  const boxes = daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl: given.apiUrl, fetch: relayFetch(root, runId) });
+  const boxes = daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl: given.apiUrl, fetch: relayFetch(root, runDir, runId) });
   const attached = await boxes.attach(given.id, context);
   if (!attached.ok) throw new Error(`the run's box could not be reached: ${attached.error.message}`);
   if (!attached.value) throw new Error(`the run's box ${given.id} is not running`);
@@ -259,9 +259,12 @@ export type RemotePull = { -readonly [K in "changed" | "files" | "bytes" | "remo
  *  nothing reached); else the copy failed, and a later pull may land. */
 export class PullIncomplete extends Error {
   readonly lasting: boolean;
-  constructor(message: string, lasting: boolean) {
+  /** The box that keeps what did not come back. */
+  readonly box: string;
+  constructor(message: string, lasting: boolean, box: string) {
     super(message);
     this.lasting = lasting;
+    this.box = box;
   }
 }
 
@@ -291,8 +294,8 @@ export async function pullRemoteBox(boxes: BoxProvider, run: { id: string; dir: 
     total.removed += removed;
     if (!stopped) return total;
     const wrote = files + directories + removed > 0;
-    if (stopped.reason === "copy_failed") throw new PullIncomplete(`the copy back from the run's box stopped: ${stopped.message}`, false);
-    if (stopped.reason === "malformed" || !wrote || round >= PULL_ROUNDS) throw new PullIncomplete(`the copy back from the run's box stopped (${stopped.reason}): ${stopped.message}`, true);
+    if (stopped.reason === "copy_failed") throw new PullIncomplete(`the copy back from the run's box stopped: ${stopped.message}`, false, box.id);
+    if (stopped.reason === "malformed" || !wrote || round >= PULL_ROUNDS) throw new PullIncomplete(`the copy back from the run's box stopped (${stopped.reason}): ${stopped.message}`, true, box.id);
   }
 }
 
@@ -316,11 +319,11 @@ export async function destroyRunBoxes(boxes: BoxProvider, runId: string, context
 /** The start's sweep: destroys every run's box whose run `ended` says is over, once `before` (a remote box's pull) for its
  *  run says it may go. A box of a run this server does not know is left to its lifetime: another server's, or one being
  *  made. */
-export async function sweepRunBoxes(boxes: BoxProvider, ended: (runId: string) => boolean, context: Context, before?: (runId: string) => Promise<boolean>): Promise<number> {
+export async function sweepRunBoxes(boxes: BoxProvider, ended: (runId: string) => boolean, context: Context, before?: (runId: string, boxId: string) => Promise<boolean>): Promise<number> {
   return destroyListed(boxes, { [KIND_LABEL]: "run" }, (labels) => typeof labels[RUN_LABEL] === "string" && ended(labels[RUN_LABEL]), context, before);
 }
 
-async function destroyListed(boxes: BoxProvider, labels: Record<string, string>, pick: (labels: Readonly<Record<string, string>>) => boolean, context: Context, before?: (runId: string) => Promise<boolean>): Promise<number> {
+async function destroyListed(boxes: BoxProvider, labels: Record<string, string>, pick: (labels: Readonly<Record<string, string>>) => boolean, context: Context, before?: (runId: string, boxId: string) => Promise<boolean>): Promise<number> {
   const listed = await boxes.list(labels, context);
   if (!listed.ok) throw listed.error;
   let destroyed = 0;
@@ -328,7 +331,7 @@ async function destroyListed(boxes: BoxProvider, labels: Record<string, string>,
     const box = await boxes.attach(ref.id, context);
     if (!box.ok) throw box.error;
     if (!box.value) continue;
-    if (before && !(await before(ref.labels[RUN_LABEL]!))) continue;
+    if (before && !(await before(ref.labels[RUN_LABEL]!, ref.id))) continue;
     const gone = await box.value.destroy(context);
     if (!gone.ok) throw gone.error;
     destroyed++;

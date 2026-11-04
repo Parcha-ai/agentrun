@@ -1,17 +1,20 @@
 // The box relay: how a run's process reaches its Daytona box without Daytona's key. The key is the server's alone
 // (BOX_KEYS, SERVER_ONLY in runs.ts), so a run's Daytona provider sends each of its calls here instead, on loopback with
-// the door token, and the relay sends it on with the key only when it is one of the calls a run's tools make of that run's
-// own box: a read of the sandbox, its toolbox's address, and its toolbox's programs and files. Nothing else passes: no
-// create, listing, stop or delete (the server makes and seeds the box, pulls its work/ back and destroys it), and no call
-// to a sandbox that does not carry the run's label. The relay's address is a file in the data directory, read again at
-// each call, so a run's process that outlives its server reaches the next one.
+// its run's own door token (RUN_DOOR_TOKEN, the token its door takes, handed to that run's process alone), and the relay
+// sends it on with the key only when it is one of the calls a run's tools make of that run's own box: a read of the
+// sandbox, its toolbox's address, and its toolbox's programs and files. Nothing else passes: no call for another run (its
+// token is not this one), no create, listing, stop or delete (the server makes and seeds the box, pulls its work/ back
+// and destroys it), no call to a sandbox that does not carry the run's label, and no redirect, ever followed: one would
+// carry the key. The relay's address is a file in the data directory, read again at each call, so a run's process that
+// outlives its server reaches the next one.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { DOOR_TOKEN_FILE, readJson, writeWhole } from "./files.js";
+import { type DaytonaApi, daytonaCall, redirectRefusal } from "./daytona-api.js";
+import { readJson, RUN_DOOR_TOKEN, writeWhole } from "./files.js";
 
 /** The relay's address in the data directory: `{"url": "http://<loopback>:<port>"}`. */
 export const BOX_RELAY_FILE = ".box-relay";
@@ -31,10 +34,10 @@ const TOOLBOX: Readonly<Record<string, string>> = { "process/execute": "POST", "
 const KNOWN_MAX = 1024;
 
 export type BoxRelayOptions = {
-  /** The data directory: where the relay's address goes, and the door token is read from. */
+  /** The data directory: where the relay's address goes. */
   root: string;
-  /** The door token: what each call to the relay carries. */
-  token: string;
+  /** Run `runId`'s own door token, which a call for that run must carry; undefined for a run that has none. */
+  tokenOf(runId: string): string | undefined;
   /** Daytona's API and the server's key for it. */
   apiUrl: string;
   apiKey: string;
@@ -54,20 +57,19 @@ const digest = (text: string) => createHash("sha256").update(text).digest();
 export async function startBoxRelay(options: BoxRelayOptions): Promise<BoxRelay> {
   const base = options.apiUrl.replace(/\/+$/, "");
   const upstream = options.fetch ?? fetch;
-  const expected = digest(`Bearer ${options.token}`);
+  const api: DaytonaApi = { apiUrl: base, apiKey: options.apiKey, ...(options.fetch ? { fetch: options.fetch } : {}) };
   // Each sandbox's run (its label) and its toolbox's address, as Daytona answered the server: neither changes.
   const known = new Map<string, { run: string | undefined; proxy?: string }>();
   const remember = (id: string, value: { run: string | undefined; proxy?: string }) => {
     if (known.size >= KNOWN_MAX) known.clear();
     known.set(id, value);
   };
-  const daytona = (url: string) => upstream(url, { headers: { authorization: `Bearer ${options.apiKey}`, "x-daytona-source": "pi-transport" }, signal: AbortSignal.timeout(30_000) });
 
   /** The run whose label sandbox `id` carries, as Daytona says; undefined for a sandbox that has none, or is not there. */
   const runOf = async (id: string): Promise<string | undefined> => {
     const held = known.get(id);
     if (held) return held.run;
-    const answer = await daytona(`${base}/sandbox/${encodeURIComponent(id)}`);
+    const answer = await daytonaCall(api, "GET", `/sandbox/${encodeURIComponent(id)}`);
     if (answer.status === 404) return undefined;
     if (!answer.ok) throw new Error(`Daytona answered ${answer.status} to the read of a sandbox`);
     const info = (await answer.json().catch(() => null)) as { labels?: Record<string, unknown>; toolboxProxyUrl?: unknown } | null;
@@ -79,7 +81,7 @@ export async function startBoxRelay(options: BoxRelayOptions): Promise<BoxRelay>
   const proxyOf = async (id: string): Promise<string | undefined> => {
     const held = known.get(id);
     if (held?.proxy) return held.proxy.replace(/\/+$/, "");
-    const answer = await daytona(`${base}/sandbox/${encodeURIComponent(id)}/toolbox-proxy-url`);
+    const answer = await daytonaCall(api, "GET", `/sandbox/${encodeURIComponent(id)}/toolbox-proxy-url`);
     if (!answer.ok) return undefined;
     const url = ((await answer.json().catch(() => null)) as { url?: unknown } | null)?.url;
     if (typeof url !== "string") return undefined;
@@ -125,12 +127,21 @@ export async function startBoxRelay(options: BoxRelayOptions): Promise<BoxRelay>
     const abort = new AbortController();
     res.once("close", () => void (res.writableFinished || abort.abort()));
     const type = req.headers["content-type"];
-    const sent = await upstream(target.href, {
-      method,
-      headers: { authorization: `Bearer ${options.apiKey}`, "x-daytona-source": "pi-transport", ...(type ? { "content-type": type } : {}) },
-      ...(body ? { body: new Uint8Array(body) } : {}),
-      signal: abort.signal,
-    });
+    let sent: Response;
+    try {
+      sent = await upstream(target.href, {
+        method,
+        headers: { authorization: `Bearer ${options.apiKey}`, "x-daytona-source": "pi-transport", ...(type ? { "content-type": type } : {}) },
+        ...(body ? { body: new Uint8Array(body) } : {}),
+        // Never followed: a box that holds its toolbox's port could point the key at another run's sandbox.
+        redirect: "error",
+        signal: abort.signal,
+      });
+    } catch (error) {
+      const refused = redirectRefusal(error);
+      if (refused) return answer(res, 502, { message: `the box relay refuses ${method} ${target.pathname}: ${refused}` });
+      throw error;
+    }
     res.writeHead(sent.status, { "content-type": sent.headers.get("content-type") ?? "application/octet-stream", "cache-control": "no-store" });
     if (!sent.body) return void res.end();
     Readable.fromWeb(sent.body as never).on("error", () => res.destroy()).pipe(res);
@@ -138,11 +149,13 @@ export async function startBoxRelay(options: BoxRelayOptions): Promise<BoxRelay>
 
   const server = createServer((req, res) => {
     void (async () => {
-      const auth = String(req.headers.authorization ?? "");
-      if (!timingSafeEqual(digest(auth), expected)) return answer(res, 401, { message: "the box relay takes the door token" });
       const path = /^\/runs\/([^/]+)\/(box|daytona)$/.exec(new URL(req.url ?? "/", "http://relay").pathname);
       const runId = path ? decodeURIComponent(path[1]!) : "";
-      if (!path || !options.serves(runId)) return answer(res, 404, { message: "no run of this server is in a Daytona box by that id" });
+      // The calling run's own token, and only for its own run: one run's process never speaks for another's.
+      const token = path ? options.tokenOf(runId) : undefined;
+      const auth = String(req.headers.authorization ?? "");
+      if (!path || !token || !timingSafeEqual(digest(auth), digest(`Bearer ${token}`))) return answer(res, 401, { message: "the box relay takes a run's call only with that run's own door token" });
+      if (!options.serves(runId)) return answer(res, 404, { message: "no run of this server is in a Daytona box by that id" });
       if (path[2] === "box") {
         if (req.method !== "POST") return answer(res, 405, { message: "POST asks for the run's box" });
         const box = await options.ensure(runId);
@@ -186,18 +199,19 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer | null> {
   return Buffer.concat(parts);
 }
 
-/** The relay's address and the door token, read from the data directory `root` at each call. */
-export async function relayAddress(root: string): Promise<{ url: string; token: string }> {
-  const [file, token] = await Promise.all([readJson(join(root, BOX_RELAY_FILE)), readFile(join(root, DOOR_TOKEN_FILE), "utf8").catch(() => "")]);
+/** The relay's address, from the data directory `root`, and the run's own door token, from its directory `runDir`: read
+ *  at each call. */
+export async function relayAddress(root: string, runDir: string): Promise<{ url: string; token: string }> {
+  const [file, token] = await Promise.all([readJson(join(root, BOX_RELAY_FILE)), readFile(join(runDir, RUN_DOOR_TOKEN), "utf8").catch(() => "")]);
   const url = file && typeof file === "object" && !Array.isArray(file) && typeof file.url === "string" ? file.url : undefined;
   if (!url || !token.trim()) throw new Error("this server's box relay is not running, and a run reaches its Daytona box only through it");
   return { url, token: token.trim() };
 }
 
 /** The `fetch` a run's Daytona provider uses: each call goes to the relay, which sends it on with the key. */
-export const relayFetch = (root: string, runId: string): typeof fetch =>
+export const relayFetch = (root: string, runDir: string, runId: string): typeof fetch =>
   (async (input: string | URL | Request, init?: RequestInit) => {
-    const { url, token } = await relayAddress(root);
+    const { url, token } = await relayAddress(root, runDir);
     const headers = new Headers(init?.headers);
     headers.set("authorization", `Bearer ${token}`);
     headers.set(TARGET, input instanceof Request ? input.url : String(input));
@@ -205,9 +219,9 @@ export const relayFetch = (root: string, runId: string): typeof fetch =>
   }) as typeof fetch;
 
 /** Asks the relay for run `runId`'s box: made and seeded by the server when it has none. */
-export async function relayedBox(root: string, runId: string, signal?: AbortSignal): Promise<{ id: string; made: boolean; apiUrl: string }> {
-  const { url, token } = await relayAddress(root);
-  const sent = await fetch(`${url}/runs/${encodeURIComponent(runId)}/box`, { method: "POST", headers: { authorization: `Bearer ${token}` }, ...(signal ? { signal } : {}) });
+export async function relayedBox(root: string, runDir: string, runId: string, signal?: AbortSignal): Promise<{ id: string; made: boolean; apiUrl: string }> {
+  const { url, token } = await relayAddress(root, runDir);
+  const sent = await fetch(`${url}/runs/${encodeURIComponent(runId)}/box`, { method: "POST", headers: { authorization: `Bearer ${token}` }, redirect: "error", ...(signal ? { signal } : {}) });
   const body = (await sent.json().catch(() => null)) as { id?: unknown; made?: unknown; api_url?: unknown; message?: unknown } | null;
   if (!sent.ok || typeof body?.id !== "string" || typeof body.api_url !== "string") {
     throw new Error(`the server did not give the run its box: ${typeof body?.message === "string" ? body.message : `it answered ${sent.status}`}`);

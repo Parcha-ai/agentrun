@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -17,7 +17,8 @@ import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecis
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, stopWhenIdle, wakeStopped } from "./daytona-api.js";
 import { dropSeed, type Learning, learningBlocker, type LearningMode, pinSeed, type Seed, seedOf } from "./learning.js";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { rowPaths } from "./workspace-paths.js";
@@ -92,6 +93,33 @@ const PULL_WAIT_MS = 120_000;
 
 /** A run's end that waits for its remote box's last pull: its settle is tried again until the pull lands. */
 class PullPending extends Error {}
+
+/** Run directory `dir`'s own door token (RUN_DOOR_TOKEN), when it has one. */
+function runDoorToken(dir: string): string | undefined {
+  try {
+    const token = readFileSync(join(dir, RUN_DOOR_TOKEN), "utf8").trim();
+    return token && !/\s/.test(token) ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Run directory `dir`'s own door token, made now (mode 0600, never through a link) when it has none. */
+function ensureRunDoorToken(dir: string): string {
+  const held = runDoorToken(dir);
+  if (held) return held;
+  const token = `ar_door_${randomBytes(24).toString("base64url")}`;
+  try {
+    writeFileSync(join(dir, RUN_DOOR_TOKEN), `${token}\n`, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    // Made meanwhile: that one is the run's.
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const made = runDoorToken(dir);
+    if (!made) throw new Error(`the run's door token at ${RUN_DOOR_TOKEN} is not one`);
+    return made;
+  }
+  return token;
+}
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 const holderPid = (record: Json | null) => (isObject(record?.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined);
@@ -231,6 +259,9 @@ export type Run = {
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
+  /** Its own door token (RUN_DOOR_TOKEN), once read or made; absent for a run an older server started, whose door takes
+   *  the server-wide one. */
+  doorToken?: string;
   /** A remote box's making and seed, asked by the run's process through the relay: one at a time. */
   boxing?: Promise<{ id: string; made: boolean }>;
   /** Its remote box's newest pull: a read of its files waits for it. */
@@ -417,7 +448,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
  *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
 export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
@@ -818,11 +849,18 @@ export class Runs {
       // once that pull landed: one that fails keeps the box for the next start, its lifetime bounding it.
       if (remoteBoxes) {
         const dirOf = (id: string) => join(this.options.agents.dir, "runs", id);
-        const pulledFirst = (id: string) =>
+        const pulledFirst = (id: string, boxId: string) =>
           pullRemoteBox(remoteBoxes, { id, dir: dirOf(id) }, boxContext(REMOTE_SYNC_MS)).then(
             () => true,
-            (error: Error) => (warn(id, `its box is kept: its pull failed (${error.message}); the next start tries again`), false),
+            async (error: Error) => {
+              warn(id, `its box is kept: its pull failed (${error.message}); the next start tries again`);
+              await this.keepBox(id, boxId);
+              return false;
+            },
           );
+        // A box kept at a run's end that Daytona stopped once idle is woken first, so this sweep pulls it like the rest.
+        const api = this.options.remoteApi;
+        if (api) await wakeStopped(api, (id) => ended.has(id)).catch((error: Error) => warn("-", `the stopped boxes of ended runs were not woken (${error.message}); the next start tries again`));
         await sweepRunBoxes(remoteBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst).catch((error: Error) => warn("-", `its start's sweep of remote run boxes failed (${error.message}); the next start sweeps again`));
       }
       if (!box) return;
@@ -854,8 +892,8 @@ export class Runs {
         await this.pullBox(run, true);
       } catch (error) {
         if (error instanceof PullIncomplete && error.lasting) {
-          this.options.log?.("box_kept", { run: run.id, reason: "pull_incomplete" });
-          return warn(run.id, `its box is kept, not destroyed: ${error.message}; what came back is in its files, and the box lives until its lifetime ends`);
+          await this.keepBox(run.id, error.box);
+          return warn(run.id, `its box is kept, not destroyed: ${error.message}; what came back is in its files, and the box stops after ${KEPT_AUTOSTOP_MINUTES} idle minutes, its files kept for the next start's pull`);
         }
         const why = `its box's last pull failed (${(error as Error).message})`;
         if (ending) throw new PullPending(why);
@@ -867,6 +905,14 @@ export class Runs {
     } catch (error) {
       warn(run.id, `its box was not destroyed (${(error as Error).message}); the next start sweeps it`);
     }
+  }
+
+  /** A remote box kept because its copy back is not whole: said in the log, and set to stop once idle, so it costs its
+   *  disk alone until the next start's pull (which wakes it) or its lifetime. */
+  private async keepBox(runId: string, boxId: string): Promise<void> {
+    this.options.log?.("box_kept", { run: runId, box: boxId, reason: "pull_incomplete" });
+    const api = this.options.remoteApi;
+    if (api) await stopWhenIdle(api, boxId).catch((error: Error) => warn(runId, `its kept box was not set to stop when idle (${error.message})`));
   }
 
   /** Pulls run `run`'s remote box into its work/, after any pull already running: at a turn's end in the background (a
@@ -982,8 +1028,18 @@ export class Runs {
 
   // ---- the door -------------------------------------------------------------------------------------------------------
 
-  private headers(json = false): Record<string, string> {
-    return { authorization: `Bearer ${this.options.doorToken}`, ...(json ? { "content-type": "application/json" } : {}) };
+  /** A call to run `run`'s door: with its own door token, or, for a process an older server started, the server-wide one. */
+  private headers(run: Run, json = false): Record<string, string> {
+    run.doorToken ??= runDoorToken(run.dir);
+    return { authorization: `Bearer ${run.doorToken ?? this.options.doorToken}`, ...(json ? { "content-type": "application/json" } : {}) };
+  }
+
+  /** Run `id`'s own door token, the one its calls to the box relay carry; none for a run it does not hold or that has none. */
+  relayToken(id: string): string | undefined {
+    const run = this.runs.get(id);
+    if (!run) return undefined;
+    run.doorToken ??= runDoorToken(run.dir);
+    return run.doorToken;
   }
 
   /** Follow the door's events into an agentic run's rows, again after each drop while the process lives. A workflow
@@ -1012,7 +1068,7 @@ export class Runs {
   private async follow(run: Run, door: string, signal: AbortSignal): Promise<void> {
     // A file a call names by its absolute path in the run's workspace (a harness's CLI sends one) reads by its name there.
     const reducer = timelineReducer({ path: rowPaths(run.dir) });
-    const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(), accept: "text/event-stream" } });
+    const up = await fetch(new URL("/events", door), { signal, headers: { ...this.headers(run), accept: "text/event-stream" } });
     if (!up.ok || !up.body) return;
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1117,7 +1173,7 @@ export class Runs {
   private async abortTurn(run: Run): Promise<void> {
     if (run.kind === "workflow") return;
     const door = this.doorOf(await this.record(run));
-    if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
+    if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(run, true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   }
 
   private async toDoor(run: Run, path: string, body?: Json, readyMs?: number): Promise<{ status: number; body: Json | null }> {
@@ -1126,7 +1182,7 @@ export class Runs {
       const door = await this.ensureLive(run, readyMs);
       const res = await fetch(new URL(path, door), {
         method: body === undefined ? "GET" : "POST",
-        headers: this.headers(body !== undefined),
+        headers: this.headers(run, body !== undefined),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(15_000),
       }).catch(() => null);
@@ -1201,10 +1257,12 @@ export class Runs {
     }
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
+    // Its own door token, which its door takes and its calls to the box relay carry: no other run's process holds it.
+    run.doorToken = ensureRunDoorToken(run.dir);
     const child = spawn(process.execPath, [
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
-      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
+      "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", join(run.dir, RUN_DOOR_TOKEN), "--drain-timeout", drain,
     ], { stdio, env });
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;

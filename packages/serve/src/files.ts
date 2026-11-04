@@ -13,9 +13,12 @@ export const RUN_CANCELLED = "cancelled";
 /** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
  *  or exits: found at a start, the server went down while it launched the run. */
 export const RUN_LAUNCHING = "launching";
-/** The token the server and its runs' processes share, in the data directory: the server's calls to a run's door carry
- *  it, and so do a run's calls to the server's box relay (box-relay.ts). */
+/** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
 export const DOOR_TOKEN_FILE = ".door-token";
+/** A run's own door token, in its directory, made at its first launch and handed to its process alone (its
+ *  `--serve-token-file`): the server's calls to that run's door carry it, and so do that run's calls to the box relay
+ *  (box-relay.ts), which takes a call for a run only with that run's token. */
+export const RUN_DOOR_TOKEN = "door-token";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
 
