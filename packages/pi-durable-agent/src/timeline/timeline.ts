@@ -344,7 +344,8 @@ function createMeter() {
   return { push, decide, usage, clamp: () => lastClamp, settled };
 }
 
-type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
+/** `lead`: the first call row of the answer that made it (its round), where a session its round opened reads as opened. */
+type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; lead: TimelineEvent; done: boolean };
 
 const TAG = /^[\w.-]{1,64}$/;
 const blocksOf = (message: Obj | undefined): Obj[] => {
@@ -484,13 +485,13 @@ function createProjector(options: TimelineOptions) {
   };
 
   /** The conversation's browser session, once a browser call got one: its first opener that did not fail, read as the
-   *  session opened right before that call (`use`, its row). A call the provider refused (a key it does not take) opened
-   *  none, so no row says one was. */
-  function opened(conv: number, name: string, view: ToolResultView, use: TimelineEvent, show: (row: TimelineEvent) => void) {
+   *  session opened right before the round that call is in (`lead`, the round's first call row), at that row's time. A
+   *  call the provider refused (a key it does not take) opened none, so no row says one was. */
+  function opened(conv: number, name: string, view: ToolResultView, lead: TimelineEvent, show: (row: TimelineEvent) => void) {
     if (!BROWSER_OPENERS.has(name) || browsers.has(conv) || callFailed(name, view)) return;
     browsers.add(conv);
-    const row = make("phase", conv, `${use.id}:session`, { summary: "Opened a live browser session", seq: (use.seq ?? 0) - 0.25 });
-    rows.splice(Math.max(rows.indexOf(use), 0), 0, row);
+    const row = make("phase", conv, `${lead.id}:session`, { summary: "Opened a live browser session", timestamp: lead.timestamp, created_at: lead.created_at, seq: (lead.seq ?? 0) - 0.25 });
+    rows.splice(Math.max(rows.indexOf(lead), 0), 0, row);
     show(row);
   }
 
@@ -577,13 +578,15 @@ function createProjector(options: TimelineOptions) {
         // A reply that stopped at the output its request's cap limited it to says so, with the numbers.
         const clamp = metered === "answer" && message.stopReason === "length" ? meter.clamp() : undefined;
         if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp) }));
+        let lead: TimelineEvent | undefined;
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
           const args = obj(block.arguments) ?? {};
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round });
+          lead ??= use;
           const before = early.get(`${conv}:${id}`);
-          calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: before !== undefined });
+          calls.set(`${conv}:${id}`, { conv, name, args, round, use, lead, done: before !== undefined });
           add(use);
           // Its result came first: it is this call's, so it reads with the call's label and sits right after it.
           if (before) {
@@ -595,7 +598,7 @@ function createProjector(options: TimelineOptions) {
             rows.splice(rows.indexOf(before.row), 1);
             rows.splice(rows.indexOf(use) + 1, 0, before.row);
             touch(before.row);
-            opened(conv, name, before.view, use, touch);
+            opened(conv, name, before.view, lead, touch);
           }
         });
       }
@@ -621,7 +624,7 @@ function createProjector(options: TimelineOptions) {
       const row = resultRow(conv, base, { name, callId: id || null, round: call?.round }, named, view, shown);
       if (!call && id) early.set(`${conv}:${id}`, { row, view, shown });
       add(row);
-      if (call) opened(conv, name, view, call.use, touch);
+      if (call) opened(conv, name, view, call.lead, touch);
       if (!view.isError) {
         const answer = str(args.answer);
         if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
@@ -679,7 +682,7 @@ function createProjector(options: TimelineOptions) {
   function nested(conv: number, id: string, parent: string, name: string, args: Obj): TimelineEvent {
     const round = calls.get(`${conv}:${parent}`)?.round;
     const use = useRow(conv, `${conv}:n:${id}`, id, name, args, { round, parent_tool_use_id: parent });
-    calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
+    calls.set(`${conv}:${id}`, { conv, name, args, round, use, lead: use, done: false });
     rows.push(use);
     return use;
   }
