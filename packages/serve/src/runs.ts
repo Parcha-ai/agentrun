@@ -781,21 +781,26 @@ export class Runs {
   /** A run's error as a person reads it, in its error box and on its Timeline row alike: a refused key in plain words
    *  (plainKey), else the harness's text with no loopback address (withoutLoopback: Codex names serve's own proxy). */
   private errorWords(run: Run, text: string | undefined): string | undefined {
-    return text ? (this.plainKey(run, text) ?? withoutLoopback(text)) : text;
+    return text ? withoutLoopback(this.plainKey(run, text) ?? text) : text;
   }
 
   /** An error row as served: its summary and text in errorWords' terms. The run's own rows, which its status reads, keep
    *  what the harness said. */
   private servedError(run: Run, row: TimelineEvent): TimelineEvent {
     const plain = this.plainKey(run, row.text ?? undefined);
-    if (plain) return { ...row, summary: plain, text: plain };
+    if (plain) {
+      const words = withoutLoopback(plain);
+      return { ...row, summary: words, text: words };
+    }
     return { ...row, ...(row.summary ? { summary: withoutLoopback(row.summary) } : {}), ...(row.text ? { text: withoutLoopback(row.text) } : {}) };
   }
 
   /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
    *  harness's route sends, by this server's settings and keys, and no secret's value. */
   private plainKey(run: Run, text: string | undefined): string | undefined {
-    if (!text) return undefined;
+    // A workflow's nodes run on their own tiers' models, and its error row does not say which one failed: naming the
+    // default tier's key could name the wrong one, so its error keeps the provider's own words.
+    if (!text || run.kind === "workflow") return undefined;
     const env = withSecrets(process.env, "all", this.options.storedKeys);
     const secrets = SECRET_NAMES.map((name) => env[name]).filter((value): value is string => typeof value === "string");
     return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), secrets);

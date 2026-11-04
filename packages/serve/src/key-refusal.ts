@@ -67,11 +67,12 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
 
 /** Codex's errors end on the address it sent the request to (", url: " and then serve's own loopback model proxy, with
  *  its port and /v1/responses); any loopback address in a run's error is the host's, never a person's. */
-const LOOPBACK_TAIL = /,?\s*url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)?\S*\s*$/i; // key-gate: loopback-rule strips the loopback proxy address codex prints
-const LOOPBACK = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)?[^\s,;)\x22\x27\]]*/gi; // key-gate: loopback-rule replaces any loopback address in a run error
+const LOOPBACK_TAIL = /,?\s*url:\s*https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?\S*\s*$/i; // key-gate: loopback-rule strips the loopback proxy address codex prints
+const LOOPBACK = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?![\w.-])(:\d+)?[^\s,;:)\x22\x27\]]*/gi; // key-gate: loopback-rule replaces any loopback address in a run error
 
 /** `text`, a run's error, with no loopback address in it: Codex's `url:` tail goes, and any other becomes "a local
- *  address". */
+ *  address". Only a loopback host itself: a host name that only starts with a loopback name goes on
+ *  past it, is a public host, and keeps its address. */
 export function withoutLoopback(text: string): string {
   return text.replace(LOOPBACK_TAIL, "").replace(LOOPBACK, "a local address");
 }
