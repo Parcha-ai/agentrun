@@ -11,6 +11,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { openCodeAdapter } from "../dist/harness-opencode/index.js";
 import { findOpenCode } from "../dist/harness-opencode/binary.js";
@@ -86,6 +87,32 @@ test("on the pinned OpenCode, the host's tool runs through the adapter, each req
   assert.match(last, /Look up x\./, "the follow-up's process has the first turn back");
   assert.match(last, /found: x/);
   assert.match(last, /And now\?/);
+});
+
+test("on the pinned OpenCode, a host tool's result as long as the host's bound reaches the model whole: never cut and saved to a file the model has no tool to read", { skip, timeout: 120_000 }, async () => {
+  // 3,000 lines of 40 characters, some past ASCII: past OpenCode's own limits on both counts (2,000 lines, 51,200 bytes).
+  const text = `${"é".repeat(9)}${"x".repeat(30)}\n`.repeat(HOST_RESULT_MAX_CHARS / 40);
+  assert.equal(text.length, HOST_RESULT_MAX_CHARS);
+  const script = [{ call: "hands_long", callId: "call_long", args: {} }, { text: "Read it." }];
+  const seen = [];
+  const fetch = async (url, init) => {
+    const i = seen.length;
+    seen.push(JSON.parse(init.body));
+    return new Response(answer(script[i] ?? { text: "spare" }, i), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const long = { name: "long", description: "A long answer.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: async () => ({ text }) };
+  const a = openCodeAdapter({ model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "provider-secret" }, price: () => 0.001, sessionsDir: join(ROOT, "long-sessions"), fetch });
+  const store = memorySessionStore();
+  const io = { writer: await store.open("long"), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, cwd: mkdtempSync(join(ROOT, "work-")), onEvent: () => {} };
+  const session = await a.open({ key: "long", label: "task", system: ["You read long things."], tools: [long], context: "fresh" }, io);
+  await session.send("Read the long thing.");
+  assert.deepEqual(await session.turnEnd(), { status: "completed" });
+  await session.close();
+  assert.equal(seen.length, 2);
+  const output = seen[1].input.find((item) => item.type === "function_call_output" && item.call_id === "call_long")?.output;
+  assert.equal(typeof output, "string");
+  assert.ok(!output.includes("output truncated"), `cut: ${output.slice(-200)}`);
+  assert.equal(output, text, "the model reads the whole result");
 });
 
 test("twenty follow-ups on the pinned OpenCode, each a new process that took the session back with /sync/replay: every event stream opens at the first try and every turn completes", { skip, timeout: 600_000 }, async (t) => {
