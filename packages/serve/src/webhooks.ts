@@ -46,7 +46,7 @@ const MAX_URL = 2048;
  *  held here only, its outbox write failed; `off`, no webhook set, or one a 410 turned off, so nothing is to be sent;
  *  `closed`, the server is stopping. */
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
-export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "stopped" } };
+export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "stopped" | "budget" } };
 type Config = { url: string; secret: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
 /** What the outbox queued of one run: its end (its time), and the wait it stands at (its mark), kept until the run moves
