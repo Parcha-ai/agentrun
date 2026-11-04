@@ -60,7 +60,7 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
     ["typesafe", "tool", ["decisions.jev"], []],
     ["anthropic", "model", [], ["pi", "claude-agent"].filter((id) => offered.includes(id))],
     ["openai", "model", [], ["pi", "codex", "opencode"].filter((id) => offered.includes(id))],
-    ["openrouter", "model", [], ["pi", "claude-agent", "codex"].filter((id) => offered.includes(id))],
+    ["openrouter", "model", [], ["pi", "claude-agent", "codex", "opencode"].filter((id) => offered.includes(id))],
   ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);

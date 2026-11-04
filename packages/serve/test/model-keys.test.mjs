@@ -55,10 +55,12 @@ test("the host's model counts for a harness only when that harness runs it: clau
   assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast"), "openai/gpt-6-mini");
 });
 
-test("opencode runs the models codex runs, OpenAI's or the gateway's: an OpenAI key gives it its default, and another provider's model is skipped for it", () => {
-  // OpenCode's model requests go where codex's do (adapters.ts' codexProvider): OpenAI with its key, or the gateway.
+test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway's: an OpenAI key gives it its default, and another provider's model is skipped for it", () => {
+  // OpenCode's model requests go where codex's do (adapters.ts' codexProvider): OpenAI with its key, OpenRouter with its
+  // key, or the gateway.
   assert.equal(hostModel(keyed("anthropic", "openai"), "default", "opencode"), "openai/gpt-6.1-sol", "an OpenAI key's default");
-  assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), undefined, "no OpenAI key: none");
+  assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), "openai/gpt-6-sol", "OpenRouter's key alone: codex's route");
+  assert.equal(hostModel(keyed("anthropic"), "default", "opencode"), undefined, "no OpenAI or OpenRouter key: none");
   assert.equal(hostModel({ AGENT_MODEL: "gpt-6-luna", AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", ...keyed("anthropic") }, "default", "opencode"), "gpt-6-luna", "the gateway's own id");
   assert.equal(hostModel({ AGENT_MODEL: "openai/gpt-6-luna" }, "default", "opencode"), "openai/gpt-6-luna");
   assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5", ...keyed("openai") }, "default", "opencode"), "openai/gpt-6.1-sol", "an Anthropic AGENT_MODEL is skipped for the OpenAI key's default");
