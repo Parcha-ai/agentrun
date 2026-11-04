@@ -87,7 +87,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);

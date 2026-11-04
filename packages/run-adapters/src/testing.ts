@@ -132,11 +132,14 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
-            await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             stats.requests += 1;
             const index = cursor++;
-            await append(FAUX_RECORDS.request, { index });
+            // The output limit it was admitted with (what is left of a spend cap can buy), as a real adapter's proxy would
+            // write it into the body: filed, for a test to see.
+            const limit = ticket ? ticket.outputTokensMax : undefined;
+            await append(FAUX_RECORDS.request, { index, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
             if ("fail" in action) return await end("failed", action.fail);
             const book = () => io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
             const bookAfter = "calls" in action && action.bookAfter === true;

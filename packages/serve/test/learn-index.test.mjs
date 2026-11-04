@@ -12,11 +12,11 @@ import * as reflect from "../dist/learn/reflect.js";
 import * as secrets from "../dist/learn/secrets.js";
 
 const VALUES = {
-  check: ["CAPS", "checkProposal", "mergeProblems", "printable"],
+  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable"],
   grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradePrompt", "parseVerdict"],
   invisible: ["hiddenCharacter"],
   reflect: ["reflectPrompt"],
-  notes: ["activeNotes", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "NOTE_FILE", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "supersede"],
+  notes: ["activeNotes", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "NOTE_FILE", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
   secrets: ["MIN_SECRET", "PRINT_MAX", "redactSecrets", "secretShapes", "valueMatcher"],
 };
 const MODULES = { check, grade, invisible, reflect, notes, secrets };

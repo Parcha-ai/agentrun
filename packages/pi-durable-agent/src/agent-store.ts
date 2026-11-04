@@ -557,15 +557,17 @@ export class AgentStore extends AgentStoreReader {
 
   /** End a run, once: `state` is how it ended, `summary` a line for the list (cut to 2000 characters, never refused, so a run always ends). A second call for an ended run is refused.
    *  `metrics` (runMetricsOf of the whole run, and what its host knows) replace the run's in the same transaction, so a
-   *  run opened again and ended again keeps its latest; with none it has none, as with no cost its cost is unknown. */
-  carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; summary?: string; metrics?: StoredMetrics }): void {
+   *  run opened again and ended again keeps its latest; with none it has none, as with no cost its cost is unknown.
+   *  `endedAt`, an ISO time in UTC, is when the run ended as its host chose it before writing the end anywhere (so its
+   *  notices and its row name one time); with none it is now. */
+  carryBack(runId: string, result: { state: "completed" | "failed" | "stopped" | "escalated"; costUsd?: number; summary?: string; metrics?: StoredMetrics; endedAt?: string }): void {
     if (!["completed", "failed", "stopped", "escalated"].includes(result?.state)) throw invalid("the state is not completed, failed, stopped or escalated");
     if (result.costUsd !== undefined && !(Number.isFinite(result.costUsd) && result.costUsd >= 0)) throw invalid("the cost is not a number of at least 0");
     if (result.summary !== undefined && (typeof result.summary !== "string" || result.summary === "")) throw invalid("the summary is not non-empty text");
     const metrics = result.metrics === undefined ? undefined : checkMetrics(result.metrics);
     const id = checkId(runId, "run");
     this.refuseImported(id);
-    const at = new Date().toISOString();
+    const at = result.endedAt === undefined ? new Date().toISOString() : checkTime(result.endedAt, "end");
     this.tx(() => {
       const done = this.db.prepare("UPDATE runs SET state = ?, ended_at = ?, cost_usd = ?, summary = ? WHERE id = ? AND ended_at IS NULL").run(result.state, at, result.costUsd ?? null, result.summary === undefined ? null : cutSummary(result.summary), id);
       if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(id) ? "exists" : "missing", "that run is unknown or has already ended");
