@@ -52,7 +52,7 @@ async function endpointRefusal(what: string, url: string): Promise<string | unde
   }
   const { isPrivateAddress } = await import("@parcha/pi-browser");
   const host = at.hostname.replace(/^\[|\]$/g, "");
-  const local = host === "localhost" || host.endsWith(".localhost") || (net.isIP(host) ? isPrivateAddress(host) : (await dns.lookup(host, { all: true }).catch(() => [])).some((one) => isPrivateAddress(one.address)));
+  const local = LOOPBACK.test(at.hostname) || (net.isIP(host) ? isPrivateAddress(host) : (await dns.lookup(host, { all: true }).catch(() => [])).some((one) => isPrivateAddress(one.address)));
   if (local) return `the authorization server's ${what} is a private address; refused`;
   if (at.protocol !== "https:") return `the authorization server's ${what} is not https; refused`;
   return undefined;

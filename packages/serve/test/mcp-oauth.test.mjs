@@ -363,7 +363,7 @@ test("a public MCP server's authorization server may not steer this server to a 
   for (const [metadata, words] of [
     [{ token_endpoint: inside.url }, /the authorization server's token endpoint is a private address; refused/],
     [{ registration_endpoint: inside.url }, /the authorization server's registration endpoint is a private address; refused/],
-    [{ token_endpoint: "https://10.1.2.3/token" }, /the authorization server's token endpoint is a private address; refused/],
+    [{ token_endpoint: "https://[fd00::1]/token" }, /the authorization server's token endpoint is a private address; refused/],
     [{ authorization_endpoint: "http://as.example.test/authorize" }, /the authorization server's authorization endpoint is not https; refused/],
   ]) {
     publicFakes(t, metadata);
