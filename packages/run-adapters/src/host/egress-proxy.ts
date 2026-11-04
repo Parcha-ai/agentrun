@@ -57,7 +57,8 @@ export interface EgressProxyOptions {
    *  other host, any IP literal and any port but 80 and 443 are refused 403 (SOCKS reply 2, class `not-listed`) before
    *  any lookup. Absent, every public host is reached. */
   allow?: string | readonly string[];
-  /** What a refusal for a host off the list says to do, after its words (the caller's, which knows its settings). */
+  /** What a refusal for a host off the list says to do, after its words (the caller's, which knows its settings): printable
+   *  ASCII, since it goes into the status line; anything else refuses the start. */
   allowHint?: string;
 }
 
@@ -117,8 +118,9 @@ const hostOf = (text: string) => JSON.stringify(text.slice(0, 255));
 export async function startEgressProxy(options: EgressProxyOptions): Promise<EgressProxy> {
   const { socketPath, maxTunnels, maxConnections, log } = options;
   const allow = options.allow === undefined ? undefined : parseAllow(options.allow);
-  // The hint goes into a status line: a control character there would end it.
-  if (options.allowHint !== undefined && /[\u0000-\u001f\u007f]/.test(options.allowHint)) throw new Error("the egress proxy's allowHint holds a control character");
+  // The hint goes into a status line, which carries printable ASCII only: Node refuses anything else there (an em dash
+  // included), and a control character would end the line.
+  if (options.allowHint !== undefined && !/^[\x20-\x7e]*$/.test(options.allowHint)) throw new Error("the egress proxy's allowHint holds a character a status line cannot carry: printable ASCII only");
   const hinted = (words: string) => (options.allowHint ? `${words}: ${options.allowHint}` : words);
   /** The refusal of a target off the host list, or undefined: checked before any lookup. */
   const offList = (host: string, port: number): Refusal | undefined => {

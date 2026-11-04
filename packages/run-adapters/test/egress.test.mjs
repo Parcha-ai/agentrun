@@ -722,3 +722,12 @@ test('parseAllow takes names and *.suffixes (a list or a comma list), lowercase 
   assert.throws(() => parseAllow(['*.org']), /a name with at least two labels/);
 });
 
+test('a hint that a status line cannot carry (a control character, or anything past printable ASCII) refuses the start', async () => {
+  for (const allowHint of ['ask the operator \u2014 please', 'add it\r\nx-injected: yes', 'caf\u00e9']) {
+    const path = socketPath();
+    mkdirSync(join(path, '..'), { recursive: true });
+    await assert.rejects(startEgressProxy({ socketPath: path, maxTunnels: 1, maxConnections: 1, log: () => {}, allow: ['pypi.org'], allowHint }), /allowHint holds a character a status line cannot carry/, JSON.stringify(allowHint));
+    assert.equal(existsSync(path), false, 'no socket was made');
+  }
+});
+
