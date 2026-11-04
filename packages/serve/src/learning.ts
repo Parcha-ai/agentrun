@@ -135,8 +135,8 @@ export function shortOf<T extends { state: LearningState; reason: LearningReason
 export const LEARNING_LABEL = "learning";
 
 /** A run's proposal, in its directory (propose.ts): the seed it was checked against, each new note's file and text, and
- *  what the user said in the run as the grader reads it (each message cut to GRADE_CAPS.askedMessage and of the host's
- *  secrets; absent in a proposal kept before the grader read them). */
+ *  what the user said in the run as the grader reads it (each message cut of the host's secrets, then shortened to
+ *  GRADE_CAPS.askedMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
 export type Proposal = { seed: string; notes: { file: string; text: string }[]; asked?: string[] };
 
