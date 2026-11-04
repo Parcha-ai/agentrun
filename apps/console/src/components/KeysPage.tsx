@@ -1,6 +1,7 @@
 import { KeyRound, TriangleAlert } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
+import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Client, ClientError } from "@/lib/client";
@@ -60,7 +61,7 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
 
   if (!view) return loadError
     ? <ReadError error={loadError} onRetry={load} />
-    : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+    : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
   const reenter = view.reenter;
   return (
     <div className="h-full overflow-auto">
