@@ -1,7 +1,7 @@
 // `npx @parcha/agentrun`: AgentRun Server on this machine. The server is not this package's dependency, so this installs
 // alone and a server release does not change it: the server's launcher runs from an install beside this one when there is
 // one, else `npm exec` fetches the server's latest release first, and only then is it started.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
@@ -51,6 +51,38 @@ export function openUrl(stdout) {
     });
     stdout.on("end", () => resolve(found));
   });
+}
+
+/** A process's command line, or undefined once it is gone: from /proc on Linux, else from ps. */
+export function commandOf(pid) {
+  try {
+    if (process.platform === "linux") return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim() || undefined;
+    return execFileSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A process's parent, or undefined once it is gone. */
+export function parentOf(pid) {
+  try {
+    if (process.platform === "linux") return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[1]);
+    const out = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return out ? Number(out) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const isNpm = (command) => /^npm(?:\s|$)/.test(command ?? "");
+
+/** The npm that runs this command, when `npm exec` (npx) started it: npm says so in the environment (`npm_command` is
+ *  exec, in npm 10 and 11) and names its own process `npm exec …`, two steps up (npm, its `sh -c`, this). Undefined for
+ *  a command started any other way, which watches nothing. */
+export function npmExecOf(env, from = process.ppid) {
+  if (env.npm_command !== "exec") return undefined;
+  for (let pid = from, step = 0; pid > 1 && step < 3; step++, pid = parentOf(pid)) if (isNpm(commandOf(pid))) return pid;
+  return undefined;
 }
 
 export async function freePort(from = DEFAULT_PORT) {
@@ -113,6 +145,12 @@ export async function main(argv, env = process.env) {
   const data = ["--data", at >= 0 ? argv[at + 1] : join(homedir(), ".agentrun")];
   const rest = at >= 0 ? [...argv.slice(0, at), ...argv.slice(at + 2)] : argv;
   const childEnv = { AGENTRUN_LOG: "quiet", ...env, ...modelEnv(env), AGENTRUN_NPX_PACKAGE: OWN_SPEC };
+  // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
+  // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: this finds that npm now, before any fetch,
+  // starts no server once it is gone, and stops the server when it goes later. Started any other way, it watches nothing,
+  // so a shell's own rules apply (`&`, nohup).
+  const npm = npmExecOf(env);
+  const npmGone = () => npm !== undefined && !isNpm(commandOf(npm));
   let launcher = installedServer();
   if (launcher === undefined) {
     const fetched = await fetchServer(childEnv);
@@ -126,11 +164,25 @@ export async function main(argv, env = process.env) {
   const p = rest.indexOf("--port");
   const port = p >= 0 && Number(rest[p + 1]) > 0 ? Number(rest[p + 1]) : await freePort();
   const passed = rest.filter((arg, i) => arg !== "--no-open" && !(p >= 0 && (i === p || i === p + 1)));
+  if (npmGone()) return console.error("AgentRun: the npm that started this command is gone, so the server was not started."), 1;
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line.
   const child = spawn(launcher, [...data, "--port", String(port), ...passed], { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
   const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+  // A SIGHUP to this command alone (not the terminal's, which reaches the server too) asks the server to stop as a SIGTERM
+  // does.
+  process.on("SIGHUP", () => child.kill("SIGTERM"));
+  // When that npm goes, the server stops, as on a SIGTERM, and this ends.
+  if (npm !== undefined) {
+    const watch = setInterval(() => {
+      if (!npmGone()) return;
+      clearInterval(watch);
+      child.kill("SIGTERM");
+    }, 1000);
+    watch.unref();
+    child.on("exit", () => clearInterval(watch));
+  }
   let timer;
   const url = await Promise.race([openUrl(child.stdout), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);

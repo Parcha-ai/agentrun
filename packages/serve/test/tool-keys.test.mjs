@@ -60,7 +60,7 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
     ["typesafe", "tool", ["decisions.jev"], []],
     ["anthropic", "model", [], ["pi", "claude-agent"].filter((id) => offered.includes(id))],
     ["openai", "model", [], ["pi", "codex", "opencode"].filter((id) => offered.includes(id))],
-    ["openrouter", "model", [], ["pi"]],
+    ["openrouter", "model", [], ["pi", "claude-agent", "codex"].filter((id) => offered.includes(id))],
   ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
@@ -350,7 +350,7 @@ test("a key a harness reads, saved later, makes the harness available with no re
   const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
   const base = { PATH: process.env.PATH, HOME: process.env.HOME };
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
-  assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY."]);
+  assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
   // How many fit at once is this host's memory (admission.test.mjs).
   const { max_concurrent_runs, ...offer } = await claude();

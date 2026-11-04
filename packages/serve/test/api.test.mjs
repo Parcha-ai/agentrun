@@ -53,7 +53,7 @@ test("without a default model a revision that names none is refused before it st
   const refused = await api("POST", "/agents/plain/runs", { input: { content: "hi" } });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY where AgentRun starts\./);
+  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts\./);
   assert.doesNotMatch(refused.body.error.message, /--faux|AGENT_MODEL/, "a person's words: no operator flags");
   assert.equal((await api("POST", "/agents", agent("keyless", { model: "openai/gpt-5" }))).status, 201);
   const keyless = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });

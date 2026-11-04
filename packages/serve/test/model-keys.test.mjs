@@ -26,12 +26,13 @@ test("with no AGENT_MODEL a provider's key gives the default: anthropic, then op
   assert.equal(hostModel({}), undefined);
   assert.equal(hostModel(keyed("anthropic", "openai", "openrouter")), "anthropic/claude-sonnet-5-5");
   assert.equal(hostModel(keyed("openai", "openrouter")), "openai/gpt-6.1-sol");
-  assert.equal(hostModel(keyed("openrouter")), "openrouter/anthropic/claude-sonnet-5.5");
+  assert.equal(hostModel(keyed("openrouter")), "openrouter/openai/gpt-6-sol", "pi's on OpenRouter: on its bearer route (model.ts)");
   assert.equal(hostModel({ ...keyed("anthropic"), AGENT_MODEL: "openai/gpt-6-luna" }), "openai/gpt-6-luna", "the host's own default wins");
   assert.equal(hostModel(keyed("anthropic"), "fast"), "anthropic/claude-sonnet-5-5", "a tier with no model of its own takes the default");
   assert.equal(hostModel(keyed("anthropic", "openai"), "default", "codex"), "openai/gpt-6.1-sol", "codex runs OpenAI's models");
   assert.equal(hostModel(keyed("anthropic", "openai"), "default", "claude-agent"), "anthropic/claude-sonnet-5-5");
-  assert.equal(hostModel(keyed("openai", "openrouter"), "default", "claude-agent"), undefined, "claude-agent runs Anthropic's only");
+  assert.equal(hostModel(keyed("openai", "openrouter"), "default", "claude-agent"), "anthropic/claude-sonnet-5.5", "claude-agent runs Anthropic's, through OpenRouter on its key");
+  assert.equal(hostModel(keyed("openai"), "default", "claude-agent"), undefined, "claude-agent runs Anthropic's only");
 });
 
 test("the host's model counts for a harness only when that harness runs it: claude-agent Anthropic's, codex OpenAI's or the gateway's, pi any; else the harness takes its own key's default", () => {
@@ -68,11 +69,11 @@ test("opencode runs the models codex runs, OpenAI's or the gateway's: an OpenAI 
 // A key-less first run (npx, no key yet) is told what a person does: add a key in the console or where AgentRun starts.
 // Operator detail (--faux, AGENT_MODEL, a tier's variable) is the README's. A model no catalog knows is still named.
 test("with no model here, the refusal says what a person does: a model key in Settings or where AgentRun starts, no operator flags", async () => {
-  const none = "No model yet: add a model key in Settings → Model keys, or set ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY where AgentRun starts.";
+  const none = "No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts.";
   assert.equal((await chooseModel({}, undefined)).why, none);
   assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast tier:"));
   assert.equal((await chooseModel({}, "openai/gpt-5")).why, "No OpenAI key here for openai/gpt-5: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts.");
-  assert.equal(claudeModel({}, undefined).why, "No model yet for claude-agent: add an Anthropic key in Settings → Model keys, or set ANTHROPIC_API_KEY where AgentRun starts.");
+  assert.equal(claudeModel({}, undefined).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
   for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-5")).why, claudeModel({}, undefined).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
   const unknown = await chooseModel({ OPENAI_API_KEY: made() }, "openai/no-such-model");
   assert.deepEqual([unknown.needs, /no-such-model/.test(unknown.why)], ["model", true], "a model no catalog knows is named");

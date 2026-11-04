@@ -49,7 +49,7 @@ import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, t
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
-import { type ServerLock, takeServerLock } from "./server-lock.js";
+import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -67,6 +67,20 @@ const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
+/** What a stopping server's record allows past its runs' kill bound, the cap a start waits under: the runs' carry backs,
+ *  retried while the agent store is held (about 15.5 s), their boxes' cleanup (up to a minute), and the deliveries', the
+ *  listener's and the stores' stop. A start stops waiting sooner once the stopping server's process is gone. */
+const STOP_MARGIN_MS = 120_000;
+/** A wait, as the stop's lines give it: whole seconds, rounded up, one at least. */
+const seconds = (ms: number) => `${Math.max(1, Math.ceil(ms / 1000))} s`;
+/** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
+const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void => {
+  try {
+    (options.notice ?? ((said: string) => void process.stderr.write(`agentrun-serve: ${said}\n`)))(line);
+  } catch {
+    // The line is told, not needed: the stop and the wait go on without it.
+  }
+};
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
@@ -150,6 +164,10 @@ export type ServeOptions = {
   settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
+  /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
+   *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
+   *  standard error, after `agentrun-serve: `. */
+  notice?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
@@ -468,12 +486,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
-  // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile.
-  const lock = takeServerLock(data);
+  // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
+  // that is stopping (its runs' processes still drain) is waited for, up to the time its mark gives, not refused.
+  const lock = await takeServerLockAfterStop(data, {
+    waiting: ({ pid, until }) => noticeOf(options)(`the server on this data root (pid ${pid}) is stopping; waiting for it, up to ${seconds(until - Date.now())}`),
+  });
   // What a start that fails stops before the lock goes: the webhook deliveries it began, which would write the next
   // server's outbox.
   const stops: Array<() => Promise<void>> = [];
   try {
+    // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
+    markRunning(data);
     return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
@@ -1565,6 +1588,35 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
+  /** The server's stop: once (`close` keeps its promise). */
+  let stopped: Promise<void> | undefined;
+  async function stop(): Promise<void> {
+    // First, the record a start on this data root waits on while the runs' processes drain and exit (server-lock.ts),
+    // rewritten in place: this close's bound, with time for the deliveries and the listener after them. One not
+    // written leaves a start refused.
+    const { runs: busy, boundMs } = runs.stopping();
+    try {
+      markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
+    } catch (error) {
+      const fields = { reason: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
+      void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
+    }
+    if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
+    // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
+    // after close.
+    closing = true;
+    stopping.abort();
+    for (const worker of workers.keys()) worker.postMessage("stop");
+    await Promise.all([...workers.values()].map((w) => w.exit));
+    await importing;
+    // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
+    await runs.close();
+    await webhooks.close();
+    await new Promise((done) => (server.close(done), server.closeAllConnections()));
+    agents.close();
+    // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
+    lock.release();
+  }
   return {
     url,
     baseUrl: `${url}/v2`,
@@ -1574,20 +1626,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env)),
-    async close() {
-      // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
-      // after close.
-      closing = true;
-      stopping.abort();
-      for (const worker of workers.keys()) worker.postMessage("stop");
-      await Promise.all([...workers.values()].map((w) => w.exit));
-      await importing;
-      // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
-      await runs.close();
-      await webhooks.close();
-      await new Promise((done) => (server.close(done), server.closeAllConnections()));
-      agents.close();
-      lock.release();
-    },
+    // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
+    // never writes this data root's record again (the next server's, by then).
+    close: () => (stopped ??= stop()),
   };
 }
