@@ -36,7 +36,7 @@ import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
-import { TABLE_TOOLS, ToolSettings } from "./tool-plane.js";
+import { readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -290,8 +290,28 @@ export class RunGate {
   readonly policy = (tool: string): Permission => {
     const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
-    return key === undefined ? "ask" : permissionOf(key, new ToolSettings(this.where.data, () => undefined).get() as PermissionSettings, this.overrides);
+    if (key === undefined) return "ask";
+    const server = this.serverSettings();
+    // No settings ever read: every tool asks, or keeps the revision's own deny.
+    if (server === undefined) return permissionOf(key, {}, this.overrides) === "deny" ? "deny" : "ask";
+    return permissionOf(key, server, this.overrides);
   };
+
+  private lastGood?: PermissionSettings;
+  private readonly told = new Set<string>();
+  /** The server's settings now: read at each call, so a change reaches a live run; a file that does not read keeps the
+   *  last good (undefined: none read yet). Each problem is said once, by file and field, never a value. */
+  private serverSettings(): PermissionSettings | undefined {
+    const read = readToolSettings(this.where.data);
+    for (const line of read.problems) {
+      if (this.told.has(line)) continue;
+      this.told.add(line);
+      process.stderr.write(`agentrun-serve: the tool gate: ${line}\n`);
+    }
+    if (read.unreadable) return this.lastGood;
+    this.lastGood = read.settings as PermissionSettings;
+    return this.lastGood;
+  }
 
   /** The origin of the turn running now: what the server's internal path wrote for it; none for a person's turn. */
   turnOrigin(): TurnOrigin | undefined {
