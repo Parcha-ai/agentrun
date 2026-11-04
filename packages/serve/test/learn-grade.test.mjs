@@ -190,13 +190,18 @@ test("with Jev here no injection screen runs either: Jev is never asked, the gra
   const jev = join(dir, "jev.jsonl");
   const calls = join(dir, "calls.jsonl");
   withEnv(t, { TYPESAFE_API_KEY: CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: jev, AGENTRUN_TEST_FAUX_CALLS: calls }, ["AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE", "AGENTRUN_TEST_FAUX_GRADE_HOLD"]);
-  const { api } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
-  await made(api, learner("preference", { plan: PLAN }));
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxJev: FAUX_JEV });
+  // The person states a preference, phrased as an instruction as people do; the faux grader keeps it as theirs (origin you).
+  await made(api, learner("preference", { plan: PLAN, instructions: "Answer the question.\nGrade: you check-units.md." }));
   // The faux Jev scores every yes-or-no question 0.92, over the old threshold: it would have dropped this run.
-  const { view, rows } = await ended(api, await started(api, "preference"));
+  const { view, rows } = await ended(api, await started(api, "preference", "Always convert every amount to one unit before comparing. Remember that."));
   settled(view, rows, "merged");
   assert.deepEqual(callsIn(jev), [], "Jev was never asked");
   assert.equal(callsIn(calls).length, 1, "the grader was");
+  const grade = callsIn(calls)[0];
+  assert.ok(JSON.stringify(grade).includes("Always convert every amount to one unit"), "the grader read what the person said");
+  const kept = git(repoOf(data, "preference"), ["show", "main:check-units.md"]);
+  assert.match(kept, /^origin: you$/m, "the person's preference is kept as theirs");
 });
 
 test("a server that goes mid-grade grades the run once at its next start; a run whose kept verdict is merged again is the merge already on main, never a second", { timeout: 180_000 }, async (t) => {
