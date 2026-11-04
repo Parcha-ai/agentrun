@@ -4,7 +4,7 @@
 // a plain web page, a closed port and a redirect.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -124,6 +124,23 @@ test("preview tells a server that wants a credential (bearer or OAuth), one that
   assert.equal(redirected.body.error.fields[0].field, "url");
   assert.equal(redirected.body.error.fields[0].reason, "redirect");
   assert.deepEqual(target.log, [], "a redirect is never followed, so the credential never goes where it points");
+  const leakyHop = await plain(t, (req, res) => { res.writeHead(302, { location: `https://elsewhere.example/mcp?token=${token}` }); res.end(); });
+  const leakyRedirect = await preview(`${leakyHop}/mcp`, { type: "bearer", token });
+  assert.equal(leakyRedirect.body.error.fields[0].reason, "redirect");
+  holdsNone(JSON.stringify(leakyRedirect.body), token, "a redirect's refusal");
+  assert.match(leakyRedirect.body.error.fields[0].message, /token=\[credential\]/, "where it points is named, the token cut");
+  // A server that speaks JSON-RPC but fails every request, echoing the bare token in its error.
+  const echo = await plain(t, async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const id = JSON.parse(body || "{}").id ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: `token ${token} is not allowed here` } }));
+  });
+  const echoed = await preview(`${echo}/mcp`, { type: "bearer", token });
+  assert.equal(echoed.status, 424, JSON.stringify(echoed.body));
+  holdsNone(JSON.stringify(echoed.body), token, "an upstream failure's message");
+  assert.match(echoed.body.error.message, /\[credential\]/, "the server's words are kept, the token cut");
 });
 
 test("PUT seals the credential: reads say `sealed` and never hold it, nor does the file; a PUT without one keeps it; refresh says what was added, removed and changed; DELETE forgets", async (t) => {
@@ -178,6 +195,10 @@ test("PUT seals the credential: reads say `sealed` and never hold it, nor does t
   assert.deepEqual((await api("GET", "/settings/mcp-servers/fake")).body.tools.map((tool) => tool.name).sort(), ["add", "delete_thing", "multiply", "slow_write"]);
   holdsNone(JSON.stringify(refreshed.body) + readFileSync(file, "utf8"), token, "after a refresh");
 
+  for (const inherited of ["constructor", "tostring"]) {
+    assert.equal((await api("GET", `/settings/mcp-servers/${inherited}`)).status, 404, `${inherited} is no saved server`);
+    assert.equal((await api("DELETE", `/settings/mcp-servers/${inherited}`)).status, 404);
+  }
   assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 204);
   assert.equal((await api("GET", "/settings/mcp-servers/fake")).status, 404);
   assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 404);
@@ -238,4 +259,24 @@ test("a saved credential sealed under another key reads as unreadable, and a PUT
   assert.equal(again.status, 422, JSON.stringify(again.body));
   assert.equal(again.body.error.fields[0].field, "auth.token");
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: server.url, auth: { type: "bearer", token } })).body.credential, "sealed");
+});
+
+test("a saved-servers file that does not read is never written over: reads say so, and every write is refused, the file unchanged", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
+  const { api, data } = await serve(t);
+  const server = await fake(t);
+  const file = join(data, "mcp-servers.json");
+  for (const damaged of ['{"format": "mcp-servers/1", "servers": {"fake": ', JSON.stringify({ format: "mcp-servers/9", servers: {} })]) {
+    writeFileSync(file, damaged, { mode: 0o600 });
+    const listed = await api("GET", "/settings/mcp-servers");
+    assert.equal(listed.status, 200);
+    assert.deepEqual(listed.body, { servers: [], file_unreadable: true });
+    for (const [method, path, body] of [["PUT", "/settings/mcp-servers/other", { url: server.url }], ["DELETE", "/settings/mcp-servers/fake"], ["POST", "/settings/mcp-servers/fake/refresh"], ["GET", "/settings/mcp-servers/fake"]]) {
+      const refused = await api(method, path, body);
+      assert.equal(refused.status, 409, `${method} ${path}: ${JSON.stringify(refused.body)}`);
+      assert.equal(refused.body.error.code, "store_unreadable");
+      assert.equal(readFileSync(file, "utf8"), damaged, `${method} ${path} left the file as it was`);
+    }
+  }
+  assert.deepEqual(server.log, [], "a PUT refused for the file contacts nothing");
 });

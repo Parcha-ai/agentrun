@@ -74,6 +74,7 @@ export class McpServers {
 
   list() {
     const servers = this.kept();
+    if (servers === "unreadable") return { servers: [], file_unreadable: true as const };
     return { servers: Object.keys(servers).sort().map((name) => this.view(name, servers[name]!)) };
   }
 
@@ -102,7 +103,7 @@ export class McpServers {
     nameOf(name);
     const { url, auth } = this.admit(body);
     if (auth.type !== "none" && !this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no MCP server credential: it never keeps one in the clear.`);
-    const was = this.kept()[name];
+    const was = this.servers()[name];
     let headers = auth.headers;
     if (auth.type !== "none" && !headers) {
       if (!was || was.auth.type !== auth.type) throw invalid([credentialMissing(auth.type, `The server ${name} has no saved ${auth.type} credential to keep.`)]);
@@ -113,7 +114,7 @@ export class McpServers {
     const listed = await listServer(url, headers ?? {}, this.version, stop);
     const now = new Date().toISOString();
     const sealed = auth.type !== "oauth" && headers && Object.fromEntries(Object.entries(headers).map(([header, value]) => [header, seal(this.key!, Buffer.from(value, "utf8"), aad(name, header)).toString("base64")]));
-    const servers = this.kept();
+    const servers = this.servers();
     // An OAuth server keeps its token set as sealed; only a sign-in replaces it.
     const kept = auth.type === "oauth" ? (servers[name] ?? was!).auth : { type: auth.type, ...(sealed ? { sealed, check: this.sealCheck } : {}) };
     servers[name] = { url: url.href, auth: kept, ...listed, listed_at: now, updated_at: now };
@@ -126,10 +127,11 @@ export class McpServers {
     await this.freshen(name);
     const was = this.need(name);
     const listed = await listServer(new URL(was.url), this.opened(name, was, "name"), this.version, stop);
-    const servers = this.kept();
+    const servers = this.servers();
     const now = servers[name];
     if (!now) throw notFound(name);
-    if (now.url !== was.url) throw new ApiError("unavailable", `The server ${name} was changed while its tools were listed: refresh it again.`);
+    // A PUT while listing (another URL, another account's credential) makes this listing stale: never kept.
+    if (canonical([now.url, now.auth, now.updated_at]) !== canonical([was.url, was.auth, was.updated_at])) throw new ApiError("unavailable", `The server ${name} was changed while its tools were listed: refresh it again.`);
     const before = new Map(now.tools.map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     servers[name] = { ...now, ...listed, listed_at: new Date().toISOString() };
@@ -169,7 +171,7 @@ export class McpServers {
       if (error) return back(/^[a-z_]{1,64}$/.test(error) ? error : "sign_in_failed");
       const set = await this.signIns.finish(entry, query.get("code") ?? "", query.get("iss") ?? undefined);
       const listed = await listServer(new URL(entry.url), { authorization: `Bearer ${set.tokens.access_token}` }, this.version, stop);
-      const servers = this.kept();
+      const servers = this.servers();
       const now = new Date().toISOString();
       servers[entry.name] = { url: entry.url, auth: this.sealedSet(entry.name, set), ...listed, listed_at: now, updated_at: now };
       this.write(servers);
@@ -183,7 +185,7 @@ export class McpServers {
    *  `margin`. Undefined when it takes none, none opens, or its sign-in expired. */
   async headersForRun(name: string, margin = REFRESH_MARGIN_MS): Promise<HeaderMap | undefined> {
     await this.freshen(name, margin);
-    const kept = this.kept()[name];
+    const kept = this.saved(name);
     if (!kept || kept.auth.type === "none" || kept.auth.oauth?.expired) return undefined;
     const opened = this.open(name, kept);
     return "headers" in opened ? opened.headers : undefined;
@@ -194,7 +196,7 @@ export class McpServers {
   private freshen(name: string, margin = REFRESH_MARGIN_MS): Promise<void> {
     const running = this.refreshing.get(name);
     if (running) return running;
-    const kept = this.kept()[name];
+    const kept = this.saved(name);
     if (kept?.auth.type !== "oauth" || kept.auth.oauth?.expired) return Promise.resolve();
     const opened = this.open(name, kept);
     const set = "set" in opened ? opened.set : undefined;
@@ -211,7 +213,7 @@ export class McpServers {
       }
       const servers = this.kept();
       // Signed in again, or forgotten, while it refreshed: that stands.
-      if (servers[name]?.auth.sealed?.oauth !== kept.auth.sealed?.oauth || (!next && !no)) return;
+      if (servers === "unreadable" || servers[name]?.auth.sealed?.oauth !== kept.auth.sealed?.oauth || (!next && !no)) return;
       servers[name] = { ...kept, auth: next ? this.sealedSet(name, next) : { ...kept.auth, oauth: { ...kept.auth.oauth!, expired: true } } };
       this.write(servers);
     })().finally(() => this.refreshing.delete(name));
@@ -226,14 +228,19 @@ export class McpServers {
   }
 
   remove(name: string): void {
-    const servers = this.kept();
+    const servers = this.servers();
     if (!servers[name]) throw notFound(name);
     delete servers[name];
     this.write(servers);
   }
 
+  private saved(name: string): Kept | undefined {
+    const kept = this.kept();
+    return kept === "unreadable" ? undefined : kept[name];
+  }
+
   private need(name: string): Kept {
-    const kept = this.kept()[name];
+    const kept = this.servers()[name];
     if (!kept) throw notFound(name);
     return kept;
   }
@@ -283,13 +290,21 @@ export class McpServers {
     return { url: url!, auth: auth! };
   }
 
-  private kept(): Record<string, Kept> {
+  /** The saved servers: none with no file, "unreadable" when the file does not read as this format. */
+  private kept(): Record<string, Kept> | "unreadable" {
     try {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-      return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? ({ ...doc.servers } as Record<string, Kept>) : {};
-    } catch {
-      return {};
+      return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? (Object.assign(Object.create(null), doc.servers) as Record<string, Kept>) : "unreadable";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : "unreadable";
     }
+  }
+
+  /** The saved servers, or 409: a file that does not read is never written over, so no saved server is lost to it. */
+  private servers(): Record<string, Kept> {
+    const kept = this.kept();
+    if (kept === "unreadable") throw new ApiError("store_unreadable", `${MCP_SERVERS_FILE} in the data directory does not read as ${FORMAT}: nothing is read from it or written to it until it is restored or removed.`);
+    return kept;
   }
 
   private write(servers: Record<string, Kept>): void {
@@ -298,6 +313,10 @@ export class McpServers {
 }
 
 const aad = (name: string, header: string) => `mcp:${name}:${header}`;
+/** `text` with every credential value cut out: each header's value, and a bearer's token alone, which a server may
+ *  echo without its scheme. */
+const scrub = (text: string, headers: HeaderMap): string =>
+  Object.values(headers).flatMap((value) => [value, /^Bearer\s+(.+)$/i.exec(value)?.[1]]).filter((value): value is string => !!value).sort((a, b) => b.length - a.length).reduce((cut, value) => cut.split(value).join("[credential]"), text);
 const notFound = (name: string) => new ApiError("not_found", `No MCP server ${name}: GET /v2/settings/mcp-servers lists them.`);
 const credentialMissing = (type: AuthType, message: string): InputIssue => ({ field: type === "bearer" ? "auth.token" : type === "oauth" ? "auth.type" : "auth.headers", reason: "missing", message: type === "oauth" ? `${message} An OAuth server is signed in to first: POST /v2/settings/mcp-servers/{name}/oauth/start.` : message });
 const nameOf = (name: string) => {
@@ -417,11 +436,11 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   const redirect = seen.find((one) => one.status >= 300 && one.status < 400);
   if (redirect) {
     const to = redirect.headers.get("location");
-    return invalid([{ field: "url", reason: "redirect", message: `The MCP server answered ${redirect.status}${to ? `, pointing to ${new URL(to, url).href}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.` }]);
+    return invalid([{ field: "url", reason: "redirect", message: scrub(`The MCP server answered ${redirect.status}${to ? `, pointing to ${new URL(to, url).href}` : ""}. Redirects are not followed, so a credential goes only where you send it: use the address it points to.`, headers) }]);
   }
   const denied = seen.find((one) => one.status === 401 || one.status === 403);
   if (denied) {
-    const auth = await authAsked(url, denied.headers, sdk);
+    const auth = await authAsked(url, denied.headers, deadline, sdk);
     const sent = Object.keys(headers).length > 0;
     const asks = auth === "oauth" ? `It signs in with OAuth: ${sent ? `${SIGN_IN_AGAIN}, or ` : ""}sign in with POST /v2/settings/mcp-servers/{name}/oauth/start and its url.` : "Send a bearer token or the headers it takes.";
     return new ApiError("auth_required", `The MCP server ${sent ? "refused the credential sent" : "asks for a credential"} (HTTP ${denied.status}). ${asks}`, { details: { auth, status: denied.status } });
@@ -435,16 +454,16 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${url.href} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
   if (deadline.aborted || timedOut(error)) return upstream(`The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
-  const said = Object.values(headers).reduce((text, value) => text.split(value).join("[credential]"), error instanceof Error ? error.message : String(error));
+  const said = scrub(error instanceof Error ? error.message : String(error), headers);
   return upstream(`The MCP server failed to list its tools: ${said.slice(0, 300)}`);
 }
 
 /** What a 401 or 403 asks for: `oauth` when the server names protected-resource metadata (its WWW-Authenticate, or a
  *  well-known document naming an authorization server), else `bearer`. The probe sends no credential. */
-async function authAsked(url: URL, headers: globalThis.Headers, sdk: typeof import("@modelcontextprotocol/client")): Promise<"oauth" | "bearer"> {
+async function authAsked(url: URL, headers: globalThis.Headers, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client")): Promise<"oauth" | "bearer"> {
   if (sdk.extractWWWAuthenticateParams(new Response(null, { headers })).resourceMetadataUrl) return "oauth";
   try {
-    const probe = (input: string | URL | Request, init?: RequestInit) => fetch(input, { ...init, redirect: "manual", signal: AbortSignal.timeout(5_000) });
+    const probe = async (input: string | URL | Request, init?: RequestInit) => capped(await fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]) }), () => {});
     const metadata = await sdk.discoverOAuthProtectedResourceMetadata(url, undefined, probe);
     return metadata.authorization_servers?.length ? "oauth" : "bearer";
   } catch {

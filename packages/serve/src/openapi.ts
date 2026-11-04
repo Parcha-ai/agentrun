@@ -768,7 +768,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-servers": {
     get: {
       operationId: "listMcpServers", tags: ["local"], summary: "The remote MCP servers saved here, with their tools; never a credential",
-      responses: { "200": json(closed({ servers: { type: "array", items: MCP_SERVER_VIEW } }), "Each server, by name."), ...errors(401, 429, 500) },
+      description: "When the saved-servers file does not read (damaged, or another format), `servers` is empty and `file_unreadable` is true; every other route on it is 409 store_unreadable, and nothing writes over it.",
+      responses: { "200": json({ type: "object", additionalProperties: false, required: ["servers"], properties: { servers: { type: "array", items: MCP_SERVER_VIEW }, file_unreadable: { const: true, description: "Present when the saved-servers file does not read." } } }, "Each server, by name."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
@@ -785,7 +786,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     get: {
       operationId: "getMcpServer", tags: ["local"], summary: "One saved MCP server; never its credential",
       parameters: [MCP_NAME],
-      responses: { "200": json(MCP_SERVER_VIEW, "The server."), ...errors(401, 404, 429, 500) },
+      responses: { "200": json(MCP_SERVER_VIEW, "The server."), ...errors(401, 404, 409, 429, 500) },
       "x-agentrun-serve": "mcpservers/1",
     },
     put: {
@@ -799,7 +800,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     delete: {
       operationId: "deleteMcpServer", tags: ["local"], summary: "Forget a saved MCP server and its credential",
       parameters: [MCP_NAME],
-      responses: { "204": { description: "Forgotten." }, ...errors(401, 404, 429, 500) },
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 404, 409, 429, 500) },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
