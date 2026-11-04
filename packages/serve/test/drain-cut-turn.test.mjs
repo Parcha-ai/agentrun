@@ -34,6 +34,8 @@ function storeEntries(data, runId) {
   }
 }
 const turnEnds = (data, runId) => storeEntries(data, runId).filter((e) => e.kind === "adapter.turn_end").map((e) => ({ status: e.data?.status, answer: e.data?.answer ?? null }));
+/** The store id of the turn's answer entry, "Saved answer.". */
+const savedAnswer = (data, runId) => storeEntries(data, runId).find((e) => e.kind === "pi.assistant" && JSON.stringify(e.model ?? []).includes("Saved answer."))?.id;
 
 for (const harness of ["claude-agent", "codex"]) {
   test(`${harness} (A): a drain that cuts a turn after its answer entry, the turn still open in the session: the next open resumes it`, { timeout: 180_000 }, async (t) => {
@@ -61,6 +63,10 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.equal(last.status, "completed", JSON.stringify(seen));
     assert.equal(seen.final_answer, "Saved answer.", JSON.stringify(seen));
     assert.ok(rows.some((r) => r.kind === "phase" && r.summary === "Resumed after the server stopped"), `resumed: ${JSON.stringify(seen)}`);
+    // One end for the turn, completed, naming its saved answer: the resumed turn's, and no other.
+    const saved = savedAnswer(data, runId);
+    assert.ok(saved !== undefined, `setup: the answer's entry is on the root: ${JSON.stringify(seen)}`);
+    assert.deepEqual(seen.turnEnds, [{ status: "completed", answer: saved }], `one turn end, completed, naming the saved answer: ${JSON.stringify(seen)}`);
   });
 }
 
@@ -98,5 +104,8 @@ test("claude-agent (B): a server drain that cuts only the root's turn end, the s
   t.diagnostic(JSON.stringify(seen));
   assert.equal(last.status, "completed", JSON.stringify(seen));
   assert.equal(seen.final_answer, "Saved answer.", JSON.stringify(seen));
-  assert.deepEqual(seen.turnEnds.map((e) => e.status), ["completed"], JSON.stringify(seen));
+  // One end for the turn, the restored one, completed, naming its saved answer.
+  const saved = savedAnswer(data, runId);
+  assert.ok(saved !== undefined, `setup: the answer's entry is on the root: ${JSON.stringify(seen)}`);
+  assert.deepEqual(seen.turnEnds, [{ status: "completed", answer: saved }], `one turn end, completed, naming the saved answer: ${JSON.stringify(seen)}`);
 });
