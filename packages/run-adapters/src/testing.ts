@@ -35,11 +35,11 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
   | { say: string; usd?: number | null }
-  /** `bookAfter`: the request's cost is booked only once its calls have run, as a streaming harness (the Claude CLI)
-   *  runs a host tool while its response still streams, before the response's usage comes in. */
-  | { call: string; args?: unknown; usd?: number | null; bookAfter?: true }
-  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
-  | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: true }
+  | { call: string; args?: unknown; usd?: number | null }
+  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
+   *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
+   *  response, so a call can end before the request that asked for it is paid. */
+  | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean }
   | { submit: unknown; usd?: number | null }
   /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
    *  turn interrupted, with no stop asked for, ends it so). */
@@ -148,8 +148,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             await append(FAUX_RECORDS.request, { index });
             if ("fail" in action) return await end("failed", action.fail);
             const book = () => io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
-            const late = "bookAfter" in action && action.bookAfter === true;
-            if (!late) await book();
+            const bookAfter = "calls" in action && action.bookAfter === true;
+            if (!bookAfter) await book();
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
             else if ("end" in action) return await end(action.turn ?? "completed");
             else {
@@ -165,7 +165,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
                 io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
               }
-              if (late) await book();
+              if (bookAfter) await book();
             }
           }
         } catch (error) {

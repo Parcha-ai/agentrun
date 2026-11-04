@@ -265,7 +265,7 @@ the run's files go to. It gives back:
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
 - Serve, what a run is told of its files (`packages/serve/src/run-manifest.ts`): `firstMessage` adds one line to an
-  agentic run's first message, `Files for this run: inputs/<path> (<size>), ...`, at most `MANIFEST_ENTRIES` (20), from
+  agentic run's first message, `Files for this run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from
   the run's `work/inputs/` as `runs.ts` sends it to the door, on every harness.
 - Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
   (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
@@ -345,8 +345,9 @@ or a real `docker` on `PATH` for a server under test.
    and nothing is bound; the box is destroyed at completion, cancel and archive, adopted by its label after a crash
    (the left command killed), and swept at start once its run has ended.
 8. **Run files told**: `run-manifest.test.mjs` passes. A run given `notes.txt` is sent "Summarize the attached file."
-   plus `Files for this run: inputs/notes.txt (<n> B).`, reads it and answers with its text; on claude-agent and codex
-   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged.
+   plus `Files for this run: "inputs/notes.txt" (<n> B).`, reads it and answers with its text; on claude-agent and codex
+   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged; a name
+   with `", ` or an RTL override stays inside its quotes, escaped; a link at `work/inputs` lists nothing.
 
 ### Console, import and analytics
 

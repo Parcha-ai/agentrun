@@ -21,6 +21,8 @@ const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).p
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
+/** The timeline's rows that say the run's process opened again after the last one ended unfinished. */
+const resumedRows = (rows) => rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary);
 
 async function started(api, id, instructions, harness = "claude-agent", tools = []) {
   assert.equal((await api("POST", "/agents", agent(id, { harness, instructions, tools }))).status, 201);
@@ -51,7 +53,7 @@ test("one turn of three paid requests costs their sum, once: never twice", { tim
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.007);
 });
 
-test("a run whose process dies mid-turn after a paid request resumes on the next process and finishes; each paid request counted once", { timeout: 90_000 }, async (t) => {
+test("a run whose process dies mid-turn after a paid request resumes on the next process and finishes; each paid request counted once; its timeline says it resumed after a crash", { timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "resume", `Wait for ${go} before the answer.`);
@@ -66,6 +68,26 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Done after the wait.");
   assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request before the kill and the one after it, once each");
+  assert.deepEqual(resumedRows(rows), ["Resumed after a crash"], "one stored row, kept by the settle's read");
+});
+
+test("a run that the server stopped mid-turn goes on at the next start, and its timeline says it resumed after the server stopped", { timeout: 90_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data, fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  const runId = await started(first.api, "drained", `Wait for ${go} before the answer.`);
+  for (let i = 0; !(await first.api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+    assert.ok(i < 300, "the first request's tool row");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await first.close();
+  const left = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
+  const next = await serve(t, { data, fauxHarness: FAUX_HARNESS });
+  await writeFile(go, "");
+  const { rows } = await follow(next.api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(await answer(next.api, runId), "Done after the wait.");
+  assert.deepEqual(resumedRows(rows), ["Resumed after the server stopped"], "one stored row, kept by the settle's read");
 });
 
 test("a chat sent while a turn works, then the server and the run's process die: the next server's run finishes the turn and answers the chat before it completes, never dropping it", { timeout: 120_000 }, async (t) => {
@@ -336,6 +358,8 @@ test("pi's confinement holds for another harness's read: a link out of the works
   const read = toolResults(rows).at(-1);
   assert.match(read[0], /outside the workspace/, JSON.stringify(read));
   assert.doesNotMatch(read[0], /not for the agent/);
+  // Named as the call gave it: neither the server's data directory nor where the link points.
+  namesOnlyGiven(rows.filter((r) => r.kind === "tool_result").at(-1), "out.txt", [data, dir], "claude-agent");
 });
 
 test("another harness's file tools name the workspace's paths relative to it: a path out of it, a missing file and a write, with no result naming the server's data directory", { timeout: 60_000 }, async (t) => {
@@ -578,4 +602,48 @@ test("the run's thinking level reaches the harness's session: the revision's, an
     await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     assert.equal(await answer(api, run.body.run_id), said);
   }
+});
+
+/**
+ * A refused call's row names the path the call gave, as given, and no other: neither a directory of `roots` (the server's
+ * data directory, where a link points), as named or as resolved, nor any other absolute path on the host.
+ */
+function namesOnlyGiven(row, given, roots, who) {
+  const said = `${row.summary ?? ""}\n${row.tool_result_preview ?? ""}`;
+  assert.equal(row.tool_status, "failed", `${who}: ${said}`);
+  assert.ok((row.tool_result_preview ?? "").includes(`${given}: outside the workspace`), `${who}: the refusal names ${given} as given: ${said}`);
+  for (const root of new Set(roots.flatMap((root) => [root, realpathSync(root)]))) assert.ok(!said.includes(root), `${who}: the refusal of ${given} names ${root}: ${said}`);
+  // An absolute path starts at a "/" no name, dot or "<" comes before: pi's "</harness>", closing its error block, is none.
+  assert.doesNotMatch(said.split(given).join(""), /(?<![\w.~<-])\/[\w.-]/, `${who}: the refusal of ${given} names an absolute host path: ${said}`);
+  assert.doesNotMatch(said, /resolves to/, `${who}: the refusal of ${given} names where it resolves to: ${said}`);
+}
+
+test("a read refused outside the run names the path it was given, as given, on pi, claude-agent and codex: up out of the run, absolute, and a link out of the workspace, never the data directory or a host path", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const reads = (rows) => rows.filter((r) => r.kind === "tool_result" && r.tool_name === "read");
+  for (const harness of ["claude-agent", "codex"]) {
+    const runId = await started(api, `outside-${harness}`, "Read outside the run.", harness, ["read"]);
+    const refused = reads((await follow(api, runId, ["completed"], { deadlineMs: 55_000 })).rows);
+    assert.equal(refused.length, 2, `${harness}: ${JSON.stringify(refused)}`);
+    refused.forEach((row, i) => namesOnlyGiven(row, ["../../.token", "/etc/hostname"][i], [data], harness));
+  }
+  // On pi, the reads wait for a link the test plants in the run's workspace, to a file outside it.
+  const dir = await scratch(t);
+  const go = join(dir, "go");
+  await writeFile(join(dir, "secret.txt"), "not for the agent");
+  const given = ["../../.token", "/etc/hostname", "out.txt"];
+  assert.equal((await api("POST", "/agents", agent("outside-pi", { tools: ["read"] }))).status, 201);
+  const pi = await api("POST", "/agents/outside-pi/runs", { input: { content: `Read these paths once ${go} exists: ${JSON.stringify(given)}` } });
+  assert.equal(pi.status, 202, JSON.stringify(pi.body));
+  const work = join(data, "runs", pi.body.run_id, "work");
+  for (let i = 0; !existsSync(work); i++) {
+    assert.ok(i < 300, "the run's workspace");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await symlink(join(dir, "secret.txt"), join(work, "out.txt"));
+  await writeFile(go, "");
+  const refused = reads((await follow(api, pi.body.run_id, ["completed"], { deadlineMs: 55_000 })).rows);
+  assert.equal(refused.length, 3, `pi: ${JSON.stringify(refused)}`);
+  refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi"));
+  assert.ok(refused.every((row) => !JSON.stringify(row).includes("not for the agent")));
 });

@@ -112,8 +112,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
     const p = await onSave(fields, note);
-    // A provider picked while the save was under way is not in it: the form keeps that pick, unsaved. Saved and unchanged
-    // since, the tool settings are the agent's own: the form shows them as the definition has them.
+    // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
+    // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
@@ -179,11 +179,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
           {step === "context" && (
             <div className="max-w-3xl space-y-6">
-              <Field label="Name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
-                <input value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" className={cn(input, !creating && "text-muted-foreground")} />
+              <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
+                <input id="agent-name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
-              <Field label="Description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
-                <input value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
+              <Field label="Description" id="agent-description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
+                <input id="agent-description" value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
               {starting ? (
                 <Field label="Workflow">
@@ -196,10 +196,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
               ) : (
-                <Field label="Instructions" required error={fieldError("instructions")} warning={fieldWarning("instructions")}
+                <Field label="Instructions" id={preview ? undefined : "agent-instructions"} required error={fieldError("instructions")} warning={fieldWarning("instructions")}
                   aside={<span className="flex">{(["Preview", "Edit"] as const).map((m) => <button key={m} type="button" onClick={() => setPreview(m === "Preview")} className={cn("caps border px-2.5 py-1 text-[11px]", (m === "Preview") === preview ? "border-foreground bg-foreground text-background" : "text-muted-foreground")}>{m}</button>)}</span>}>
                   {preview ? <article className="report min-h-64 border p-4" dangerouslySetInnerHTML={{ __html: markdown(f.instructions || "") }} />
-                    : <textarea value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
+                    : <textarea id="agent-instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
                   <p className="mt-2 font-mono text-[11px] text-muted-foreground">{(f.instructions ?? "").length} characters</p>
                 </Field>
               )}
@@ -239,7 +239,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {!workflow && (
                 <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
-                  onChange={(next) => (same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+                  // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
+                  // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
+                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
               )}
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>
@@ -274,8 +276,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!starting && (
-                <Field label="Model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
-                  <input value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
+                <Field label="Model" id="agent-model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
+                  <input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
               )}
               {!workflow && !starting && caps.places && <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []} onChange={set} error={fieldError("place")} warning={fieldWarning("place")} />}
@@ -327,11 +329,14 @@ const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
-function Field({ label, required, optional, note, error, warning, aside, children }: { label: string; required?: boolean; optional?: boolean; note?: React.ReactNode; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
+function Field({ label, id, required, optional, note, error, warning, aside, children }: { label: string; id?: string; required?: boolean; optional?: boolean; note?: React.ReactNode; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
+  // `id`: the one input this field holds, which its label names. A field of several controls (a list, a radio group)
+  // names them its own way, so its heading is no label.
+  const Heading = id ? "label" : "span";
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="caps text-[12px] font-semibold">{label}{required && <span className="text-destructive-text"> *</span>}{optional && <span className="font-normal normal-case text-muted-foreground"> (optional)</span>}</span>
+        <Heading {...(id ? { htmlFor: id } : {})} className="caps text-[12px] font-semibold">{label}{required && <span className="text-destructive-text"> *</span>}{optional && <span className="font-normal normal-case text-muted-foreground"> (optional)</span>}</Heading>
         {aside}
       </div>
       {note && <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">{note}</p>}
