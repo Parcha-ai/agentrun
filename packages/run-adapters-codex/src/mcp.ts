@@ -35,7 +35,7 @@ const said = (text: string, isError: boolean): McpCallResult => ({ content: [{ t
 /** `mcp` with each call recorded in the drive's session as a built-in's, `mcp__<server>__<tool>` under Codex's call id:
  *  its intent once `barrier` has its line in the log and before it is sent, its outcome once it answers. A call id the
  *  records already hold is answered from them. */
-export function recorded(mcp: SessionMcp, ctx: DriveContext, barrier: (callId: string) => Promise<boolean>, onParked?: (callId: string) => void): SessionMcp {
+export function recorded(mcp: SessionMcp, ctx: DriveContext, barrier: (callId: string) => Promise<boolean>): SessionMcp {
   const calls = new BuiltinCalls(ctx);
   return {
     servers: mcp.servers,
@@ -53,8 +53,6 @@ export function recorded(mcp: SessionMcp, ctx: DriveContext, barrier: (callId: s
       if (!start.run) return said(start.result.text, start.result.isError === true);
       const result = await mcp.call(server, tool, args, context);
       await calls.end(callId, { text: result.content.map((block) => block.text).join("\n\n"), isError: result.isError === true }).catch(() => {});
-      // A call the gateway parked for a person: the session's host ends Codex's turn (the gateway's park is not built yet).
-      if ((result as { parked?: unknown }).parked === true) onParked?.(callId);
       return result;
     },
   };

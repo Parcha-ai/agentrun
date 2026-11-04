@@ -82,8 +82,6 @@ export interface LocalMachineOptions {
   /** The session's remote MCP servers (mcp.ts): each served at the proxy's `/mcp/<server>`, written in Codex's config,
    *  and each call recorded in the drive's session before it is sent. */
   mcp?: SessionMcp;
-  /** Told the call id of an MCP call the gateway parked for a person, so the host can end Codex's turn. */
-  onParked?: (callId: string) => void;
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
   /** Files one of the session's private directories holds at the start of every drive: written when the machine is
@@ -252,7 +250,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(price ? { price } : {}),
-      ...(options.mcp ? { mcp: mcpRoute(recorded(options.mcp, ctx, (callId) => barrier?.(callId) ?? Promise.resolve(false), options.onParked)) } : {}),
+      ...(options.mcp ? { mcp: mcpRoute(recorded(options.mcp, ctx, (callId) => barrier?.(callId) ?? Promise.resolve(false))) } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
     }, key);

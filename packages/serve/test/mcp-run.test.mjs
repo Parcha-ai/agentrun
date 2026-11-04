@@ -263,9 +263,13 @@ test("codex: an agent granted mcp:fake/add calls it through the session's proxy;
   const runId = await runOf(api, "codex-adder", 'mcp fake add {"a":2,"b":3}');
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
-  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "add returned: 5");
+  const answer = /^add returned: 5 \(item (\S+)\)$/.exec((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "");
+  assert.ok(answer, "the stand-in answered with the tool's result and its mcpToolCall item's id");
   const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "mcp__fake__add");
   assert.equal(call?.summary, "fake · add", JSON.stringify(rows.filter((row) => row.kind.startsWith("tool"))));
+  // The call is keyed by the id Codex sends in tools/call's _meta.callId, which is its mcpToolCall item's id: a host that
+  // acts on a call's result event (a parked call ends the turn) finds the call by it.
+  assert.deepEqual(rows.filter((row) => row.tool_name === "mcp__fake__add").map((row) => [row.kind, row.tool_use_id]), [["tool_use", answer[1]], ["tool_result", answer[1]]]);
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   const configs = await codexConfigOf(data, runId);
   assert.ok(configs.some((text) => /^\[mcp_servers\.fake\]$/m.test(text) && /^default_tools_approval_mode = "approve"$/m.test(text) && /^enabled_tools = \["add"\]$/m.test(text)), `Codex was given the server, its grant and approve mode: ${configs.join("\n---\n")}`);

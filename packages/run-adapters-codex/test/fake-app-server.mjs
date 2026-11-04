@@ -69,7 +69,7 @@
  *   file mid-turn (`FAKE_CODEX_TAMPER` does it in every turn);
  * - `turn/interrupt` kills the running command and ends the turn interrupted;
  * - `mcp <server> <tool> <json args>` calls a config.toml `mcp_servers` tool as Codex 0.164 does (`item/started`, then `tools/call` at once,
- *   `_meta.callId`); a required server that does not start (`FAKE_CODEX_MCP_START=fail`) fails `thread/start`; `outputs` says the tool outputs;
+ *   `_meta.callId`, the item's id); a required server that does not start (`FAKE_CODEX_MCP_START=fail`) fails `thread/start`; `outputs` says the tool outputs;
  * - `recall` answers with the code word an earlier message of the thread
  *   ("the code word is …") named, from the rollout it resumed.
  */
@@ -287,7 +287,7 @@ async function runTurn(turnId, clientId, text) {
     const out = answer.error?.message ?? answer.result.content.map((c) => c.text).join('');
     write('response_item', { type: 'function_call_output', call_id: callId, output: out });
     notify('item/completed', { threadId: thread.id, turnId, item: { ...item, status: answer.error || answer.result.isError ? 'failed' : 'completed', result: answer.result ?? null, error: answer.error ? { message: out } : null } });
-    last = `${tool} ${answer.error ? 'failed' : 'returned'}: ${out.slice(0, 200)}`;
+    last = `${tool} ${answer.error ? 'failed' : 'returned'}: ${out.slice(0, 200)} (item ${callId})`;
     await say(turnId, last);
   } else if (trimmed === 'recall') {
     const said = thread.lines.map((l) => JSON.stringify(l.payload ?? {})).join('\n');
