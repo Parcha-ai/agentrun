@@ -17,10 +17,11 @@ import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
+import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, resolvesView, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
@@ -74,9 +75,9 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
   return { tools: [tool], extensions: [extension] };
 }
 
-/** What a call node's effect gets from the run's process: its signal, environment and work directory, and one
- *  completion on the run's models (the `llm` tool's). */
-export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete };
+/** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
+ *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -110,13 +111,14 @@ const webFetchEntry = (name: string): ToolEntry => ({
   needs: [],
   nodes: true,
   bind: async (host) => {
-    const tool = webFetchTool(host.env, name) as unknown as ToolRegistration;
+    const tool = booking(webFetchTool(host.env, name)) as unknown as ToolRegistration;
     const extension = defineExtension({ name: name.replaceAll("_", "-"), tools: [tool] });
     host.install(extension);
     return { tools: [tool], extensions: [extension] };
   },
-  // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default.
-  effect: async (args, run) => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, signal: run.signal }),
+  // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default. Its request to
+  // Parallel is booked under the call (paid-calls.ts).
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, signal: run.signal })),
 });
 
 /** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
@@ -208,11 +210,11 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   },
   [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
-    summary: "Search the web: the harness's own search, on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Exa's keyless search, or Parallel's Search API where Parallel is picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
+    summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Exa's keyless search; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
-    bind: async (host) => installTool(host, "web-search", webSearchTool(host.env) as unknown as ToolRegistration),
-    effect: async (args, run) => searchFor(run.env, args, run.signal),
+    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env)) as unknown as ToolRegistration),
+    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal)),
   },
   browser: browserTool,
   // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
@@ -297,16 +299,17 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  (`reason`). `noBox`: why no box can run a sandbox-only tool here (place.ts noBoxReason), which leaves it
  *  unavailable with that reason; undefined, a box can. */
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string) => {
-  const resolves = resolvesView(env, settings);
+  const views = explainsView(env, settings);
   const picked = withDefaults(settings);
   return Object.entries(TOOLS).map(([name, entry]) => {
-    const plane = (PICKABLE as readonly string[]).includes(name) ? resolves[name as Pickable] : undefined;
+    const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
+    const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const boxless = entry.sandboxOnly ? noBox : undefined;
     const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined;
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${missing.join(", ")}`);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };

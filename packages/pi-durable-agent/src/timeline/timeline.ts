@@ -404,6 +404,11 @@ function createProjector(options: TimelineOptions) {
   const meter = createMeter();
   // Each conversation's latest answer, by entry id: a continuation's calls show under it.
   const answers = new Map<number, number | undefined>();
+  // Per conversation, the text answer that ended its request, until its turn shows whether it was the last thing said: a
+  // later answer, or a continuation, with text or a call makes it a text_block (a harness's commentary before a tool of
+  // its own, which its host never sees as a call); a person's message settles it. A later answer of the same turn, an
+  // empty one too, takes its place, so the earlier one is a text_block then.
+  const provisional = new Map<number, TimelineEvent>();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -494,6 +499,12 @@ function createProjector(options: TimelineOptions) {
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
+        const settled = provisional.get(conv);
+        if (settled && (textOf(message) || blocks.some((block) => block.type === "toolCall"))) {
+          settled.kind = "text_block";
+          touch(settled);
+          provisional.delete(conv);
+        }
         const first = (type: string) => blocks.findIndex((block) => block.type === type);
         const thinking = scrubUrls(textOf(message, "thinking", "thinking"));
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
@@ -501,7 +512,19 @@ function createProjector(options: TimelineOptions) {
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
         // A final stop's text block is its answer even when empty: the model ended its turn on purpose, with nothing to
         // say. A message with no text block (a request the adapter bridge writes without content) shows none.
-        if (text || (final && first("text") >= 0)) add(make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text }));
+        // An answer its turn goes on from is a text_block (provisional, below), an empty one too.
+        if (text || (final && first("text") >= 0)) {
+          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text });
+          add(row);
+          if (final) {
+            const earlier = provisional.get(conv);
+            if (earlier) {
+              earlier.kind = "text_block";
+              touch(earlier);
+            }
+            provisional.set(conv, row);
+          }
+        }
         // A reply that stopped at the output its request's cap limited it to says so, with the numbers.
         const clamp = metered === "answer" && message.stopReason === "length" ? meter.clamp() : undefined;
         if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp) }));
@@ -592,6 +615,7 @@ function createProjector(options: TimelineOptions) {
       const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
+      provisional.delete(conv);
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn

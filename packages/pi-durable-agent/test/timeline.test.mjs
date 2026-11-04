@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { CAPS, foldLabel, groupTimeline, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
+
+/** The root conversation of a Codex run in QA run 3 (F22: "Write a file called hello.md…", then "Now add a second line
+ *  saying goodbye"), as serve wrote it from the adapter's events: the first turn's commentary came in a request whose
+ *  only tool call was Codex's own exec (it read ALL_TOOLS), so its entry is text alone, stopReason "stop"; the host's
+ *  write came in the next request. */
+const CODEX_COMMENTARY = JSON.parse(readFileSync(new URL("./fixtures/codex-commentary-entries.json", import.meta.url), "utf8"));
 
 const GREP_FIELDS = [
   "id", "timestamp", "created_at", "kind", "summary", "agent_label", "tool_name", "tool_use_id", "tool_status",
@@ -59,6 +66,39 @@ test("a stop answer of one empty text block is an empty final_answer; a stop wit
 test("prose before calls is a text_block; a final stop answer is the final_answer", () => {
   const rows = timelineOf([assistant([{ type: "text", text: "Opening the portal." }, call("c", "read", { path: "a" })]), result("c", "read", "x"), assistant([{ type: "text", text: "Done.\nMore." }])]);
   assert.deepEqual(rows.filter((r) => /text|final/.test(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "Opening the portal."], ["final_answer", "Done."]]);
+});
+
+test("an answer the same turn goes on from is what the agent said, not its answer: Codex's commentary before a tool of its own, in the stored view and the live one alike", () => {
+  const live = (entries) => {
+    const reducer = timelineReducer();
+    reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
+    return reducer.rows();
+  };
+  const said = (rows) => rows.filter((r) => r.kind === "text_block" || r.kind === "final_answer").map((r) => [r.kind, r.summary]);
+  for (const view of [timelineOf, live]) {
+    assert.deepEqual(said(view(CODEX_COMMENTARY)), [
+      ["text_block", "I’ll create `hello.md` in the workspace with the single line `hello`."],
+      ["final_answer", "Wrote [hello.md](hello.md) with one line:"],
+      ["text_block", "I’ll update `hello.md` to contain `hello` followed by `goodbye` on the second line."],
+      ["final_answer", "Updated [hello.md](hello.md) with `goodbye` as the second line."],
+    ]);
+    // A text answer stays the answer when nothing with content follows it in its turn: a person's message, or a request
+    // with nothing in it (a harness's side request, cost only), ends nothing it said.
+    const kept = [user("Hi", 0), assistant([{ type: "text", text: "Hello." }], 1), assistant([], 2), user("Again", 3), assistant([{ type: "text", text: "Hello again." }], 4)];
+    assert.deepEqual(said(view(kept)), [["final_answer", "Hello."], ["final_answer", "Hello again."]]);
+    // Commentary, then an answer of only whitespace, then a call and the real answer: every earlier answer of the turn
+    // is what the agent said, the commentary too, and only the last is its answer.
+    const quiet = [
+      user("Write it.", 0), assistant([{ type: "text", text: "I'll check first." }], 1), assistant([{ type: "text", text: " " }], 2),
+      assistant([call("w1", "write", { path: "note.md", content: "noted" })], 3), result("w1", "write", "ok", 4), assistant([{ type: "text", text: "Wrote note.md." }], 5),
+    ];
+    assert.deepEqual(said(view(quiet)), [["text_block", "I'll check first."], ["text_block", ""], ["final_answer", "Wrote note.md."]]);
+  }
+  // The live view hears of the change: the row comes again, under its id, as a text_block.
+  const reducer = timelineReducer();
+  const ids = new Map();
+  for (const entry of CODEX_COMMENTARY) for (const row of reducer.apply([{ type: "entry_appended", entry }]).rows) ids.set(row.id, row.kind);
+  assert.equal(ids.get("1:33:0"), "text_block");
 });
 
 test("a host may name a call's file path its own way (path option): the tool rows and the Saved row use it, the input preview and the entries keep the call's own", () => {

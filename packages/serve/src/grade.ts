@@ -165,11 +165,12 @@ async function agentModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost)
     if ("why" in choice) throw new Error(choice.why);
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
     // The grader asks where the run's requests go, with the run's credential and auth mode: one claudeProvider call for
-    // both. The catalog only prices the model.
+    // both. It sends the id the run sends (claudeProvider's modelId), on pi-ai's anthropic provider. The catalog only
+    // prices the model.
     const sent: RunProvider = claudeProvider(env, choice.model);
     const catalog = builtinModels({ authContext: graderAuth(sent) }) as unknown as PiModels;
     const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: sent.origin } : found);
-    chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: choice.model };
+    chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: { provider: "anthropic", modelId: sent.modelId } };
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
   const { model } = chosen;
