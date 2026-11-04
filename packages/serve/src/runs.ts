@@ -257,10 +257,11 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
-/** Notes the messages the run's turns took and how each turn ended, from `entries` (its root's) and `submissions`
- *  (pi's input submissions). */
-function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly unknown[] = []): void {
+/** Notes the messages the run's turns took and how each turn ended, from `entries` (its root's), `submissions` (pi's
+ *  input submissions) and a reconnect's `snapshot` of them (the door's `inputs`, the run's whole state of them). */
+function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly unknown[] = [], snapshot?: readonly unknown[]): void {
   run.turns.note(entries, submissions);
+  if (snapshot) run.turns.snapshot(snapshot);
 }
 
 const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
@@ -940,10 +941,11 @@ export class Runs {
         const events = event === "snapshot" ? [value as Json] : event === "events" && Array.isArray(value) ? (value as Json[]) : [];
         if (event === "snapshot") run.working = Boolean((value as Json).run);
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
-        // The settlements of pi's turns: each a submission event in the commit of its turn's last entry, and the newest
-        // ones in a snapshot (pi-durable-disk's `inputs`).
-        const submissions = events.flatMap((e) => (e.type === "submission" && e.record !== undefined ? [e.record] : e.type === "snapshot" && Array.isArray(e.inputs) ? e.inputs : []));
-        noteTurns(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])), submissions);
+        // The settlements of pi's turns: each a submission event in the commit of its turn's last entry, and the door's
+        // snapshot of them on a (re)connect (pi-durable-disk's `inputs`), read as their whole state.
+        const submissions = events.flatMap((e) => (e.type === "submission" && e.record !== undefined ? [e.record] : []));
+        const inputs = events.find((e) => e.type === "snapshot" && Array.isArray(e.inputs))?.inputs as unknown[] | undefined;
+        noteTurns(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])), submissions, inputs);
         reducer.apply(events as never);
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.

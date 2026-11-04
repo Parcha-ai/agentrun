@@ -87,6 +87,25 @@ export class Turns {
     for (const value of submissions) this.#settle(value, skip, now);
   }
 
+  /** A reconnect's snapshot (the door's `inputs`): the run's inputs from the newest settled one on, and every earlier one
+   *  not settled yet. It is the whole state, where an event batch carries only changes: a message this ledger holds
+   *  open that is missing from it, from before its newest settled input, settled while the stream was down. That one
+   *  is closed, its own end unread and never the run's (the settled one after it is newer). One still queued, a
+   *  follow-up a steer settled ahead of, is in the snapshot and stays open. */
+  snapshot(inputs: readonly unknown[], skip?: (id: number) => boolean, now = Date.now()): void {
+    this.note([], inputs, skip, now);
+    let through: number | undefined;
+    const held = new Set<string>();
+    for (const value of inputs) {
+      if (!isObject(value) || value.type !== "input" || typeof value.id !== "number") continue;
+      held.add(`s:${value.id}`);
+      const settled = (value.status === "done" || value.status === "unanswered") && typeof value.entry === "number";
+      if (settled && !(typeof value.requestId === "string" && value.requestId.startsWith(REFLECT_REQUEST)) && !skip?.(value.entry as number)) through = Math.max(through ?? value.id, value.id);
+    }
+    if (through === undefined) return;
+    for (const message of this.#messages.values()) if (message.key.startsWith("s:") && !message.end && message.order < through && !held.has(message.key)) message.end = { status: "answered", answer: null };
+  }
+
   /** One input submission: a message taken while queued or placed, closed once it is settled. */
   #settle(value: unknown, skip: ((id: number) => boolean) | undefined, now: number): void {
     if (!isObject(value) || value.type !== "input" || typeof value.id !== "number") return;

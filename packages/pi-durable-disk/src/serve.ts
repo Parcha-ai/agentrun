@@ -176,13 +176,16 @@ const callsOf = (record: { model?: readonly unknown[] } | undefined): boolean =>
 
 /** Start listening; requests are answered once `attach` hands over the open run. */
 /** The inputs a door's snapshot carries, from a conversation's input submissions in id order: the newest one settled
- *  (done, or unanswered after it was placed) and every one after it. */
+ *  (done, or unanswered after it was placed), every one after it, and every one before it not settled yet (queued or
+ *  placed: a steer settles ahead of a follow-up queued before it, which is still to run). So an input a reader holds
+ *  open that is missing here, from before the newest settled one, is settled. */
 export function snapshotInputs<T extends { readonly status: string; readonly entry?: unknown }>(records: readonly T[]): T[] {
   let newest = -1;
   records.forEach((record, at) => {
     if ((record.status === "done" || record.status === "unanswered") && record.entry !== undefined) newest = at;
   });
-  return records.slice(Math.max(newest, 0));
+  if (newest < 0) return [...records];
+  return [...records.slice(0, newest).filter((record) => record.status === "queued" || record.status === "placed"), ...records.slice(newest)];
 }
 
 export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
@@ -284,10 +287,11 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     };
   }
 
-  /** The conversation's input submissions from its newest settled one on, oldest first, a `done` one with its answer's
-   *  whole text (`answer_text`) and whether that answer asked for tools (`answer_calls`, a tool ended the turn):
-   *  pi-durable settles a person's message in the commit of its turn's last entry, so a reader that comes in now knows
-   *  which messages are still open and how the newest one's turn ended. */
+  /** The conversation's input submissions a snapshot carries (snapshotInputs: from its newest settled one on, and every
+   *  earlier one not settled yet), oldest first, a `done` one with its answer's whole text (`answer_text`) and whether
+   *  that answer asked for tools (`answer_calls`, a tool ended the turn): pi-durable settles a person's message in the
+   *  commit of its turn's last entry, so a reader that comes in now knows which messages are still open, that one it
+   *  holds open and finds missing is settled, and how the newest one's turn ended. */
   async function inputsOf(conversationId: ConversationId, context: Context): Promise<unknown[]> {
     const storage = run!.store.storage;
     // In id order (an older pi-durable scans no other way).
