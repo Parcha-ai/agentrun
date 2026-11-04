@@ -334,7 +334,7 @@ test("with accounts off no one can approve: an ask, a catalog tool's default or 
 });
 
 /** A held key, made at runtime (no credential-shaped literal), and whether `text` holds any 8 characters of it. */
-const HELD = ["not-a-secret", "approval-card-key", randomBytes(6).toString("hex")].join("-");
+const HELD = ["not-a-secret", "gate-held-key", randomBytes(6).toString("hex")].join("-");
 const holdsPiece = (text, secret) => [...Array(Math.max(0, secret.length - 7)).keys()].some((i) => text.includes(secret.slice(i, i + 8)));
 
 test("a parked call whose arguments hold a held key shows no 8 characters of it on its approval row or its pending approval, as the Timeline redacts a call's arguments", { timeout: 90_000 }, async (t) => {

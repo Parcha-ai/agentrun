@@ -362,22 +362,24 @@ function noteApprovals(run: Run, entries: readonly unknown[]): void {
 /** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
 const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-const approvalOf = (run: Run): PendingApproval | undefined => {
+const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: waiting.args_preview, requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: redact(waiting.args_preview), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
 };
 /** One answered (allow or deny) whose answer the run's process has not acted on yet. */
 const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && run.meta.approvals[a.id]!.decision !== "canceled");
-/** The row after each tool call that waited for approval, beside its result's row. */
-function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">): TimelineEvent[] {
+/** The row after each tool call that waited for approval, beside its result's row. Its arguments are redacted whole
+ *  (`redact`, the Timeline's own: no held key), before any cut. */
+function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">, redact: (text: string) => string): TimelineEvent[] {
   if (!run.approvals?.size) return [...rows];
   const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
   const waiting = waitingApproval(run);
   return rows.flatMap((row) => {
     const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
     if (!approval) return [row];
-    const summary = `${approval === waiting ? "Waiting for your approval" : "Asked your approval"}: ${approval.tool} ${clip(approval.args_preview, 400)}`;
-    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: approval.args_preview, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(approval.args_preview, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+    const args = redact(approval.args_preview);
+    const summary = `${approval === waiting ? "Waiting for your approval" : "Asked your approval"}: ${approval.tool} ${clip(args, 400)}`;
+    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
 }
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
@@ -886,7 +888,7 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run)), run.meta.max_cost_usd);
+    run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run, this.redactor(run))), run.meta.max_cost_usd);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
@@ -2328,7 +2330,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
-      pending: status === "input_required" && state === "waiting" ? (approvalOf(run) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
