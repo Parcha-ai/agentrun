@@ -18,11 +18,12 @@ const live = (text) => {
 };
 
 test("a stream that wraps a held key (its head, a line break, its tail): what it shows holds no 8 characters of it", () => {
-  for (const text of [`${PAD}Using ${KEY.slice(0, 20)}`, `${PAD}Using ${KEY.slice(0, 20)}\n${KEY.slice(20)} now. ${PAD}`]) {
-    const out = live(text);
-    assert.ok(!holdsRun(out, KEY), JSON.stringify(out.slice(-200)));
-    assert.ok(out.length > 0 && PAD.startsWith(out.slice(0, 40)), "what came before the key still shows");
-  }
+  // Before the tail: what came before the key still shows. With the whole wrapped key in, learning's rule takes the
+  // whole text, as it does a settled row's (a key split by whitespace blanks the text), so the live block shows nothing.
+  const head = live(`${PAD}Using ${KEY.slice(0, 20)}`);
+  assert.ok(!holdsRun(head, KEY) && head.length > 0 && PAD.startsWith(head.slice(0, 40)), JSON.stringify(head.slice(-200)));
+  const whole = live(`${PAD}Using ${KEY.slice(0, 20)}\n${KEY.slice(20)} now. ${PAD}`);
+  assert.ok(!holdsRun(whole, KEY), JSON.stringify(whole.slice(-200)));
 });
 
 test("a stream with only a held key's head so far: what it shows holds no part of it, and a short stream shows nothing yet", () => {

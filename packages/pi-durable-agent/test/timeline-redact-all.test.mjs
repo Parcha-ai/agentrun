@@ -62,7 +62,8 @@ test("a thinking block and a text block quoting a held key, settled: no form of 
 });
 
 test("a key streamed across two deltas, live: no row holds any part of it, before or after the second delta", () => {
-  const reducer = timelineReducer({ conversationId: 1, redact });
+  // The host holds back a streaming block's tail (redactLive, below), as serve does.
+  const reducer = timelineReducer({ conversationId: 1, redact, redactLive });
   reducer.apply([{ type: "message_start", message: { role: "assistant", content: [] } }]);
   const [head, tail] = [KEY.slice(0, 20), KEY.slice(20)];
   const first = reducer.apply([{ type: "message_update", usage: {}, changes: [
