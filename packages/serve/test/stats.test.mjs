@@ -65,7 +65,8 @@ test("GET /v2/stats counts by status, sums only known costs, leaves archived out
   await follow(api, working.run_id, ["working"]);
   const stats = await api("GET", "/stats");
   assert.equal(stats.status, 200, JSON.stringify(stats.body));
-  const { analytics, ...counts } = stats.body;
+  const { analytics, learning, ...counts } = stats.body;
+  assert.deepEqual(learning, { runs: 0, merged: 0, dropped: {}, in_progress: 0 }, "no run here learns");
   assert.deepEqual(counts, {
     agents: 5,
     runs: { total: 6, active: 1, needs_input: 1, failed: 1, needs_review: 1, status_unknown: 0 },

@@ -5,8 +5,8 @@ import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 
-// A sandbox agent's run can be started on the server instead (the request narrows its place to the runner); a start
-// the server refuses for a box it lacks says so in words, with that way out.
+// A run runs where its agent's definition says: the start names no place, for an agent in a box too, and a start the
+// server refuses for a box it lacks says so, and that the fix is where the agent runs, in its settings.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -31,26 +31,23 @@ function mount(a: Agent, refuse?: ClientError) {
 }
 
 describe("RunBar, a run of a sandbox agent", () => {
-  it("offers \"Run on the server instead\" only for an agent in a box; ticked, the start narrows its place", async () => {
-    expect(mount(agent()).toggle()).toBeNull();
-    act(() => root!.unmount()); document.body.innerHTML = "";
+  it("offers no place for an agent in a box: no \"Run on the server instead\", and the start sends its input alone", async () => {
     const m = mount(agent({ mode: "sandbox", box: "docker" }));
-    expect(m.toggle()).not.toBeNull();
+    expect(m.toggle()).toBeNull();
+    expect(m.host.textContent).not.toContain("Run on the server instead");
     m.write("hi");
     await m.run();
-    expect(m.starts.at(-1)).toEqual({ input: { content: "hi" } });
-    act(() => m.toggle()!.click());
-    await m.run();
-    expect(m.starts.at(-1)).toEqual({ input: { content: "hi" }, place: "runner" });
+    expect(m.starts).toEqual([{ input: { content: "hi" } }]);
   });
 
-  it("a start refused for a box this server lacks says so in words, with the way to run it on the server", async () => {
+  it("a start refused for a box this server lacks says so, and points to where the agent runs, in its settings", async () => {
     const refusal = Object.assign(new ClientError(409, "agent_not_runnable", "fixture: the docker box is not set up here"), { details: { box: "docker" } });
     const m = mount(agent({ mode: "sandbox", box: "docker" }), refusal);
     m.write("hi");
     await m.run();
     const alert = m.host.querySelector('[role="alert"]')!.textContent!;
     expect(alert).toContain("fixture: the docker box is not set up here");
-    expect(alert).toContain("This server can't run the docker box this agent runs in. Tick \"Run on the server instead\" to run it without the box.");
+    expect(alert).toContain("This server can't run the docker box this agent runs in: change where it runs in its settings.");
+    expect(alert).not.toContain("Run on the server instead");
   });
 });
