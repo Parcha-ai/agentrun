@@ -99,6 +99,9 @@ export function sealKeyOf(text: string | undefined): Buffer | undefined {
 
 const aad = (name: string) => `${FORMAT}|${name}`;
 
+/** How many times this process has read the saved keys' file: a test reads it to see a stream open them once. */
+export const keyReads = { count: 0 };
+
 export class ToolKeys {
   readonly file: string;
   private readonly key: Buffer | undefined;
@@ -117,6 +120,7 @@ export class ToolKeys {
   /** The file's entries, none with no file; "unreadable" when it does not read as this format. A file from before checks
    *  has none. */
   private kept(): Kept | "unreadable" {
+    keyReads.count++;
     try {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
       if (!isObject(doc) || doc.v !== 1 || !isObject(doc.fields)) return "unreadable";
