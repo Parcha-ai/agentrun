@@ -18,9 +18,9 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { DATA_ENV, HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
+import { DATA_ENV, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
-import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
+import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
@@ -305,29 +305,39 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  *  the offers probed again, never shown. */
 const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
 
+/** What a revision that names no model needs here (capabilities' `models.needs`): null when one runs, else chooseModel's
+ *  `needs`, a provider's key or another model. Made from `env` alone, so it is remade only when env is. */
+async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelNeeds | null> {
+  const chosen = await chooseModel(env, undefined);
+  return "why" in chosen ? chosen.needs : null;
+}
+
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
  *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
  *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
- *  box offers (`boxes`, what the box registry set up at the start, boxes.ts). The server makes it once at its start and
- *  then remakes only the parts a write changes (startHolding). */
+ *  box offers (`boxes`, what the box registry set up at the start, boxes.ts), with whether a revision that names no
+ *  model runs (needsOf). The server makes it once at its start and then remakes only the parts a write changes
+ *  (startHolding), so a key saved later can make a harness, a provider or the default model available with no restart. */
 export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
   const offers = await harnessOffers(offersEnvOf(env));
-  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes) };
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), await needsOf(env), toolSettings, boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
- *  included (harnessOffers), so what this returns is what the route serves and what the document's schema holds.
+ *  included (harnessOffers), and whether a revision that names no model runs here (`models.ready`, and what it `needs`
+ *  when not), so what this returns is what the route serves and what the document's schema holds.
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
  *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show. */
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, toolSettings, boxes);
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes);
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
- *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
-  const models = modelSource(env);
+ *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
+ *  needsOf says it for a revision that names no model (null when it runs). */
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, needs: ModelNeeds | null, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
+  const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
   return {
@@ -515,8 +525,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let env = withSecrets(base, "all", storedKeys);
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
+  // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
+  let needs: ModelNeeds | null = await needsOf(env);
   // The box offers are probed once, below, before the first reading is made.
-  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers));
+  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers));
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
@@ -530,11 +542,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     [offers, offersFrom] = [next, from];
     recompose();
   };
-  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. */
+  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. Writes can overlap
+   *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
+   *  finishes after it is dropped. */
+  let needsAsked = 0;
   const keysChanged = async () => {
     // A run's learning, as its view, a list and its timeline row show it, is cut of the keys saved now (runs.ts).
     runs.keysChanged();
     env = withSecrets(base, "all", storedKeys);
+    const mine = ++needsAsked;
+    const next = await needsOf(env);
+    if (mine === needsAsked) needs = next;
     const inputs = offersInputs(env);
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
@@ -583,8 +601,26 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   await probe("start");
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
-  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
-  void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then, however
+  // that went, the webhook's ledger against the agent store: waits of runs ended or gone dropped, and each end it lacks
+  // queued. Each is its own step: a recovery that gives up (a store busy past its wait) still lets the catch-up run, and a
+  // step that gives up is said, the next start trying it again.
+  void runs
+    .recover()
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`))
+    .then(async () => {
+      const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      // An end's notice from its row and its serve.json alone, as the run list reads an ended run (summaryOfRow): never
+      // its own store, whose read can fail, so a busy store loses no end. The same body a live end's notice has.
+      await webhooks.catchUp(rows, async (id) => {
+        const row = byId.get(id);
+        if (!row) return null;
+        const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
+        return { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
+      });
+    })
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so

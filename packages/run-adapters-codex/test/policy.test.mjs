@@ -66,7 +66,8 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   assert.deepEqual([f.body.model, f.body.store, f.body.max_output_tokens, f.body.include], ['session-model', false, 32_000, ['reasoning.encrypted_content']]);
   // web search, the CLI's built-ins and its multi-agent namespace are not the session's: only `lookup` is offered.
   assert.deepEqual(f.body.tools.map((t) => `${t.type}:${t.name}`), ['function:lookup']);
-  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8') }], "the runner is asked about the applied body's model, with its input bound: the sent body's bytes");
+  // With the output the body asks for (the policy's clamp, 32,000) and the least it may be limited to and still answer.
+  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8'), outputTokensAsked: 32_000, outputTokensLeast: 1_024 }], "the runner is asked about the applied body's model, with its input bound (the sent body's bytes), its output and its least");
   const sent = JSON.stringify(f);
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
 });

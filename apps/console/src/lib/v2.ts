@@ -101,7 +101,8 @@ export type ToolKeyField = { name: string; set: boolean; source: "server" | "sto
 /** A saved key's check with its provider: accepted, when; or not checked, why (in plain words) and when it last tried, if
  *  it did. Null, or absent from a server that does not check, says nothing. */
 export type ToolKeyCheck = { state: "accepted"; at: string } | { state: "not_checked"; reason: string; at?: string };
-export type ToolKey = { id: string; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[]; check?: ToolKeyCheck | null };
+/** `kind`: `model`, a model provider's key, which every run gets; `tool`, one a tool needs. Absent on an older server. */
+export type ToolKey = { id: string; kind?: "tool" | "model"; label: string; fields: ToolKeyField[]; unlocks: string[]; harnesses: string[]; check?: ToolKeyCheck | null };
 /** Saved values that do not open on this server, and why. `fields` is empty when the whole file does not read. */
 export type ToolKeysReenter = { reason: "seal_key_missing" | "seal_key_changed" | "file_unreadable"; fields: string[] };
 export type ToolKeys = { keys: ToolKey[]; reenter: ToolKeysReenter | null };

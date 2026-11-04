@@ -37,7 +37,7 @@ export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref:
   // harness every harness takes the run's usual model.
   const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
   if (own && !available) return undefined;
-  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : await chooseModel(env, ref);
+  const chosen = own ? (await import("./adapters.js")).claudeModel(env, ref) : await chooseModel(env, ref, "default", harness);
   if ("why" in chosen) return chosen;
   // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
   if (harness !== DEFAULT_HARNESS && available) {

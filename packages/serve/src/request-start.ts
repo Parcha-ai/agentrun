@@ -22,7 +22,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, sideRequests } from "./cap.js";
+import { CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, sideRequests } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 
 
@@ -40,7 +40,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
   const opened = new Promise<DurableRun>((resolve) => (open = resolve));
-  const mark = async (kind: string, data: Record<string, string | number | boolean | null> = {}) => {
+  type Mark = string | number | boolean | null | { [key: string]: Mark };
+  const mark = async (kind: string, data: Record<string, Mark> = {}) => {
     const run = await opened;
     await run.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT);
   };
@@ -59,6 +60,13 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   const heldOf = (options: unknown): Record<string, number> => {
     const held = (options as Record<symbol, unknown> | undefined)?.[HELD_USD];
     return typeof held === "number" && Number.isFinite(held) ? { [HELD_FIELD]: held } : {};
+  };
+  /** A start mark's figures: its worst case, and what the cap limited its output to when it did (CLAMP), so a reply cut
+   *  short there says so on the run's timeline. */
+  const startOf = (options: unknown): Record<string, Mark> => {
+    const clamp = (options as Record<symbol, unknown> | undefined)?.[CLAMP] as { tokens?: unknown; leftUsd?: unknown; capUsd?: unknown } | undefined;
+    const kept: Record<string, Mark> = clamp && typeof clamp.tokens === "number" && typeof clamp.leftUsd === "number" && typeof clamp.capUsd === "number" ? { clamp: { tokens: clamp.tokens, leftUsd: clamp.leftUsd, capUsd: clamp.capUsd } } : {};
+    return { ...heldOf(options), ...kept };
   };
   /** A cancelled run's request, never sent. It waits for the cancel to reach the run (the request's abort), and then ends
    *  as aborted, as a request the cancel cut does: the turn, or a workflow's node, stops, never failing on the refusal.
@@ -86,7 +94,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     void (async () => {
       if (cancelled()) return refused();
       try {
-        await mark(REQUEST_STARTED, heldOf(options));
+        await mark(REQUEST_STARTED, startOf(options));
       } catch (error) {
         const message = failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
         outer.push({ type: "error", reason: "error", error: message });

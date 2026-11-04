@@ -18,7 +18,7 @@ import { join, posix } from "node:path";
 import { INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
 import { activeOf, detailShown, dropSeed, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, snapshotLearned, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
@@ -645,7 +645,7 @@ export class LearningRuns {
     const last = run.rows.findLast((row) => row.agent_label === LEARNING_LABEL && shows(row));
     if (run.cancel) this.setLearning(run, "dropped", "cancelled", said.stopped(STOPPED.cancelledLooking));
     else if (reflect.timedOut) this.setLearning(run, "dropped", "reflect_timeout", said.stopped(STOPPED.timedOut));
-    else if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) this.setLearning(run, "dropped", "no_budget", said.noBudget);
+    else if (last?.kind === "error" && CAP_REFUSAL_PREFIX.test(last.text ?? "")) this.setLearning(run, "dropped", "no_budget", said.noBudget);
     else if (last?.kind === "error") this.setLearning(run, "dropped", "reflect_failed", said.stopped(STOPPED.failed));
     else if (!reflect.ended) this.setLearning(run, "dropped", "crashed", said.stopped(STOPPED.crashedLooking));
     else this.setLearning(run, "reflecting", null, said.reflecting);

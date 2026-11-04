@@ -41,7 +41,7 @@ test("a request in flight holds its worst case: a second that fits alone but not
   const second = await capped.streamSimple(priced, context).result();
   assert.equal(sent.length, 1, "the second request was not sent while the first was in flight");
   assert.equal(second.stopReason, "error");
-  assert.match(second.errorMessage, /^spend_cap_reached: /);
+  assert.match(second.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   sent[0].end(0.0001);
   await first.result();
   await new Promise((resolve) => setImmediate(resolve));
@@ -77,7 +77,7 @@ test("a paid call under way holds what it is held at: a model request that fits 
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "not sent while the paid call is under way");
   const refused = await request.result();
-  assert.match(refused.errorMessage, /^spend_cap_reached: the next model request was not sent\. It could cost up to \$0\.001000, and with \$0\.001000 spent the run would pass its cap of \$0\.0015: the run is out of budget\.$/);
+  assert.equal(refused.errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.001 for requests still answering, of its $0.0015 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.01 to run it.");
   call.settle(0.0002);
   assert.deepEqual(await call.paid, { result: 0.0002 });
   const admitted = capped.streamSimple(priced, context);
@@ -97,7 +97,7 @@ test("a paid call that fails counts at what it was held at, as a model request t
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
   const refused = await request.result();
-  assert.match(refused.errorMessage, /^spend_cap_reached: .*with \$0\.001000 spent the run would pass its cap of \$0\.0015/);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\./);
 });
 
 /** The input bound: one token per UTF-8 byte of the request's context, which byte-level tokenizers never undercount. */
@@ -119,17 +119,19 @@ test("the input is priced at the cache-write price when it is dearer than input,
   }
 });
 
-test("the worst case is the model's full output ceiling, not the max tokens a request asks for: a thinking budget can raise any request to it", async () => {
-  // No input price, $1 per million output tokens, a ceiling of 1,000: the worst case is $0.001 whatever the request asks.
-  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+test("a request is held at the output it is sent with: what it asks for, and on an API whose thinking takes a budget, the budget pi-ai adds to it", async () => {
+  // No input price, $1 per million output tokens, a ceiling of 1,000: asking 100 tokens with no thinking, the worst case is
+  // $0.0001; thinking on Anthropic's API, pi-ai adds the budget, so it is the ceiling's $0.001.
   const asks = { maxTokens: 100 };
-  for (const [cap, sends] of [[0.0005, 0], [0.0011, 1]]) {
+  const plain = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const thinking = { ...plain, api: "anthropic-messages" };
+  for (const [priced, options, cap, sends] of [[plain, asks, 0.0005, 1], [thinking, { ...asks, reasoning: "high" }, 0.0005, 0], [thinking, { ...asks, reasoning: "high" }, 0.0011, 1]]) {
     const { models, sent } = fakeModels();
     const capped = await capModels(models, cap, 0);
-    const answer = capped.streamSimple(priced, context, asks);
-    assert.equal(sent.length, sends, `a cap of ${cap}: the worst case is the ceiling's $0.001, not the asked 100 tokens' $0.0001`);
+    const answer = capped.streamSimple(priced, context, options);
+    assert.equal(sent.length, sends, `${priced.api}, ${JSON.stringify(options)}, a cap of ${cap}`);
     if (sends) sent[0].end(0);
-    else assert.match((await answer.result()).errorMessage, /could cost up to \$0\.001000/);
+    else assert.match((await answer.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run's cap of \$0\.0005 can't cover one m request \(at least \$0\.01\)\. Raise the cap to at least \$0\.01 to run it\.$/);
     await answer.result();
   }
 });
@@ -147,7 +149,7 @@ test("pi's input is bounded by its context's UTF-8 bytes, never pi's average: a 
   const capped = await capModels(models, cap, 0);
   const answer = await capped.streamSimple(priced, dense).result();
   assert.equal(sent.length, 0, "not sent: its byte bound passes the cap");
-  assert.match(answer.errorMessage, /^spend_cap_reached: /);
+  assert.match(answer.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
 });
 
 test("pi under a cap: a model serve has no price for is refused, a model the catalog lists at $0 passes", async () => {
@@ -213,6 +215,6 @@ test("a tool's own request adds its hosted tool's allowance to its input bound a
     const answer = capped.completeSimple(priced, search);
     assert.equal(requests.length, sent, `a cap of $${cap}`);
     requests[0]?.end(0.001);
-    if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached: /);
+    if (!sent) assert.match((await answer).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   }
 });
