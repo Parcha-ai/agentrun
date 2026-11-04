@@ -17,11 +17,40 @@ import * as model from "../dist/model.js";
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
+// A cleanup never waits on the shared machine without a bound: another process's connection to a held port, or a
+// server slow to stop, would otherwise hold the whole file until its timeout.
+/** `promise`, or undefined once `ms` pass. */
+const within = (promise, ms) => {
+  let timer;
+  return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+};
+/** Stops a child this test spawned: SIGTERM, then SIGKILL if it has not exited within 10 s. A child not yet reaped keeps
+ *  its pid, so the signal reaches this child only. */
+async function stopChild(child, exited) {
+  const alive = () => child.exitCode === null && child.signalCode === null;
+  if (!alive()) return;
+  child.kill("SIGTERM");
+  if ((await within(exited.then(() => true), 10_000)) || !alive()) return;
+  child.kill("SIGKILL");
+  await within(exited, 5_000);
+}
+/** A closer for `server`: its open connections ended first, so none can hold the close, which waits at most 5 s. */
+function closer(server) {
+  const sockets = new Set();
+  server.on("connection", (socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  return () => {
+    server.closeAllConnections?.();
+    for (const socket of sockets) socket.destroy();
+    return within(new Promise((resolve) => server.close(() => resolve())), 5_000);
+  };
+}
+
 /** A port held on loopback by this test until it ends. */
 async function held(t, port = 0) {
   const server = createServer();
+  const close = closer(server);
   await new Promise((resolve, reject) => server.once("error", reject).listen(port, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(close);
   return server.address().port;
 }
 
@@ -48,7 +77,7 @@ async function serve(t, args, env = {}, data = undefined) {
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
   const child = spawn(process.execPath, [CLI, "--data", data ?? join(home, "agents"), ...args], { env: { ...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(async () => { child.kill("SIGTERM"); await exited; });
+  t.after(() => stopChild(child, exited));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -57,7 +86,7 @@ async function serve(t, args, env = {}, data = undefined) {
     assert.ok(i < 600 && child.exitCode === null, `the server printed its banner: ${out}${err}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const stop = async () => { child.kill("SIGTERM"); await exited; };
+  const stop = () => stopChild(child, exited);
   return { home, base: /AGENTRUN_BASE_URL=(\S+)\/v2/.exec(out)[1], out, stop };
 }
 
@@ -73,8 +102,9 @@ test("demo: with no --port the server takes the first free port from its default
 test("demo: started on an OpenAI key alone, pi's default model follows an Anthropic key saved in the console, with no restart", { timeout: 120_000 }, async (t) => {
   // The Anthropic key's check (key-check.ts) answered on loopback: no network.
   const provider = createHttpServer((req, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"data":[]}'));
+  const closeProvider = closer(provider);
   await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => provider.close(resolve)));
+  t.after(closeProvider);
   const token = randomBytes(24).toString("hex");
   const env = { OPENAI_API_KEY: "not-a-secret", AGENTRUN_TOKEN: token, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ANTHROPIC_BASE_URL: `http://127.0.0.1:${provider.address().port}` };
   const { base } = await serve(t, ["--port", "0"], env);
@@ -127,7 +157,7 @@ test("a server free to pick its port listens on the next one when its port is ta
   const dir = mkdtempSync(join(tmpdir(), "serve-port-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const moved = await startServe({ data: join(dir, "a"), port: taken, nextFreePort: true, faux: FAUX });
-  t.after(() => moved.close());
+  t.after(() => within(moved.close(), 10_000));
   assert.ok(moved.port > taken && moved.port < taken + 100, `${moved.port} is past ${taken}, which is taken`);
   assert.equal(moved.url, `http://127.0.0.1:${moved.port}`);
   assert.equal((await fetch(`${moved.baseUrl}/health`)).status, 200);
@@ -137,8 +167,8 @@ test("a server free to pick its port listens on the next one when its port is ta
 // Each taken port is one attempt on the same server: an attempt that failed leaves none of its handlers on it, so
 // passing over many taken ports adds no listener per port.
 test("a server free to pick its port passes over 11 taken ports with no listener left behind per attempt", { timeout: 60_000 }, async (t) => {
-  const listen = (port) => new Promise((resolve) => { const server = createServer(); server.once("error", () => resolve(undefined)).listen(port, "127.0.0.1", () => resolve(server)); });
-  const close = (server) => new Promise((resolve) => server.close(resolve));
+  const listen = (port) => new Promise((resolve) => { const server = createServer(); const close = closer(server); server.once("error", () => resolve(undefined)).listen(port, "127.0.0.1", () => resolve(close)); });
+  const close = (closeIt) => closeIt();
   // 11 consecutive ports this test holds from a base, and the one after them free.
   let base;
   for (let tries = 0; base === undefined && tries < 50; tries++) {
@@ -164,7 +194,7 @@ test("a server free to pick its port passes over 11 taken ports with no listener
   const dir = mkdtempSync(join(tmpdir(), "serve-ports-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const moved = await startServe({ data: join(dir, "a"), port: base, nextFreePort: true, faux: FAUX });
-  t.after(() => moved.close());
+  t.after(() => within(moved.close(), 10_000));
   // A warning is emitted on the next tick: one turn of the event loop lets any reach the handler.
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(moved.port, base + 11, `${moved.port} is the first free port from ${base}`);
@@ -179,8 +209,10 @@ test("demo: two servers started at once with no --port each take a port of their
   const home = mkdtempSync(join(tmpdir(), "serve-taken-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const child = spawn(process.execPath, [CLI, "--data", join(home, "agents"), "--port", String(taken)], { env: { ...process.env, HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => stopChild(child, exited));
   let err = "";
   child.stderr.on("data", (chunk) => (err += chunk));
-  assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 1, err);
+  assert.equal(await exited, 1, err);
   assert.match(err, new RegExp(`EADDRINUSE.*127\\.0\\.0\\.1:${taken}`));
 });

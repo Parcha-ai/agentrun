@@ -23,6 +23,22 @@ const STORE = (home) => join(home, ".agentrun");
 const SERVE_STORE = (home) => join(home, ".local", "share", "agentrun", "agents");
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN"];
 
+/** `promise`, or undefined once `ms` pass: a cleanup never waits without a bound. */
+const within = (promise, ms) => {
+  let timer;
+  return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+};
+/** Stops a child this test spawned: SIGTERM, then SIGKILL if it has not exited within 10 s. A child not yet reaped keeps
+ *  its pid, so the signal reaches this child only. */
+async function stopChild(child, exited) {
+  const alive = () => child.exitCode === null && child.signalCode === null;
+  if (!alive()) return;
+  child.kill("SIGTERM");
+  if ((await within(exited.then(() => true), 10_000)) || !alive()) return;
+  child.kill("SIGKILL");
+  await within(exited, 5_000);
+}
+
 /** This environment with a fresh home, no model key, and no browser. */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
@@ -35,7 +51,7 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(async () => { child.kill("SIGTERM"); await exited; });
+  t.after(() => stopChild(child, exited));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -130,7 +146,7 @@ setInterval(() => {}, 1000);
   const { home, env: base } = bare(t);
   const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(async () => { child.kill("SIGTERM"); await exited; });
+  t.after(() => stopChild(child, exited));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
