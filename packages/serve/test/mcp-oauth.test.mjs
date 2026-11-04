@@ -200,15 +200,15 @@ test("a sign-in the owner since forgot or replaced is not written back: a callba
   assert.equal((await api("GET", "/settings/mcp-servers/docs")).status, 404, "a forgotten server stays forgotten");
 });
 
-test("a run: its launch refreshes a token near expiry and the call goes with the new one; after a refused refresh the call says to sign in again", { timeout: 120_000 }, async (t) => {
+for (const name of ["docs", "constructor"]) test(`a run (server ${name}): its launch refreshes a token near expiry and the call goes with the new one; after a refused refresh the call says to sign in again`, { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api } = await serve(t, { faux: FAUX_MCP });
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
-  const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  const started = await api("POST", `/settings/mcp-servers/${name}/oauth/start`, { url: mcp.url });
   assert.equal((await approve(started.body.authorization_url)).status, 302);
-  assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("adder", { tools: [`mcp:${name}/add`] }))).status, 201);
   const run = async () => {
-    const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+    const made = await api("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
     assert.equal(made.status, 202, JSON.stringify(made.body));
     await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
     return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer;
@@ -223,9 +223,9 @@ test("a run: its launch refreshes a token near expiry and the call goes with the
 
   as.revoke();
   const said = await run();
-  assert.match(said, /The MCP server docs refused its credential/);
+  assert.ok(said.includes(`The MCP server ${name} refused its credential`), said);
   assert.match(said, /sign in again in Settings → MCP servers/);
-  assert.equal((await api("GET", "/settings/mcp-servers/docs")).body.credential, "expired");
+  assert.equal((await api("GET", `/settings/mcp-servers/${name}`)).body.credential, "expired");
 });
 
 test("a token given with no expiry is taken to last an hour: a launch after that refreshes it", async (t) => {

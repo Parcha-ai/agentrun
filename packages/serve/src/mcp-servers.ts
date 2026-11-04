@@ -317,7 +317,8 @@ export class McpServers {
       const doc = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
       return isObject(doc) && doc.format === FORMAT && isObject(doc.servers) ? (Object.assign(Object.create(null), doc.servers) as Record<string, Kept>) : "unreadable";
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : "unreadable";
+      // No prototype either way: a server named `constructor` is a server, not Object's.
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? (Object.create(null) as Record<string, Kept>) : "unreadable";
     }
   }
 
