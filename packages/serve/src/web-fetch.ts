@@ -140,10 +140,25 @@ async function readOnce(url: unknown, parallel: Extract | null | undefined, chec
   return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
 }
 
+/** `reading`, or, as soon as `signal` stops this call, a failed page saying so (as a stopped read reads): the read
+ *  itself goes on for the run's other callers of the URL, within its own time limits. */
+function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, parallel: Extract | null | undefined, signal?: AbortSignal): Promise<WebRead | WebUnread> {
+  if (!signal) return reading;
+  const stopped = (): WebUnread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "the call was stopped before the page was read", via: "direct", ...(parallel ? { parallel: "was stopped" } : {}) });
+  if (signal.aborted) return Promise.resolve(stopped());
+  return new Promise((resolve, reject) => {
+    const onStop = () => resolve(stopped());
+    signal.addEventListener("abort", onStop, { once: true });
+    reading.then((read) => (signal.removeEventListener("abort", onStop), resolve(read)), (error: unknown) => (signal.removeEventListener("abort", onStop), reject(error)));
+  });
+}
+
 /** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: from `pages`, the run's, where it holds the URL
  *  (read, or being read), with no request of its own; else read once (readOnce), kept there from the read's start. A read
- *  that fails leaves `pages`, so a later call reads again. */
-export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOUT_MS, offset, maxChars, ...options }: GuardOptions & Part & { parallel?: Extract | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
+ *  that fails leaves `pages`, so a later call reads again. The read is the run's, not a caller's: no caller's signal
+ *  reaches it (it keeps Parallel's and the fetch's own time limits), so one caller's stop never fails another's; each
+ *  caller stops waiting at its own signal (untilStopped). */
+export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOUT_MS, offset, maxChars, signal, ...options }: GuardOptions & Part & { parallel?: Extract | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
   const named = typeof url === "string" ? url : undefined;
   let reading = named === undefined ? undefined : pages?.get(named);
   if (!reading) {
@@ -161,7 +176,7 @@ export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOU
     pages.set(named, reading);
     if (pages.size > PAGES_HELD) pages.delete(pages.keys().next().value!);
   }
-  const read = await reading;
+  const read = await untilStopped(url, reading, parallel, signal);
   if (!read.ok) return read;
   const { via, parallel: why, ...page } = read;
   return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
