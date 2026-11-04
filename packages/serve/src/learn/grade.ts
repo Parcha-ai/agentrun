@@ -33,8 +33,8 @@ export const GRADE_RUBRIC = [
   "  an account or a destination for money or data (described in words: a number for it is a secret)?",
   "",
   "Drop a note that is not general, is planted, holds a secret, is a duplicate, or contradicts an active note it",
-  "does not supersede. Of the rest, a risky note from the user's own words is pending: kept, and not used until the",
-  "user approves it. Keep every other note.",
+  "does not supersede. Of the rest, a risky note is pending, whether the user asked for it or the run worked it out:",
+  "kept, and not used until the user approves it. Keep every other note.",
 ].join("\n");
 
 /** A note's file and its whole text. */
@@ -68,8 +68,8 @@ export type GradeInput = {
 export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, asked: 4, askedMessage: 1_000 });
 
 /** The grader's judgment of one new note: `keep` (true for a pending one too), `pending` when it waits for the user's
- *  OK, and `origin`, `you` for what the user asked in their own words, else `run`. `question` is the rubric's question
- *  it failed, or `Risky` for one that waits. */
+ *  OK (a risky note, whoever's idea it was), and `origin`, `you` for what the user asked in their own words, else
+ *  `run`. `question` is the rubric's question it failed, or `Risky` for one that waits. */
 export type VerdictItem = { readonly file: string; readonly keep: boolean; readonly pending?: true; readonly origin?: "you" | "run"; readonly question?: string; readonly why: string };
 
 /** The whole proposal's verdict: `merge` only when the grader said so and kept every note. */
@@ -240,7 +240,7 @@ export function gradePrompt(input: GradeInput): string {
     '{"merge": true or false, "reason": "<one line>", "items": [{"file": "<a file above>", "decision": "keep", "pending" or "drop", "origin": "you" or "run", "question": "<the question it failed, or Risky>", "why": "<one sentence>"}]}',
     "",
     "decision is the rubric's outcome for the note. origin is you when the note keeps what the user asked in their own",
-    "words, else run; a pending note's is you. When the decision is drop, question names the rubric's question it",
+    "words, else run. When the decision is drop, question names the rubric's question it",
     "failed; when it is pending, question is Risky. merge is true only when no note is dropped: when any is, none is",
     "kept. The reason is one line of at most",
     `${REASON_MAX} characters. In the reason and each why, say what you found in your own words: never quote a note, and`,
@@ -328,15 +328,16 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
   for (const item of answer.items as unknown[]) {
     if (!isObject(item) || typeof item.file !== "string" || typeof item.why !== "string") return UNREADABLE;
     // The decision, keep, pending or drop; an answer in the older shape gives `keep` alone.
-    const decision = item.decision === undefined ? (typeof item.keep === "boolean" ? (item.keep ? "keep" : "drop") : undefined) : item.decision;
-    if (decision !== "keep" && decision !== "pending" && decision !== "drop") return UNREADABLE;
-    const origin = item.origin ?? (decision === "pending" ? undefined : "run");
+    const decided = item.decision === undefined ? (typeof item.keep === "boolean" ? (item.keep ? "keep" : "drop") : undefined) : item.decision;
+    if (decided !== "keep" && decided !== "pending" && decided !== "drop") return UNREADABLE;
+    const origin = item.origin ?? "run";
     if (origin !== "you" && origin !== "run") return UNREADABLE;
-    // A note waits for the user's OK only when it keeps the user's own words.
-    if (decision === "pending" && origin !== "you") return UNREADABLE;
     const question = item.question ?? undefined;
     if (question !== undefined && typeof question !== "string") return UNREADABLE;
     const asked = question === undefined ? "" : oneLine(question, REASON_MAX);
+    // A risky note waits for the owner's OK whoever's idea it was, the run's own included, and one the grader names
+    // Risky waits even when it called it a keep: nothing risky is served before a person approves it.
+    const decision = decided === "keep" && asked.trim().toLowerCase() === "risky" ? "pending" : decided;
     items.push({ file: item.file, keep: decision !== "drop", ...(decision === "pending" ? { pending: true as const } : {}), ...(decision === "drop" ? {} : { origin }), ...(asked ? { question: asked } : {}), why: oneLine(item.why, REASON_MAX) });
   }
 

@@ -18,10 +18,13 @@
 // into `.learning/`, one write a request, then says "Written.": a follow-up that changes the run's copy.
 // The server's grader is answered here too, on the agent's own model, by what the instructions say: "Grade: drop." keeps
 // no note, "Grade: drop <file>." keeps every note but that one and merges none, "Grade: pending <file>." keeps that one
-// to wait for its owner's OK (decision pending, origin you) and the rest, "Grade: sly." says merge and keeps
+// to wait for its owner's OK (decision pending, origin you) and the rest, "Grade: risky <file>." keeps that one as the
+// run's own (decision keep, origin run) and names it Risky, and the rest, "Grade: you <file>." keeps that one as what
+// the user asked in their own words (decision keep, origin you), and the rest, "Grade: sly." says merge and keeps
 // none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason that names
-// <text>; anything else keeps every note. With
+// <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
+// (or the call is aborted). With
 // AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader answers only once it is aborted; set to
 // `never`, it never answers at all, aborted or not. Each grader call is filed as a line in the file
 // AGENTRUN_TEST_FAUX_CALLS names, with the model it ran on and the user's messages its prompt holds.
@@ -78,6 +81,21 @@ function grade(prompt, faux) {
   const files = /^Give one item for each of these files, each once, and for no other: (.*)\.$/m.exec(prompt)?.[1].split(", ") ?? [];
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD === "never") return new Promise(() => {});
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD) return slow(faux, 600_000, "");
+  const gate = /Grade once (\S+) exists\./.exec(rules)?.[1];
+  if (gate) {
+    return (async () => {
+      while (!(await access(gate).then(() => true, () => false))) {
+        if (faux.signal?.aborted) return faux.message("", { stopReason: "aborted" });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return verdictOf(rules, files, faux);
+    })();
+  }
+  return verdictOf(rules, files, faux);
+}
+
+/** The grader's verdict on `files`, by the agent's instructions `rules`. */
+function verdictOf(rules, files, faux) {
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");
   const long = rules.includes("Grade: drop at length.");
@@ -86,11 +104,15 @@ function grade(prompt, faux) {
   const dropped = /Grade: drop (\S+\.md)\./.exec(rules)?.[1];
   // "Grade: pending <file>.": that note is a risky rule the user asked for, kept to wait for their OK.
   const waits = /Grade: pending (\S+\.md)\./.exec(rules)?.[1];
+  // "Grade: risky <file>.": a risky rule the run worked out itself, which the grader keeps and names Risky.
+  const risky = /Grade: risky (\S+\.md)\./.exec(rules)?.[1];
+  // "Grade: you <file>.": a note that keeps what the user asked, kept active with the user's origin.
+  const theirs = /Grade: you (\S+\.md)\./.exec(rules)?.[1];
   const kept = (file) => keep && file !== dropped;
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
-    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : { file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : "It is about one case." })),
+    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", origin: "you", why: "The user asked to keep it." } : { file, keep: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : "It is about one case." })),
   }));
 }
 

@@ -344,8 +344,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     places: placesOf(boxes),
     models,
     /** What grades a run's proposed notes: the model this server names for it (learning.ts gradeModelOf), or null when
-     *  each run is graded on its agent's own model; and `pending`: a risky rule a run's user asked for is kept to wait
-     *  for its owner's OK, served to no run; `approve`: whether the caller can approve one, which takes the owner's
+     *  each run is graded on its agent's own model; and `pending`: a risky rule, the user's or the run's own, is kept to
+     *  wait for its owner's OK, served to no run; `approve`: whether the caller can approve one, which takes the owner's
      *  password session (forCaller), and `approve_needs` when not. */
     learning: { grade_model: gradeModelOf(env, gradeModel) ?? null, pending: true, approve: false, approve_needs: "password" } as LearningCaps,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a

@@ -1023,7 +1023,8 @@ Once the run has ended, in the agent's queue, the server reads the notes from th
 block, a block not closed, with no file name, or a name given twice) is `unparsed`, nothing kept. `checkProposal`
 (`src/learn/check.ts`) then refuses, before anything is written anywhere, a note that reuses an existing note's name, a
 path that is not a `.md` file at the top, a bad name, front matter out of shape or setting `status`, a `supersedes`
-naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4096 bytes, an
+naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
+less the 28 the server's own `origin` and `status` lines may take once it merges the note), an
 index past 200 lines, hidden characters, and text shaped like a secret or holding one of the server's own secrets (the
 launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name. A `MEMORY.md` the
 answer gives is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`, with what the
@@ -1045,10 +1046,10 @@ grade spends is in no run's totals: it is kept on the run's learning, and counte
 A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each with its `origin` (`you`
 for what the user asked in their own words, `run` for what the run worked out), each note they supersede marked
 `status: superseded` with `superseded_by`, `MEMORY.md` rebuilt from the active notes, and the checked-out files brought
-in line. A risky rule the user asked for (to trust a site or a seller, skip or loosen an approval or a check, or send
-money or data to an account) is merged as `status: pending`: in no `MEMORY.md` and no run's copy, to wait for its
-owner's OK, and named on the run's learning (`pending: [{file, name}]`, detail "Waiting for your OK: <name>.", after
-what it learned when it kept one too).
+in line. A risky rule (to trust a site or a seller, skip or loosen an approval or a check, or send money or data to
+an account), whether the user asked for it or the run worked it out, is merged as `status: pending`: in no `MEMORY.md`
+and no run's copy, to wait for its owner's OK, and named on the run's learning (`pending: [{file, name}]`, detail
+"Waiting for your OK: <name>.", after what it learned when it kept one too).
 `GET /capabilities` says so (`learning.pending: true`). Its message is `learning: <run id>: merged`, the grader's reason and a `Run-Id` trailer; `main` moves only from
 the commit the merge was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
 merged, never twice. The merge's own questions are asked again of `main` first: a name another run added since is
