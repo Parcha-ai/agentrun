@@ -5,7 +5,6 @@
 // wrote during the task counts. The same on every harness: every model writes markdown, and no tool is needed.
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
-import { SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -73,8 +72,8 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "",
     `A skill is how to do the job, step by step, as a SKILL.md: front matter with its \`name\` (lowercase letters, digits`,
     "and single dashes) and a `description` of when to use it, then the steps. Open its block with four backticks, so a",
-    `code block inside it stays in it, and close it with four. To change a skill in \`${dir}/${SKILLS_DIR}/\`, give it again`,
-    `whole under its name. At most ${CAPS.file} bytes.`,
+    "code block inside it stays in it, and close it with four. To change a skill you were given, give it again whole",
+    `under its name. At most ${CAPS.file} bytes.`,
     "",
     `\`\`\`\`${SKILL_BLOCK} find-policies`,
     "---",
@@ -87,7 +86,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "A workflow draft does the job as one workflow DSL document: front matter with one line that says what it does and",
     "when to use it, then the JSON. It uses model, judge and tool-call nodes, and never a code node or a shell or",
     `executor call. ${tools.length ? `Its nodes may name only these tools: ${tools.join(", ")}.` : "Its nodes name no tool."} At most ${CAPS.file} bytes of JSON.`,
-    `To change a draft in \`${dir}/${WORKFLOWS_DIR}/\`, give it again whole under its name.`,
+    "To change a draft you were given, give it again whole under its name.",
     "",
     `\`\`\`\`${WORKFLOW_BLOCK} find-policies`,
     "---",
