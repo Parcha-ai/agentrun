@@ -48,7 +48,7 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
     const n = ++asked.current;
     try {
       const saved = await v2.saveToolSettings(next);
-      if (n === asked.current) setAnswer(saved);
+      if (n === asked.current) { setAnswer(saved); setLoadError(null); }
       onSaved();
     } catch (e) {
       setProblem(e instanceof ClientError && e.status === 422 && e.fields?.length
@@ -74,6 +74,15 @@ export function ToolsPage({ v2, choices, onSaved, onOpen }: { v2: Client; choice
           ) : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">This server offers no tool with a choice of provider.</p>}
           {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
           {problem?.error && <div className="mt-3 border"><RunError error={problem.error} title="The change was not saved" /></div>}
+          {/* A settings read that failed once the page shows settings: the table keeps the last ones read and says so, with
+              Try again. A save's answer is newer, so it clears this. */}
+          {loadError && (
+            <div className="mt-3 border p-3" role="alert">
+              <p className="font-mono text-[12px] text-destructive-text">The tool settings could not be read again: {loadError.code}: {loadError.message}</p>
+              <p className="mt-1 text-[12px] text-muted-foreground">The table shows the last ones read.</p>
+              <button type="button" onClick={retry} disabled={busy} className="caps mt-2 border px-3 py-1.5 text-[11px] hover:bg-accent disabled:opacity-60">Try again</button>
+            </div>
+          )}
         </section>
       </div>
     </div>
