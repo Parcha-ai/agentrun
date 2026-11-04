@@ -790,7 +790,7 @@ check as it was. A save whose check is still waiting when the server begins to c
 unavailable`, while its connection lasts): the check stops waiting, and the server's lock, released at close, may be
 another server's by then. Under `--faux` a key is checked only against the fake its runs are given (`fauxMonid`,
 `fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network. A key the server starts
-with is checked under `--faux` only against a check's own fake (`fauxBrowserbase`), so the fakes the runs use see the
+with is checked under `--faux` only against a check's own fake (`fauxBrowserbase`, `fauxMonidCheck`), so the fakes the runs use see the
 runs' calls alone; with none, its `check` stays null.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's

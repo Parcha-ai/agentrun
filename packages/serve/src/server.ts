@@ -146,6 +146,10 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch the check of a Browserbase key goes through (the
    *  tests' fake), in place of Browserbase's API. */
   fauxBrowserbase?: string;
+  /** With `faux` only: a module whose default export is the fetch the start's check of a monid key the server is started
+   *  with goes through (the tests' fake for that check alone), in place of monid's API; the runs' calls go through
+   *  `fauxMonid`'s. */
+  fauxMonidCheck?: string;
   /** With `faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through, in
    *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
   fauxUpstream?: string;
@@ -708,9 +712,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   await probe("start");
   // The tool keys the server is started with, each checked once against its provider, in the background: the start never
   // waits on one, and capabilities are made again as each answers (a refused one leaves its tools unavailable).
-  // Under faux, only a check's own fake (fauxBrowserbase) is asked: the fakes the runs use (monid, Parallel, Jev) see the
-  // runs' calls alone, and a key with no check fake is not checked.
-  const startFetch = async (id: string): Promise<typeof fetch | null> => (!options.faux ? fetch : id === "browserbase" && options.fauxBrowserbase ? (await checkFetch(id)) ?? null : null);
+  // Under faux, only a check's own fake (fauxBrowserbase, fauxMonidCheck) is asked: the fakes the runs use (monid,
+  // Parallel, Jev) see the runs' calls alone, and a key with no check fake is not checked.
+  const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck };
+  const startFetch = async (id: string): Promise<typeof fetch | null> => {
+    if (!options.faux) return fetch;
+    const fake = checkFakes[id];
+    return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : null;
+  };
   void toolKeys.checkServer(startFetch, stopping.signal, () => recompose());
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
