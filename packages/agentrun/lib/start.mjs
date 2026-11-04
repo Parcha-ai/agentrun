@@ -101,8 +101,8 @@ export async function main(argv, env = process.env) {
   const childEnv = { AGENTRUN_LOG: "quiet", ...env, AGENTRUN_NPX_PACKAGE: OWN_SPEC };
   // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
   // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: this finds that npm now, at its start,
-  // starts no server once it is gone, and stops the server when it goes later. Started any other way, it watches nothing,
-  // so a shell's own rules apply (`&`, nohup).
+  // and stops the server when it goes. Started any other way, it watches nothing, so a shell's own rules apply (`&`,
+  // nohup).
   const npm = npmExecOf(env);
   const npmGone = () => npm !== undefined && !isNpm(commandOf(npm));
   // The data directory is ~/.agentrun unless --data names one, handed to the server and its subcommands (import,
@@ -114,7 +114,6 @@ export async function main(argv, env = process.env) {
   if (rest[0] && !rest[0].startsWith("-")) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
-  if (npmGone()) return console.error("AgentRun: the npm that started this command is gone, so the server was not started."), 1;
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line. What it prints on stderr (why it did not start) comes through as it is.
   const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });

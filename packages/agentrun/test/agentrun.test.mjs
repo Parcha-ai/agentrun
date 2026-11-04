@@ -220,9 +220,9 @@ test("the setup skill's start step ends with the command's error when it fails, 
 
 // npx runs the command through `npm exec`, which runs it through `sh -c`. A signal to npm alone (a process manager's
 // SIGTERM or SIGKILL) ended npm and left the command, and the server, with nobody to stop them. Now, started by npm exec,
-// the command watches that npm: it starts no server once npm is gone, and stops the server when npm goes later. Started
-// any other way it watches nothing: a shell that backgrounds it and exits (`&`, nohup, a tool call's shell) leaves it
-// running, as a shell's rules say. A SIGHUP to the command alone asks the server to stop, as a SIGTERM does.
+// the command watches that npm and stops the server when npm goes. Started any other way it watches nothing: a shell that
+// backgrounds it and exits (`&`, nohup, a tool call's shell) leaves it running, as a shell's rules say. A SIGHUP to the
+// command alone asks the server to stop, as a SIGTERM does.
 const NPM_ENV = { npm_command: "exec", npm_lifecycle_event: "npx", npm_execpath: "/usr/lib/node_modules/npm/bin/npm-cli.js" };
 const strip = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^npm_/i.test(name)));
 async function healthUntil(base, wanted, tries) {
