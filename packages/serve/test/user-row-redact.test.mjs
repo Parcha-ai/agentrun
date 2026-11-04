@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 /** A held key, made at runtime: distinct per run, and no credential-shaped literal for the source export. */
 const KEY = ["not-a-secret", "pasted-key", randomBytes(6).toString("hex")].join("-");
@@ -40,4 +40,41 @@ test("a message that holds a held key: its Timeline row and the run's title (its
   const listed = (await api("GET", "/runs?agent=pasted")).body.runs.find((run) => run.run_id === runId);
   for (const [where, title] of [["the run's view", view.title], ["the run list", listed.title]]) assert.ok(!holdsRun(title, KEY), `${where}'s title: ${title}`);
   assert.ok(!holdsRun(JSON.stringify(rows), KEY), "nowhere on the Timeline");
+});
+
+// A workflow run's title is its agent's name and a few of its input's values, a long one cut at 39 characters. It shows
+// on the run's page, the runs list (and Mission Control, which reads it) and its agent's runs.
+const DIGITS = ["1234", "5678", "9012"].join("");
+const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
+
+test("a workflow run whose input holds a held key, cut or whole, and an all-digit one: its title on its page, the runs list and its agent's runs holds neither, and the run keeps its input as given", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: DIGITS, PARALLEL_API_KEY: KEY }, [...NAMES, "PARALLEL_API_KEY"]);
+  const { api, data } = await serve(t);
+  const flow = {
+    v: 2, name: "wf",
+    schemas: {
+      In: { type: "object", required: ["question", "note", "number"], properties: { question: { type: "string" }, note: { type: "string" }, number: { type: "number" } } },
+      Out: { type: "object", required: ["note", "n"], properties: { note: { type: "string" }, n: { type: "number" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Out", path: "out" },
+    root: { node: "chain", steps: [{ node: "extract", label: "out", instructions: "Submit the held key.", out: "Out", as: "out" }] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("wf", flow))).status, 201);
+  // The note is cut at 39 characters, inside the key.
+  const input = { question: KEY, note: `see ${KEY} for the rest`, number: Number(DIGITS) };
+  const started = await api("POST", "/agents/wf/runs", { input });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 50_000 });
+  const titles = [
+    ["its page", (await api("GET", `/runs/${runId}`)).body.title],
+    ["the runs list", (await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).title],
+    ["its agent's runs", (await api("GET", "/agents/wf/runs")).body.runs.find((run) => run.run_id === runId).title],
+  ];
+  for (const [where, title] of titles) {
+    assert.ok(title.startsWith("wf: "), `${where}: ${title}`);
+    assert.ok(!holdsRun(title, KEY) && !title.includes(DIGITS), `${where}'s title: ${title}`);
+  }
+  assert.deepEqual(JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8")).input, input, "the run keeps its input as given");
 });
