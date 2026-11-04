@@ -26,7 +26,9 @@ async function answered(t, content) {
 test("a run's final answer quoting a held key, plainly and base64-encoded, is served with neither, and the rest of it intact", { timeout: 60_000 }, async (t) => {
   const run = await answered(t, "Answer quoting the held key.");
   noKey(JSON.stringify(run), "the run");
-  assert.match(run.result.final_answer, /^Here it is: \[redacted\] and \[redacted\]\. The rest stays\.$/, run.result.final_answer);
+  // A base64 copy's last character or two can mix in the bytes after the key (and its padding), so they stay: no key
+  // material, as noKey shows.
+  assert.match(run.result.final_answer, /^Here it is: \[redacted\] and \[redacted\][A-Za-z0-9+/=]{0,3}\. The rest stays\.$/, run.result.final_answer);
 });
 
 test("a long final answer (about 50 KB) quoting a held key near its end is served whole, not cut, with no piece of the key", { timeout: 60_000 }, async (t) => {
