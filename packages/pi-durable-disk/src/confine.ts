@@ -31,8 +31,8 @@ export type RefusalReason = "outside_work" | "changed";
  * while it was being resolved (`changed`). pi turns it into a failed tool result whose text is the message, and the
  * message names no path: pi's tools resolve a path against the workspace before they ask for it, so the path asked
  * for, the workspace and where a link resolves to are all the host's own, which a model on a server must not read.
- * `path` keeps the path asked for. An app that shows a refusal names the path its caller gave, found by `refusalOf`,
- * never by the message's text. Its `code` is pi's `permission_denied`.
+ * `path` keeps the path asked for. An app that shows a refusal names the path its caller gave, telling the refusal by
+ * its type and `reason`, never by the message's text. Its `code` is pi's `permission_denied`.
  */
 export class PathOutsideWorkError extends FileError {
   readonly reason: RefusalReason;
@@ -41,11 +41,6 @@ export class PathOutsideWorkError extends FileError {
     this.name = "PathOutsideWorkError";
     this.reason = reason;
   }
-}
-
-/** Why `error` is the confinement's refusal, or undefined when it is any other error. */
-export function refusalOf(error: unknown): RefusalReason | undefined {
-  return error instanceof PathOutsideWorkError ? error.reason : undefined;
 }
 
 const MAX_LINKS = 40;

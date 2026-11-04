@@ -19,7 +19,7 @@ export type { ClaimControl, HeldPath, WithClaimOptions } from "./with-claim.ts";
 // A run's own files, read over the control: never a mount, a write, or a wait on the claim.
 export { listRunFiles, readRunFile, RunFileError } from "./run-files.ts";
 export type { RunFileControl, RunFileErrorCode } from "./run-files.ts";
-export { PathOutsideWorkError, refusalOf } from "./confine.ts";
+export { PathOutsideWorkError } from "./confine.ts";
 export type { RefusalReason } from "./confine.ts";
 export { BoxUnavailableError, ClaimError, FencedError, HeldError, PdaError } from "./errors.ts";
 export type { ClaimErrorCode, Holder } from "./errors.ts";

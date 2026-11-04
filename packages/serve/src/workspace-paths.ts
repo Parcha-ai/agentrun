@@ -6,7 +6,7 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
-import { PathOutsideWorkError, refusalOf } from "@parcha/pi-durable-disk";
+import { PathOutsideWorkError } from "@parcha/pi-durable-disk";
 
 /**
  * `text` with the workspace's absolute path taken out: `<work>/notes/a.md` reads `notes/a.md`, the workspace itself `.`,
@@ -41,7 +41,7 @@ class GivenPathRefusal extends PathOutsideWorkError {}
 /**
  * Refuses `given`, a path a call gave that leaves the workspace, in the one words every refusal uses:
  * `<given>: outside the workspace`, and no other path (not the workspace, a box's work dir, or where it resolves). It is
- * the confinement's typed refusal (`PathOutsideWorkError`, `outside_work`), so `refusalOf` tells it from any other error.
+ * the confinement's typed refusal (`PathOutsideWorkError`, `outside_work`), so its type tells it from any other error.
  * For a tool that checks a path itself (a box's file tools); pi's own tools refuse through the confinement, named by
  * `asGivenRefusals`.
  */
@@ -52,9 +52,9 @@ export function refuseOutsideWorkspace(given: string): never {
 /**
  * pi's file `tools`, each with its confinement's refusal named by the path the call gave, as it gave it:
  * `../../.token: outside the workspace`. The confinement names no path itself: pi's tools resolve a path against the
- * workspace before they ask for it, so every path it sees is the host's own (`<data>/runs/.token`), and the call's `path`
- * is the only one the model gave. A refusal is told by its type (`refusalOf`), never by its text; one already named
- * (`refuseOutsideWorkspace`), every other error, and every result are the tool's own.
+ * workspace before they ask for it, so every path it sees is the host's own (`<data>/runs/.token`), and the call's
+ * `path` is the only one the model gave. A refusal is told by its type (`PathOutsideWorkError`), never by its text; one
+ * already named (`refuseOutsideWorkspace`), every other error, and every result are the tool's own.
  */
 export function asGivenRefusals(tools: readonly ToolRegistration[]): ToolRegistration[] {
   return tools.map((tool): ToolRegistration => ({
@@ -63,7 +63,7 @@ export function asGivenRefusals(tools: readonly ToolRegistration[]): ToolRegistr
       try {
         return await tool.execute(args, api, context);
       } catch (error) {
-        const reason = refusalOf(error);
+        const reason = error instanceof PathOutsideWorkError ? error.reason : undefined;
         const given = (args as { path?: unknown } | undefined)?.path;
         if (reason === undefined || error instanceof GivenPathRefusal || typeof given !== "string" || given === "") throw error;
         throw new GivenPathRefusal(given, reason, `${given}: ${(error as Error).message}`);
