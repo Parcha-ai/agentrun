@@ -8,7 +8,7 @@ export type McpAuthType = "none" | "bearer" | "headers" | "oauth";
 export type McpServer = {
   name: string; url: string; auth: { type: McpAuthType; headers?: string[] }; tools: McpTool[]; protocol?: string; listed_at?: string; updated_at?: string;
   credential: "sealed" | "seal_key_missing" | "unreadable" | "expired" | null;
-  oauth?: { expires_at?: string; scopes: string[]; client: string };
+  oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };
   prices?: Record<string, number>;
 };
 export type McpPreview = { protocol: string; server_info?: { name?: string; version?: string }; instructions?: string; tools: McpTool[] };

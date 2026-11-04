@@ -184,17 +184,15 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=y"]);
   });
 
-  it("signs in again with the person's own client only once its ID is entered again: the server keeps no client to reuse", async () => {
-    const own = saved({ name: "crm", auth: { type: "oauth" }, credential: "expired", oauth: { scopes: ["read", "write"], client: "pre-registered" } });
+  it("signs in again with the person's own client by its scopes alone: the server reuses the client it kept", async () => {
+    const own = saved({ name: "crm", auth: { type: "oauth" }, credential: "expired", oauth: { scopes: ["read", "write"], client: "pre-registered", client_id: "owner-app" } });
     const s = server([[own]], (c) => (c.path.endsWith("/oauth/start") ? json(200, { authorization_url: "http://127.0.0.1:4300/authorize?state=z" }) : undefined));
     const p = await open(s.v2);
+    expect(p.row("crm").textContent).toContain("client owner-app");
     await p.click(/^Sign in again$/, p.row("crm"));
-    expect(s.writes()).toEqual([]);
-    expect(p.text()).toContain("enter its ID");
-    expect(p.input("mcp-scopes").value).toBe("read write");
-    await p.type("mcp-client-id", "owner-app");
-    await p.click(/^Sign in again$/, p.host.querySelector("form")!);
-    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/crm/oauth/start", body: { url: VARS.url, scopes: ["read", "write"], client_id: "owner-app" } }]);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/crm/oauth/start", body: { url: VARS.url, scopes: ["read", "write"] } }]);
+    expect(p.host.querySelector("form")).toBeNull();
+    expect(p.opened).toEqual(["http://127.0.0.1:4300/authorize?state=z"]);
   });
 
   it("changes one with its token kept: the field is empty and says saved", async () => {

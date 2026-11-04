@@ -91,7 +91,7 @@ function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client;
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-[15px] font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip></p>
           <p className="mt-1.5 break-all font-mono text-[12px] text-muted-foreground">{s.url}</p>
-          {oauth && s.oauth && <p className="mt-1 font-mono text-[12px] text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
+          {oauth && s.oauth && <p className="mt-1 font-mono text-[12px] text-muted-foreground">Signed in with OAuth{s.oauth.scopes.length ? ` · ${s.oauth.scopes.join(" ")}` : ""}{s.oauth.client === "pre-registered" && s.oauth.client_id ? ` · client ${s.oauth.client_id}` : ""}{s.oauth.expires_at ? ` · token until ${when(s.oauth.expires_at)}` : ""}</p>}
           <details className="mt-2">
             <summary className="cursor-pointer font-mono text-[12px]">{s.tools.length} tool{s.tools.length === 1 ? "" : "s"}</summary>
             <ul className="mt-1 space-y-0.5">{s.tools.map((t) => <li key={t.name} className="font-mono text-[12px]">{t.name}{s.prices?.[t.name] !== undefined && <span className="text-muted-foreground"> · ${s.prices[t.name]} a call</span>}</li>)}</ul>
@@ -100,7 +100,7 @@ function ServerRow({ v2, server: s, signIn, onChange, onChanged }: { v2: Client;
         </div>
         {!confirm && (
           <div className="flex flex-wrap gap-2">
-            {oauth && s.credential !== "sealed" && <Button size="sm" variant="primary" disabled={busy} onClick={() => (s.oauth?.client === "pre-registered" ? onChange() : void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) })))}>Sign in again</Button>}
+            {oauth && s.credential !== "sealed" && <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => signIn(s.name, { url: s.url, ...(s.oauth?.scopes.length ? { scopes: s.oauth.scopes } : {}) }))}>Sign in again</Button>}
             <Button size="sm" disabled={busy} onClick={() => void run(async () => { setNote(await v2.refreshMcpServer(s.name)); onChanged(); })}>Refresh</Button>
             <Button size="sm" disabled={busy} onClick={onChange}>Change</Button>
             <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirm(true)}>Delete</Button>
@@ -201,7 +201,7 @@ function ServerForm({ v2, saved, cantStore, signIn, onCancel, onSaved }: { v2: C
       {type === "oauth" && (
         <div className="space-y-3">
           <p className="text-[12px] text-muted-foreground">This server signs in for you and keeps the tokens; an agent never sees one. Sign in opens the server's own page to approve it, and its tools are saved once you do.</p>
-          {saved?.oauth?.client === "pre-registered" && <p className="text-[12px] text-warning-text">It signed in with your own client: enter its ID, and its secret if it has one, to sign in again.</p>}
+          {saved?.oauth?.client_id && <p className="text-[12px] text-muted-foreground">Signing in again uses the client it signed in with ({saved.oauth.client_id}); a client ID here replaces it.</p>}
           <label className="block"><span className="caps mb-2 block text-[12px] font-semibold">Scopes (optional)</span><input name="mcp-scopes" placeholder="read write" defaultValue={saved?.oauth?.scopes.join(" ")} spellCheck={false} className={input} /></label>
           <div className="flex gap-2">
             <label className="block flex-1"><span className="caps mb-2 block text-[12px] font-semibold">Client ID (optional)</span><input name="mcp-client-id" spellCheck={false} className={input} /></label>
