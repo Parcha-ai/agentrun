@@ -126,7 +126,10 @@ export type TimelineOptions = {
   /** What a thinking or text block shows while it streams, given all of it that has streamed so far: the host's redacted
    *  prefix of it. A key whose head has streamed but not its tail cannot be found yet, and one a stream wraps is found
    *  only in the whole, so the host redacts the whole stream and holds back a tail as long as a key can take; the
-   *  settled row replaces the live one whole when the block ends. Default: `redact` over the whole stream. */
+   *  settled row replaces the live one whole when the block ends. Default: `redact` over the whole stream, with its
+   *  trailing word held back until whitespace follows it or the block ends. A host that knows its held values should pass
+   *  this for the full protection: a key a stream wraps with only part of its tail streamed is covered by a held-back
+   *  tail as long as a key, not by the word holdback. */
   redactLive?: (text: string) => string;
 };
 
@@ -896,9 +899,15 @@ export function timelineReducer(options: TimelineOptions = {}) {
     const showStreams = () => {
       for (const kind of ["thinking", "text_block"] as const) {
         // All that has streamed so far, as the host shows a streaming block (redactLive: redacted whole, a tail held back),
-        // before a summary or a cut is taken; else redacted whole.
-        const raw = [...streams[kind].values()].join("").trim();
-        const text = scrubUrls(options.redactLive ? options.redactLive(raw) : redactedWhy(raw));
+        // before a summary or a cut is taken. With only `redact`: redacted whole, then its trailing word held back until
+        // whitespace follows it or the block ends, since it may be the head of a key whose tail has not streamed yet.
+        const joined = [...streams[kind].values()].join("");
+        const raw = joined.trim();
+        const fallback = () => {
+          const red = redactedWhy(raw);
+          return options.redact && /\S$/.test(joined) ? red.replace(/\S+$/, "").trimEnd() : red;
+        };
+        const text = scrubUrls(options.redactLive ? options.redactLive(raw) : fallback());
         const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
