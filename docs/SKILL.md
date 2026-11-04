@@ -35,9 +35,9 @@ its last lines say why: tell the person, and stop. Give the person the address i
 curl -s "$(grep -o 'http://[^/ ]*' agentrun.log | head -1)/v2/capabilities" | node -p 'JSON.parse(require("fs").readFileSync(0)).models.default'
 ```
 
-`null` means it has no model yet. Ask the person to set one provider key in the shell that starts AgentRun
-(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY`), never in this chat, then stop it (`kill %1`, or the
-PID you started) and start it again as in step 2. Never print, echo or write a key anywhere. Started this way, the
+`null` means it has no model yet. Ask the person to set one model key in the shell that starts AgentRun, never in this
+chat: `OPENROUTER_API_KEY` alone gives every harness its model (pi, Claude Code and Codex), or `ANTHROPIC_API_KEY`
+or `OPENAI_API_KEY` for one provider's own. Then stop it (`kill %1`, or the PID you started) and start it again as in step 2. Never print, echo or write a key anywhere. Started this way, the
 person's shell and npm keep the keys they exported in their environment, as they always do; the server itself, and its
 runs, hold none.
 
