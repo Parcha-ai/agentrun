@@ -423,6 +423,14 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         const listed = await live.request("GET", `/session/${sessionID}/message`, undefined, signal).catch(() => undefined);
         const messages = listed?.status === 200 && Array.isArray(listed.body) ? listed.body.filter(isPlain) : [];
         const asked = messages.findIndex((m) => isPlain(m.info) && m.info.id === current.messageID);
+        // Idle with no finished answer to this turn's message: OpenCode took the prompt and has not started its turn yet
+        // (or not recorded it), so nothing ended. The stream open now carries the turn's busy and idle, which end it.
+        const replies = (asked < 0 ? [] : messages.slice(asked + 1)).filter((m) => isPlain(m.info) && m.info.role === "assistant");
+        const finished = replies.some((m) => {
+          const info = m.info as Record<string, unknown>;
+          return (isPlain(info.time) && typeof info.time.completed === "number") || typeof info.finish === "string" || isPlain(info.error);
+        });
+        if (!finished) return;
         for (const m of asked < 0 ? [] : messages.slice(asked + 1)) {
           const info = isPlain(m.info) ? m.info : {};
           if (info.role !== "assistant") continue;
