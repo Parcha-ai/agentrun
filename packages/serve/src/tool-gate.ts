@@ -73,18 +73,20 @@ const HOST_TOOLS_SERVER = "hands";
  *  by. A settings key is itself (a table tool, `monid.<tool>`, `mcp:<server>/<tool>`); a CLI's own tool is the table's it
  *  is; an MCP alias, `mcp__<server>__<tool>` (claude-agent's host tools `mcp__hands__<wire name>`, mapped as their
  *  wire name) and on OpenCode `<server>_<tool>`, is `mcp:<server>/<tool>`; a catalog's wire name (`monid_run`) is its
- *  catalog name; the browser's registrations are `browser`. Undefined: nothing maps it, and the gate asks. */
-export function settingsKeyOf(harness: string, name: string): string | undefined {
+ *  catalog name; the browser's registrations are `browser`. OpenCode's `<server>_<tool>` maps only for a server of
+ *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
+ *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway. */
+export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
   if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
   if (native) return native;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
-  if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!) : mcpToolName(mcp[1]!, mcp[2]!);
+  if (mcp) return mcp[1] === HOST_TOOLS_SERVER ? settingsKeyOf(harness, mcp[2]!, mcpServers) : mcpToolName(mcp[1]!, mcp[2]!);
   const monid = /^monid_([a-z]+)$/.exec(name);
   if (monid) return `monid.${monid[1]}`;
   if (BROWSER_REGISTRATIONS.includes(name)) return "browser";
   const alias = harness === "opencode" ? /^([a-z][a-z0-9-]*)_(.+)$/.exec(name) : null;
-  return alias ? mcpToolName(alias[1]!, alias[2]!) : undefined;
+  return alias && mcpServers.includes(alias[1]!) ? mcpToolName(alias[1]!, alias[2]!) : undefined;
 }
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
@@ -277,12 +279,12 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
   readonly policy = (tool: string): Permission => {
-    const key = settingsKeyOf(this.where.harness ?? "pi", tool);
+    const key = settingsKeyOf(this.where.harness ?? "pi", tool, this.where.mcpServers);
     // A name nothing maps fails closed: it asks (refused where no one can approve), never allows.
     return key === undefined ? "ask" : permissionOf(key, new ToolSettings(this.where.data, () => undefined).get() as PermissionSettings, this.overrides);
   };
@@ -300,7 +302,7 @@ export class RunGate {
    *  (ask). One call waits at a time: another asked meanwhile is answered so, not run. */
   async enter(name: string, args: unknown, callId: string, park: Park, options: EnterOptions = {}): Promise<Entered> {
     // Held to its settings key (settingsKeyOf), the name its request, a refusal and the approved call give.
-    const tool = settingsKeyOf(this.where.harness ?? "pi", name) ?? name;
+    const tool = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
     const permission = this.policy(name);
     const turnOrigin = permission === "ask" ? this.turnOrigin() : undefined;
     const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
