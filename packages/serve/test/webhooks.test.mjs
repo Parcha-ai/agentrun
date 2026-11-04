@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
+import { openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { ATTEMPTS_KEPT, signatureOf, Webhooks } from "../dist/webhooks.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -801,6 +802,40 @@ test("a run.ended whose outbox write failed is not recorded as queued, so after 
   await until(() => ofType(hook.got, "run.ended").length === 2, "sent again, under the same id");
   const ids = new Set(ofType(hook.got, "run.ended").map((r) => r.headers["webhook-id"]));
   assert.equal(ids.size, 1, "one end, one webhook-id");
+});
+
+// A start's recovery that cannot read the agent store (busy past its wait) gives up, as it always has; the catch-up of the
+// ends the outbox lacks is its own start step, so it still runs, reads the store once it is free, and queues each end.
+test("a start whose recovery gives up on a busy agent store still catches up the ends stored before it: the catch-up is its own step", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await processOn(t, data, [SERVE_END_HELD, data, FAUX]);
+  assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const run = await startRun(first.api, "ends-busy-start", "Answer.");
+  const at = await until(() => endedIn(data, run.run_id), "its end in the store");
+  await killed(first.child);
+  rmSync(join(data, "webhook-outbox.json"), { force: true });
+  // The next server's first reads of the run list find the store busy, every try of one request's wait (the first one
+  // and REQUEST_BUSY_MS's eight): recovery's read, which gives up. The reads after it find the store free.
+  const scratchStore = openStore(await scratch(t), { busyTimeoutMs: 0 });
+  const reader = Object.getPrototypeOf(Object.getPrototypeOf(scratchStore));
+  scratchStore.close();
+  const listRuns = reader.listRuns;
+  let busyLeft = 9;
+  reader.listRuns = function (...args) {
+    if (busyLeft > 0) { busyLeft--; throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 }); }
+    return listRuns.apply(this, args);
+  };
+  t.after(() => { reader.listRuns = listRuns; });
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its run.ended, though the start's recovery gave up");
+  assert.equal(busyLeft, 0, "the start's first reads did find the store busy");
+  const [ended] = ofType(hook.got, "run.ended");
+  assert.equal(ended.headers["webhook-id"], noticeId(run.run_id, "run.ended", at));
+  await sleep(300);
+  assert.equal(ofType(hook.got, "run.ended").length, 1, "once");
 });
 
 test("a run continued, its server killed once the reopening is committed, ends again under a new webhook-id: both ends reach the receiver", async (t) => {
