@@ -1,3 +1,4 @@
+import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { BrowserFailureError, FenceRefusal, refusedError, loadedNoPage, passedThrough, type AttachedSession, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
 import type { Decisions, PageVerdict } from "./decisions.js";
@@ -7,6 +8,9 @@ import type { WorkspaceFiles } from "./host.js";
 import { createRepeatGuard, type RepeatGuard } from "./guard.js";
 import { regionOf, type Locate } from "./clip.js";
 import { captureWithinBudget, type ScreenshotOptions } from "./images.js";
+import { decodeEntities } from "./entities.js";
+import { FrameScan } from "./page-scan.js";
+import { dropOnLoop, htmlMarkdown, READ_DEADLINE_MS, READ_MAX_CHARS, thousands } from "./read-page.js";
 import { orderFacts, receiptFacts, sha256Hex } from "./receipts.js";
 import { scrubPageUrl, type Redact } from "./redact.js";
 import { UNANSWERED_CALL } from "./unanswered.js";
@@ -115,26 +119,24 @@ const MAX_FRAMES = 5;
 const FRAME_TEXT_CHARS = 200;
 const FRAME_TEXT_READ_CHARS = 20_000;
 const FRAME_SCAN_CHARS = 2_000_000;
+/** How much of the page one step of the frame scan reads before it yields the event loop. */
+const FRAME_STEP_CHARS = 32_768;
 /** What the judge is shown of the page's frames, in document order: a frame's content is not in the page's text, so a page whose content sits in a challenge frame reads as empty without it. `frames` are the distinct origins (origin only: a
  *  frame's path and query can carry a token; http(s) only; a relative source resolves against the page's `<base href>` when it has one, as the browser does) and `frameText` what the page puts inside the frame elements (the fallback a browser
  *  does not render, where a block page keeps its message), collapsed to one line and cut at 200 characters. A frame is an element: markup inside a script, a comment, a noscript or a template is not one, so it neither counts nor takes one of the five.
- *  A page that cannot be parsed gives none. */
+ *  The first FRAME_SCAN_CHARS of the page are read in one linear scan (FrameScan), FRAME_STEP_CHARS at a time with the event loop yielded between steps, so a big page never holds it. A page that cannot be read gives none. */
 async function framesOf(html: string, pageUrl: string, redact: Redact): Promise<{ frames: string[]; frameText: string[] }> {
   try {
-    const { parse } = await import("node-html-parser");
-    // HTML's own void elements (the parser's default list lacks `frame`, so an unclosed <frame> would swallow its sibling).
-    const root = parse(html.slice(0, FRAME_SCAN_CHARS), { voidTag: { tags: ["area", "base", "br", "col", "embed", "frame", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr"] } });
+    const scan = new FrameScan(await dropOnLoop(html.slice(0, FRAME_SCAN_CHARS)), decodeEntities, FRAME_TEXT_READ_CHARS);
+    while (!scan.step(FRAME_STEP_CHARS)) await yieldToLoop();
+    const { frames, base: baseHref } = scan.result();
     let base = pageUrl;
-    const baseHref = root.querySelector("base[href]")?.getAttribute("href");
     if (baseHref) { try { base = new URL(baseHref, pageUrl).href; } catch { /* a base that does not parse: the page's own URL stands */ } }
     const origins = new Set<string>();
     const texts = new Set<string>();
-    for (const frame of root.querySelectorAll("iframe, frame")) {
+    for (const frame of frames) {
       if (origins.size >= MAX_FRAMES && texts.size >= MAX_FRAMES) break;
-      let inert = false;
-      for (let up = frame.parentNode; up; up = up.parentNode) if (up.rawTagName?.toLowerCase() === "template") { inert = true; break; }
-      if (inert) continue;
-      const source = frame.getAttribute("src")?.trim();
+      const source = frame.src?.trim();
       if (source && origins.size < MAX_FRAMES) {
         try {
           const url = new URL(source, base);
@@ -190,22 +192,23 @@ const factsOf = (p: Cut, now: string): PendingEffectFacts => ({
   sent: p.watched ? (p.sent ?? []).map((r) => ({ method: r.method, url: `${r.origin}${r.path}`, held: r.held })) : null,
 });
 
-async function markdown(html: string, fallback: string): Promise<Read> {
-  try {
-    const [{ parse }, { NodeHtmlMarkdown }] = await Promise.all([import("node-html-parser"), import("node-html-markdown")]);
-    const root = parse(html);
-    const main = root.querySelector("article") ?? root.querySelector("main") ?? root.querySelector("body") ?? root;
-    const md = NodeHtmlMarkdown.translate(main.toString(), { keepDataImages: false });
-    if (md.trim()) return { body: md, extractor: "readability-md", ext: "md" };
-  } catch {}
-  return { body: fallback, extractor: "inner-text", ext: "txt" };
+/** The page's main content as markdown (its first article, else main, else body: htmlMarkdown, off the event loop); the
+ *  browser's own text when the conversion gives nothing, fails or runs past `deadlineMs`. A page cut before it was read
+ *  says so on its last line. Rejects only with `signal`'s reason. */
+async function markdown(html: string, fallback: string, signal: AbortSignal | undefined, deadlineMs: number): Promise<Read> {
+  const read = await htmlMarkdown(html, { main: true, deadlineMs, ...(signal ? { signal } : {}) });
+  if (!read?.text.trim()) return { body: fallback, extractor: "inner-text", ext: "txt" };
+  const cut = read.truncated ? `\n\n(Cut: the page is ${thousands(read.html_chars!)} characters of HTML, and only the first ${thousands(READ_MAX_CHARS)} of its main content, scripts and styles aside, were read as markdown. browser_read with what: "text" gives all of its text.)` : "";
+  return { body: read.text + cut, extractor: "readability-md", ext: "md" };
 }
 
-export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: timings = RECONNECT }: {
+export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: timings = RECONNECT, readDeadlineMs = READ_DEADLINE_MS }: {
   /** Each conversation's repeat guard; a host that owns the conversation's lifecycle passes it to evict one. */
   guards?: Map<number, RepeatGuard>;
   /** The reconnect timings, for tests; hosts keep the defaults. */
   reconnect?: ReconnectTimings;
+  /** How long browser_read's markdown has before the browser's own text stands in (default READ_DEADLINE_MS), for tests. */
+  readDeadlineMs?: number;
 } = {}): Pick<BrowserToolImpls<PageDriver>, "snapshot" | "run" | "screenshot" | "browser_read" | "browser_upload" | "browser_downloads"> {
   const guardOf = (conversationId: number, redact: Redact) => guards.get(conversationId) ?? guards.set(conversationId, createRepeatGuard(redact)).get(conversationId)!;
 
@@ -410,7 +413,7 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         // A browser that has loaded no page yet, on an about:blank nothing has written into, is fresh, not walled: it says
         // so, and where to go. A script that wrote a title or text into about:blank made a page, which is read.
         if (page.url === "about:blank" && loadedNoPage(s.record) && !page.title.trim() && !page.text.trim()) throw new BrowserFailureError(freshBrowser(s.replaced ?? null));
-        const read: Read = what === "markdown" ? await markdown(page.html, page.text)
+        const read: Read = what === "markdown" ? await markdown(page.html, page.text, call.signal, readDeadlineMs)
           : what === "html" ? { body: page.html, extractor: "raw", ext: "html" }
           : what === "text" ? { body: page.text, extractor: "inner-text", ext: "txt" }
           : { body: what === "url" ? pageUrl(call, page.url) : page.title, ext: "txt" };

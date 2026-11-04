@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-export type SettingsPage = "keys" | "tools";
-export const SETTINGS_PAGES: { id: SettingsPage; label: string }[] = [{ id: "keys", label: "Tool keys" }, { id: "tools", label: "Tools" }];
+export type SettingsPage = "keys" | "tools" | "webhook";
+export const SETTINGS_PAGES: { id: SettingsPage; label: string }[] = [{ id: "keys", label: "Tool keys" }, { id: "tools", label: "Tools" }, { id: "webhook", label: "Webhook" }];
 
 /** Settings: a tab per page this server offers (`offered`), above the page. One page alone needs no tabs. */
 export function Settings({ active, offered, children }: { active: SettingsPage; offered: SettingsPage[]; children: ReactNode }) {

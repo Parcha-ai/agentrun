@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startServe } from "../dist/index.js";
+import { writesHeld } from "../dist/workspace.js";
 import fauxBoxes, { fauxRoot } from "./fixtures/faux-box.mjs";
 import { client, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -84,7 +85,7 @@ async function noSecretIn(text, server) {
   for (const [name, value] of Object.entries({ ...SENTINELS, token: server.token, door })) assert.ok(!text.includes(value), `${name} reached the box`);
 }
 
-test("demo (pi): in a Docker place read, write, edit and bash run in the run's box; bash's out.txt shows in the run's files; the box's environment is the fixed one, with no key or token", { timeout: 120_000 }, async (t) => {
+test("demo (pi): in a Docker place bash runs in the run's box, and read, write and edit on this machine's work/ that the box binds; bash's out.txt shows in the run's files; the box's environment is the fixed one, with no key or token", { timeout: 120_000 }, async (t) => {
   const server = await boxed(t);
   const { api, data } = server;
   assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true, reason: "a faux box (tests)" });
@@ -137,7 +138,10 @@ test("demo (pi): in a Docker place read, write, edit and bash run in the run's b
     mounts: [{ source: join(data, "runs", run.run_id, "work"), target: "/run/agentrun/run/work" }],
     labels: { "agentrun.run": run.run_id, "agentrun.box": "run" }, network: "none", maxLifetimeMs: 86_400_000,
   });
-  assert.ok(execs(data).length >= plan.length, "every call ran a command in the box");
+  // bash's calls ran in the box, one command each; read, write and edit ran none where they run here (bound-files.ts),
+  // and at least one each where this host reaches directories by path.
+  if (writesHeld()) assert.equal(execs(data).length, plan.filter((step) => step.tool === "bash").length, JSON.stringify(execs(data)));
+  else assert.ok(execs(data).length >= plan.length, "every call ran a command in the box");
   const view = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.deepEqual(view.place, SANDBOX);
   await until(() => liveBoxes(data).length === 0, "the box's destroy at the run's end");
