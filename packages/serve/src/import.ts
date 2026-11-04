@@ -340,11 +340,12 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents) });
     }
   }
-  // A new agent's own text (its name, its path, its instructions and skills) is the import's to cut too: counted here,
-  // after every key is known, as the import cuts it.
+  // Each project's files read as the import reads them, held agent or new: each file it leaves out (a link, one over its
+  // cap) is among what the dry run says it leaves out. A new agent's own text (its name, its path, its instructions and
+  // skills) is the import's to cut too: counted here, after every key is known, as the import cuts it.
   for (const project of plan.projects) {
+    const files = await projectFiles(project.cwd, skipped);
     if (store?.readAgent(project.agentId)) continue;
-    const files = await projectFiles(project.cwd, []);
     counting.text(project.name);
     counting.text(project.cwd);
     for (const text of Object.values(files.instructions)) counting.text(text);
