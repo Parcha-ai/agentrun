@@ -70,11 +70,13 @@ function runFile(href: string, files: LinkedFiles): string | null {
  *  A link with no scheme (a relative path, a path from the root, a fragment, //host) would be read against the console's
  *  own address and take its tab away (a fragment changes its route), so it is never a link here: one that names a run
  *  file in `files` becomes a button carrying `data-run-file` (the page opens the file on its click), any other reads as
- *  its text. A link with a scheme (https:, mailto:) is as marked and the sanitizer leave it. */
+ *  its text. A link to a page (http:, https:, ftp:) opens in a new tab, with no opener and no referrer; one that hands off
+ *  to another app (mailto:, tel:) is as marked and the sanitizer leave it. */
 export function markdown(text: string, files?: LinkedFiles): string {
   const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
   for (const a of [...body.querySelectorAll("a[href]")]) {
     const href = a.getAttribute("href")!.trim();
+    if (/^(https?|ftps?):/i.test(href)) { a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer"); continue; }
     if (/^[a-z][a-z\d+.-]*:/i.test(href)) continue;
     const path = files && runFile(href, files);
     if (path) {
