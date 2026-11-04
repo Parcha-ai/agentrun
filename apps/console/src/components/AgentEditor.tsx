@@ -119,21 +119,26 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
   };
-  // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses, caps.defaultModel);
   const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel, route_prefix: caps.routePrefix }) : undefined;
+  // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
-        <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold">{creating ? "New agent" : d!.name}</h1>
-        {agent && <Chip>{agent.kind}</Chip>}
-        {agent && <span className="caps text-[11px] text-muted-foreground">{current ? `rev ${current.version} current · ` : ""}{agent.revisions} {agent.revisions === 1 ? "revision" : "revisions"}</span>}
-        {agent && onArchive && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
+        <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
+        {/* The kind, revision count and Archive: a row of their own under the name on a phone, so the name keeps the width. */}
+        {agent && (
+          <div className="flex basis-full flex-wrap items-center gap-3 sm:basis-auto" role="group" aria-label="About this agent">
+            <Chip>{agent.kind}</Chip>
+            <span className="caps text-[11px] text-muted-foreground">{current ? `rev ${current.version} current · ` : ""}{agent.revisions} {agent.revisions === 1 ? "revision" : "revisions"}</span>
+            {onArchive && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
+          </div>
+        )}
       </header>
       {problem?.kind === "conflict" && (
         <div className="flex flex-wrap items-center gap-3 border-b bg-card px-5 py-3 md:px-8" role="alert">
@@ -151,9 +156,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           </ul>
         </div>
       )}
-      {!workflow && !starting && !reachesWeb(f.tools ?? []) && (
-        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
-      )}
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
@@ -169,7 +171,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <span className="caps flex items-center gap-1.5 text-[12px]"><s.Icon className="size-3.5" aria-hidden /> {s.label}</span>
                   <span className="mt-0.5 block text-[11px] text-muted-foreground">{s.note}</span>
                 </span>
-                <span className="caps text-[12px] md:hidden">{s.label}</span>
+                {/* Below md the rail is a row across the top: step numbers only, so it fits a phone; the step's name heads the step. */}
+                <span className="sr-only md:hidden">{s.label}</span>
               </button>
             </li>
           ))}
@@ -236,6 +239,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     );
                   })}
                 </ul>
+                {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
+                {!workflow && !reachesWeb(f.tools ?? []) && (
+                  <p className="mt-2 font-mono text-[12px] text-muted-foreground">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
+                )}
               </Field>
               {!workflow && (
                 <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
