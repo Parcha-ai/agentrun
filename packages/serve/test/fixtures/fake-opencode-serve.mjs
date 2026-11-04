@@ -19,6 +19,8 @@
 // FAKE_OPENCODE_EVENTS_GONE=<ms>: the first event stream says server.connected and ends at once, every later one is
 //   answered 503, and the first /sync/history waits <ms> first: a drive's stream runs out of tries while the drive
 //   mirrors a new session, before any turn.
+// FAKE_OPENCODE_DROP_BUSY=1: the event stream ends as the first turn starts, before its busy status is said, and a new one
+//   is answered at once: the turn's busy status reaches no one, and its later events reach the new stream.
 // FAKE_OPENCODE_IGNORE_ABORT=1: `POST /session/:id/abort` answers 200 and the turn goes on: OpenCode does not end it.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
@@ -33,6 +35,7 @@ const prompt = config.agent?.[agentName]?.prompt ?? "";
 const exitAfter = process.env.FAKE_OPENCODE_EXIT_AFTER_CALL;
 let stalls = Number(process.env.FAKE_OPENCODE_STALL_EVENTS ?? 0);
 let dropInTurn = process.env.FAKE_OPENCODE_DROP_EVENTS_IN_TURN === "1";
+let dropBusy = process.env.FAKE_OPENCODE_DROP_BUSY === "1";
 const goneAfter = Number(process.env.FAKE_OPENCODE_EVENTS_GONE ?? 0);
 let goneOpened = false;
 let goneWaited = false;
@@ -150,6 +153,14 @@ async function loop(sid, user) {
   const controller = new AbortController();
   running.set(sid, controller);
   const signal = controller.signal;
+  if (dropBusy) {
+    dropBusy = false;
+    for (const res of [...subscribers]) {
+      subscribers.delete(res);
+      res.end();
+    }
+    note({ dropped: "/event", before: "busy" });
+  }
   status(sid, "busy");
   let release;
   if (dropInTurn) {

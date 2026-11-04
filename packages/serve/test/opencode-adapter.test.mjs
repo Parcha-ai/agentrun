@@ -443,3 +443,64 @@ test("a host tool's result past the host's bound reaches OpenCode cut there, say
   assert.ok(text.length <= BOUND + 200, `${text.length} characters reached the model`);
   assert.match(text, /\[cut at \d+ of 130000 characters\]/);
 });
+
+test("a turn that starts while the event stream is down ends when OpenCode goes idle: the reopened stream's status check reads it busy", { timeout: 60_000 }, async () => {
+  // The stream ends as the turn starts, before its busy status; the model's answer takes 1.5 s, so the stream is open again
+  // (and OpenCode's status says busy) well before the turn goes idle.
+  const { adapter: a } = adapter([async () => { await sleep(1_500); return { text: "Done." }; }], { standInEnv: { FAKE_OPENCODE_DROP_BUSY: "1" } });
+  const s = await session(a, memorySessionStore(), spec([]));
+  await s.session.send("go");
+  const ended = await Promise.race([s.session.turnEnd(), sleep(10_000).then(() => "no end within 10 s")]);
+  await s.session.close();
+  assert.deepEqual(ended, { status: "completed" }, "the turn ends when OpenCode goes idle");
+});
+
+test("a host tool still running when OpenCode goes away settles before the drive ends: its real result is in, and it never runs twice at once", { timeout: 60_000 }, async () => {
+  const order = [];
+  let active = 0;
+  let most = 0;
+  // A safe tool that takes 1.5 s and does not stop when its signal aborts (as a write already under way would not).
+  const slow = { name: "slow", description: "Takes a while.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: async () => {
+    active += 1;
+    most = Math.max(most, active);
+    await sleep(1_500);
+    active -= 1;
+    order.push("tool finished");
+    return { text: "slow done" };
+  } };
+  // OpenCode's process exits once the call has reached the MCP server.
+  const { adapter: a } = adapter([{ call: "hands_slow" }, { text: "After." }], { standInEnv: { FAKE_OPENCODE_EXIT_AFTER_CALL: "slow" } });
+  const s = await session(a, memorySessionStore(), spec([slow]));
+  await s.session.send("go");
+  await s.session.turnEnd();
+  order.push("turn ended");
+  await s.session.send("again");
+  await Promise.race([s.session.turnEnd(), sleep(20_000)]);
+  await s.session.close();
+  assert.deepEqual(order.slice(0, 2), ["tool finished", "turn ended"], "the drive ends after the call it started has settled");
+  assert.equal(most, 1, "the tool never runs twice at once");
+});
+
+test("a drive whose MCP server cannot listen closes the model proxy it opened, and its turn fails", { timeout: 60_000 }, async (t) => {
+  const http = await import("node:http");
+  const listen = http.Server.prototype.listen;
+  const servers = [];
+  t.after(() => {
+    http.Server.prototype.listen = listen;
+    for (const server of servers) if (server.listening) server.close();
+  });
+  const s = await session(adapter([]).adapter, memorySessionStore(), spec([]));
+  // The drive's first server (the model proxy) listens; its second (the MCP server) fails to.
+  http.Server.prototype.listen = function (...args) {
+    servers.push(this);
+    if (servers.length !== 2) return listen.apply(this, args);
+    process.nextTick(() => this.emit("error", Object.assign(new Error("listen EADDRINUSE: address already in use"), { code: "EADDRINUSE" })));
+    return this;
+  };
+  await s.session.send("go");
+  const ended = await s.session.turnEnd();
+  http.Server.prototype.listen = listen;
+  await s.session.close();
+  assert.equal(ended.status, "failed");
+  assert.deepEqual(servers.map((server) => server.listening), [false, false], "nothing the failed start opened is left listening");
+});
