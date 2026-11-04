@@ -6,6 +6,7 @@ import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 import { agentHash } from "@/components/AgentPage";
 import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
+import { runLabel } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
@@ -432,6 +433,28 @@ describe("App, the agents' names", () => {
     await act(async () => { location.hash = "#/runs"; });
     await until(() => rows().some((r) => r.includes(made.definition.name!)));
     expect(rows().join("\n")).not.toContain(made.agent_id);
+  });
+
+  it("names an agent made here, not by its id, on its first run in the Playground", async () => {
+    server();
+    const { host, until, button, type } = await open("#/agents/new");
+    await until(() => !!host.querySelector('input[placeholder="e.g., Invoice checker"]'));
+    await type(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!, made.definition.name!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Describe what the agent does"]')!, made.definition.instructions!);
+    await act(async () => { button(/^Create$/)!.click(); });
+    await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
+    // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
+    await act(async () => { location.hash = "#/playground"; });
+    const pick = () => host.querySelector<HTMLSelectElement>("select");
+    await until(() => [...(pick()?.options ?? [])].some((o) => o.value === made.agent_id));
+    await act(async () => { const s = pick()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, made.agent_id); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
+    await act(async () => { button(/send request/i)!.click(); });
+    // The run panel's breadcrumb names the agent, as the run's page does.
+    const crumb = () => host.querySelector('nav[aria-label="Breadcrumb"]')?.textContent ?? "";
+    await until(() => crumb().includes(`Run ${runLabel(started.run_id)}`));
+    await until(() => crumb().includes(made.definition.name!));
+    expect(crumb()).not.toContain(made.agent_id);
   });
 
   it("names a run of an archived agent, which is not gone, and shows the id of one that is", async () => {

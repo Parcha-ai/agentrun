@@ -36,7 +36,7 @@ import { LEARNED_DIR } from "./learning.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
-import { readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
+import { LEGACY_NAMES, readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -77,6 +77,8 @@ const HOST_TOOLS_SERVER = "hands";
  *  `mcpServers` (the run's configured MCP servers), never by its shape, since a host tool's name has the same shape.
  *  Undefined: nothing maps it, and the gate asks. The key only: an MCP call enters the gate once, in the MCP gateway. */
 export function settingsKeyOf(harness: string, name: string, mcpServers: readonly string[] = []): string | undefined {
+  // A legacy name the tool plane folds into a capability (fetch_page into web_fetch) is held to that capability's key.
+  if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
   if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
   if (native) return native;

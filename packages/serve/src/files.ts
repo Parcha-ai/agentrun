@@ -17,6 +17,8 @@ export const RUN_LAUNCHING = "launching";
 /** Set in a run's process environment when the server opens the run for a person's follow-up to a run whose turn had
  *  ended (it answered, or the person stopped it): that open resumes no cut work, so it writes no "resumed" row (app.ts). */
 export const FOLLOW_UP_OPEN_ENV = "AGENTRUN_FOLLOW_UP_OPEN";
+/** The server's API token (`ar_local_...`), in the data directory, made at its first start when it is given none. */
+export const TOKEN_FILE = ".token";
 /** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
 export const DOOR_TOKEN_FILE = ".door-token";
 /** A run's own door token, in its directory, made at its first launch and handed to its process alone (its

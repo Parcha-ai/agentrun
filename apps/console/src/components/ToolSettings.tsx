@@ -19,41 +19,45 @@ export function ToolTable({ label, rows, settings, fallbackOf, resolvesOf, issue
   busy?: boolean;
   onChange: (next: ToolSettings) => void;
 }) {
+  // Wider than a phone (375 px): the table scrolls in its own box, as MissionAnalytics' tables do, never the page. The box
+  // is positioned so the header's sr-only "Reset" (absolute) is placed in it, not past it on the page.
   return (
-    <table aria-label={label} className="w-full border text-left">
-      <thead><tr className="border-b">{["Tool", "Provider", "Resolves to"].map((c) => <th key={c} className="caps px-3 py-2 text-[11px] font-semibold text-muted-foreground">{c}</th>)}<th><span className="sr-only">Reset</span></th></tr></thead>
-      <tbody>
-        {rows.map((t) => {
-          const fallback = fallbackOf(t);
-          const own = settings[t.name]?.provider;
-          const set = own !== undefined && own !== fallback;
-          const provider = set ? own : fallback;
-          const pick = (next: string | undefined) => onChange(withProvider(settings, t.name, next, fallback));
-          return (
-            <Fragment key={t.name}>
-              <tr data-tool={t.name} data-set={set ? "" : undefined} className="border-b align-top last:border-b-0">
-                <td className="px-3 py-2.5 font-mono text-[13px]">{t.name}</td>
-                <td className="px-3 py-2">
-                  <select aria-label={`${t.name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
-                    className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
-                    {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p)}{p === fallback ? " (default)" : ""}</option>)}
-                  </select>
-                  {providerHelp(provider) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider)}</span>}
-                  {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback)}</span>}
-                </td>
-                <td className="px-3 py-2.5">{resolvesOf(t, provider)}</td>
-                <td className="px-2 py-2 text-right">
-                  {set && <Button size="sm" variant="ghost" disabled={busy} aria-label={`Reset ${t.name} to its default`} onClick={() => pick(undefined)}>Reset</Button>}
-                </td>
-              </tr>
-              {issues[t.name]?.length ? (
-                <tr><td colSpan={4} className="px-3 pb-2.5">{issues[t.name].map((m) => <p key={m} className="font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}</td></tr>
-              ) : null}
-            </Fragment>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="relative overflow-x-auto">
+      <table aria-label={label} className="w-full border text-left">
+        <thead><tr className="border-b">{["Tool", "Provider", "Resolves to"].map((c) => <th key={c} className="caps px-3 py-2 text-[11px] font-semibold text-muted-foreground">{c}</th>)}<th><span className="sr-only">Reset</span></th></tr></thead>
+        <tbody>
+          {rows.map((t) => {
+            const fallback = fallbackOf(t);
+            const own = settings[t.name]?.provider;
+            const set = own !== undefined && own !== fallback;
+            const provider = set ? own : fallback;
+            const pick = (next: string | undefined) => onChange(withProvider(settings, t.name, next, fallback));
+            return (
+              <Fragment key={t.name}>
+                <tr data-tool={t.name} data-set={set ? "" : undefined} className="border-b align-top last:border-b-0">
+                  <td className="px-3 py-2.5 font-mono text-[13px]">{t.name}</td>
+                  <td className="px-3 py-2">
+                    <select aria-label={`${t.name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
+                      className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
+                      {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p)}{p === fallback ? " (default)" : ""}</option>)}
+                    </select>
+                    {providerHelp(provider) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider)}</span>}
+                    {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback)}</span>}
+                  </td>
+                  <td className="px-3 py-2.5">{resolvesOf(t, provider)}</td>
+                  <td className="px-2 py-2 text-right">
+                    {set && <Button size="sm" variant="ghost" disabled={busy} aria-label={`Reset ${t.name} to its default`} onClick={() => pick(undefined)}>Reset</Button>}
+                  </td>
+                </tr>
+                {issues[t.name]?.length ? (
+                  <tr><td colSpan={4} className="px-3 pb-2.5">{issues[t.name].map((m) => <p key={m} className="font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}</td></tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

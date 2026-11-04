@@ -17,7 +17,7 @@ import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
-import { permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { LEGACY_NAMES, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 
 type Json = Record<string, unknown>;
 
@@ -238,7 +238,7 @@ const MCP_AUTH = {
   description: "Absent: none. A PUT that sends no `token` (no `headers`) keeps the sealed credential, when the type and the URL's origin are unchanged.",
 };
 const MCP_URL = { type: "string", format: "uri", maxLength: 2048, description: "The server's Streamable HTTP endpoint: https, or http on a loopback address of this machine; no user or password." };
-const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way).", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
+const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`.", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
 const MCP_FAILED = {
   "424": { description: "`upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one.", content: { "application/json": { schema: ref("schemas/Error") } } },
 };
@@ -248,6 +248,8 @@ const PERMISSION = {
   enum: [...PERMISSIONS],
   description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.",
 };
+/** The table's tools a setting may name: its legacy names (fetch_page) are set by the capability they fold into. */
+const SETTINGS_TOOLS = TABLE_TOOLS.filter((name) => !Object.hasOwn(LEGACY_NAMES, name));
 /** A catalog tool's settings key, or an MCP server's wildcard, which sets each of its tools. */
 const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" };
 /** The tool settings map (tool-plane.ts): the server's (/settings/tools) and an agent's own (definition.tool_settings),
@@ -255,8 +257,8 @@ const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" 
  *  two that have a choice. */
 const TOOL_SETTINGS = {
   type: "object",
-  propertyNames: { anyOf: [{ enum: [...TABLE_TOOLS] }, CATALOG_KEY] },
-  properties: Object.fromEntries(TABLE_TOOLS.map((name) => [name, {
+  propertyNames: { anyOf: [{ enum: SETTINGS_TOOLS }, CATALOG_KEY] },
+  properties: Object.fromEntries(SETTINGS_TOOLS.map((name) => [name, {
     type: "object", additionalProperties: false,
     properties: {
       ...((PICKABLE as readonly string[]).includes(name) ? { provider: { enum: [...PROVIDERS[name as Pickable]], description: `Default ${PROVIDERS[name as Pickable][0]}.` } } : {}),
@@ -382,11 +384,29 @@ const IMPACT_SIDE = (side: "before" | "after") => closed({
   cost_runs: { ...COUNT, description: "Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of." },
   median_learning_usd: { type: ["number", "null"], minimum: 0, description: "The median of what learning itself cost a run, its end-of-run turn and its grade (the grade's is on GET /usage's `learning` meter), over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off)." },
 });
+/** A skill or a workflow draft the agent learned, as the agent's learning lists it (learning-routes.ts learnedAt). */
+const LEARNED_ITEM = (kind: "skill" | "workflow") => ({
+  type: "object", additionalProperties: false,
+  required: ["name", "file", ...(kind === "workflow" ? ["readme"] : []), "description", "status", "run", "bytes", "etag"],
+  properties: {
+    name: { type: "string", description: `The ${kind}'s folder name; \`[redacted]\` when it holds one of the host's secrets as they are now.` },
+    file: { type: "string", description: kind === "skill" ? "Its SKILL.md, `skills/<name>/SKILL.md`: GET .../learning/files/{file}, percent-encoded, reads it." : "Its draft, `workflows/<name>/workflow.json`: GET .../learning/files/{file}, percent-encoded, reads it as JSON." },
+    ...(kind === "workflow" ? { readme: { type: "string", description: "Its README.md, which the server writes from the description the run gave: the file that says whether it waits, and the one an approval names." } } : {}),
+    description: { type: "string", description: `What its ${kind === "skill" ? "SKILL.md" : "README.md"}'s front matter says it is for, cut of the host's secrets.` },
+    status: { enum: ["active", "pending", "retired"], description: `\`pending\`: the grader held it as risky to wait for its owner's OK (\`status: pending\` in its ${kind === "skill" ? "SKILL.md" : "README.md"}), and no run is given it until it is approved (POST .../learning/files/{file}/approve on its ${kind === "skill" ? "SKILL.md" : "README.md"}). \`retired\`: a person retired it (POST .../learning/files/{file}/retire on its ${kind === "skill" ? "SKILL.md" : "README.md"}), and no later run is given it.` },
+    run: { ...NULL_STRING, description: "The run whose merge last changed it; null when no merge names one." },
+    bytes: { ...COUNT, description: `The size of its ${kind === "skill" ? "SKILL.md" : "workflow.json"} on main.` },
+    etag: { type: "string", description: `The version of its ${kind === "skill" ? "SKILL.md" : "README.md"} on main, as its file's GET answers it: an approval sends it as If-Match.` },
+  },
+  "x-agentrun-serve": "learning/3",
+});
 const AGENT_LEARNING = closed({
   agent: { type: "string" },
   main: { ...NULL_STRING, description: "Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty." },
   index: { type: "string", description: "MEMORY.md on main: what the agent's next run reads, one line per active note, built by the server." },
   notes: PAGE(LEARNING_NOTE, "The first 50 notes: active first, then by their newest change, newest first. GET .../learning/notes for more."),
+  skills: { type: "array", items: LEARNED_ITEM("skill"), description: "Every skill on main, `skills/<name>/SKILL.md`, by name: what a later run is given as a skill once it is active. Empty when there is none.", "x-agentrun-serve": "learning/3" },
+  workflows: { type: "array", items: LEARNED_ITEM("workflow"), description: "Every workflow draft on main, `workflows/<name>/workflow.json` with its README.md, by name. Empty when there is none.", "x-agentrun-serve": "learning/3" },
   log: PAGE(LEARNING_CHANGE, "The first 20 changes on main, newest first. GET .../learning/log for more."),
   counts: LEARNING_COUNTS,
   impact: {
@@ -423,6 +443,18 @@ const LEARNING_NOTES: Record<string, Json> = {
     items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." }, supersedes: { type: "array", items: NOTE_NAME_FILE, description: "The older notes it replaced, each now `superseded` by it; empty when it replaced none." } }),
     description: "The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise.",
     "x-agentrun-serve": "learning/2",
+  },
+  skills: {
+    type: "array", minItems: 1,
+    items: { type: "object", additionalProperties: false, required: ["file", "name"], properties: { file: { type: "string", description: "Its SKILL.md, `skills/<name>/SKILL.md`; `[redacted]` when it holds one of the host's secrets as they are now." }, name: { type: "string", description: "The skill's folder name, `[redacted]` as `file` is." }, pending: { type: "boolean", const: true, description: "Present while it waits for the owner's OK: no run is given it until approved." } } },
+    description: "The skill this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise.",
+    "x-agentrun-serve": "learning/3",
+  },
+  workflows: {
+    type: "array", minItems: 1,
+    items: { type: "object", additionalProperties: false, required: ["file", "name"], properties: { file: { type: "string", description: "Its draft, `workflows/<name>/workflow.json`; `[redacted]` when it holds one of the host's secrets as they are now." }, name: { type: "string", description: "The workflow's folder name, `[redacted]` as `file` is." }, pending: { type: "boolean", const: true, description: "Present while it waits for the owner's OK." } } },
+    description: "The workflow draft this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise.",
+    "x-agentrun-serve": "learning/3",
   },
 };
 /** A run's learning block, past its read and learned notes: the notes its merge holds for the owner's OK. The run's
@@ -471,9 +503,9 @@ const LEARNING_DIFF = closed({
   },
 }, "What the run proposed: once merged, its merge commit against its parent, MEMORY.md and superseded notes included; before, its new notes against its seed; a run that proposed nothing, no file.");
 const AGENT_ID = ref("parameters/AgentId");
-const NOTE_PARAM = { name: "file", in: "path", required: true, description: "A note's file name at the folder's top (`<slug>.md`), percent-encoded; on a read, `MEMORY.md` too. Any other name is 400; a path with a `/` is no route (404).", schema: { type: "string" } };
+const NOTE_PARAM = { name: "file", in: "path", required: true, description: "A note's file name at the folder's top (`<slug>.md`), percent-encoded; on a read, `MEMORY.md` too, and a skill's `skills/<name>/SKILL.md` or a draft's `workflows/<name>/workflow.json` or `README.md`, its slashes percent-encoded (`skills%2F<name>%2FSKILL.md`); on an approval, a skill's SKILL.md or a draft's README.md. Any other name is 400, and so is a skill's or a draft's file on an edit, which is for notes; on a retire, a skill's SKILL.md or a draft's README.md too; a path with a bare `/` is no route (404).", schema: { type: "string" } };
 const ETAG = { ETag: { description: "The note's version on main: its git blob id, quoted. If-Match on a write takes it.", schema: { type: "string" } }, "X-Content-Type-Options": ref("headers/NoSniff") };
-const NOTE_TEXT = (description: string) => ({ description, headers: ETAG, content: { "text/markdown": { schema: { type: "string" } } } });
+const NOTE_TEXT = (description: string, json = false) => ({ description, headers: ETAG, content: { "text/markdown": { schema: { type: "string" } }, ...(json ? { "application/json": { schema: {}, description: "A draft's workflow.json, as it is on main." } } : {}) } });
 const PRECONDITION_REQUIRED = { description: "`precondition_required`: the write names no version it read: If-Match with the note's ETag (an edit or a retire), or If-None-Match: * (a new note). If-Match: * is not one.", content: { "application/json": { schema: ref("schemas/Error") } } };
 const IF_MATCH = { name: "If-Match", in: "header", required: false, description: "The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412.", schema: { type: "string" } };
 const WRITE_ERRORS = { ...errors(400, 401, 404, 412, 429, 500), "428": PRECONDITION_REQUIRED };
@@ -511,8 +543,9 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/agents/{agent_id}/learning/files/{file}": {
     get: {
-      operationId: "readLearningFile", tags: ["agents"], summary: "One note (or MEMORY.md) on main, as text, with its ETag",
-      parameters: [AGENT_ID, NOTE_PARAM], responses: { "200": NOTE_TEXT("The file's text, cut of the host's secrets."), ...errors(400, 401, 404, 429, 500) }, ...MARK,
+      operationId: "readLearningFile", tags: ["agents"], summary: "One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag",
+      description: "A note, MEMORY.md, a SKILL.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`.",
+      parameters: [AGENT_ID, NOTE_PARAM], responses: { "200": NOTE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 404, 429, 500) }, ...MARK,
     },
     put: {
       operationId: "writeLearningFile", tags: ["agents"], summary: "Edit a note (If-Match) or create one (If-None-Match: *)",
@@ -531,15 +564,15 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/agents/{agent_id}/learning/files/{file}/retire": {
     post: {
-      operationId: "retireLearningFile", tags: ["agents"], summary: "Retire a note: out of the index, kept in history",
-      description: `Sets \`status: retired\` (and drops \`superseded_by\`), on an active note or one that waits for its owner's OK (\`pending\`); any other note is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 \`bad_request\` with \`problems\` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. ${WRITE_DESCRIPTION}`,
+      operationId: "retireLearningFile", tags: ["agents"], summary: "Retire a note, a skill or a workflow draft: out of every later run, kept in history",
+      description: `A learned skill (its \`skills/<name>/SKILL.md\`) or a workflow draft (its \`workflows/<name>/README.md\`; its workflow.json is 400) is retired the same way: \`status: retired\` last in its front matter, one host commit \`learning: retired by a person: <file>\` that changes that file alone, listed \`retired\`, and no later run is given it; one already retired is answered as it is. Sets \`status: retired\` (and drops \`superseded_by\`), on an active note or one that waits for its owner's OK (\`pending\`); any other note is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 \`bad_request\` with \`problems\` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. ${WRITE_DESCRIPTION}`,
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, retired."), ...WRITE_ERRORS }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/files/{file}/approve": {
     post: {
-      operationId: "approveLearningFile", tags: ["agents"], summary: "Approve a note that waits for its owner's OK",
-      description: `Makes a pending note active: in MEMORY.md, read by every later run, and each note it supersedes that is active still marked superseded. One host commit on main, \`learning: approved by a person: <file>\`, with the trailers \`Changed-By: user\` and \`Approved-Via: console\`; the log shows it as \`by: {user: true, via: "console"}\` at the commit's time, and never the note's text. Only the owner, signed in with their password, approves: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since an agent's MCP client, the MCP endpoint's tools or a script may hold one, to a run's door token, and to every request on a server with accounts off, whose page cookie the token mints (\`capabilities.learning.approve\` is false there, with \`approve_needs: "password"\`); with no credential at all it is 401, as every route. A run that uses bash on the host runs as the server's user and can read its files, so for untrusted tasks use the sandbox. A note that is not pending is 400 \`bad_request\`. Under If-Match, as a retire: a stale ETag is 412, none 428.`,
+      operationId: "approveLearningFile", tags: ["agents"], summary: "Approve a note, a skill or a workflow draft that waits for its owner's OK",
+      description: `A skill (its SKILL.md) or a workflow draft (its README.md) that waits is made active the same way, by the same session, in one commit that drops its \`status: pending\` line and changes nothing else: every later run is given it. Makes a pending note active: in MEMORY.md, read by every later run, and each note it supersedes that is active still marked superseded. One host commit on main, \`learning: approved by a person: <file>\`, with the trailers \`Changed-By: user\` and \`Approved-Via: console\`; the log shows it as \`by: {user: true, via: "console"}\` at the commit's time, and never the note's text. Only the owner, signed in with their password, approves: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since an agent's MCP client, the MCP endpoint's tools or a script may hold one, to a run's door token, and to every request on a server with accounts off, whose page cookie the token mints (\`capabilities.learning.approve\` is false there, with \`approve_needs: "password"\`); with no credential at all it is 401, as every route. A run that uses bash on the host runs as the server's user and can read its files, so for untrusted tasks use the sandbox. A note that is not pending is 400 \`bad_request\`. Under If-Match, as a retire: a stale ETag is 412, none 428.`,
       // The owner's password session alone (ownerSession), never the document's bearer, with the empty JSON body every
       // page write sends: a client generated from this document sends what the route takes.
       security: [{ ownerSession: [] }],
