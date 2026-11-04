@@ -18,8 +18,9 @@ import { FAUX, scratch, withEnv } from "./support.mjs";
 
 const VM = VM_PROVIDER.id;
 const DAYTONA_KEY = "DAYTONA_API_KEY";
-const NOT_ENABLED = "not enabled on this server";
-const NOT_YET = "the bwrap box is not in this release yet";
+/** A box AGENTRUN_BOXES does not list: its reason names the setting, with the boxes `listed` already kept. */
+const notEnabled = (id, listed = []) => `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${BOX_IDS.filter((box) => box === id || listed.includes(box)).join(",")}`;
+const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 const CANARY = `not-a-key-${process.pid}`;
 const keys = () => Object.fromEntries(BOX_KEYS.map((name) => [name, `${CANARY}-${name}`]));
 
@@ -62,7 +63,7 @@ test("with nothing listed, nothing is probed and every box is unavailable: bwrap
   const daytona = await fakeDaytona(t, takes(`${CANARY}-${DAYTONA_KEY}`));
   for (const listed of [undefined, "", " , "]) {
     const registry = await boxRegistry({ PATH: docker.PATH, ...keys(), DAYTONA_API_URL: daytona.url, ...(listed === undefined ? {} : { AGENTRUN_BOXES: listed }) });
-    assert.deepEqual(registry.offers(), BOX_IDS.map((id) => ({ id, available: false, reason: id === "bwrap" ? NOT_YET : NOT_ENABLED })));
+    assert.deepEqual(registry.offers(), BOX_IDS.map((id) => ({ id, available: false, reason: id === "bwrap" ? NOT_YET : notEnabled(id) })));
     for (const id of BOX_IDS) assert.equal(registry.provider(id), undefined, `no provider for ${id}`);
   }
   assert.deepEqual(docker.calls(), [], "docker was never run");
@@ -87,7 +88,7 @@ test("docker listed: a docker that answers `docker version` is available, with i
   assert.equal(registry.provider("docker")?.name, "docker");
   assert.deepEqual(docker.calls(), ["version --format {{.Server.Version}}"], "one call, the probe: building the provider runs nothing");
   assert.deepEqual(offerOf(registry, "bwrap"), { id: "bwrap", available: false, reason: NOT_YET });
-  assert.deepEqual(offerOf(registry, "daytona"), { id: "daytona", available: false, reason: NOT_ENABLED });
+  assert.deepEqual(offerOf(registry, "daytona"), { id: "daytona", available: false, reason: notEnabled("daytona", ["docker", "bwrap"]) });
   // The log line says why each listed box is not there, bwrap included; a box not listed needs no reason.
   assert.deepEqual(boxesLog(registry.offers(), new Set(["docker", "bwrap"])), { available: "docker", unavailable: BOX_IDS.filter((id) => id !== "docker").join(","), bwrap: NOT_YET });
 });
@@ -109,7 +110,7 @@ test("docker listed: a docker that fails, or none on PATH, leaves it unavailable
   const failed = await boxRegistry({ PATH: docker.PATH, AGENTRUN_BOXES: "docker" });
   const offer = offerOf(failed, "docker");
   assert.equal(offer.available, false);
-  assert.match(offer.reason, /^docker version failed \(exit 1\): is the Docker daemon running/);
+  assert.equal(offer.reason, "docker version failed (exit 1): start Docker, or add this server's user to the docker group, then restart this server");
   assert.ok(!offer.reason.includes("\n") && !/\bat .*:\d+/.test(offer.reason) && !offer.reason.includes("RAW-DOCKER-STDERR"), offer.reason);
   assert.equal(failed.provider("docker"), undefined);
   assert.equal(docker.calls().length, 1);
@@ -117,7 +118,7 @@ test("docker listed: a docker that fails, or none on PATH, leaves it unavailable
   const empty = join(await scratch(t), "empty");
   await mkdir(empty);
   const none = await boxRegistry({ PATH: empty, AGENTRUN_BOXES: "docker" });
-  assert.deepEqual(offerOf(none, "docker"), { id: "docker", available: false, reason: "no docker command on this server's PATH" });
+  assert.deepEqual(offerOf(none, "docker"), { id: "docker", available: false, reason: "no docker command on this server's PATH: install Docker, then restart this server" });
 });
 
 test("each probe is bounded and they run at once: a docker and a Daytona that never answer leave both unavailable within one timeout", async (t) => {

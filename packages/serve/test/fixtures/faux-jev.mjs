@@ -1,5 +1,6 @@
 // Under --faux only: the fetch serve's Jev runner sends System One requests through, in place of TypeSafe's API (the
-// tests' fake). It answers every question, counts as authorized only the canary key, and files one line per call (with the
+// tests' fake). It answers every question, and a list of models (GET /v1/models, a saved key's check), counts as
+// authorized only the canary key, and files one line per call (with the
 // process that made it and the descriptor it was handed the key on) in the file AGENTRUN_TEST_FAUX_JEV_CALLS names. It
 // reports no cost unless a test sets one.
 import { appendFileSync } from "node:fs";
@@ -9,7 +10,7 @@ export const CANARY = "ts-canary-9f2c41d7e0b6";
 
 export default async function fakeJev(url, init = {}) {
   const auth = new Headers(init.headers).get("authorization");
-  const body = JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body));
+  const body = init.body === undefined ? {} : JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body));
   if (process.env.AGENTRUN_TEST_FAUX_JEV_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_JEV_CALLS, `${JSON.stringify({ pid: process.pid, key_fd: process.env.AGENTRUN_SERVE_DECISION_KEY_FD, path: new URL(String(url)).pathname, authorized: auth === `Bearer ${CANARY}`, questions: Object.keys(body.questions ?? {}) })}\n`);
   // AGENTRUN_TEST_FAUX_JEV_HANG: every call is received and never answered; it ends only when its request is aborted.
   if (process.env.AGENTRUN_TEST_FAUX_JEV_HANG) {
@@ -23,6 +24,7 @@ export default async function fakeJev(url, init = {}) {
   const failWith = Number(process.env.AGENTRUN_TEST_FAUX_JEV_STATUS);
   if (failWith) return new Response(JSON.stringify({ detail: "unavailable" }), { status: failWith, headers: { "content-type": "application/json" } });
   if (auth !== `Bearer ${CANARY}`) return new Response(JSON.stringify({ detail: "invalid key" }), { status: 401, headers: { "content-type": "application/json" } });
+  if (new URL(String(url)).pathname === "/v1/models") return new Response(JSON.stringify({ models: [{ name: "jev-latest", description: "General-purpose system one model.", release_date: "2026-09-15" }] }), { status: 200, headers: { "content-type": "application/json" } });
   const answers = Object.fromEntries(Object.entries(body.questions ?? {}).map(([id, q]) => {
     if (q.type === "choice") {
       const options = Object.keys(q.criteria);

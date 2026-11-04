@@ -228,4 +228,25 @@ describe("KeysPage", () => {
     await page.click(page.row("Monid"), /^Change$/);
     expect(page.input("MONID_API_KEY").value).toBe("");
   });
+
+  it("lists a model provider's key under Models, before the tools' keys, and saves it through its own route; with none, no headings", async () => {
+    const plain = view({});
+    const anthropic = { id: "anthropic", kind: "model" as const, label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"] };
+    const { v2, calls } = server([{ ...plain, keys: [...plain.keys.map((k) => ({ ...k, kind: "tool" as const })), anthropic] }]);
+    const page = await open(v2);
+    expect([...page.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Models", "Tools"]);
+    const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
+    expect([labels("Model keys"), labels("Tool keys")]).toEqual([["Anthropic"], ["Parallel", "Monid", "Browserbase"]]);
+    expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses pi, claude-agent");
+    await page.click(page.row("Anthropic"), /^Add key$/);
+    await page.type("ANTHROPIC_API_KEY", FAKE);
+    await page.click(page.row("Anthropic"), /^Save$/);
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([{ method: "PUT", path: "/v2/settings/tool-keys/anthropic", type: "application/json", body: { values: { ANTHROPIC_API_KEY: FAKE } } }]);
+    expect(page.host.innerHTML).not.toContain(FAKE);
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    const older = await open(server([plain]).v2);
+    expect(older.host.querySelectorAll("h2")).toHaveLength(0);
+    expect(older.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search");
+  });
 });

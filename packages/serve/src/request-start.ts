@@ -22,12 +22,15 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { CAP_REFUSED_FIELD, HELD_FIELD, HELD_USD, sideRequests } from "./cap.js";
+import { CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, sideRequests } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 
 
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
+
+/** How long a request's result waits for its end mark to be written, so it lands before pi's entry for the request. */
+export const END_MARK_WAIT_MS = 1_000;
 
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
@@ -37,7 +40,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
   const opened = new Promise<DurableRun>((resolve) => (open = resolve));
-  const mark = async (kind: string, data: Record<string, string | number | boolean | null> = {}) => {
+  type Mark = string | number | boolean | null | { [key: string]: Mark };
+  const mark = async (kind: string, data: Record<string, Mark> = {}) => {
     const run = await opened;
     await run.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT);
   };
@@ -47,10 +51,22 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     errorMessage: why,
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
+  /** Until `work` settles, or `ms` pass. */
+  const within = (work: Promise<unknown>, ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    void work.finally(() => (clearTimeout(timer), resolve()));
+  });
   /** What the run's cap held for a request (its options' HELD_USD), as an end mark's field; none without a cap. */
   const heldOf = (options: unknown): Record<string, number> => {
     const held = (options as Record<symbol, unknown> | undefined)?.[HELD_USD];
     return typeof held === "number" && Number.isFinite(held) ? { [HELD_FIELD]: held } : {};
+  };
+  /** A start mark's figures: its worst case, and what the cap limited its output to when it did (CLAMP), so a reply cut
+   *  short there says so on the run's timeline. */
+  const startOf = (options: unknown): Record<string, Mark> => {
+    const clamp = (options as Record<symbol, unknown> | undefined)?.[CLAMP] as { tokens?: unknown; leftUsd?: unknown; capUsd?: unknown } | undefined;
+    const kept: Record<string, Mark> = clamp && typeof clamp.tokens === "number" && typeof clamp.leftUsd === "number" && typeof clamp.capUsd === "number" ? { clamp: { tokens: clamp.tokens, leftUsd: clamp.leftUsd, capUsd: clamp.capUsd } } : {};
+    return { ...heldOf(options), ...kept };
   };
   /** A cancelled run's request, never sent. It waits for the cancel to reach the run (the request's abort), and then ends
    *  as aborted, as a request the cancel cut does: the turn, or a workflow's node, stops, never failing on the refusal.
@@ -78,9 +94,9 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     void (async () => {
       if (cancelled()) return refused();
       try {
-        await mark(REQUEST_STARTED, heldOf(options));
+        await mark(REQUEST_STARTED, startOf(options));
       } catch (error) {
-        const message = failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+        const message = failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
         outer.push({ type: "error", reason: "error", error: message });
         outer.end(message);
         return;
@@ -90,23 +106,48 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
         return refused();
       }
       let result: AssistantMessage;
+      // Whether the provider's response had begun (an event came in) by the time the request ended.
+      let began = false;
+      // The stream's error event, passed on once the request's end is marked (below): the outer stream's result, which
+      // pi writes as the entry and the cap counts, settles on that event.
+      let failure: Parameters<typeof outer.push>[0] | undefined;
       try {
         const inner = models.streamSimple(model, context, options);
-        for await (const event of inner) outer.push(event);
+        for await (const event of inner) {
+          if (event.type === "error") {
+            failure = event;
+            continue;
+          }
+          began = true;
+          outer.push(event);
+        }
         result = await inner.result();
       } catch (error) {
         // A stream that throws instead of ending on an error event still ends the request, as an error, never a hang.
         result = failed(model, `the model request failed: ${reason(error)}`);
-        outer.push({ type: "error", reason: "error", error: result });
+        failure = { type: "error", reason: "error", error: result };
       }
       // An answer or a failure gets pi's own entry; an abort may get none, so its end is marked, with the provider's id
       // for the request when it named one before the cut (the request joins its record by it). A store that cannot
       // take the mark leaves the request unended, which the timeline also reads as cut, at an unknown cost: the
       // conservative reading, so the failure is swallowed here.
+      let ending: Promise<void> | undefined;
       if (result.stopReason === "aborted") {
         const responseId = (result as { responseId?: unknown }).responseId;
-        await mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) }).catch(() => undefined);
+        ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...heldOf(options) });
+      } else if (result.stopReason === "error" && began) {
+        // An error after its response began (an overload part way, a reset): its usage is what had streamed, not what the
+        // provider can have billed. Its message is recorded (markResponseBegan), which the cap counts at its hold in this
+        // process, and its end is marked with the hold (`error`), which the spend read back counts. One before any event
+        // (a 429, a 5xx) is refused unbilled, and counts at its own usage.
+        markResponseBegan(result);
+        if (failure?.type === "error") markResponseBegan(failure.error);
+        ending = mark(REQUEST_ENDED, { error: true, ...heldOf(options) });
       }
+      // The end mark goes in before pi has the result, so the store holds it before pi's entry; a store that refuses it, or
+      // has not answered in END_MARK_WAIT_MS, does not hold the turn: the result goes on, and the mark lands when it can.
+      if (ending) await within(ending.catch(() => undefined), END_MARK_WAIT_MS);
+      if (failure) outer.push(failure);
       outer.end(result);
     })();
     return outer;
@@ -120,7 +161,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     try {
       await mark(REQUEST_STARTED, { ...COMPACTION, ...heldOf(options) });
     } catch (error) {
-      return failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+      return failed(model, `${MARK_NOT_WRITTEN} (${reason(error)})`);
     }
     if (cancelled()) {
       await mark(REQUEST_ENDED, { ...COMPACTION, unsent: true }).catch(() => undefined);
@@ -144,7 +185,12 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // Its tokens, in pi's shape, when pi counted any: zeros are no count.
       const u = result.usage;
       const usage = u && u.input + u.output + u.cacheRead + u.cacheWrite > 0 ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : undefined;
-      await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never } : { ...COMPACTION, usd }).catch(() => undefined);
+      // One that ended on an error after its response began (it holds content or a token count; a summary has no events
+      // to read) counts at its hold: it says so, and carries it. One before any of that counts at its own usage.
+      const began = result.stopReason === "error" && (usage !== undefined || result.content.length > 0);
+      if (began) markResponseBegan(result);
+      const failure = began ? { failed: true, ...heldOf(options) } : {};
+      await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never, ...failure } : { ...COMPACTION, usd, ...failure }).catch(() => undefined);
     }
     return result;
   };

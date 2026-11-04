@@ -5,7 +5,10 @@
 // and keeps each call in `calls` for a test that calls it in its own process. Its
 // endpoints, by path: /person/enrich answers at once; /tweets answers 202 and completes on its second read; /slow never
 // ends until stopped; /wallet is 402; /budget is BLOCKED; /broken FAILS; /late is a sync 408; /missing is the provider's
-// 404; /huge answers more than the model reads.
+// 404; /huge answers more than the model reads. With AGENTRUN_TEST_FAUX_MONID_DOWN set, every call is filed and then
+// fails as a fetch to a host that can't be reached does; with AGENTRUN_TEST_FAUX_MONID_STATUS, it answers that status;
+// with AGENTRUN_TEST_FAUX_MONID_STALL, it is held, its signal ignored as a provider answering late, until release(), and
+// stalled() gives the held call's signal once one is held.
 import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
@@ -14,6 +17,12 @@ export const KEY = ["monid", "live", "not-a-secret"].join("_");
 export const calls = [];
 const runs = new Map();
 let next = 0;
+const held = [];
+const waiting = [];
+/** Once a call is held (AGENTRUN_TEST_FAUX_MONID_STALL): the signal it was sent with. */
+export const stalled = () => new Promise((reached) => (held.length ? reached(held[0].signal) : waiting.push(reached)));
+/** Every held call goes on, and is answered as any other. */
+export const release = () => { for (const { go } of held.splice(0)) go(); };
 
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const PRICE = { type: "PER_CALL", amount: { value: 0.003, currency: "USD" } };
@@ -30,6 +39,9 @@ export default async function fakeMonid(url, init = {}) {
   const key = createHash("sha256").update(bearer.replace(/^Bearer /, "")).digest("hex").slice(0, 16);
   calls.push({ method, path, body, authorized });
   if (process.env.AGENTRUN_TEST_FAUX_MONID_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_MONID_CALLS, `${JSON.stringify({ pid: process.pid, method, path, authorized, key })}\n`);
+  if (process.env.AGENTRUN_TEST_FAUX_MONID_STALL) await new Promise((go) => { held.push({ go, signal: init.signal }); for (const reached of waiting.splice(0)) reached(init.signal); });
+  if (process.env.AGENTRUN_TEST_FAUX_MONID_STATUS) return json(Number(process.env.AGENTRUN_TEST_FAUX_MONID_STATUS), { code: Number(process.env.AGENTRUN_TEST_FAUX_MONID_STATUS), message: "This key may not use this endpoint." });
+  if (process.env.AGENTRUN_TEST_FAUX_MONID_DOWN) throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.monid.ai"), { code: "ENOTFOUND" }) });
   if (!authorized) return json(401, { code: 401, message: "Missing or invalid API key" });
   if (path === "/v1/discover") {
     const results = Array.from({ length: Math.min(body.limit ?? 5, 40) }, (_, i) => ({ provider: "faux", endpoint: i ? `/other/${i}` : "/person/enrich", description: body.query.includes("everything") ? "x".repeat(20_000) : "Enrich a person from a name and company.", score: 0.9 - i / 100, price: PRICE }));
