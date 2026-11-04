@@ -32,3 +32,20 @@ test("a park named by its tool and arguments is not ended by another tool's resu
   assert.equal(endsTurn(parked, { callId: "call_8", tool: "read", args: ARGS }), false, "another tool, the same arguments");
   assert.equal(endsTurn(parked, { callId: "call_8", tool: "srv_echo", args: { url: "http://other.example/" } }), false, "the same tool, other arguments");
 });
+
+test("pi's MCP tools (mcp__<server>__<tool>) are not wrapped by the gate: the MCP gateway gates them itself, so a call passes one gate, once", async () => {
+  const { RunGate } = await import("../dist/tool-gate.js");
+  const gate = new RunGate({ root: "/nonexistent", work: "/nonexistent", data: "/nonexistent", runId: "r1" });
+  const entered = [];
+  gate.enter = async (tool) => void entered.push(tool);
+  const executed = [];
+  const tool = (name) => ({ name, description: name, parameters: {}, execute: async () => (executed.push(name), { content: [{ type: "text", text: "ok" }] }) });
+  const tools = [tool("read"), tool("mcp__srv__echo")];
+  const extension = gate.extension(tools);
+  assert.deepEqual(extension.wraps.map((wrap) => wrap.tool), ["read"], "only the host tool is wrapped");
+  // As the registry composes them: a wrap applies by name.
+  const composed = tools.map((given) => extension.wraps.find((wrap) => wrap.tool === given.name)?.wrap(given) ?? given);
+  for (const each of composed) await each.execute({}, { callId: `c-${each.name}`, commit: async () => undefined }, {});
+  assert.deepEqual(executed, ["read", "mcp__srv__echo"], "each tool's own execute, once");
+  assert.deepEqual(entered, ["read"], "the gate entered for the host tool alone");
+});
