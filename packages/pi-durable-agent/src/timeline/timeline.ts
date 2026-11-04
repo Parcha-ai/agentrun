@@ -642,11 +642,13 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
   // pairs them.
   const calls = new Map<string, { name: string; called: string; done: boolean }>();
   // Results stored before their call, by `conversation:id`: each counts once its call comes, under its name and rule.
-  const early = new Map<string, { named: string | undefined; result: { text: string; isError: boolean } }>();
+  const early = new Map<string, { named: string | undefined; result: { text: string; isError: boolean }; place: number }>();
   const tools = new Map<string, ToolMetrics>();
   // Each tool's place by its first call, or its first result with no call: a tie for the last kept place goes by it.
-  const order = new Map<string, number>();
-  const see = (name: string) => void (order.has(name) || order.set(name, order.size));
+  const order = new Map<string, [number, number]>();
+  // Each record's place: a tool's place is the record that first named it, though it counts later.
+  let at = 0;
+  const see = (name: string, place = at) => void (order.has(name) || order.set(name, [place, order.size]));
   const tally = (name: string, failed: boolean) => {
     see(name);
     const tool = tools.get(name) ?? { calls: 0, errors: 0 };
@@ -655,6 +657,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     tools.set(name, tool);
   };
   for (const entry of records) {
+    at += 1;
     const conv = entry.conversationId ?? 0;
     if (entry.id !== undefined) {
       if (seen.has(`${conv}:${entry.id}`)) continue;
@@ -681,7 +684,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
       const result = { text: textOf(message), isError: message.isError === true };
       // A result before its call waits for it, to count under its name and by its rule.
       if (!call && id) {
-        early.set(`${conv}:${id}`, { named, result });
+        early.set(`${conv}:${id}`, { named, result, place: at });
         continue;
       }
       if (call) call.done = true;
@@ -692,9 +695,13 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
   }
   for (const call of calls.values()) if (!call.done) tally(call.name, true);
   // A result whose call never came counts by its own name, as any result without a call does.
-  for (const { named, result } of early.values()) tally(named ? metricName(named) : METRIC_NAMES.unnamedTool, callFailed(named ?? "", result));
+  for (const { named, result, place } of early.values()) {
+    const name = named ? metricName(named) : METRIC_NAMES.unnamedTool;
+    see(name, place);
+    tally(name, callFailed(named ?? "", result));
+  }
   for (const row of decisions) meter.decide(row);
-  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)! - order.get(b)!));
+  const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)![0] - order.get(b)![0] || order.get(a)![1] - order.get(b)![1]));
   return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
 }
 
