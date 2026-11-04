@@ -68,7 +68,7 @@ test("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, the re
   process.env.AGENT_MODEL_FAST = "faux-fast";
   t.after(() => (saved === undefined ? delete process.env.AGENT_MODEL_FAST : (process.env.AGENT_MODEL_FAST = saved)));
   const { api, baseUrl, data } = await serve(t);
-  assert.deepEqual((await client(baseUrl)("GET", "/capabilities")).body.models, { source: "faux", route_prefix: null, fast: "faux/faux-fast", default: "faux/faux-1", strong: "faux/faux-1" });
+  assert.deepEqual((await client(baseUrl)("GET", "/capabilities")).body.models, { source: "faux", route_prefix: null, fast: "faux/faux-fast", default: "faux/faux-1", strong: "faux/faux-1", ready: true, needs: null });
   const tiered = answerFlow();
   tiered.root.steps.unshift({ node: "extract", label: "draft", instructions: "Draft an answer.", out: "Answer", as: "draft", tier: "fast" });
   const started = await start(api, "tiered", { question: "What is six times seven?" }, tiered);
@@ -114,7 +114,7 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_FAST: "m-fast" };
   const fast = await runModels(gateway, undefined, ["fast"]);
   assert.deepEqual([...fast.byTier], [["fast", { provider: "agent-model", modelId: "m-fast" }]]);
-  await assert.rejects(runModels(gateway, undefined, ["default"]), /no default/);
+  await assert.rejects(runModels(gateway, undefined, ["default"]), /No model yet: name the gateway's model in AGENT_MODEL/);
   const saved = Object.fromEntries(["AGENT_MODEL_BASE_URL", "AGENT_MODEL_FAST", "AGENT_MODEL"].map((name) => [name, process.env[name]]));
   t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
   delete process.env.AGENT_MODEL;
@@ -126,7 +126,7 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   const started = await api("POST", "/agents/fast-only/runs", { input: { question: "What is six times seven?" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   assert.equal((await api("POST", "/agents", flowAgent("default-too"))).status, 201);
-  assert.match((await api("POST", "/agents/default-too/runs", { input: { question: "x" } })).body.error.message, /no default/, "a default-tier node still needs AGENT_MODEL");
+  assert.match((await api("POST", "/agents/default-too/runs", { input: { question: "x" } })).body.error.message, /No model yet: name the gateway's model in AGENT_MODEL/, "a default-tier node still needs AGENT_MODEL");
   // The run's process loaded its app (no default asked for) and opened the run.
   const log = join(data, "runs", started.body.run_id, "process.log");
   for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes('"event":"running"'); i++) {

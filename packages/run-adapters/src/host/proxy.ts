@@ -74,6 +74,16 @@ export interface ProviderPolicy {
    *  no input bound the policy can state (a hosted tool that reads pages into the input), so `inputTokensMax` is
    *  undefined, never 0 or the body's bytes alone. Absent: none. */
   serverInputOverhead?(body: Record<string, unknown>): number | undefined;
+  /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
+   *  undefined: the body does not say. */
+  outputAsked?(body: Record<string, unknown>): number | undefined;
+  /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
+   *  its provider takes when it thinks. Absent: 1,024. */
+  outputLeast?(body: Record<string, unknown>): number;
+  /** The body `apply` returned with its output limited to `max` tokens, thinking included (what is left of a spend cap
+   *  can buy): never more than it asked for, and never longer as sent, since its input bound was measured on it. A host
+   *  that limits a request's output needs it: without it such a request is refused, never sent unlimited. */
+  limitOutput?(body: Record<string, unknown>, max: number): Record<string, unknown>;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -89,11 +99,22 @@ export interface ModelUsageReport extends ProxyUsage {
   providerIds?: Record<string, string>;
 }
 
+/** A paid request as the host is asked about it, before it leaves. */
+export interface ProxyRequest {
+  model: string;
+  /** The most input tokens it can be billed for (see `inputTokensMaxOf`), undefined when that could not be measured. */
+  inputTokensMax?: number;
+  /** The most output tokens it asks for (the policy's `outputAsked`), when the body says. */
+  outputTokensAsked?: number;
+  /** The least output it may be limited to and still answer (the policy's `outputLeast`). */
+  outputTokensLeast?: number;
+}
+
 export interface ModelProxyHooks {
   /** Before a paid request leaves; a throw refuses it. What it returns (a ticket) is handed back to this request's
-   *  `afterRequest`, since requests may be in flight together. `inputTokensMax` is the most input tokens it can be
-   *  billed for (see `inputTokensMaxOf`), undefined when that could not be measured. */
-  beforeRequest(request: { model: string; inputTokensMax?: number }): Promise<unknown>;
+   *  `afterRequest`, since requests may be in flight together. A ticket's `outputTokensMax` limits the request's output
+   *  (thinking included) to that many tokens, written into its body by the policy's `limitOutput` before it is sent. */
+  beforeRequest(request: ProxyRequest): Promise<unknown>;
   /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
   afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
@@ -402,7 +423,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       say(`model proxy (${policy.id}): the body could not be serialized`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       return refuse(res, 500, "the body could not be serialized", req);
     }
-    const inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
+    let inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
+    // What the body asks for at most, and the least it may be limited to, as the policy reads them. One the policy cannot
+    // read leaves the request's worst case unknown: its input is unmeasured.
+    const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+    let outputTokensAsked: number | undefined;
+    let outputTokensLeast: number | undefined;
+    try {
+      outputTokensAsked = figure(policy.outputAsked?.(body));
+      outputTokensLeast = figure(policy.outputLeast?.(body));
+    } catch (error) {
+      say(`model proxy (${policy.id}): the policy could not read the body's output; its worst case is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      inputTokensMax = undefined;
+    }
     // The provider's credential and its headers come before the runner is asked: a request that could not be sent is
     // refused without being admitted, so it is never booked and spends no turn.
     let credential = "";
@@ -429,14 +462,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
-      if (!route.free) ticket = await hooks.beforeRequest({ model: asked, inputTokensMax });
+      if (!route.free) ticket = await hooks.beforeRequest({
+        model: asked, inputTokensMax,
+        ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
+        ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
+      });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
     }
-    if (closing) {
-      // Admitted while the proxy was closing, and never sent: released, booked at nothing, so the runner's count agrees.
-      refuse(res, 503, "the model proxy is closing", req);
+    /** An admitted request that is not sent after all: refused to its client, and released, booked at nothing, so the
+     *  runner's count agrees. */
+    const release = async (status: number, message: string) => {
+      refuse(res, status, message, req);
       if (!route.free) {
         try {
           await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket);
@@ -444,7 +482,23 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           say(`model proxy (${policy.id}): afterRequest threw; the request was not sent and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }
       }
-      return;
+    };
+    // Admitted while the proxy was closing, and never sent.
+    if (closing) return release(503, "the model proxy is closing");
+    // Admitted with an output limit (what is left of a spend cap can buy): written into the body, which is never sent
+    // unlimited, nor longer than the body its input bound was measured on.
+    const limit = typeof ticket === "object" && ticket !== null ? (ticket as { outputTokensMax?: unknown }).outputTokensMax : undefined;
+    if (limit !== undefined) {
+      if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || !policy.limitOutput) return release(500, "the request's output could not be limited to what its spend cap leaves");
+      let limited: string;
+      try {
+        limited = JSON.stringify(policy.limitOutput(body, limit));
+      } catch (error) {
+        say(`model proxy (${policy.id}): the policy could not limit the body's output`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        return release(500, "the request's output could not be limited to what its spend cap leaves");
+      }
+      if (Buffer.byteLength(limited, "utf8") > Buffer.byteLength(sent, "utf8")) return release(500, "the request's limited body is longer than the one its input was measured on");
+      sent = limited;
     }
     const controller = new AbortController();
     inflight.add(controller);
