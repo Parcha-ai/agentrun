@@ -272,7 +272,16 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
  *  newest entry (learning-run.ts reads it). The end-of-run learning turn's entries are no turn of the run's: none of
  *  them, its TURN_END and its settlement included, opens, closes or answers one of the run's messages. */
 function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly unknown[] = [], snapshot?: readonly unknown[]): void {
-  for (const value of entries) if (isObject(value) && typeof value.id === "number") run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
+  for (const value of entries) {
+    if (!isObject(value) || typeof value.id !== "number") continue;
+    run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
+    // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
+    // (learning-run.ts). The ledger skips them; this is their only reader here.
+    if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
+      const content = value.model[0].content;
+      (run.turnText ??= new Map()).set(value.id, typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "");
+    }
+  }
   const reflect = (id: number) => reflects(run.meta.reflect, id);
   run.turns.note(entries, submissions, reflect);
   if (snapshot) run.turns.snapshot(snapshot, reflect);
