@@ -356,14 +356,20 @@ const holdingStream = (text) => async (_url, init) => new Response(new ReadableS
   start(c) { c.enqueue(new TextEncoder().encode(text)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
 }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
 
-test("a stopped request whose policy says its reasoning is hidden (only a summary streams) is booked with that reasoning's budget beside what it was sent; one read whole, or with no hidden reasoning, says no such thing", async (t) => {
-  // The policy reads a body's hidden reasoning budget (as codex's reads its effort, and claude-agent's its thinking budget).
-  const reasoning = { ...policy, reasoningHidden: (body) => (typeof body.hidden === 'number' ? body.hidden : 0) };
-  const summary = 'data: {"delta":"**Weighing it**"}\n\n';
+test("a stopped request whose policy says its reasoning is hidden (only a summary streams) is booked with that reasoning's budget and the reasoning bytes it was sent (by the policy's reading of each event), beside all it was sent; one read whole, or with no hidden reasoning, says no such thing", async (t) => {
+  // The policy reads a body's hidden reasoning budget (as codex's reads its effort, and claude-agent's its thinking budget),
+  // and the reasoning in each event it streams (as codex's reads a summary delta, and claude-agent's a thinking delta).
+  const reasoning = {
+    ...policy,
+    reasoningHidden: (body) => (typeof body.hidden === 'number' ? body.hidden : 0),
+    reasoningBytesOf: (event) => { const data = JSON.parse(event.replace(/^data: /, '')); return typeof data.reasoning === 'string' ? Buffer.byteLength(data.reasoning) : 0; },
+  };
+  const thought = 'Weighing it: é ✓';
+  const summary = `data: ${JSON.stringify({ reasoning: thought })}\n\ndata: {"delta":"The answer is"}\n\n`;
   const hidden = await proxy(t, { policy: reasoning, fetch: holdingStream(summary) });
   await stopAt(hidden.p.url, { model: 'other', input: 'hi', hidden: 8_192 });
   await settledAfter(hidden.hooks);
-  assert.deepEqual(hidden.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(summary), stoppedHiddenTokens: 8_192 }], 'stopped: what it was sent, and its hidden reasoning budget');
+  assert.deepEqual(hidden.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, stoppedAfterBytes: Buffer.byteLength(summary), stoppedHiddenTokens: 8_192, stoppedReasoningBytes: Buffer.byteLength(thought) }], 'stopped: all it was sent, its hidden reasoning budget, and the reasoning it was sent');
   // No hidden reasoning (the policy says 0): only what it was sent, as before.
   const none = await proxy(t, { policy: reasoning, fetch: holdingStream(summary) });
   await stopAt(none.p.url, { model: 'other', input: 'hi', hidden: 0 });

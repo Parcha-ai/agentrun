@@ -66,7 +66,7 @@ test("a request its client stopped part way counts at the host's figure for what
   assert.equal(Math.round((await port(store, 0.9)).spentUsd() * 1e9) / 1e9, 1.803);
 });
 
-test("a stopped request whose reasoning was hidden counts what it was sent and the part of its hidden reasoning's budget that did not stream (the reader's case: a gpt-5-class request, a 20 KB context, a stop after a summary: about $0.106 spent); after a budget's worth streamed, nothing on top; never more than its hold", async () => {
+test("a stopped request whose reasoning was hidden counts all it was sent and the part of its reasoning budget its streamed reasoning did not cover (the reader's case: a gpt-5-class request, a 20 KB context, a stop after a summary: about $0.106 spent); text after the reasoning adds to it; after a budget's worth of reasoning streamed, nothing on top; never more than its hold", async () => {
   const store = memorySessionStore();
   // The host's figure for a stop, as serve's cap counts it on a gpt-5-class model: 20,000 input tokens at $1.25 a million,
   // and what streamed plus 1,024 tokens at $10 a million, within the 34,500 tokens the request was held at.
@@ -75,7 +75,7 @@ test("a stopped request whose reasoning was hidden counts what it was sent and t
   const booking = await modelPortFor(await store.open(key), { key, beforeRequest: () => ({ holdUsd: hold, stoppedUsd }) });
   await booking.models.beforeRequest({ model: 'gpt-5' });
   // 300 bytes of reasoning summary reached the client; the policy said medium effort's 8,192 reasoning tokens are hidden.
-  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 300, stoppedHiddenTokens: 8_192 });
+  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 300, stoppedReasoningBytes: 300, stoppedHiddenTokens: 8_192 });
   const spent = booking.spentUsd();
   // 300 bytes streamed, and max(0, 8,192 - 300) of the budget that did not: 8,192 tokens in all.
   assert.equal(Math.round(spent * 1e9) / 1e9, Math.round(stoppedUsd(300 + Math.max(0, 8_192 - 300)) * 1e9) / 1e9, 'what streamed and the unstreamed part of the hidden budget');
@@ -83,13 +83,18 @@ test("a stopped request whose reasoning was hidden counts what it was sent and t
   assert.ok(spent <= hold, `never past its hold, $${hold}`);
   // A hidden budget past the hold counts at the hold.
   await booking.models.beforeRequest({ model: 'gpt-5' });
-  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 300, stoppedHiddenTokens: 1_000_000 });
+  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 300, stoppedReasoningBytes: 300, stoppedHiddenTokens: 1_000_000 });
   const second = booking.spentUsd() - spent;
   assert.equal(Math.round(second * 1e9) / 1e9, Math.round(hold * 1e9) / 1e9, 'at its hold');
-  // 9,000 bytes streamed against an 8,192-token budget (reasoning the client saw): nothing of the budget on top.
+  // 9,000 bytes of reasoning streamed against an 8,192-token budget (reasoning the client saw): nothing on top.
   await booking.models.beforeRequest({ model: 'gpt-5' });
-  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 9_000, stoppedHiddenTokens: 8_192 });
-  assert.equal(Math.round((booking.spentUsd() - spent - second) * 1e9) / 1e9, Math.round(stoppedUsd(9_000) * 1e9) / 1e9, 'what streamed, nothing on top');
+  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 9_000, stoppedReasoningBytes: 9_000, stoppedHiddenTokens: 8_192 });
+  const third = booking.spentUsd() - spent - second;
+  assert.equal(Math.round(third * 1e9) / 1e9, Math.round(stoppedUsd(9_000) * 1e9) / 1e9, 'what streamed, nothing on top');
+  // A 300-byte summary, then 8,000 bytes of answer text: the text counts, and so does the budget the summary left unseen.
+  await booking.models.beforeRequest({ model: 'gpt-5' });
+  await booking.models.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: null, stoppedAfterBytes: 8_300, stoppedReasoningBytes: 300, stoppedHiddenTokens: 8_192 });
+  assert.equal(Math.round((booking.spentUsd() - spent - second - third) * 1e9) / 1e9, Math.round(stoppedUsd(8_300 + 8_192 - 300) * 1e9) / 1e9, 'the text and the unseen reasoning');
 });
 
 test('a request a crash cut off counts at the figure held for it in the next process, booked once as cut, counted once however often the session is opened', async () => {

@@ -627,3 +627,71 @@ test("a stopped Responses request's hidden reasoning, as the policy reads it fro
   assert.equal(hidden({ reasoning: { summary: 'auto' }, max_output_tokens: 32_000 }), 32_000, 'no effort: its output limit');
   assert.equal(hidden({ max_output_tokens: 20_000 }), 20_000, 'no reasoning object: its output limit, as the model may reason at its default');
 });
+
+test("the reasoning a Responses stream shows, as the policy reads each event: a reasoning summary's or reasoning text's delta counts its bytes; answer text, a function call's arguments and every other event count none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.reasoningBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: 'Weighing é ✓' })),
+      bytes(event('response.reasoning_text.delta', { item_id: 'rs_1', delta: 'step two' })),
+      bytes(event('response.output_text.delta', { item_id: 'msg_1', delta: 'The answer' })),
+      bytes(event('response.function_call_arguments.delta', { item_id: 'fc_1', delta: '{"q":"x"}' })),
+      bytes(event('response.completed', { response: {} })),
+    ],
+    [Buffer.byteLength('Weighing é ✓'), Buffer.byteLength('step two'), 0, 0, 0],
+  );
+});
+
+test("a Codex request whose hidden reasoning (a short summary) came before 8,000 bytes of answer text, then stopped, counts all it was sent and the reasoning budget its summary left unseen: the text does not stand in for the reasoning", async () => {
+  const summary = 'Weighing the layouts and the totals. '.repeat(8);
+  const text = 'The ledger balances once the March entries move to April. '.repeat(140).slice(0, 8_000);
+  const sse = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
+  const stream = sse('response.created', { response: { id: 'resp_1' } }) + sse('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: summary })
+    + Array.from({ length: 8 }, (_, i) => sse('response.output_text.delta', { item_id: 'msg_1', delta: text.slice(i * 1_000, (i + 1) * 1_000) })).join('');
+  const reports = [];
+  let reported;
+  const done = new Promise((resolve) => (reported = resolve));
+  // The provider holds the stream open after the text, until the proxy aborts it (the client left).
+  const p = await startModelProxy({
+    policy: codexPolicy({ model: 'session-model', tools: ['lookup'] }),
+    hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { reports.push(u); reported(); } },
+    model: 'session-model',
+    origin: 'https://provider.invalid',
+    credential: () => 'provider-secret',
+    price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
+    fetch: async (_url, init) => new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  }, KEY);
+  after(() => p.close());
+  await new Promise((resolve) => {
+    const { hostname, port } = new URL(p.url);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}`, accept: 'text/event-stream' } }, (res) => {
+      let read = 0;
+      // The person stops once the text has reached the harness.
+      res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, reasoning: { effort: 'medium', summary: 'auto' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] }));
+  });
+  await done;
+  const [booked] = reports;
+  // The host's figure for a stop, as serve's cap counts it on a gpt-5-class model: 20,000 input tokens at $1.25 a million,
+  // and what it counts of output plus 1,024 tokens at $10 a million, within the 32,000 the request was sent with.
+  const stoppedUsd = (tokens) => 20_000 * 1.25 / 1e6 + Math.min(32_000, tokens + 1_024) * 10 / 1e6;
+  const store = (await import('@parcha/agentrun-kernel/testing')).memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:text'), { key: 'chat:text', beforeRequest: () => ({ holdUsd: stoppedUsd(32_000), stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'session-model' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  // All it was sent, and medium's 8,192-token budget less the summary's bytes.
+  assert.deepEqual(
+    { hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
+    { hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(booked.stoppedAfterBytes + 8_192 - Buffer.byteLength(summary))) },
+    'the text and the unseen reasoning both count',
+  );
+});

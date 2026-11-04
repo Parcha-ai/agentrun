@@ -707,5 +707,71 @@ test("the lead's case: a Messages request thinking at budget_tokens 8,192, stopp
   // Booked with its thinking budget, and counted at what streamed and the allowance: max(0, 8,192 - what streamed) is 0, so
   // exactly (to the nano-dollar) stoppedUsd(what streamed), with nothing of the budget on top.
   const nano = (usd) => Math.round(usd * 1e9) / 1e9;
-  assert.deepEqual({ hidden: booked.stoppedHiddenTokens, counted: nano(booking.spentUsd()) }, { hidden: 8_192, counted: nano(stoppedUsd(booked.stoppedAfterBytes)) }, 'its thinking budget booked, and nothing of it counted on top of thinking that streamed');
+  const thinking = 40 * Buffer.byteLength('Let me check the ledger against the totals. '.repeat(5));
+  assert.deepEqual({ hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) }, { hidden: 8_192, reasoning: thinking, counted: nano(stoppedUsd(booked.stoppedAfterBytes)) }, 'its thinking budget and the thinking it was sent booked, and nothing of the budget counted on top of thinking that streamed');
+});
+
+test("the reasoning a Messages stream shows, as the policy reads each event: a thinking delta counts its bytes; text, a tool call's JSON, a signature and every other event count none", () => {
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.reasoningBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'Weighing é ✓' } })),
+      bytes(event('content_block_delta', { index: 1, delta: { type: 'text_delta', text: 'The answer' } })),
+      bytes(event('content_block_delta', { index: 2, delta: { type: 'input_json_delta', partial_json: '{"q":' } })),
+      bytes(event('content_block_delta', { index: 0, delta: { type: 'signature_delta', signature: 'EqQBCgIYAhIM' } })),
+      bytes(event('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 9 } })),
+    ],
+    [Buffer.byteLength('Weighing é ✓'), 0, 0, 0, 0],
+  );
+});
+
+test("a Messages request thinking at budget_tokens 8,192 whose short thinking summary came before 8,000 bytes of answer text, then stopped, counts all it was sent and the budget its thinking left unseen", async () => {
+  const thinker = anthropicPolicy({ model: 'claude-main', tools: [], maxOutputTokens: 32_000 });
+  const summary = 'Weighing the layouts and the totals. '.repeat(8);
+  const text = 'The ledger balances once the March entries move to April. '.repeat(140).slice(0, 8_000);
+  const sse = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
+  const stream = sse('message_start', { message: { id: 'msg_t', type: 'message', role: 'assistant', model: 'claude-main', content: [], usage: { input_tokens: 10, output_tokens: 1 } } })
+    + sse('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } })
+    + sse('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: summary } })
+    + sse('content_block_delta', { index: 0, delta: { type: 'signature_delta', signature: 'EqQBCgIYAhIM' } })
+    + sse('content_block_stop', { index: 0 })
+    + sse('content_block_start', { index: 1, content_block: { type: 'text', text: '' } })
+    + Array.from({ length: 8 }, (_, i) => sse('content_block_delta', { index: 1, delta: { type: 'text_delta', text: text.slice(i * 1_000, (i + 1) * 1_000) } })).join('');
+  const streaming = async (_url, init) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(stream));
+      init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  let report;
+  const done = new Promise((resolve) => (report = resolve));
+  const proxy = await startModelProxy({ policy: thinker, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: priced, hooks: { beforeRequest: async () => {}, afterRequest: async (u) => report(u) }, fetch: streaming }, 'session-key');
+  let booked;
+  try {
+    await new Promise((resolve) => {
+      const req = request(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' } }, (res) => {
+        let read = 0;
+        res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+        res.on('error', resolve);
+        res.on('close', resolve);
+      });
+      req.on('error', resolve);
+      req.end(JSON.stringify(body({ stream: true, max_tokens: 32_000, thinking: { type: 'enabled', budget_tokens: 8_192 } })));
+    });
+    booked = await done;
+  } finally {
+    await proxy.close();
+  }
+  const stoppedUsd = (tokens) => 20_000 * 3 / 1e6 + Math.min(32_000, tokens + 1_024) * 15 / 1e6;
+  const store = memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:text'), { key: 'chat:text', beforeRequest: () => ({ holdUsd: stoppedUsd(32_000), stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'claude-main' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  assert.deepEqual(
+    { hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
+    { hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(booked.stoppedAfterBytes + 8_192 - Buffer.byteLength(summary))) },
+    'the text and the unseen thinking both count',
+  );
 });
