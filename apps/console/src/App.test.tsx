@@ -481,13 +481,13 @@ describe("App, the playground when its agents can't be read", () => {
 // card) shows a bar while capabilities say no model is ready, and it goes by itself once they say ready.
 describe("App, the no-model bar", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const serve = (models: () => Record<string, unknown>, routes = true) => {
+  const serve = (models: () => Record<string, unknown>, routes = true, atRest: "sealed" | "unavailable" = "sealed") => {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(routes ? { tool_keys: { routes: true, at_rest: "sealed" } } : {}) }, models: models() });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(routes ? { tool_keys: { routes: true, at_rest: atRest } } : {}) }, models: models() });
       if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
       if (path === "/v2/stats") return json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
@@ -539,6 +539,14 @@ describe("App, the no-model bar", () => {
 
   it("says to set a key and restart where the server keeps no keys, one OpenRouter key giving every harness its model", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false);
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
+    expect(bar(host)?.querySelector("a")).toBeNull();
+  });
+
+  it("says to set a key and restart, with no Settings link, where the server has key routes but no seal key to keep one", async () => {
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, "unavailable");
     const host = await mount("#/runs");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
