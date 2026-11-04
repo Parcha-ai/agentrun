@@ -16,7 +16,8 @@ delete process.env.AGENTRUN_BOXES;
 
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return dir;
 }
 

@@ -56,13 +56,14 @@ describe("AgentEditor, the learning switch", () => {
     expect(e.saves[1].learning).toBeUndefined();
     expect(editBody(agentOf(), e.saves[1], "").unchanged).toBe(true);
   });
-  it("on, without the write tool, says quietly that it needs it, and Add it ticks it", async () => {
-    const e = mount(agentOf({ tools: ["read"], learning: true }), caps("on"));
-    expect(e.text()).toContain("Needs the write tool, for now.");
-    await e.click([...e.host.querySelectorAll("button")].find((b) => b.textContent === "Add it")!);
-    expect(e.text()).not.toContain("Needs the write tool");
+  it("turned on for an agent without the write tool, asks for no tool: no line about one and no Add it, and the save keeps its tools as they are", async () => {
+    const e = mount(agentOf({ tools: ["read"] }), caps("on"));
+    await e.click(e.sw()!);
+    expect(e.sw()!.getAttribute("aria-checked")).toBe("true");
+    expect(e.text()).not.toMatch(/write tool/i);
+    expect([...e.host.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Add it");
     await e.save();
-    expect(e.saves[0].tools).toEqual(["read", "write"]);
+    expect(editBody(agentOf({ tools: ["read"] }), e.saves[0], "").definition).toMatchObject({ learning: true, tools: ["read"] });
   });
   it("on a server with learning off, says no run learns there yet", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agentOf({ learning: true }), caps: caps("off"), step: "settings" }))).toContain("This server has learning turned off");

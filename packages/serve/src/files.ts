@@ -124,3 +124,13 @@ export function writeDurableSync(path: string, text: string, mode = 0o600): void
     closeSync(dir);
   }
 }
+
+/** Runs `work` once every call queued before it under `key` in `queues` has settled: one at a time per key. The queue
+ *  holds only settled turns, so one that failed never fails the next, and a key is dropped once its last turn settles. */
+export function serialBy<T>(queues: Map<string, Promise<unknown>>, key: string, work: () => Promise<T>): Promise<T> {
+  const turn = (queues.get(key) ?? Promise.resolve()).then(work);
+  const settled = turn.then(() => undefined, () => undefined);
+  queues.set(key, settled);
+  void settled.then(() => queues.get(key) === settled && queues.delete(key));
+  return turn;
+}
