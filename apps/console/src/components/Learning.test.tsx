@@ -636,6 +636,24 @@ describe("the Learning tab's skills and workflows", () => {
     expect(t.calls).toContain(`approve ${README_FILE} "readme-v1"`);
   });
 
+  it("approving a skill that is open approves the version it shows: the one read when it opened, never a newer one the list holds", async () => {
+    const t = await open(agent(true), { learning: async () => learned({ skill: "pending" }), caps: { learning: { pending: true, approve: true } }, read: reads });
+    await t.click(/^Show the skill find-policies$/);
+    expect(t.card("find-policies")!.textContent).toContain("Open the policies page first.");
+    await t.click(/^Approve find-policies$/);
+    expect(t.calls).toContain(`approve ${SKILL_FILE} "v-${SKILL_FILE}"`);
+  });
+
+  it("a text that could not be read is read again by Try again, the card staying open", async () => {
+    let tries = 0;
+    const t = await open(agent(true), { learning: async () => learned(), read: async (file: string) => { tries++; if (tries === 1) throw new Error("down"); return reads(file); } });
+    await t.click(/^Show the skill find-policies$/);
+    expect(t.card("find-policies")!.textContent).not.toContain("Open the policies page first.");
+    await t.click(/^Try again$/);
+    expect(tries).toBe(2);
+    expect(t.card("find-policies")!.textContent).toContain("Open the policies page first.");
+  });
+
   it("without the owner's password sign-in, one that waits says why, and there is no Approve", async () => {
     const t = await open(agent(true), { learning: async () => learned({ skill: "pending" }), caps: { learning: { pending: true, approve: false, approve_needs: "password" } } });
     expect(t.card("find-policies")!.textContent).toContain("Approving needs your password sign-in.");

@@ -417,21 +417,33 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
 function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | null>(null);
+  // The version of the text shown: a skill is approved on it, never on a newer one the list holds (its etag).
+  const [shown, setShown] = useState<string | null>(null);
   const [readError, setReadError] = useState<unknown>(null);
   const [approving, setApproving] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
+  const load = async () => {
+    setReadError(null);
+    setText(null);
+    setShown(null);
+    try { const read = await v2.readNote(agentId, item.file); setText(read.note); setShown(read.etag); } catch (e) { setReadError(e ?? new Error("unknown")); }
+  };
   const show = async () => {
     if (open) return setOpen(false);
     setOpen(true);
-    if (text !== null) return;
-    setReadError(null);
-    try { setText((await v2.readNote(agentId, item.file)).note); } catch (e) { setReadError(e ?? new Error("unknown")); }
+    if (text === null) await load();
   };
+  // The list moved to another version: a text shown of the old one goes, and an open card reads the new one.
+  useEffect(() => {
+    if (text === null && shown === null) return;
+    if (open) void load();
+    else { setText(null); setShown(null); }
+  }, [item.etag]); // eslint-disable-line react-hooks/exhaustive-deps
   const approve = async () => {
     setApproving(true); setSaid(null);
     try {
-      await v2.approveNote(agentId, kind === "workflow" && item.readme ? item.readme : item.file, item.etag);
+      await v2.approveNote(agentId, kind === "workflow" && item.readme ? item.readme : item.file, kind === "skill" && open && shown ? shown : item.etag);
       onChanged();
     } catch (e) {
       setApproving(false);
@@ -456,7 +468,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         </div>
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
-      {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => { setOpen(false); void show(); }} className="" /></div>
+      {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
         : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
         : kind === "skill" ? <Body text={bodyOf(text)} />
         : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-[12px]">{text}</pre>)}
