@@ -104,6 +104,12 @@ test("records read twice read the same, a turn's first end stands, and the end-o
   assert.deepEqual([live.open, live.end()], [1, undefined], "the follow-up is still open");
   const reflected = read([...list, message(7, "r"), sent(8, "r"), assistant(9, [{ type: "text", text: "Noted." }], "stop", 0.001)], [], (id) => id > 6);
   assert.deepEqual([reflected.open, answerOf(reflected)], [0, "Answer 1."], "the end-of-run turn opens no message and answers nothing");
+  // Its own turn end too (the bridge writes one for the end-of-run turn's message), and #1424's first form after it:
+  // the run ends exactly as it did before that turn, its answer never the turn's text.
+  const reflectEnd = [...list, message(7, "r"), sent(8, "r"), assistant(9, [{ type: "text", text: "Noted." }], "stop", 0.001), ended(10, { message: "r", status: "completed", answer: 9 }), ended(11, { status: "completed" })];
+  const before = read(list).end();
+  const afterTurn = read(reflectEnd, [], (id) => id > 6);
+  assert.deepEqual([afterTurn.open, afterTurn.end(), answerOf(afterTurn)], [0, before, "Answer 1."], "the end-of-run turn's own end changes nothing of the run's");
 });
 
 test("an older bridge's records: #1424's turn end with no message closes the message sent last; with no turn end at all, a message stays open until a turn end names it", () => {

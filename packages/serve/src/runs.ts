@@ -265,10 +265,14 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
 }
 
 /** Notes the messages the run's turns took and how each turn ended, from `entries` (its root's), `submissions` (pi's
- *  input submissions) and a reconnect's `snapshot` of them (the door's `inputs`, the run's whole state of them). */
+ *  input submissions) and a reconnect's `snapshot` of them (the door's `inputs`, the run's whole state of them), and the
+ *  newest entry (learning-run.ts reads it). The end-of-run learning turn's entries are no turn of the run's: none of
+ *  them, its TURN_END and its settlement included, opens, closes or answers one of the run's messages. */
 function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly unknown[] = [], snapshot?: readonly unknown[]): void {
-  run.turns.note(entries, submissions);
-  if (snapshot) run.turns.snapshot(snapshot);
+  for (const value of entries) if (isObject(value) && typeof value.id === "number") run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
+  const reflect = (id: number) => reflects(run.meta.reflect, id);
+  run.turns.note(entries, submissions, reflect);
+  if (snapshot) run.turns.snapshot(snapshot, reflect);
 }
 
 const shows = (r: TimelineEvent) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id);
@@ -311,7 +315,7 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer with text, paid for: an assistant message's, else its newest answer row's. */
-const lastAnswer = (run: Run) => run.turns.newestText ?? run.rows.findLast((r) => r.kind === "final_answer")?.text ?? null;
+const lastAnswer = (run: Run) => run.turns.newestText ?? run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 /** A row's store entry, from its id (`<conversation>:<entry>[:...]`). */
 const entryOfRow = (id: string) => Number(id.split(":")[1]);
 /** The answer of a run that completed: the whole text of the entry its turn's end names, "" when that turn showed no text,

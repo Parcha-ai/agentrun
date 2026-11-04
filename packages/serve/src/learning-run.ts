@@ -25,6 +25,7 @@ import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, withSecrets } from "./secrets.js";
 import { ended, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
+import { REFLECT_REQUEST } from "./turns.js";
 
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
  *  after it (its rows are those between), its deadline, whether its copy of the folder was laid, and how it ended. */
@@ -39,7 +40,7 @@ export const reflecting = (run: { meta: { reflect?: Reflect } }) => run.meta.ref
 const awaitsPropose = (meta: Partial<Run["meta"]> | null): boolean => meta?.learning?.state === "reflecting" && meta.reflect?.ended === true && meta.reflect.until !== undefined;
 /** The end-of-run turn's request id: the door and pi take one id once, so a turn asked again after a restart is not
  *  asked twice. */
-const reflectId = (runId: string) => `learn-reflect-${runId}`;
+const reflectId = (runId: string) => `${REFLECT_REQUEST}${runId}`;
 /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it. */
 const REFLECT_TIMEOUT_MS = 5 * 60_000;
 /** How often the run's door is asked whether its end-of-run turn has ended. */
