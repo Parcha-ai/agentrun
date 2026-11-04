@@ -1,7 +1,7 @@
 import { Copy, Download, FileText, Folder, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { bytes, markdown, when } from "@/lib/format";
+import { bytes, markdown, openLinkedFile, when } from "@/lib/format";
 import type { RunFile } from "@/lib/v2";
 import { viewKind } from "@/lib/viewing";
 
@@ -32,8 +32,9 @@ export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: R
 }
 
 /** The file viewer: the file's name, Copy, Download and its characters. Text and Markdown render here (Markdown
- *  sanitized); anything else is offered as a download only. */
-export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: string | null; onClose: () => void }) {
+ *  sanitized; a link in it to another of the run's `files`, read from this file's folder, opens that one with `onOpen`);
+ *  anything else is offered as a download only. */
+export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { file: RunFile; text: string | null; onClose: () => void; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
   const [copied, setCopied] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   // A native modal dialog: focus moves in and stays in, the page behind is inert, Escape closes it, and focus goes back
@@ -44,7 +45,10 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
     if (d && !d.open) d.showModal?.();
     return () => { d?.open && d.close(); opener?.focus?.(); };
   }, []);
+  // A link in a Markdown file can open another file in this viewer: Copied belongs to the file it was said of.
+  useEffect(() => setCopied(false), [file.path]);
   const kind = viewKind(file);
+  const open = openLinkedFile((path) => { const f = files.find((x) => x.path === path); if (f) onOpen?.(f); });
   const download = () => {
     if (text === null) return;
     const url = URL.createObjectURL(new Blob([text], { type: file.content_type ?? "application/octet-stream" }));
@@ -64,7 +68,8 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
         </header>
         <div className="min-h-0 flex-1 overflow-auto px-6 py-8 md:px-16">
           {text === null ? <p className="font-mono text-[13px] text-muted-foreground">Loading the file...</p>
-            : kind === "markdown" ? <article className="report mx-auto max-w-3xl" dangerouslySetInnerHTML={{ __html: markdown(text) }} />
+            : kind === "markdown" ? <article className="report mx-auto max-w-3xl" onClick={open}
+                dangerouslySetInnerHTML={{ __html: markdown(text, onOpen && { paths: files.map((f) => f.path), from: file.path.split("/").slice(0, -1).join("/") }) }} />
             : kind === "text" ? <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.8]">{text}</pre>
             : <p className="font-mono text-[13px] text-muted-foreground">This file type is not shown here. Download it to open it.</p>}
         </div>

@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import type { MouseEvent } from "react";
 import type { Cost } from "./v2";
 
 export const clock = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
@@ -51,5 +52,45 @@ export function cost(c: Cost | null | undefined): string {
   return `${dollars(c.usd)}${est(c)}`;
 }
 
-/** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames). */
-export const markdown = (text: string) => DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
+/** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
+ *  of the file the Markdown is in ("" for the run's answer), which its relative links are read from. */
+export type LinkedFiles = { paths: readonly string[]; from?: string };
+
+/** The run file a relative link names, resolved from `from` as a browser would (./, ../, %20; no query or fragment), or
+ *  null when it names none. A path from the root (/x) is the server's, never a run file. */
+function runFile(href: string, files: LinkedFiles): string | null {
+  if (href.startsWith("/") || href.startsWith("#")) return null;
+  const at = new URL(href, `file:///${files.from ? `${files.from.replace(/\/*$/, "")}/` : ""}`);
+  let path: string;
+  try { path = decodeURIComponent(at.pathname.slice(1)); } catch { return null; }
+  return files.paths.includes(path) ? path : null;
+}
+
+/** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames).
+ *  A link with no scheme (a relative path, a path from the root, a fragment, //host) would be read against the console's
+ *  own address and take its tab away (a fragment changes its route), so it is never a link here: one that names a run
+ *  file in `files` becomes a button carrying `data-run-file` (the page opens the file on its click), any other reads as
+ *  its text. A link with a scheme (https:, mailto:) is as marked and the sanitizer leave it. */
+export function markdown(text: string, files?: LinkedFiles): string {
+  const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
+  for (const a of [...body.querySelectorAll("a[href]")]) {
+    const href = a.getAttribute("href")!.trim();
+    if (/^[a-z][a-z\d+.-]*:/i.test(href)) continue;
+    const path = files && runFile(href, files);
+    if (path) {
+      const open = a.ownerDocument.createElement("button");
+      open.type = "button";
+      open.title = `Open ${path}`;
+      open.dataset.runFile = path;
+      open.append(...a.childNodes);
+      a.replaceWith(open);
+    } else a.replaceWith(...a.childNodes);
+  }
+  return body.innerHTML;
+}
+
+/** A click handler for rendered Markdown: a click on a run file's button (`data-run-file`, from `markdown`) opens it. */
+export const openLinkedFile = (onOpen: (path: string) => void) => (e: MouseEvent<HTMLElement>) => {
+  const path = (e.target as Element).closest?.("[data-run-file]")?.getAttribute("data-run-file");
+  if (path) { e.preventDefault(); onOpen(path); }
+};
