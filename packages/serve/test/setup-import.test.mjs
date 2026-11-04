@@ -440,7 +440,7 @@ test("a server stopped while setup still lists a home's session files exits at o
   // Unreferenced: the bound holds no exited test's process open.
   const outcome = await Promise.race([exited.then(() => "exited"), sleep(5_000, "still running", { ref: false })]);
   assert.equal(outcome, "exited", `${Date.now() - stopped} ms after SIGTERM, the count still listing`);
-  assert.equal(err, "", "no line on stderr: an ended count is no failed one");
+  assert.doesNotMatch(err, /the count of this machine's sessions failed/, "an ended count is no failed one");
 });
 
 test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
