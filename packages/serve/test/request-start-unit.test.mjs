@@ -30,7 +30,9 @@ test("a model stream that throws while it is read ends as an error, never a hang
   assert.notEqual(result, "hung", "the request ended");
   assert.equal(result.stopReason, "error");
   assert.match(result.errorMessage, /the connection reset/);
-  assert.deepEqual(kinds, [REQUEST_STARTED], "an error is pi's to write as the request's entry");
+  // Its start event came first, so its response had begun: its end is marked (`error`) before the result settles, and
+  // the error stays pi's to write as the request's entry (cap-error.test.mjs).
+  assert.deepEqual(kinds, [REQUEST_STARTED, REQUEST_ENDED], "its end marked before pi has its result");
 });
 
 test("a request cut before its first content, after the provider named it, ends with the provider's id on its end mark", async () => {

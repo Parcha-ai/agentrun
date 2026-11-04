@@ -5,9 +5,8 @@
 import { secret } from "./secrets.js";
 // Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { defaultData } from "./files.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
@@ -23,8 +22,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --port N          the port (default ${DEFAULT_PORT}; 0 is any free port)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
-  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else from this host's memory: (memory - 128 MiB)
-                    / 72 MiB, at least 1); over it a new run is 429
+  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
+                    holds); each run also reserves its harness's memory, and over either a new run is 429
   --documents DIR   a read-only directory of documents a workflow's pdf_pages calls read by file name (default
                     AGENTRUN_SERVE_DOCUMENTS)
   --allow-code-nodes run workflows' code nodes, in the run's process with no sandbox (default off, or
@@ -64,7 +63,7 @@ if (process.argv[2] === "reset-password") {
     console.error(`${(error as Error).message}\n\n${USAGE}`);
     process.exit(2);
   }
-  const target = dir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
+  const target = dir ?? defaultData();
   resetPassword(target);
   console.log(`The password is cleared and every browser is signed out (${target}). The next visit to the page sets a new one.`);
   process.exit(0);
@@ -119,7 +118,7 @@ if (publicName) {
   }
   publicUrl = parsed.href.replace(/\/+$/, "");
 }
-const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
+const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
