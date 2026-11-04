@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { snapshotInputs } from "../src/serve.ts";
 
-const input = (id: number, status: "queued" | "placed" | "done" | "unanswered", entry?: number) => ({ id, type: "input", status, ...(entry === undefined ? {} : { entry }) });
+const input = (id: number, status: "queued" | "placed" | "done" | "unanswered", entry?: number, requestId?: string) => ({ id, type: "input", status, ...(entry === undefined ? {} : { entry }), ...(requestId === undefined ? {} : { requestId }) });
 const ids = (records: readonly { id: number }[]) => records.map((record) => record.id);
 
 describe("snapshotInputs", () => {
@@ -22,5 +22,14 @@ describe("snapshotInputs", () => {
     assert.deepEqual(ids(snapshotInputs(records)), [2, 3]);
     // One withdrawn before it was placed (unanswered, no entry) had no turn: it is settled, and left out.
     assert.deepEqual(ids(snapshotInputs([input(1, "unanswered"), input(2, "placed", 11), input(3, "done", 12)])), [2, 3]);
+  });
+
+  it("a host's own turn (its request ids under `skip`) is never the newest settled input: after a reflect settle, the run's own inputs still read", () => {
+    // A, the run's last message, settled; F queued behind it; then the host's end-of-run turn (learning's reflect request)
+    // settled. Started at the reflect settle, the snapshot would drop A, and a reader holding A open could not close it.
+    const records = [input(1, "done", 10, "first-r1"), input(2, "queued", undefined, "follow-r1"), input(3, "done", 12, "learn-reflect-r1")];
+    assert.deepEqual(ids(snapshotInputs(records, "learn-reflect-")), [1, 2, 3]);
+    // With nothing of the run's own settled, every input.
+    assert.deepEqual(ids(snapshotInputs([input(2, "queued", undefined, "follow-r1"), input(3, "done", 12, "learn-reflect-r1")], "learn-reflect-")), [2, 3]);
   });
 });

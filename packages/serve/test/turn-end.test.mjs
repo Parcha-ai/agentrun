@@ -183,6 +183,19 @@ test("a follow-up queued before a steer that settled stays open: the snapshot st
   assert.deepEqual([turns.open, turns.end()], [1, undefined], "F stays open: the run does not end mid-turn");
 });
 
+test("a reconnect's snapshot whose newest settled input is the end-of-run turn's: the run's own newest settled input is the one the ledger reads", () => {
+  // X read open; then X, A and the end-of-run turn's input R all settled while the stream was down. The snapshot holds A
+  // (the run's own newest settled), F queued behind it, and R. X, missing and older than A, settled; F stays open.
+  const turns = new Turns();
+  turns.note([], [{ id: 1, conversationId: 1, type: "input", status: "placed", entry: 3, requestId: "x-r1" }], undefined, 1_000);
+  snapshot(turns, [
+    { id: 2, conversationId: 1, type: "input", status: "done", entry: 5, answer: 6, requestId: "a-r1", answer_text: "Answer A." },
+    { id: 4, conversationId: 1, type: "input", status: "queued", requestId: "follow-r1" },
+    { id: 7, conversationId: 1, type: "input", status: "done", entry: 8, answer: 9, requestId: "learn-reflect-r1", answer_text: "Noted." },
+  ]);
+  assert.deepEqual([turns.open, turns.end()], [1, undefined], "X closed, F open: the run waits for F");
+});
+
 test("a working turn's last progress: when its message was taken, then each entry since; none once every message is closed", () => {
   const turns = new Turns();
   turns.note([message(1, "a")], [], undefined, 1_000);
