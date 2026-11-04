@@ -31,6 +31,8 @@ export class Turns {
   /** The bridge's message whose turn runs (the one sent last), and its newest answer since then. */
   #sent: Message | undefined;
   #since: number | undefined;
+  /** The newest error the bridge wrote on the root since that message was sent: an older bridge's turn end has none. */
+  #sinceError: string | undefined;
   #newestText: string | undefined;
   #seen = 0;
   #progress: number | undefined;
@@ -59,6 +61,8 @@ export class Turns {
         this.#texts.set(id, text);
         if (text && fresh) this.#newestText = text;
         if (text && fresh && first.api === ADAPTER_API) this.#since = id;
+      } else if (value.kind === "pi.assistant" && first?.api === ADAPTER_API && first.stopReason === "error" && typeof first.errorMessage === "string") {
+        if (fresh) this.#sinceError = first.errorMessage;
       } else if (value.kind === MESSAGE && typeof data?.id === "string") {
         this.#take(`m:${data.id}`, now, id ?? this.#seen);
       } else if (value.kind === MESSAGE_END && typeof data?.id === "string") {
@@ -76,13 +80,17 @@ export class Turns {
         if (this.#sent && !this.#sent.end) this.#sent.end = { status: "answered", answer: this.#since ?? null };
         this.#sent = message;
         this.#since = undefined;
+        this.#sinceError = undefined;
       } else if (value.kind === TURN_END && data) {
         // #1424's first form names no message: it ends the turn of the message sent last, read in place.
         const message = typeof data.message === "string" ? this.#messages.get(`m:${data.message}`) : fresh ? this.#sent : undefined;
         if (!message || message.end) continue;
         const status = data.status === "completed" ? "answered" : data.status === "interrupted" ? "interrupted" : "failed";
         const answer = "answer" in data ? (typeof data.answer === "number" ? data.answer : null) : (this.#since ?? null);
-        message.end = { status, answer: status === "answered" ? answer : null, ...(typeof data.error === "string" ? { error: data.error } : {}) };
+        // #1424's bridge wrote a failed turn's error on the root, then its end with none (and a relaunch writes one for a
+        // turn whose end it never wrote): the error is the bridge's newest since that message was sent.
+        const error = typeof data.error === "string" ? data.error : status === "failed" && message === this.#sent ? this.#sinceError : undefined;
+        message.end = { status, answer: status === "answered" ? answer : null, ...(error === undefined ? {} : { error }) };
       }
     }
     for (const value of submissions) this.#settle(value, skip, now);
