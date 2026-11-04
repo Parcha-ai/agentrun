@@ -16,12 +16,15 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
  *    pi:           n=1 106, 106; n=3 96, 99 MB a run → 128 (+21%)
  *    codex:        n=1 132, 143; n=3 120, 131 MB a run → 192 (+34%)
  *    claude-agent: n=1 215, 208; n=3 211, 208 MB a run → 288 (+34%)
+ *    opencode:     n=1 524, 501; n=3 509, 514 MB a run → 704 (+34%), measured the same way 2026-11-04 on the pinned
+ *                  OpenCode 1.19.5 (its own process, a Bun binary, is most of it; at a 1024M limit two runs were
+ *                  OOM-killed, and at 512M one short run completed)
  *  The margin covers a longer conversation than the probe's three steps; the CLI harnesses (codex, claude-agent) grow
  *  more with one, so theirs is larger. At a 512M limit the same build completed pi x3, codex x2 and claude-agent x1
  *  (and x2). A check that reads a binary whole adds its size to the server and to each run (294 MB for codex, 230 MB
  *  for the claude-agent CLI), and these sizes do not cover it. The faux model and the faux
  *  harness reserve the size of the harness they stand in for, so tests admit as a real server does. */
-export const RUN_MIB: Readonly<Record<HarnessId, number>> = { pi: 128, "claude-agent": 288, codex: 192 };
+export const RUN_MIB: Readonly<Record<HarnessId, number>> = { pi: 128, "claude-agent": 288, codex: 192, opencode: 704 };
 
 /** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
  *  mid-turn (`steer`), or queues it for the turn's end. */

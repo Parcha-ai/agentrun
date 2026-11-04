@@ -6,3 +6,4 @@ AgentRun Server runs OpenCode as a harness: a revision with `harness: "opencode"
 - What a host does differently: install `opencode-ai@1.19.5` beside the server to make `opencode` available in `GET /v2/capabilities`. Without it, capabilities say it is not installed and give the install line.
 - OpenCode's own events for the session are mirrored into the run's store and given back to a new OpenCode process (`/sync/replay`) on each drive, so a follow-up, a stop or a crash resumes from the store. A turn a crash cut off gets the kernel's recovery note.
 - The console offers OpenCode beside Pi, Claude and Codex when the server lists it.
+- An opencode run reserves 704 MB of the host's memory (measured: OpenCode's own process takes about 500 MB), so a 1 GB instance holds one opencode run at a time and a host under 832 MB doesn't offer it, with why.

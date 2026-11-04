@@ -207,14 +207,16 @@ container's limit when it has one (cgroup), else the machine's, less the server'
 | pi | 128 MiB | up to 106 MB |
 | codex | 192 MiB | up to 143 MB |
 | claude-agent | 288 MiB | up to 215 MB |
+| opencode | 704 MiB | up to 524 MB |
 
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
-once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28. A start that does not fit in what is left is
+once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
+it, needs a 1 GB instance for one and 2 GB for two. A start that does not fit in what is left is
 `429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
 queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
-on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, and its runs are `409
-agent_not_runnable` with that reason. pi always has one place, however small the host.
+on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses` entry, and
+its runs are `409 agent_not_runnable` with that reason. pi always has one place, however small the host.
 
 `--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
 apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
