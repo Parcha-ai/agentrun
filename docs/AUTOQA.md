@@ -276,8 +276,8 @@ the run's files go to. It gives back:
   place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
 - Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
   (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
-  keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` is available when
-  it is, and every other box says runs in it are not available yet.
+  keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` and `daytona` are
+  available when they are, and every other box says runs in it are not available yet.
 - Serve, a run's place and its box: a run takes its revision's place or the default (`resolvePlace`), and the run keeps
   its resolved `place` (its `serve.json`, `GET /v2/runs/{id}`). In the run's process, `codingSource(place, box?)`
   (`packages/serve/src/coding-tools.ts`) is the boxed coding source: on the runner pi's `read`, `write` and `edit`; in a
@@ -287,9 +287,17 @@ the run's files go to. It gives back:
   box. The box's lifecycle and mounts are `packages/serve/src/run-box.ts` (`runBox`, `boxMounts`, `mountSource`,
   `destroyRunBoxes`, `sweepRunBoxes`), labelled `agentrun.run=<id>`; pi-transport's `endLeftCommands` kills what a
   crashed run's process left running.
+- Serve, a Daytona place (`{mode: "sandbox", box: "daytona"}`): the server makes, seeds, pulls and destroys the run's
+  sandbox with its own key (`ensureRemoteBox`, `pullRemoteBox` in `run-box.ts`; `remotePlace` in `place.ts`), the network
+  blocked (`networkBlockAll`). The run's process reaches it only through the box relay (`packages/serve/src/box-relay.ts`,
+  its address in `<data>/.box-relay`), which takes a run's call only with that run's own door token, follows no redirect,
+  and sends on with the key only a read of the run's own
+  sandbox and its toolbox's programs and files. `work/` is copied in at the sandbox's making and back at each turn's end
+  (a read of the run's files waits for that copy) and before the run's end is recorded; the mark is `box-sync.json`
+  beside the run. Tests: `test/daytona-boxes.test.mjs` on `test/fixtures/fake-daytona.mjs`, a loopback Daytona.
 
-Not on main yet: runs in a box other than Docker, a files API for the agent's home, and uploads. Each one extends this
-section when it lands.
+Not on main yet: runs in a box other than Docker and Daytona, a files API for the agent's home, and uploads. Each one
+extends this section when it lands.
 
 **Alone.** Everything else is faked: boxes by fake providers, the model by the faux model. Put a `docker` that exits
 1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:

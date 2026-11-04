@@ -31,17 +31,26 @@ async function serverProcess(data) {
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   for (let i = 0; !/AGENTRUN_BASE_URL=/.test(out); i++) {
-    assert.ok(i < 400 && child.exitCode === null, `the server did not start: ${out}`);
+    // 90 s: a loaded machine can take well over 20 s to start a server process (the test's own timeout is 150 s).
+    assert.ok(i < 1800 && child.exitCode === null, `the server did not start: ${out}`);
     await sleep(50);
   }
   return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
 
 test("a server that goes while a run reflects: the next one asks the turn again under the same request id, the run's process takes it once, and what it wrote merges", { timeout: 150_000 }, async (t) => {
+  // Teardown, registered before the scratch folders: node:test runs a test's after hooks in the order they were added and
+  // stops at the first that throws, so the servers and the run's process go first, and the folders' rm (scratch) after.
+  // Each step here is guarded, so one that fails never skips the rest.
+  let first, next, pid;
+  t.after(async () => {
+    try { first?.child.kill("SIGKILL"); } catch {}
+    try { if (pid && processAlive(pid)) process.kill(pid, "SIGKILL"); } catch {}
+    try { await next?.close(); } catch {}
+  });
   const data = join(await scratch(t), "agents");
   const go = join(await scratch(t), "go");
-  const first = await serverProcess(data);
-  t.after(() => first.child.kill("SIGKILL"));
+  first = await serverProcess(data);
   await made(first.api, learner("crash", { instructions: `Say your prompt. Reflect once ${go} exists.`, plan: PLAN }));
   const runId = await started(first.api, "crash");
   for (let i = 0; !reflectRows((await first.api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).some((row) => row.kind === "user_message"); i++) {
@@ -51,11 +60,9 @@ test("a server that goes while a run reflects: the next one asks the turn again 
   assert.equal((await first.api("GET", `/runs/${runId}`)).body.learning.state, "reflecting");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
-  const pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+  pid = JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
   assert.ok(processAlive(pid), "the run's process outlived its server, mid-turn");
-  t.after(() => processAlive(pid) && process.kill(pid, "SIGKILL"));
-  const next = await startServe({ data, port: 0, faux: LEARN, drainTimeout: "5s" });
-  t.after(() => next.close());
+  next = await startServe({ data, port: 0, faux: LEARN, drainTimeout: "5s" });
   const api = client(next.baseUrl, next.token);
   writeFileSync(go, "");
   const { view, rows } = await ended(api, runId);

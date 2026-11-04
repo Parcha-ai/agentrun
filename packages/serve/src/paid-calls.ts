@@ -61,8 +61,20 @@ export class PaidRefused extends Error {
 export type Ledger = { call: string; record(kind: string, data: Record<string, string | number | null>): Promise<void> };
 const ledgers = new AsyncLocalStorage<Ledger>();
 
-/** The ledger of a tool call: its id, and its commits to the run's store. */
-const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context) });
+/** The run process's own commit to its run's root, outside any one call's turn (app.ts sets it once the run's harness is
+ *  open). A request's settle (TOOL_COST) is written there: once a turn is stopped, its tool call can no longer commit
+ *  (pi-durable refuses a task with a durable abort mark), though the request was sent and its charge stands. */
+let rootRecord: Ledger["record"] | undefined;
+export const settleIn = (record: Ledger["record"] | undefined): void => {
+  rootRecord = record;
+};
+/** A settle of `kind` written to the run's root (settleIn), when that is set; else undefined, for the caller's own commit.
+ *  monid.run's settle goes here too. */
+export const settleOnRoot = (kind: string, data: Record<string, string | number | null>): Promise<void> | undefined => rootRecord?.(kind, data);
+
+/** The ledger of a tool call: its id, and its commits to the run's store. Its mark (TOOL_STARTED) is the call's own
+ *  commit, so a stopped turn sends nothing new; its settle goes to the run's root when that is set (settleIn). */
+const ledgerOf = (api: ToolExecutionApi, context: Context): Ledger => ({ call: api.callId, record: (kind, data) => ((kind === TOOL_COST ? settleOnRoot(kind, data) : undefined) ?? api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)) });
 
 /** `tool` with each call's paid requests booked under it: its execute runs with the call's ledger set. */
 export function booking<T extends ToolRegistration>(tool: T): T {

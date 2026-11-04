@@ -17,7 +17,8 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   Agent adapter does), and then the node fails `aborted`. Run again with the same step, it resumes from its records: a
   call that finished during the pause is never run, or paid for, again.
 - `AgentAdapter` is the interface a harness implements: `check` refuses a session before anything is spent (a fork it
-  cannot make), and `open` restores a session from its records.
+  cannot make), and `open` restores a session from its records. A session's `settleOpenTurn()` ends a turn its records
+  still hold open (one the person stopped), interrupted, and runs nothing, so the turn is never resumed.
 - `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
   session: every writer opened earlier for that key is fenced from then on, and its appends are refused
   (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a
@@ -35,7 +36,8 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   `followUpState(records)` tells a host, before it resumes an open turn, whether that turn is a follow-up's.
   `./process` is the shared layer for harnesses that run as a child process: the native journal, the transcript, the
   recovery note, the tool bridge, the built-ins' hook-pair calls, the inbox (and `waitForSubmissions`, for a harness that
-  waits for input while a turn runs), and `zodShapeFromJsonSchema`, for harness SDKs whose tool APIs take zod.
+  waits for input while a turn runs), `zodShapeFromJsonSchema`, for harness SDKs whose tool APIs take zod, and
+  `settleTurn`, the transcript's end for a turn a session settles (`settleOpenTurn`).
 - `./host` is the session's model proxy, provider-neutral: on the loopback interface, it admits only the session's key,
   only the routes a `ProviderPolicy` lists (by exact path text, with no query or one the route lists exactly; a route
   may also be answered by the proxy, or be free, like a token count), and strict JSON, has the policy shape or refuse the
