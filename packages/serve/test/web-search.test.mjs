@@ -473,3 +473,30 @@ test("pi's hosted search: Anthropic's pause_turn answers the results it has and 
   assert.match((await hostedSearch("widgets", 5, "anthropic/no-such-model", undefined, models)).error, /no model to search on/);
   assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 1, "one request, the paused one, not resubmitted");
 });
+
+test("a run cancelled while its search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known", { timeout: 90_000 }, async (t) => {
+  const seen = await calls(t, true);
+  // The faux Parallel answers the search after 2 s, so the cancel lands while the call is under way.
+  withEnv(t, { [MODE]: "slow:2000" }, [MODE, EXTRACT_MODE]);
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
+  assert.equal((await api("POST", "/agents", { definition: { id: "stopped", name: "stopped", instructions: "Research.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } } })).status, 201);
+  const started = await api("POST", "/agents/stopped/runs", { input: { content: "Search the web for widgets" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  for (const end = Date.now() + 30_000; !(await seen()).some((call) => call.path === "/v1/search"); ) {
+    assert.ok(Date.now() < end, "the search reached Parallel");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(api, runId, ["cancelled", "failed", "completed"], { deadlineMs: 60_000 });
+  let paid = [];
+  for (const end = Date.now() + 15_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
+    paid = paidRecords(data, runId);
+    if (paid.some((entry) => entry.kind === "agentrun.tool_cost")) break;
+  }
+  assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.heldUsd ?? entry.usd]), [
+    ["agentrun.tool_started", "web_search", PARALLEL_SEARCH_USD],
+    ["agentrun.tool_cost", "web_search", PARALLEL_SEARCH_USD],
+  ], "the call was marked, and settled though its turn was stopped");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, PARALLEL_SEARCH_USD, "the run's cost is the search's fee, never unknown");
+});
