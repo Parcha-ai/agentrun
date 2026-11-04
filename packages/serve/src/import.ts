@@ -1047,6 +1047,8 @@ export async function importCommand(
       env,
       stored: keys.values(),
     };
+    // What it prints is cut with the saved keys too, as what it keeps is.
+    printed.add(Object.values(options.stored ?? {}));
     if (values["dry-run"]) {
       // A dry run writes nothing, not even a store: one there already is only read.
       const reader = existsSync(join(dir, STORE_FILE)) ? openStoreReader(dir) : undefined;

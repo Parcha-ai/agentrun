@@ -598,6 +598,48 @@ test("an import's plan reads no subagent file through secretlint: a subagent of 
 });
 
 
+test("a secretlint-disable line in what an import reads turns no rule off: a key after it in the same run is cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "lint");
+  mkdirSync(site, { recursive: true });
+  const token = `${["gh", "p"].join("")}_${Array.from(randomBytes(36), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[b % 62]).join("")}`;
+  // A repository's own secretlint config printed in one turn, a token in the next.
+  claudeSession(at, site, 1, { prompt: `$ cat .secretlintrc.js\n// ${"secretlint"}-disable`, output: `GITHUB_TOKEN=${token}` });
+  const data = join(root, "agents");
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+  for (const [file, bytes] of keptUnder(data)) assert.ok(!bytes.includes(token), `${file.slice(data.length + 1)} holds the token`);
+  assert.ok(lines.includes("1 secret removed"), lines.filter((l) => /removed/.test(l)).join(" "));
+});
+
+test("reading text through secretlint leaves no performance marks behind in the process", async () => {
+  const { secretsIn } = await import("../dist/secret-cut.js");
+  const before = performance.getEntriesByType("mark").length;
+  for (let i = 0; i < 5; i++) await secretsIn(`round ${i}: ${["gh", "p"].join("")}_${"a1B2c3D4e5F6g7H8i9J0".repeat(2).slice(0, 36)}`);
+  assert.equal(performance.getEntriesByType("mark").length, before);
+});
+
+test("what the CLI prints is cut with the saved tool keys too: a skipped file named after one is printed cut", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const site = join(at, "code", "saved");
+  mkdirSync(site, { recursive: true });
+  const file = claudeSession(at, site, 1);
+  const seal = randomBytes(32).toString("base64");
+  const saved = `not-a-secret-saved-${randomBytes(8).toString("hex")}`;
+  const named = join(dirname(file), `${saved}.jsonl`);
+  writeFileSync(named, "not a session\n");
+  utimesSync(named, new Date(minute(10)), new Date(minute(10)));
+  const data = join(root, "agents");
+  mkdirSync(data, { recursive: true });
+  new ToolKeys(data, { AGENTRUN_SEAL_KEY: seal }, () => undefined).save("monid", { values: { MONID_API_KEY: saved } });
+  const lines = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin", AGENTRUN_SEAL_KEY: seal }, out: (line) => lines.push(line) }), 0);
+  assert.ok(!lines.some((line) => line.includes(saved)), lines.join("\n"));
+  assert.ok(lines.some((line) => line.startsWith("skipped ") && line.includes("[redacted].jsonl")), lines.join("\n"));
+});
+
 test("the README says what an import removes and what it leaves", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
   assert.ok(readme.includes("Known key formats are removed. Other secrets in your session history, like passwords in config files, are imported as they are."));

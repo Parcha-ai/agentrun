@@ -2,7 +2,11 @@
 // cut, for what the importer writes (a transcript can hold a key a tool printed or was given). The import adds the keys
 // secretlint finds in what it reads (`secretsIn`): keys of a known format, whoever's they are.
 import { lintSource } from "@secretlint/core";
-import { creator as recommended } from "@secretlint/secretlint-rule-preset-recommend";
+import { secretLintProfiler } from "@secretlint/profiler";
+import { rules as recommended } from "@secretlint/secretlint-rule-preset-recommend";
+
+// No performance marks: the profiler would leave about 14 a call in the process's global buffer.
+secretLintProfiler.setEnabled(false);
 
 /** Names whose values are secrets. */
 const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
@@ -23,16 +27,25 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
   // `text.removed` counts the values it cut, each once however often it was met; `text.probe` cuts the same and counts
   // nothing (a string never kept); `add` takes more values to cut (the keys secretlint found).
   const removed = new Set<string>();
-  // Each value as it is, and as a JSON string holds it (a quote or a backslash in it escaped).
+  // One pass a string: every value as it is and as a JSON string holds it (a quote or a backslash in it escaped), in one
+  // alternation, the longest first, so the longest value wins where two start at one place. Built again when values
+  // are added.
+  let pattern: RegExp | undefined;
+  let owner = new Map<string, string>();
+  const compile = () => {
+    owner = new Map();
+    for (const secret of secrets) for (const form of [secret, JSON.stringify(secret).slice(1, -1)]) if (!owner.has(form)) owner.set(form, secret);
+    const forms = [...owner.keys()].sort((a, b) => b.length - a.length);
+    pattern = forms.length ? new RegExp(forms.map((form) => form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g") : undefined;
+  };
+  compile();
   const cut = (value: string, count: boolean) =>
-    secrets.reduce((out, secret) => {
-      for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1)])) {
-        const parts = out.split(form);
-        if (parts.length > 1 && count) removed.add(secret);
-        out = parts.join(REDACTED);
-      }
-      return out;
-    }, value);
+    pattern
+      ? value.replace(pattern, (form) => {
+          if (count) removed.add(owner.get(form)!);
+          return REDACTED;
+        })
+      : value;
   const text = Object.assign(
     (value: string): string => {
       const out = cut(value, true);
@@ -43,7 +56,9 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
   );
   const add = (values: readonly string[]) => {
     const fresh = values.filter((value) => value.length >= 8 && !secrets.includes(value));
-    if (fresh.length) secrets.splice(0, secrets.length, ...[...secrets, ...fresh].sort((a, b) => b.length - a.length));
+    if (!fresh.length) return;
+    secrets.splice(0, secrets.length, ...[...secrets, ...fresh].sort((a, b) => b.length - a.length));
+    compile();
   };
   const json = (value: unknown): unknown => {
     if (typeof value === "string") return text(value);
@@ -54,7 +69,10 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
   return { text, json, add };
 }
 
-const SECRETLINT = { rules: [{ id: "@secretlint/secretlint-rule-preset-recommend", rule: recommended }] };
+/** The recommended preset's rules, but its comment filter: a `secretlint-disable` line in what an import reads (a
+ *  repository's own config a tool printed, a web page) would switch every rule off for the rest of it. */
+const FILTER_COMMENTS = "@secretlint/secretlint-rule-filter-comments";
+const SECRETLINT = { rules: recommended.filter((rule) => rule.meta.id !== FILTER_COMMENTS).map((rule) => ({ id: rule.meta.id, rule })) };
 /** How many passes `secretsIn` has made in this process: for a test that a path makes none. */
 export const secretlintCalls = { count: 0 };
 
