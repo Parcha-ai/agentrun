@@ -610,3 +610,28 @@ test("a key the provider refuses (401) ends the opencode turn with an error that
   const words = keyRefusal(ended.error, { who: "OpenAI", field: "OPENAI_API_KEY", saved: true }) ?? "";
   assert.match(words, /^OpenAI refused OPENAI_API_KEY \(401: Incorrect API key provided.*\): set it where AgentRun starts, or save it in Settings \u2192 Model keys\.$/, `the turn's error: ${ended.error}`);
 });
+
+test("a crash after a long prompt was placed, before OpenCode recorded it: the recovery sends the whole prompt, as codex does, not its first 1,500 characters", { timeout: 60_000 }, async () => {
+  const { openDrive } = await import("@parcha/agentrun-kernel/kernel");
+  const { placeSubmissions } = await import("@parcha/agentrun-kernel/process");
+  // The first process places the prompt, then dies before OpenCode's message is mirrored: no OpenCode session holds it.
+  const recovered = async (key, prompt) => {
+    const store = memorySessionStore();
+    const drive = await openDrive({ writer: await store.open(key), signal: new AbortController().signal });
+    await drive.submit({ id: "p1", kind: "prompt", text: prompt });
+    await placeSubmissions(drive, drive.pending());
+    const { adapter: a, provider: p } = adapter([{ text: "Recovered." }]);
+    const s = await session(a, store, spec([], { key }));
+    assert.equal(s.session.state, "open_turn", "setup: the placed prompt's turn is open to the next process");
+    await s.session.recover();
+    assert.deepEqual(await s.session.turnEnd(), { status: "completed" });
+    await s.session.close();
+    return userTexts(p).join("\n");
+  };
+  // The control: a short lost prompt reaches the model whole, with the note.
+  const short = await recovered("s-lost-short", "Count the invoices.");
+  assert.deepEqual([short.includes("Count the invoices."), short.includes("[Recovery]")], [true, true], `a short lost prompt and the note: ${short}`);
+  const long = `Read the brief below, then follow its last line.\n${"The brief goes on. ".repeat(100)}\nThe last line: reply with MARKER-AFTER-1500.`;
+  const sent = await recovered("s-lost-long", long);
+  assert.match(sent, /reply with MARKER-AFTER-1500\./, "the long lost prompt's end reaches the model");
+});
