@@ -539,10 +539,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   await probe("start");
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
-  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then the
-  // webhook's ledger against the agent store: waits of runs ended or gone dropped, and each end it lacks queued.
+  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then, however
+  // that went, the webhook's ledger against the agent store: waits of runs ended or gone dropped, and each end it lacks
+  // queued. Each is its own step: a recovery that gives up (a store busy past its wait) still lets the catch-up run, and a
+  // step that gives up is said, the next start trying it again.
   void runs
     .recover()
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`))
     .then(async () => {
       const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
       const byId = new Map(rows.map((row) => [row.id, row]));
@@ -555,7 +558,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
       });
     })
-    .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
