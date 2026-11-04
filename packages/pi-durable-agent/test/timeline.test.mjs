@@ -61,6 +61,38 @@ test("prose before calls is a text_block; a final stop answer is the final_answe
   assert.deepEqual(rows.filter((r) => /text|final/.test(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "Opening the portal."], ["final_answer", "Done."]]);
 });
 
+test("a host may name a call's file path its own way (path option): the tool rows and the Saved row use it, the input preview and the entries keep the call's own", () => {
+  const work = "/data/runs/r1/work";
+  const entries = () => [assistant([call("w", "write", { path: `${work}/hello.md`, content: "hi" })]), result("w", "write", "Successfully wrote to hello.md"), assistant([{ type: "text", text: "Done." }])];
+  const path = (p) => (p.startsWith(`${work}/`) ? p.slice(work.length + 1) : p);
+  const given = entries();
+  const rows = timelineOf(given, { path });
+  assert.deepEqual(rows.filter((r) => ["tool_use", "tool_result", "phase"].includes(r.kind)).map((r) => [r.kind, r.summary, r.path ?? null]), [["tool_use", "Wrote hello.md", null], ["tool_result", "Wrote hello.md: ok", null], ["phase", "Saved hello.md", "hello.md"]]);
+  assert.match(rows.find((r) => r.kind === "tool_use").tool_input_preview, /\/data\/runs\/r1\/work\/hello\.md/, "the preview is the call's own input");
+  assert.equal(given[0].model[0].content[0].arguments.path, `${work}/hello.md`, "the entry is not changed");
+  // The live view takes the same option.
+  const reducer = timelineReducer({ path });
+  reducer.apply(entries().map((entry) => ({ type: "entry_appended", entry })));
+  assert.deepEqual(reducer.rows().filter((r) => r.kind === "phase").map((r) => r.summary), ["Saved hello.md"]);
+  // Without it, rows name the path as the call gave it.
+  assert.deepEqual(timelineOf(entries()).filter((r) => r.kind === "tool_use").map((r) => r.summary), [`Wrote ${work}/hello.md`]);
+});
+
+test("folded calls take the host's path option too: two reads by absolute path read \"Read 2 files: a.md, b.md\"; without it, as before", () => {
+  const work = "/data/runs/r1/work";
+  const path = (p) => (p.startsWith(`${work}/`) ? p.slice(work.length + 1) : p);
+  const entries = () => [
+    assistant([call("r1", "read", { path: `${work}/a.md` }), call("r2", "read", { path: `${work}/b.md` })]),
+    result("r1", "read", "a"), result("r2", "read", "b"),
+    assistant([{ type: "text", text: "Read both." }]),
+  ];
+  const folded = (rows, options) => lines(rows, options).find((line) => /Read 2 files/.test(line)) ?? "";
+  assert.match(folded(timelineOf(entries(), { path }), { path }), /Read 2 files: a\.md, b\.md/);
+  assert.ok(folded(timelineOf(entries())).includes(`Read 2 files: ${work}/a.md, ${work}/b.md`), folded(timelineOf(entries())));
+  // The preview stays the call's own.
+  assert.equal(timelineOf(entries(), { path }).find((r) => r.kind === "tool_use").tool_input_preview, `${work}/a.md`);
+});
+
 test("a round of three browser_read folds to one line and shows its failure", () => {
   const rows = timelineOf([
     assistant([call("a", "browser_read"), call("b", "browser_read"), call("c", "browser_read")], 0),
@@ -539,6 +571,37 @@ test("a call an earlier process left open is interrupted in its place: the answe
   placed(rest(timelineOf(entries, { settled: true })));
 });
 
+test("a result stored before its call (a harness that wrote it first) reads as that call's: right after it, with its label, once, and the call never reads interrupted", () => {
+  // Two calls in one answer; the first one's result was stored before the answer that holds both.
+  const entries = [
+    user("Write the files.", 0),
+    result("w1", "write", "Successfully wrote a.md", 1),
+    assistant([call("w1", "write", { path: "a.md", content: "alpha" }), call("w2", "write", { path: "b.md", content: "beta" })], 2),
+    result("w2", "write", "Successfully wrote b.md", 3),
+    assistant([{ type: "text", text: "Wrote both." }], 4),
+  ];
+  const placed = (rows) => {
+    const shown = JSON.stringify(rows.map((r) => [r.id, r.kind, r.summary]));
+    assert.deepEqual(rows.filter((r) => r.id.includes(":interrupted:")), [], `no call reads interrupted: ${shown}`);
+    for (const [id, file] of [["w1", "a.md"], ["w2", "b.md"]]) {
+      const use = rows.findIndex((r) => r.kind === "tool_use" && r.tool_use_id === id);
+      const results = rows.filter((r) => r.kind === "tool_result" && r.tool_use_id === id);
+      assert.equal(results.length, 1, `${id}: one result: ${shown}`);
+      assert.ok(use >= 0 && rows.indexOf(results[0]) === use + 1, `${id}: its result right after its call: ${shown}`);
+      assert.match(results[0].summary, new RegExp(file.replace(".", "\\.")), `${id}: its result names ${file}: ${shown}`);
+      assert.equal(results[0].tool_status, "success", shown);
+    }
+    assert.equal(rows.filter((r) => r.kind !== "usage" && r.kind !== "phase").at(-1).kind, "final_answer", shown);
+  };
+  // Stored: the settled read.
+  placed(timelineOf(entries, { settled: true }));
+  // Live: the same store as a snapshot, then a turn that starts and ends.
+  const reducer = timelineReducer({ conversationId: 1 });
+  reducer.apply([{ type: "snapshot", entries }, { type: "run_start", inputs: [] }]);
+  reducer.apply([{ type: "run_end", inputs: [] }]);
+  placed(reducer.rows());
+});
+
 test("waits: a retry, a poll and a queue are live rows that clear", () => {
   const reducer = timelineReducer({ conversationId: 1, now: () => 1_000 });
   const rows = (events) => summaries(reducer.apply(events).rows);
@@ -629,16 +692,25 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   for (const secret of ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "SECRET6", "frag-secret", userinfo("pw")]) assert.ok(!all.includes(secret), `a row holds ${secret}`);
 });
 
-test("a nested call's result is scrubbed too", () => {
-  const reducer = timelineReducer({ conversationId: 1 });
-  reducer.apply([
-    { type: "message_end", entry: assistant([call("p", "codemode", {})], 0) },
-    { type: "tool_execution_start", toolCallId: "p/1", toolName: "web_fetch", args: { url: "https://x.example/a?token=SECRET7" }, parentToolCallId: "p" },
-    { type: "tool_execution_end", toolCallId: "p/1", toolName: "web_fetch", parentToolCallId: "p", result: { taskId: 2, isError: false, structuredOutput: "https://x.example/b?sig=SECRET8", diagnostics: [] } },
+test("a failed call answered only by the harness's diagnostics block is summarized by its error, not by the block's tag", () => {
+  const rows = timelineOf([
+    assistant([
+      call("a", "bash", { command: "true" }),
+      call("b", "bash", { command: "ls" }),
+      call("c", "read", { path: "a.md" }),
+      call("d", "bash", { command: "make" }),
+    ], 0),
+    result("a", "bash", "<harness>\n[error] Tool bash is not available\n</harness>", 1, { isError: true }),
+    result("b", "bash", "<harness>\n[warning] Output truncated: 3 lines, 9 bytes dropped\n[error] Tool call blocked: refused by the permission gate\n</harness>", 1, { isError: true }),
+    result("c", "read", "<harness>\n[error]\n</harness>", 1, { isError: true }),
+    result("d", "bash", "make: *** No rule to make target\n<harness>\n[error] Command exited with code 2\n</harness>", 1, { isError: true }),
   ]);
-  const all = JSON.stringify(reducer.rows());
-  assert.ok(!all.includes("SECRET7") && !all.includes("SECRET8"));
-  assert.ok(all.includes("https://x.example/b?sig=\u2026"));
+  const summary = (id) => rows.find((row) => row.tool_use_id === id && row.kind === "tool_result").summary;
+  assert.equal(summary("a"), "Ran `true` failed: Tool bash is not available");
+  assert.equal(summary("b"), "Ran `ls` failed: Tool call blocked: refused by the permission gate", "the error, before any warning");
+  assert.equal(summary("c"), "Read a.md failed: no detail");
+  assert.equal(summary("d"), "Ran `make` failed: make: *** No rule to make target", "a result with output keeps its first line");
+  assert.equal(rows.find((row) => row.tool_use_id === "a" && row.kind === "tool_result").tool_result_preview, "<harness>\n[error] Tool bash is not available\n</harness>", "the preview is the result as it is");
 });
 
 test("a saved file's phase row carries its path", () => {
@@ -717,6 +789,7 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own tex
     { type: "message_update", usage: {}, changes: [{ type: "thinking_delta", contentIndex: 0, delta: `Think ${at(15)}` }, { type: "text_delta", contentIndex: 1, delta: `Say ${at(16)}` }] },
     { type: "tool_execution_start", toolCallId: "s/1", toolName: "browser_read", args: {}, parentToolCallId: "s" },
     { type: "tool_execution_end", toolCallId: "s/1", toolName: "browser_read", parentToolCallId: "s", result: { taskId: 3, isError: false, structuredOutput: `title: ${at(17)}`, diagnostics: [] } },
+    { type: "tool_execution_start", toolCallId: "s/2", toolName: "web_fetch", args: { url: at(21) }, parentToolCallId: "s" },
     { type: "auto_retry_start", attempt: 1, at: 0, errorMessage: `limit at ${at(18)}` },
     { type: "task_failed", taskId: 4, kind: "tool", message: `crashed at ${at(19)}` },
     { type: "compaction_end", taskId: 5, reason: "threshold", error: `no summary at ${at(20)}` },
@@ -728,6 +801,8 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own tex
     assert.deepEqual(rest.match(/SECRET\d+/g), null);
     assert.ok(rest.includes("https://x.example/14?token=…"));
   }
+  const nested = JSON.stringify(reducer.rows());
+  for (const id of [17, 21]) assert.ok(nested.includes(`https://x.example/${id}?token=…`), `a nested call's ${id === 17 ? "result" : "args"} keep the URL's path`);
 });
 
 test("a provider wait clears when the answer comes, fails, retries, or the run ends", () => {
@@ -783,4 +858,17 @@ test("web_search reads as a search, in the past tense: the query scrubbed and cu
   const [first] = text(rows).split("\n");
   assert.match(first, /^\S+\s+Searched the web 3 times: "acme anvils", "see https:\/\/x\.example\/a\?token=… for d\.\.\."\s+3 ok$/);
   assert.equal(foldLabel("web_search", [{ input: "a", output: null }]), 'Searched the web 1 times: "a"');
+});
+
+test("a run's process that opened again after the last one ended unfinished is a row of its own, from its entry: after a crash, or after the server stopped", () => {
+  const time = (s) => Date.UTC(2026, 9, 15, 20, 14, 0) + s * 1000;
+  const resumed = (after, s) => ({ kind: "agentrun.run_resumed", id: 900 + s, conversationId: 1, data: { generation: 2, after, at: time(s) } });
+  const entries = [user("hi", 0), assistant([{ type: "text", text: "a" }], 1), resumed("crash", 5), assistant([{ type: "text", text: "b" }], 6), resumed("server_stop", 9)];
+  const rows = timelineOf(entries);
+  const marks = (list) => list.filter((r) => r.kind === "phase").map((r) => [r.summary, r.timestamp]);
+  assert.deepEqual(marks(rows), [["Resumed after a crash", new Date(time(5)).toISOString()], ["Resumed after the server stopped", new Date(time(9)).toISOString()]], "each at the time its process opened");
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.02, requests: 2 }, "a mark is no request");
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "snapshot", entries }]);
+  assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
 });

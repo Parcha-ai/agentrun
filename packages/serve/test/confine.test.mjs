@@ -8,7 +8,6 @@ import { test } from "node:test";
 import { answerFlow, follow, serve } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
-const OUTSIDE = /^<harness>\n\[error\] .*: outside the workspace /;
 const NO_SHELL = "<harness>\n[error] Tool bash is not available\n</harness>";
 const exists = (path) => stat(path).then(() => true, () => false);
 
@@ -83,7 +82,8 @@ test("read, write and edit reach nothing outside work/: the tokens, the owner's 
   attempts.forEach(([tool, args], i) => {
     assert.equal(said[i].tool, tool);
     assert.equal(said[i].error, true, `${tool} ${args.path} is refused`);
-    assert.match(said[i].text, OUTSIDE, `${tool} ${args.path}`);
+    // Named as the call gave it, and by no other path: not the workspace, not where it resolved or a link points.
+    assert.equal(said[i].text, `<harness>\n[error] ${args.path}: outside the workspace\n</harness>`, `${tool} ${args.path}`);
   });
   assert.deepEqual(said.slice(attempts.length).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to inside.txt"], ["read", false, "inside"], ["read", false, "note"]], "the same run reads and writes inside work/, and reads its own tmp/");
   assert.equal(await readFile(join(data, "runs", run.runId, "work", "inside.txt"), "utf8"), "inside");

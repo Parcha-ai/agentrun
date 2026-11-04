@@ -98,9 +98,10 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.deepEqual(pinOf(data, runId), { seed: git(repo, ["rev-parse", "main"]) });
   assert.deepEqual(readdirSync(learnedDir(data, runId)), ["MEMORY.md"]);
   assert.ok(prompt.includes("Answer the question.") && !prompt.includes("# Learned"), `an empty index adds no section: ${prompt}`);
+  // Seeded, then, as its agent has no write tool, asked no end-of-run turn (learn-reflect.test.mjs).
   const { whole, short } = await learningOf(api, "fresh", runId);
-  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "seeded", reason: null, detail: null, at: "string" });
-  assert.deepEqual(short, { state: "seeded", reason: null });
+  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "no_write_tool", detail: "The agent has no write tool to add a note with.", at: "string" });
+  assert.deepEqual(short, { state: "dropped", reason: "no_write_tool" });
   // A server started again reads the run's learning back from its serve.json, whole and in a list.
   await first.close();
   const again = await serve(t, { data, faux: SYSTEM });
@@ -129,7 +130,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const skills = join(data, "runs", runId, "work", ".agents", "skills");
     assert.deepEqual(existsSync(skills) ? readdirSync(skills) : [], [], "no learned skill is written");
     const { whole, short } = await learningOf(api, id, runId);
-    assert.deepEqual([whole.state, whole.reason, short], ["seeded", null, { state: "seeded", reason: null }]);
+    assert.deepEqual([whole.state, whole.reason, short], ["dropped", "no_write_tool", { state: "dropped", reason: "no_write_tool" }], "seeded, and asked no end-of-run turn");
   });
 }
 
@@ -200,7 +201,7 @@ test("two runs of a new agent made at once: one folder made, one commit on main,
   assert.equal(git(repo, ["reflog", "show", "--format=%H", "refs/heads/main"]), main, "main was set once");
   assert.deepEqual(made.map((run) => pinOf(data, run.body.run_id).seed), [main, main]);
   assert.deepEqual(readdirSync(homeOf(data, "twice")), ["learning"]);
-  for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.state, "seeded");
+  for (const run of made) assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.learning.reason, "no_write_tool", "seeded, and asked no end-of-run turn");
 });
 
 test("two agents whose ids differ only in case: each has its own learning folder, in homes whose names differ in any case, and what one learned never seeds the other's run", { timeout: 120_000 }, async (t) => {

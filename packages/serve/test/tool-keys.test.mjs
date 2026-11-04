@@ -18,7 +18,7 @@ import { agent, call, client, cookieOf, FAUX, follow, printed, scratch, serve, w
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
-const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "AGENTRUN_SEAL_KEY"];
+const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_SEAL_KEY"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
@@ -38,6 +38,9 @@ async function meetsDocument(api, view) {
 }
 
 test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
+  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key }, KEYS);
   const { api, data } = await serve(t);
@@ -47,12 +50,17 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: values.BROWSERBASE_PROJECT_ID } })).status, 204, "one field of two, the other kept");
   const listed = await api("GET", "/settings/tool-keys");
   assert.equal(listed.status, 200);
-  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET });
-  assert.deepEqual(listed.body.keys.map((k) => [k.id, k.unlocks, k.harnesses]), [
-    ["parallel", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
-    ["monid", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
-    ["browserbase", ["browser"], ["pi"]],
-    ["typesafe", ["decisions.jev"], []],
+  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
+  // A model key's harnesses: pi and its provider's own, of those this server runs.
+  const offered = (await api("GET", "/capabilities")).body.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
+  assert.deepEqual(listed.body.keys.map((k) => [k.id, k.kind, k.unlocks, k.harnesses]), [
+    ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex"]],
+    ["monid", "tool", ["monid.discover", "monid.inspect", "monid.run"], ["pi", "claude-agent", "codex"]],
+    ["browserbase", "tool", ["browser"], ["pi"]],
+    ["typesafe", "tool", ["decisions.jev"], []],
+    ["anthropic", "model", [], ["pi", "claude-agent"].filter((id) => offered.includes(id))],
+    ["openai", "model", [], ["pi", "codex"].filter((id) => offered.includes(id))],
+    ["openrouter", "model", [], ["pi"]],
   ], "only what this server binds: web_fetch and web_search on every harness; the monid tools on every harness, as capabilities run them");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
@@ -70,7 +78,7 @@ test("a key saved by name is kept sealed: GET says which fields are set and from
   assert.throws(() => unseal(Buffer.from(key, "base64"), sealed, "tool-keys/1|MONID_API_KEY"));
   holdsNone(readFileSync(file), keyForms(key), "tool-keys.json");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
-  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, TYPESAFE_API_KEY: UNSET });
+  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8")).fields), ["PARALLEL_API_KEY"]);
 });
 
@@ -86,8 +94,10 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
       assert.deepEqual(view.keys.map((key) => key.id), TOOL_KEYS.map((row) => row.id), "every key lists, one that unlocks nothing too");
       for (const [i, key] of view.keys.entries()) {
         assert.deepEqual(key.unlocks, TOOL_KEYS[i].unlocks.filter((name) => bound.has(name)), `${key.id}: its names capabilities bind, and only those`);
-        const run = new Set(key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []));
-        assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks`);
+        // A model key unlocks no tool: its harnesses are pi and its provider's own, of those this server runs.
+        const offered = caps.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
+        const run = new Set(TOOL_KEYS[i].kind === "tool" ? key.unlocks.flatMap((name) => tools.get(name)?.harnesses ?? []) : TOOL_KEYS[i].harnesses.filter((id) => offered.includes(id)));
+        assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks, or that run on its model key`);
       }
       for (const tool of caps.tools) if (tool.key !== undefined) assert.ok(view.keys.find((key) => key.id === tool.key)?.unlocks.includes(tool.name), `${tool.name} names the key ${tool.key}, which unlocks it`);
       await meetsDocument(api, view);
@@ -150,7 +160,7 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: made() } })).status, 409);
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: made() } })).status, 204);
   const view = (await api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET });
+  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
   for (const value of Object.values(server)) holdsNone(JSON.stringify(view) + JSON.stringify(refused.body), formsOf(value), "an answer");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204, "its stored field goes; the server's stays");
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);
@@ -273,10 +283,12 @@ test("the page's owner saves and forgets a key with the session cookie from the 
 async function launched(t, data, config, token) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !KEYS.includes(name)));
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--faux", FAUX], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...env, XDG_CONFIG_HOME: config, AGENTRUN_TOKEN: token } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Signalled only while it lives: once it has exited, its group id may be another process's (PIDs wrap in minutes).
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", (code) => ((alive = false), resolve(code))));
   const stop = async () => {
     try {
-      process.kill(-child.pid, "SIGTERM");
+      if (alive) process.kill(-child.pid, "SIGTERM");
     } catch {}
     await exited;
   };
@@ -332,7 +344,7 @@ test("under its launcher the seal key is made once, outside the data directory, 
   holdsNone(said.join("\n"), forms, "the server's log and answers");
 });
 
-test("a key saved later makes a harness available with no restart: each key write makes the harnesses' offers again from the server's reading", async (t) => {
+test("a key a harness reads, saved later, makes the harness available with no restart: the server's reading probes the harnesses' offers with it", async (t) => {
   if (secret("ANTHROPIC_API_KEY")) return t.skip("this process holds an Anthropic key of its own");
   let saved;
   const stored = (name) => (name === "ANTHROPIC_API_KEY" ? saved : undefined);
@@ -340,7 +352,9 @@ test("a key saved later makes a harness available with no restart: each key writ
   const claude = async () => (await readingOf(base, 4, stored)).caps.harnesses.find((offer) => offer.id === "claude-agent");
   assert.deepEqual([(await claude()).available, (await claude()).reason], [false, "claude-agent needs ANTHROPIC_API_KEY."]);
   saved = ["not-a-secret", "anthropic"].join("-");
-  assert.deepEqual(await claude(), { id: "claude-agent", available: true, steer: false, default_model: null }, "saved: offered");
+  // How many fit at once is this host's memory (admission.test.mjs).
+  const { max_concurrent_runs, ...offer } = await claude();
+  assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5-5", run_memory_mib: 288 }, "saved: offered, on the key's default model");
   saved = undefined;
   assert.equal((await claude()).available, false, "deleted: not offered");
 });
@@ -350,11 +364,46 @@ test("TypeSafe's key unlocks Jev's decisions: saved, the jev provider is availab
   const { api } = await serve(t);
   const jev = async () => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((provider) => provider.id === "jev").available;
   const row = async () => (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "typesafe");
-  assert.deepEqual(await row(), { id: "typesafe", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }] });
+  assert.deepEqual(await row(), { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }], check: null });
   assert.equal(await jev(), false);
   assert.equal((await api("PUT", "/settings/tool-keys/typesafe", { values: { TYPESAFE_API_KEY: made() } })).status, 204);
   assert.deepEqual([await jev(), (await row()).fields], [true, [{ name: "TYPESAFE_API_KEY", ...STORED }]], "no restart");
   assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
   assert.equal(await jev(), false);
   await meetsDocument(api, (await api("GET", "/settings/tool-keys")).body);
+});
+
+test("a tool-settings PUT and a tool key's PUT and DELETE answer without probing the harnesses again, and capabilities read right after show each change", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, KEYS);
+  const lines = [];
+  const { api } = await serve(t, { log: (line) => void lines.push(line) });
+  const caps = async () => (await api("GET", "/capabilities")).body;
+  const tool = async (name) => (await caps()).tools.find((entry) => entry.name === name);
+  const parallel = async () => (await caps()).workflows.decisions.providers.find((provider) => provider.id === "parallel").available;
+  const harnesses = (await caps()).harnesses;
+
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "off" } })).status, 200);
+  const off = await tool("web_search");
+  assert.deepEqual([off.available, [...new Set(Object.values(off.resolves))]], [false, ["unavailable: web_search is turned off in settings"]], "off at once");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);
+  assert.deepEqual([(await tool("web_search")).available, (await tool("web_search")).missing, await parallel()], [false, ["PARALLEL_API_KEY"], false], "Parallel picked, no key");
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: made() } })).status, 204);
+  const picked = await tool("web_search");
+  assert.deepEqual([picked.available, picked.missing, [...new Set(Object.values(picked.resolves))], await parallel()], [true, undefined, ["parallel"], true], "the key saved: Parallel resolves, and its decisions run, at once");
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
+  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [true, undefined], "monid at once");
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  assert.deepEqual([(await tool("monid.run")).available, (await tool("monid.run")).missing], [false, ["MONID_API_KEY"]], "deleted: missing at once");
+  assert.equal((await api("DELETE", "/settings/tool-keys/parallel")).status, 204);
+  assert.deepEqual([(await tool("web_search")).missing, await parallel()], [["PARALLEL_API_KEY"], false], "deleted: Parallel missing at once");
+  assert.deepEqual((await caps()).harnesses, harnesses, "no tool key and no tool setting changes what the harnesses offer");
+
+  // Probes counted, not timed: the server logs each probe of the harnesses (event=harness_offers), and it made one, at its
+  // start, around the six writes it logged; none of them probed again.
+  const events = lines.flatMap((line) => {
+    const probe = / event=harness_offers why=(\S+)/.exec(line);
+    const write = / event=request method=(PUT|DELETE) path=(\/v2\/settings\/tool\S*)/.exec(line);
+    return probe ? [`probe:${probe[1]}`] : write ? [`${write[1]} ${write[2]}`] : [];
+  });
+  assert.deepEqual(events, ["probe:start", "PUT /v2/settings/tools", "PUT /v2/settings/tools", "PUT /v2/settings/tool-keys/parallel", "PUT /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/monid", "DELETE /v2/settings/tool-keys/parallel"]);
 });

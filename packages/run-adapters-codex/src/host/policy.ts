@@ -392,6 +392,32 @@ function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): {
   };
 }
 
+/** The tokens a request keeps for its answer when its output is limited. */
+export const ANSWER_TOKENS_LEAST = 1024;
+/** What a reasoning request at each effort is allowed for its reasoning beside its answer, when its output is limited:
+ *  OpenAI's reasoning shares `max_output_tokens` and takes no budget, so a limit under its reasoning comes back
+ *  incomplete with no answer. The figures are pi-ai's thinking budgets by level (xhigh at high's). */
+export const REASONING_TOKENS_ALLOWED: Readonly<Record<string, number>> = Object.freeze({ minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384 });
+
+/** The output tokens a Responses body asks for at most: its `max_output_tokens` (as `apply` clamped it). */
+export function responsesOutputAsked(body: Record<string, unknown>): number | undefined {
+  const asked = body.max_output_tokens;
+  return typeof asked === "number" && Number.isSafeInteger(asked) && asked > 0 ? asked : undefined;
+}
+
+/** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
+ *  allowance when it reasons. */
+export function responsesOutputLeast(body: Record<string, unknown>): number {
+  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
+}
+
+/** A Responses body with its output limited to `max` tokens, reasoning included: never raised, and never longer. */
+export function limitResponsesOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
+  const asked = responsesOutputAsked(body);
+  return { ...body, max_output_tokens: asked === undefined ? max : Math.min(asked, max) };
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
@@ -442,6 +468,9 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured.
+    outputAsked: responsesOutputAsked,
+    outputLeast: responsesOutputLeast,
+    limitOutput: limitResponsesOutput,
     serverInputOverhead: search ? (body) => {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;
       return responsesServerInputOverhead(body);

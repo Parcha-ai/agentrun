@@ -193,7 +193,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   read: fileTool("read", "Read a file in the run's work/."),
   write: fileTool("write", "Write a file in the run's work/."),
   edit: fileTool("edit", "Edit a file in the run's work/."),
-  bash: fileTool("bash", "Run a bash command in the run's box, from its work/: an agent whose place is a sandbox only (none runs on this machine). Its output's tail; 300 s unless the call names a timeout.", true),
+  bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.", true),
   [ASK_TOOL]: {
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
@@ -297,16 +297,18 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  a user picks a provider for (tool-plane.ts) gives the providers offered, the server's (`provider`, the default where it
  *  sets none), the default, and what it resolves to on each harness under the server's `settings`: available where any
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
- *  (`reason`). */
-export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}) => {
+ *  (`reason`). `noBox`: why no box can run a sandbox-only tool here (place.ts noBoxReason), which leaves it
+ *  unavailable with that reason; undefined, a box can. */
+export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string) => {
   const resolves = resolvesView(env, settings);
   return Object.entries(TOOLS).map(([name, entry]) => {
     const plane = (PICKABLE as readonly string[]).includes(name) ? resolves[name as Pickable] : undefined;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
-    const available = plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0;
-    // Unavailable says why: on a tool a user picks a provider for, the resolutions' own words (`web_search is turned off in
-    // settings`), else the variables it needs.
-    const reason = available ? undefined : plane ? [...new Set(Object.values(plane).filter(isUnavailable).map((resolution) => resolution.slice("unavailable: ".length)))].join("; ") : `Needs ${missing.join(", ")}`;
+    const boxless = entry.sandboxOnly ? noBox : undefined;
+    const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined;
+    // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
+    // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
+    const reason = available ? undefined : boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map((resolution) => resolution.slice("unavailable: ".length)))].join("; ") : `Needs ${missing.join(", ")}`);
     return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: settings[name as Pickable]?.provider ?? PROVIDERS[name as Pickable][0], default_provider: PROVIDERS[name as Pickable][0], resolves: plane } : {}) };
   });
 };

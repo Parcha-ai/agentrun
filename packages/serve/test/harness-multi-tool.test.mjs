@@ -1,11 +1,15 @@
 // A turn whose model asks for two tools in one answer, on a harness other than pi. The faux harness stands in for
 // claude-agent and codex alike: serve's adapter path, which writes the session's requests, calls and results to the run,
 // is the same for both. The run completes with its final answer, both files are written, both calls show under the
-// answer that asked for them and before their results, and no call reads as interrupted.
+// answer that asked for them and before their results, and no call reads as interrupted. The same holds when the calls
+// end before the answer that asked for them is paid, as with Claude Code, whose cost comes in after its response: each
+// result is stored before its call, and the timeline and the run's metrics still read each as its call's, once.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { openStoreReader } from "@parcha/pi-durable-agent";
 import { agent, follow, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -41,4 +45,46 @@ test(`${harness}: two tool calls in one answer, then the closing answer: the run
   }
   assert.deepEqual(rows.filter((r) => /interrupted/.test(r.summary ?? "") || String(r.id).includes(":interrupted:")), [], "no call reads as interrupted");
   assert.equal(rows.findLast((r) => r.kind === "usage")?.usage.requests, 2, "two model requests: the one that asked for both calls, and the answer");
+});
+
+test("claude-agent: two tool calls that end before their answer is paid: their results are stored first, and each still reads as its call's, once, none interrupted, and the run's metrics count two calls, none failed", async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  assert.equal((await api("POST", "/agents", agent("streamed", { harness: "claude-agent", instructions: "Write two files while answering.", tools: ["read", "write", "edit"] }))).status, 201);
+  const started = await api("POST", "/agents/streamed/runs", { input: { content: "Write the word alpha to a.md and the word beta to b.md." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 20_000 });
+  assert.deepEqual([last.status, last.final], ["completed", true], `${last.status}/${last.state}`);
+  const shown = JSON.stringify(rows.map((r) => [r.seq, r.kind, r.summary]));
+
+  // The store: each result entry before the answer entry that holds its call, as the bridge writes a result at once.
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const entries = db.prepare("SELECT id, record FROM entries WHERE conversation_id = 1 ORDER BY id").all().map((r) => ({ id: r.id, ...JSON.parse(r.record) }));
+  db.close();
+  const callAt = new Map();
+  for (const e of entries) if (e.kind === "pi.assistant") for (const b of e.model?.[0]?.content ?? []) if (b.type === "toolCall") callAt.set(b.id, e.id);
+  const stored = entries.filter((e) => e.kind === "pi.tool-result").map((e) => [e.model[0].toolCallId, callAt.get(e.model[0].toolCallId), e.id]);
+  assert.equal(stored.length, 2, JSON.stringify(stored));
+  for (const [call, at, result] of stored) assert.ok(at !== undefined && result < at, `the result of ${call} (entry ${result}) is stored before its call (entry ${at})`);
+
+  // The timeline reads each such result as its call's: each call once, with its one result, which names its file;
+  // nothing interrupted. (Live, a result stored before its call shows above it, as on main.)
+  const uses = rows.filter((r) => r.kind === "tool_use");
+  const results = rows.filter((r) => r.kind === "tool_result");
+  assert.deepEqual(uses.map((r) => r.tool_input_preview), ["a.md", "b.md"], shown);
+  for (const use of uses) {
+    const of = results.filter((r) => r.tool_use_id === use.tool_use_id);
+    assert.equal(of.length, 1, `${use.tool_input_preview}: one result: ${shown}`);
+    assert.equal(of[0].tool_status, "success", JSON.stringify(of[0]));
+    assert.match(of[0].summary, new RegExp(use.tool_input_preview.replace(".", "\\.")), `the result names ${use.tool_input_preview}: ${shown}`);
+  }
+  assert.deepEqual(rows.filter((r) => /interrupted/.test(r.summary ?? "") || String(r.id).includes(":interrupted:")), [], `no call reads as interrupted: ${shown}`);
+
+  // The run's metrics: two write calls, none failed.
+  const reader = openStoreReader(data);
+  try {
+    assert.deepEqual(reader.runMetrics(runId)?.tools, { write: { calls: 2, errors: 0 } });
+  } finally {
+    reader.close();
+  }
 });
