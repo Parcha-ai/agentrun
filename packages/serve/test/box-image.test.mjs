@@ -4,10 +4,11 @@
 // AGENTRUN_DOCKER_IMAGE names another, pulled when Docker has none. While either comes, capabilities say docker is
 // preparing; a sandbox run whose first box comes then waits for it with one timeline row, and its box is made once the
 // image is in. A build or pull that fails, or takes too long, makes docker unavailable with a reason that holds none of
-// Docker's output, refuses the next sandbox run naming it, and fails the call of a run that was waiting.
+// Docker's output, refuses the next sandbox run naming it, and fails the call of a run that was waiting. A build or pull
+// that fails is tried once more first. A record whose server is gone (killed or closed while the image came) holds no run.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { awaitImage, BOX_RECIPE, DEFAULT_DOCKER_IMAGE, dockerImage, IMAGE_STATE_FILE, RECIPE_HASH, RECIPE_LABEL, STALE_AFTER_MS } from "../dist/box-image.js";
-import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { startTimeOf } from "../dist/box/sweep.js";
+import { client, follow, scratch, serve, withEnv } from "./support.mjs";
 import { daytonaSandboxes } from "./fixtures/fake-daytona.mjs";
 import { startServe } from "../dist/index.js";
 
@@ -60,7 +62,12 @@ const until = async (done, what, ms = 30_000) => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 };
-const recordOf = (data) => JSON.parse(readFileSync(join(data, IMAGE_STATE_FILE), "utf8"));
+/** The record, without its writer (writerOf). */
+const recordOf = (data) => {
+  const { writer, ...record } = JSON.parse(readFileSync(join(data, IMAGE_STATE_FILE), "utf8"));
+  return record;
+};
+const writerOf = (data) => JSON.parse(readFileSync(join(data, IMAGE_STATE_FILE), "utf8")).writer;
 const dockerOffer = async (api) => (await api("GET", "/capabilities")).body.places.boxes.find((box) => box.id === "docker");
 /** The run's timeline as it is now, every page read. */
 async function rowsOf(api, runId) {
@@ -114,6 +121,7 @@ test("the default image is built on first use, once, from a private context dire
   assert.deepEqual(image.state(), { state: "preparing", reason: "building the box image (python, git, curl, node, rg)" }, "the start does not wait for the build");
   const preparing = recordOf(data);
   assert.deepEqual([preparing.state, preparing.row], ["preparing", BUILDING]);
+  if (process.platform === "linux") assert.deepEqual(writerOf(data), { pid: process.pid, startTime: startTimeOf(process.pid) }, "the record names its writer, this server");
   assert.ok(preparing.until >= before + 10 * 60_000 && preparing.until <= Date.now() + 10 * 60_000, "the record holds the build's deadline");
   await until(() => docker.builds().length === 1, "the build");
   await docker.release();
@@ -153,18 +161,19 @@ test("a recipe change builds again: another recipe's image, under its own tag or
 test("a build that fails, or takes too long, makes the box unavailable with a reason that names the cause and the next step, and holds none of Docker's output", async (t) => {
   const docker = await fakeDocker(t, { "build-fail": OFFLINE });
   const data = await scratch(t);
-  const failed = await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled;
+  const now = { retryAfterMs: 0 };
+  const failed = await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled;
   assert.deepEqual(failed, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt): ${NEXT}` });
   assert.ok(!failed.reason.includes("RAW-DOCKER-STDERR"));
   assert.deepEqual(recordOf(data), { image: DEFAULT_DOCKER_IMAGE, state: "unavailable", reason: failed.reason });
   await writeFile(join(docker.state, "build-fail"), NO_BASE);
-  assert.equal((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, `the build of the box image could not pull its base, python:3.12-slim: ${NEXT}`);
+  assert.equal((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, `the build of the box image could not pull its base, python:3.12-slim: ${NEXT}`);
   await writeFile(join(docker.state, "build-fail"), "failed to copy files: write /var/lib/docker/x: no space left on device RAW-DOCKER-STDERR");
-  assert.equal((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, "the build of the box image ran out of disk space: free some, then restart the server");
+  assert.equal((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, "the build of the box image ran out of disk space: free some, then restart the server");
   await writeFile(join(docker.state, "build-fail"), "E: Unable to locate package git RAW-DOCKER-STDERR");
-  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, /^apt could not install what the box image needs \(git, curl, nodejs, ripgrep\): /);
+  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, /^apt could not install what the box image needs \(git, curl, nodejs, ripgrep\): /);
   await writeFile(join(docker.state, "build-fail"), "Err:1 http://deb.debian.org/debian bookworm InRelease Temporary failure resolving 'deb.debian.org' RAW-DOCKER-STDERR");
-  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE)).settled).reason, /^the build of the box image could not reach the network \(it pulls python:3\.12-slim and installs git, curl, nodejs and ripgrep with apt\): /);
+  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, /^the build of the box image could not reach the network \(it pulls python:3\.12-slim and installs git, curl, nodejs and ripgrep with apt\): /);
   await rm(join(docker.state, "build-fail"));
   await writeFile(join(docker.state, "build-hold"), "");
   const started = Date.now();
@@ -231,12 +240,12 @@ test("a final state that cannot be written removes the record, so no run waits o
 test("a pull that fails makes the box unavailable with a reason that holds none of Docker's output", async (t) => {
   const denied = await fakeDocker(t, { "no-image": "", "pull-fail": DENIED });
   const data = await scratch(t);
-  const failed = await (await dockerImage(process.env, data, IMAGE)).settled;
+  const failed = await (await dockerImage(process.env, data, IMAGE, { retryAfterMs: 0 })).settled;
   assert.equal(failed.state, "unavailable");
   assert.match(failed.reason, /^the registry refused the pull of debian:bookworm-slim \(no such repository, or it needs a docker login\): run `docker pull debian:bookworm-slim` on this machine to see why, then restart the server$/);
   assert.ok(!failed.reason.includes("RAW-DOCKER-STDERR"), failed.reason);
   assert.deepEqual(recordOf(data), { image: IMAGE, state: "unavailable", reason: failed.reason });
-  assert.equal(denied.pulls().length, 1);
+  assert.equal(denied.pulls().length, 2, "tried once more, then given up");
 });
 
 test("a pull past its bound is stopped, and the box is unavailable, saying how to pull it by hand", async (t) => {
@@ -247,10 +256,10 @@ test("a pull past its bound is stopped, and the box is unavailable, saying how t
   const late = await slow.settled;
   assert.ok(Date.now() - started < 10_000, "the bound ends the pull");
   assert.deepEqual(late, { state: "unavailable", reason: "the pull of debian:bookworm-slim did not finish within 1 s: run `docker pull debian:bookworm-slim` on this machine, then restart the server" });
-  assert.equal(held.pulls().length, 1);
+  assert.equal(held.pulls().length, 1, "a pull that took its whole bound is not tried again");
 });
 
-test("a run's first box waits on the record: at once when it is ready, missing or of another image; once noted, with the record's row, while it comes; with the reason when it failed; not past a dead server's deadline; not past a cancel", async (t) => {
+test("a run's first box waits on the record: at once when it is ready, missing or of another image; once noted, with the record's row, while it comes; with the reason when it failed; not past a dead server's deadline, failing in words; not past a cancel", async (t) => {
   const data = await scratch(t);
   const notes = [];
   const note = (summary) => void notes.push(summary);
@@ -274,7 +283,7 @@ test("a run's first box waits on the record: at once when it is ready, missing o
   await put({ image: IMAGE, state: "unavailable", reason: "the registry could not be reached to pull it" });
   await assert.rejects(awaitImage(data, IMAGE, BACKGROUND_CONTEXT, note), /its image debian:bookworm-slim is not ready: the registry could not be reached to pull it/);
   await put({ image: IMAGE, state: "preparing", reason: `pulling ${IMAGE}`, until: Date.now() - STALE_AFTER_MS - 1 });
-  await awaitImage(data, IMAGE, BACKGROUND_CONTEXT, note);
+  await assert.rejects(awaitImage(data, IMAGE, BACKGROUND_CONTEXT, note), /its image debian:bookworm-slim is not ready: the server stopped while pulling it: restart the server to pull it again$/);
   await put({ image: IMAGE, state: "preparing", reason: `pulling ${IMAGE}`, until: Date.now() + 60_000 });
   const controller = new AbortController();
   const cancelled = awaitImage(data, IMAGE, withAbortSignal(controller.signal, BACKGROUND_CONTEXT), note);
@@ -447,4 +456,127 @@ test("with no Docker box (none listed, or the tests' faux box), no image is aske
   assert.deepEqual([offer.available, offer.state, typeof offer.reason], [false, "unavailable", "string"]);
   assert.equal(existsSync(join(data, IMAGE_STATE_FILE)), false, "the stale record is gone");
   assert.deepEqual(docker.calls(), []);
+});
+
+const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+const ONCE_MORE = "trying once more: the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt)";
+/** Docker's words for a `docker run` of the server's own image when Docker has none: it pulls it, and no registry has it. */
+const RAW_RUN = /Unable to find image|pull access denied|docker could not start a box/;
+
+/** A process that was this one's child and is gone: its pid and start time, as a record names its writer. */
+async function goneWriter() {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  await new Promise((resolve) => child.once("spawn", resolve));
+  const writer = { pid: child.pid, startTime: startTimeOf(child.pid) };
+  assert.equal(typeof writer.startTime, "string");
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+  return writer;
+}
+
+/** `promise`, or a rejection saying it still waited after `ms`. */
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`still waiting after ${ms} ms: ${what}`)), ms))]);
+
+test("a build or pull that fails is tried once more, docker preparing meanwhile with the failure in words: ready when the second try works; unavailable with the reason when it fails too; not tried again when the time ran out", async (t) => {
+  const docker = await fakeDocker(t, { "build-fail-once": OFFLINE });
+  const data = await scratch(t);
+  const changes = [];
+  const image = await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { retryAfterMs: 300, onChange: (state) => changes.push(state) });
+  assert.deepEqual(await image.settled, { state: "ready" }, "ready after the second try");
+  assert.deepEqual(changes, [{ state: "preparing", reason: ONCE_MORE }, { state: "ready" }], "the failure, in words, while it tries once more; then ready");
+  assert.ok(!JSON.stringify(changes).includes("RAW-DOCKER-STDERR"));
+  assert.equal(docker.builds().length, 2);
+  assert.deepEqual(recordOf(data), { image: DEFAULT_DOCKER_IMAGE, state: "ready" });
+
+  // Both tries fail: unavailable with the reason, after two builds, not three.
+  await rm(join(docker.state, "images"), { recursive: true });
+  await writeFile(join(docker.state, "build-fail"), OFFLINE);
+  const twice = await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { retryAfterMs: 0 })).settled;
+  assert.deepEqual(twice, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt): ${NEXT}` });
+  assert.equal(docker.builds().length, 4, "one try more, never two");
+
+  // A build that took its whole bound is not tried again.
+  await rm(join(docker.state, "build-fail"));
+  await writeFile(join(docker.state, "build-hold"), "");
+  const late = await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { buildTimeoutMs: 500, retryAfterMs: 0 })).settled;
+  assert.equal(late.state, "unavailable");
+  assert.equal(docker.builds().length, 5);
+});
+
+test("a record whose server is gone is no wait: a run's first box fails at once, in words that say to restart the server, never waits out the record's deadline", { skip: process.platform !== "linux" && "tells a gone writer by /proc, which only Linux has" }, async (t) => {
+  const data = await scratch(t);
+  const notes = [];
+  const put = (record) => writeFile(join(data, IMAGE_STATE_FILE), JSON.stringify(record));
+  const gone = await goneWriter();
+  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, rg)", until: Date.now() + 10 * 60_000, row: BUILDING, writer: gone });
+  await assert.rejects(
+    within(awaitImage(data, DEFAULT_DOCKER_IMAGE, BACKGROUND_CONTEXT, (summary) => void notes.push(summary)), 3_000, "a record whose writer is gone"),
+    new RegExp(`its image ${DEFAULT_DOCKER_IMAGE} is not ready: the server stopped while building it: restart the server to build it again$`),
+  );
+  assert.deepEqual(notes, [], "no row: there is nothing to wait for");
+  // The same record from a server that runs (this process) is still waited on.
+  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, rg)", until: Date.now() + 10 * 60_000, row: BUILDING, writer: { pid: process.pid, startTime: startTimeOf(process.pid) } });
+  let done = false;
+  const waiting = awaitImage(data, DEFAULT_DOCKER_IMAGE, BACKGROUND_CONTEXT, (summary) => void notes.push(summary)).finally(() => (done = true));
+  await until(() => notes.length === 1, "the row");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(done, false, "it waits while its server builds");
+  await put({ image: DEFAULT_DOCKER_IMAGE, state: "ready" });
+  await waiting;
+});
+
+test("demo, a server killed mid-build: the run it left fails its call at once, in words, with no `docker run` of an image that is not there; the next server on that data directory takes the run up and builds the image again, and docker is ready", { timeout: 120_000, skip: process.platform !== "linux" && "tells a gone writer by /proc, which only Linux has" }, async (t) => {
+  const docker = await fakeDocker(t, { "build-hold": "" });
+  t.after(() => docker.release());
+  const data = join(await scratch(t), "agents");
+  // A server in a process of its own, so it can be killed as a crash kills it; the run's process outlives it.
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", PROBE], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: join(data, "..") } });
+  t.after(() => child.kill("SIGKILL"));
+  let out = "";
+  child.stderr.resume();
+  await new Promise((resolve, reject) => {
+    child.stdout.on("data", (chunk) => (out += chunk, /^AGENTRUN_BASE_URL=\S+\n/m.test(out) && /^AGENTRUN_API_KEY=.*\n/m.test(out) && resolve()));
+    child.once("exit", (code, signal) => reject(new Error(`the server exited (${signal ?? code}): ${out}`)));
+  });
+  const first = client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], readFileSync(join(data, ".token"), "utf8").trim());
+  const runId = await boxedRun(first, [{ tool: "bash", args: { command: "printf boxed > out.txt" } }]);
+  await until(async () => (await rowsOf(first, runId)).some((row) => row.summary === BUILDING), "the preparing row");
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+  // The run's process, left behind, holds its store to itself; that the call ended shows as a write to it. It ends
+  // with the server gone, before any server is back.
+  const store = join(data, "runs", runId, "store");
+  const touched = () => Math.max(...readdirSync(store).map((name) => statSync(join(store, name)).mtimeMs));
+  const killed = touched();
+  const at = Date.now();
+  await within(until(() => touched() > killed && Date.now() - at > 1_000, "a write to the run's store", 60_000), 20_000, "the run's call, with its server gone");
+  // The next server on the same data directory takes the run up; its call said, in words, what to do.
+  const next = await serve(t, { data, faux: PROBE });
+  await follow(next.api, runId, ["completed"], { deadlineMs: 60_000 });
+  const [said] = answers(data, runId);
+  assert.equal(said.error, true);
+  assert.ok(said.text.includes(`the run's box could not be made: its image ${DEFAULT_DOCKER_IMAGE} is not ready: the server stopped while building it: restart the server to build it again`), said.text);
+  assert.doesNotMatch(said.text, RAW_RUN);
+  assert.deepEqual(docker.runs(), [], "no box was made from an image that is not there");
+  // That server builds the image again; once it is in, docker is ready.
+  assert.equal((await dockerOffer(next.api)).state, "preparing");
+  await docker.release();
+  await until(async () => (await dockerOffer(next.api)).state === "ready", "docker ready on the next server");
+  assert.equal(docker.builds().length, 2, "the next server built it again");
+});
+
+test("demo through the API: a build that fails once is tried once more; capabilities and the log say why in words meanwhile, then docker is ready", { timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t, { "build-hold": "", "build-fail-once": OFFLINE });
+  const printed = logged();
+  const { api } = await serve(t, { faux: PROBE, log: printed.log });
+  assert.equal((await dockerOffer(api)).state, "preparing");
+  await docker.release();
+  await until(async () => (await dockerOffer(api)).reason === ONCE_MORE, "the failure, in words, while it tries once more");
+  assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "preparing", reason: ONCE_MORE });
+  await until(async () => (await dockerOffer(api)).state === "ready", "docker ready after the second build", 30_000);
+  assert.equal(docker.builds().length, 2);
+  const lines = printed.of("box_image");
+  assert.ok(lines.some((line) => line.includes(`state=preparing`) && line.includes(`reason="${ONCE_MORE}"`)), lines.join("\n"));
+  assert.match(lines.at(-1), /state=ready ms=\d+/);
+  assert.ok(!lines.join("\n").includes("RAW-DOCKER-STDERR"));
 });
