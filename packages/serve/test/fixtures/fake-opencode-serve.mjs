@@ -16,6 +16,9 @@
 // FAKE_OPENCODE_DROP_EVENTS_IN_TURN=1: the event stream ends as the first turn starts, and a new one is answered only
 //   once that turn has answered: its text and its end come while no one listens.
 // FAKE_OPENCODE_REJECT_PROMPT=1: prompt_async answers 400 with a reason, and runs nothing.
+// FAKE_OPENCODE_EVENTS_GONE=<ms>: the first event stream says server.connected and ends at once, every later one is
+//   answered 503, and the first /sync/history waits <ms> first: a drive's stream runs out of tries while the drive
+//   mirrors a new session, before any turn.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -29,6 +32,9 @@ const prompt = config.agent?.[agentName]?.prompt ?? "";
 const exitAfter = process.env.FAKE_OPENCODE_EXIT_AFTER_CALL;
 let stalls = Number(process.env.FAKE_OPENCODE_STALL_EVENTS ?? 0);
 let dropInTurn = process.env.FAKE_OPENCODE_DROP_EVENTS_IN_TURN === "1";
+const goneAfter = Number(process.env.FAKE_OPENCODE_EVENTS_GONE ?? 0);
+let goneOpened = false;
+let goneWaited = false;
 /** While set, a new event-stream request waits for it before it is answered. */
 let held;
 const trace = process.env.FAKE_OPENCODE_TRACE;
@@ -223,6 +229,16 @@ const server = createServer(async (req, res) => {
       note({ stalled: "/event" });
       return; // no headers, no body: the client's own timeout ends it
     }
+    if (goneAfter) {
+      if (goneOpened) {
+        note({ refused: "/event" });
+        return json(res, 503, { error: "the event stream is gone" });
+      }
+      goneOpened = true;
+      note({ ended: "/event" });
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      return res.end(`data: ${JSON.stringify({ id: id("evt"), type: "server.connected", properties: {} })}\n\n`);
+    }
     if (held) await held;
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     res.write(`data: ${JSON.stringify({ id: id("evt"), type: "server.connected", properties: {} })}\n\n`);
@@ -237,6 +253,10 @@ const server = createServer(async (req, res) => {
     return json(res, 200, info);
   }
   if (req.method === "POST" && path === "/sync/history") {
+    if (goneAfter && !goneWaited) {
+      goneWaited = true;
+      await new Promise((resolve) => setTimeout(resolve, goneAfter));
+    }
     const exclude = body ?? {};
     const all = [...sessions.values()].flatMap((s) => s.events).filter((e) => !(e.aggregate_id in exclude && e.seq <= exclude[e.aggregate_id]));
     return json(res, 200, all.sort((a, b) => a.seq - b.seq));

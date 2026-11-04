@@ -288,6 +288,28 @@ test("an answer given while the event stream was down reaches the session when i
   assert.equal(s.events.filter((e) => e.type === "text").map((e) => e.delta).join(""), "Said while no one listened.", "the answer's text reached the session");
 });
 
+test("an event stream that runs out of tries before any turn fails the next turn at once, naming it, and the drive ends with OpenCode and its servers closed", { timeout: 60_000 }, async (t) => {
+  // The stream says server.connected, ends, then answers 503 while the drive mirrors its new session: no turn exists yet.
+  const said = [];
+  const { adapter: a, provider: p, traced } = adapter([{ text: "never" }], { standInEnv: { FAKE_OPENCODE_EVENTS_GONE: "3000" }, options: { log: (message, fields) => said.push({ message, ...fields }) } });
+  const s = await session(a, memorySessionStore(), spec([]));
+  // A turn that never ends leaves its drive waiting: the test closes it whatever happens.
+  t.after(() => s.session.close().catch(() => {}));
+  await s.session.send("hi");
+  const ended = await Promise.race([s.session.turnEnd(), sleep(10_000).then(() => "no end after 10 s")]);
+  assert.equal(ended.status, "failed", JSON.stringify(ended));
+  assert.equal(ended.error, "OpenCode's event stream did not open 3 times (opencode: OpenCode's event stream answered 503)", "its last two tries were answered 503");
+  assert.equal(p.seen.length, 0, "nothing reached the model");
+  assert.ok(!traced().some((l) => l.path?.endsWith("/prompt_async")), "the message was never sent to OpenCode");
+  const closed = await Promise.race([s.session.close().then(() => "closed"), sleep(10_000).then(() => "still waiting after 10 s")]);
+  assert.equal(closed, "closed");
+  const pid = traced().find((l) => l.pid)?.pid;
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "OpenCode's process is gone");
+  const mcp = said.find((l) => l.message === "opencode: OpenCode listens")?.mcp;
+  assert.ok(mcp, "the adapter said where its MCP server listened");
+  await assert.rejects(fetch(mcp, { method: "POST" }), "the adapter's MCP server is closed");
+});
+
 test("a message OpenCode refuses ends the turn failed with OpenCode's own status and reason", { timeout: 60_000 }, async () => {
   const { adapter: a, provider: p } = adapter([{ text: "never" }], { standInEnv: { FAKE_OPENCODE_REJECT_PROMPT: "1" } });
   const s = await session(a, memorySessionStore(), spec([]));
