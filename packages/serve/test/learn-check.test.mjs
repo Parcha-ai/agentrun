@@ -76,15 +76,18 @@ test("the new notes supersede at most eight notes together: eight pass, and a ni
   assert.deepEqual(mergeProblems(baseOf(files), proposed).map((p) => p.rule), ["supersedes"]);
 });
 
-test("eight new notes pass and a ninth is refused; a note over 4096 bytes is refused and one at 4096 passes", () => {
+test("eight new notes pass and a ninth is refused; a run's note over 4068 bytes is refused and one at 4068 passes: the note cap less the 28 bytes of the host's own lines", () => {
   const notes = (n) => Array.from({ length: n }, (_, i) => added(`n${i}.md`, note({ name: `N${i}` })));
   assert.equal(check(notes(CAPS.newNotes)).ok, true);
   assert.deepEqual(rules(check(notes(CAPS.newNotes + 1))), ["too_many_notes"]);
+  // What the host adds to a run's note as it merges it, at the most: `origin: you` and `status: pending`, a line each.
+  assert.equal(CAPS.runNote, CAPS.note - Buffer.byteLength("origin: you\nstatus: pending\n"));
+  assert.equal(CAPS.runNote, 4068);
   const at = note({ body: "" });
-  const full = note({ body: "x".repeat(CAPS.note - Buffer.byteLength(at)) });
-  assert.equal(Buffer.byteLength(full), 4096);
+  const full = note({ body: "x".repeat(CAPS.runNote - Buffer.byteLength(at)) });
+  assert.equal(Buffer.byteLength(full), 4068);
   assert.equal(check([added(NEW, full)]).ok, true);
-  assert.deepEqual(check([added(NEW, `${full}x`)]).problems, [{ rule: "too_large", path: NEW, detail: "4097 bytes; the cap is 4096" }]);
+  assert.deepEqual(check([added(NEW, `${full}x`)]).problems, [{ rule: "too_large", path: NEW, detail: "4069 bytes; the cap is 4068 for a run's note" }]);
   assert.deepEqual(rules(check([{ path: NEW, status: "added", mode: "100644", size: 9000 }])), ["too_large"], "a file the host did not read past the cap");
   assert.deepEqual(rules(check(Array.from({ length: CAPS.changes + 1 }, (_, i) => added(`n${i}.md`, note()))))[0], "too_many_files");
 });

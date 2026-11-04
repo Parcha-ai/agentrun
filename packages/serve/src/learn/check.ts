@@ -7,10 +7,17 @@ import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
 
+/** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
+ *  each (notes.ts mergedNote). */
+const HOST_LINES = Buffer.byteLength("origin: you\nstatus: pending\n");
+
 /** Byte caps (UTF-8) and counts. Over a cap is refused, never cut. */
 export const CAPS = Object.freeze({
   /** One note's file. */
   note: 4096,
+  /** One note a run proposes: the note cap less HOST_LINES, so a run's note stays within `note` once the host merges
+   *  it, and a person can still retire it and a later run supersede it, each read and checked against `note`. */
+  runNote: 4096 - HOST_LINES,
   /** New notes in one run. */
   newNotes: 8,
   /** Notes one run's new notes supersede, together. */
@@ -77,8 +84,9 @@ function nameChecked(path: string, refused: (text: string) => boolean, add: Add)
 
 /** A note's text by itself, whoever writes it: within the cap, UTF-8, no hidden character, no secret's shape or the host's
  *  values, its front matter in shape. The note when it is. */
-function textChecked(path: string, size: number, bytes: Uint8Array | undefined, refused: (text: string) => boolean, add: Add): ProposedNote | undefined {
-  if (size > CAPS.note) return void add("too_large", `${size} bytes; the cap is ${CAPS.note}`, path);
+function textChecked(path: string, size: number, bytes: Uint8Array | undefined, refused: (text: string) => boolean, add: Add, run = false): ProposedNote | undefined {
+  const cap = run ? CAPS.runNote : CAPS.note;
+  if (size > cap) return void add("too_large", `${size} bytes; the cap is ${cap}${run ? " for a run's note" : ""}`, path);
   if (!bytes) throw new TypeError(`${path}: a change that is not a deletion carries its bytes`);
   let text: string;
   try {
@@ -129,7 +137,7 @@ export function checkProposal(input: CheckInput): ProposalCheck {
     if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
     if (change.status === "modified") return add("edited", "a run never edits a note: to replace one, it adds a new note that supersedes it", path);
     if (base.has(path)) return add("exists", "the folder has a note by this name", path);
-    const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add);
+    const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
     if (!note) return;
     if (note.keys.includes("status") || note.keys.includes("superseded_by") || note.keys.includes("origin")) return add("status", "a run never sets status, superseded_by or origin: the host does, when it merges the note or a later one supersedes it", path);
     notes.push(note);

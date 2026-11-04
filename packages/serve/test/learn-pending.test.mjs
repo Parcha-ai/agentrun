@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { CAPS } from "../dist/learn/check.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { copyOf, ended, git, LEARN, learner, made, repoOf, savedOf, settled, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -69,6 +70,42 @@ test("a risky rule the run worked out itself waits for the owner too: the grader
   await ended(api, next);
   assert.ok(!readFileSync(join(data, "runs", next, "learning.json"), "utf8").includes("paperdepot24"), "its index names no pending note");
   assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
+});
+
+test("a note a run proposes at the largest it may, kept from the user's words or held for the OK, can still be retired by a person and superseded by a later run: the host's own lines never push a note on main past the note cap", { timeout: 240_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  // As large as a run's note may be: the checker's cap for a run (the note cap where it names none).
+  const largest = CAPS.runNote ?? CAPS.note;
+  const sized = (name, extra = "") => {
+    const head = note(name, `When ${name.toLowerCase()} applies`, "", extra);
+    return `${head}${"x".repeat(largest - Buffer.byteLength(head) - 1)}\n`;
+  };
+  const KEPT = sized("Keep the user's format");
+  const HELD = sized("Trust the user's seller");
+  for (const text of [KEPT, HELD]) assert.equal(Buffer.byteLength(text), largest);
+  const rules = "Answer the question.\nGrade: you kept-rule.md.\nGrade: pending held-rule.md.";
+  await made(api, learner("full", { instructions: rules, plan: [["kept-rule.md", KEPT], ["held-rule.md", HELD]], once: true }));
+  const first = await ended(api, await started(api, "full"));
+  settled(first.view, first.rows, "merged");
+  const repo = repoOf(data, "full");
+  const sizes = ["kept-rule.md", "held-rule.md"].map((file) => Buffer.byteLength(`${git(repo, ["show", `main:${file}`])}\n`));
+  // A person retires the one that waits.
+  const etag = (await api("GET", "/agents/full/learning/files/held-rule.md")).headers.get("etag");
+  const retired = await api("POST", "/agents/full/learning/files/held-rule.md/retire", undefined, { "if-match": etag });
+  assert.equal(retired.status, 200, JSON.stringify(retired.body));
+  // A later run supersedes the active one with a note as large: the grader reads the old one whole, and it merges.
+  const NEXT = sized("Keep the user's format, again", "supersedes: [kept-rule.md]\n");
+  const { id: _, version: __, ...next } = learner("full", { instructions: "Answer the question.\nGrade: you kept-rule-v2.md.", plan: [["kept-rule-v2.md", NEXT]], once: true }).definition;
+  assert.equal((await api("PUT", "/agents/full/definition", { definition: next })).status, 200);
+  const second = await ended(api, await started(api, "full"));
+  settled(second.view, second.rows, "merged");
+  assert.match(git(repo, ["show", "main:kept-rule.md"]), /\nstatus: superseded\nsuperseded_by: kept-rule-v2\.md\n/);
+  // And the new one, active with the user's origin, is retired as easily.
+  const etag2 = (await api("GET", "/agents/full/learning/files/kept-rule-v2.md")).headers.get("etag");
+  assert.equal((await api("POST", "/agents/full/learning/files/kept-rule-v2.md/retire", undefined, { "if-match": etag2 })).status, 200);
+  // On main, with the host's lines, each was within the note cap.
+  for (const size of sizes) assert.ok(size <= CAPS.note, `${size} bytes on main`);
 });
 
 test("a pending note waits until a person acts on it: a retire takes it out of the folder's waiting list, as it retires an active note, and capabilities say a risky rule waits", { timeout: 150_000 }, async (t) => {

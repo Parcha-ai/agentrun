@@ -78,6 +78,7 @@ Over a cap is refused, never cut.
 | What | Cap |
 | --- | --- |
 | One note | 4096 bytes |
+| One note a run proposes | 4068 bytes: 4096 less the 28 the host's own lines may take as it merges the note (`origin: you`, `status: pending`), so it stays within 4096 on main and a person can retire it and a later run supersede it |
 | New notes in one run | 8 |
 | Notes one run's new notes supersede, together | 8 |
 | Active notes after the merge | 200, the index's lines |
@@ -97,7 +98,7 @@ Over a cap is refused, never cut.
 | `edited` | a file that was there, changed |
 | `deleted` | a file that was there, gone |
 | `exists` | a new file whose name the folder holds, a superseded note's included |
-| `too_large` | a note over 4096 bytes |
+| `too_large` | a note over 4096 bytes; a run's note over 4068 |
 | `too_many_notes` | more than 8 new notes |
 | `invisible_unicode` | a character a reader does not see, by code point |
 | `secret_shape` | text shaped like a secret, by kind, in a note or its name |

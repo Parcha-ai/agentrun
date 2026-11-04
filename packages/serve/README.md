@@ -1011,7 +1011,8 @@ Once the run has ended, in the agent's queue, the server reads the notes from th
 block, a block not closed, with no file name, or a name given twice) is `unparsed`, nothing kept. `checkProposal`
 (`src/learn/check.ts`) then refuses, before anything is written anywhere, a note that reuses an existing note's name, a
 path that is not a `.md` file at the top, a bad name, front matter out of shape or setting `status`, a `supersedes`
-naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4096 bytes, an
+naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
+less the 28 the server's own `origin` and `status` lines may take once it merges the note), an
 index past 200 lines, hidden characters, and text shaped like a secret or holding one of the server's own secrets (the
 launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name. A `MEMORY.md` the
 answer gives is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`, with what the
