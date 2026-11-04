@@ -615,6 +615,13 @@ describe("App, the no-model bar", () => {
     expect(step(gateway)?.textContent).toContain("AGENT_MODEL_BASE_URL");
     expect(step(gateway)?.textContent).not.toContain("card above");
     act(() => root!.unmount()); root = undefined;
+    // AGENT_MODEL names a default whose provider's key the card may not offer: the step keeps the env text.
+    serve(() => ({ source: "providers", default: "deepseek/deepseek-v4-pro", ready: false, needs: "key" }), "sealed", fresh);
+    const named = await mount("");
+    await until(() => !!step(named)?.textContent?.includes("Add a model key"));
+    expect(step(named)?.textContent).toContain("AGENT_MODEL");
+    expect(step(named)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
     // AGENT_MODEL is the problem, which the card says no key fixes: the step keeps the env text.
     serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), "sealed", fresh);
     const model = await mount("");
