@@ -505,12 +505,13 @@ describe("App, the no-model bar", () => {
   const until = async (done: () => boolean) => { const end = Date.now() + 4000; while (!done() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
   const bar = (host: HTMLElement) => host.querySelector('[aria-label="No model"]');
 
-  it("says what to set on a page that is not the first screen, links to Settings, and goes once the server says ready, read again when the page comes back into view", async () => {
+  it("says what to set on a page that is not the first screen, leading with the Settings link, and goes once the server says ready, read again when the page comes back into view", async () => {
     let ready = false;
     const asked = serve(() => ({ source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" }));
     const host = await mount("#/runs");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (or ANTHROPIC_API_KEY or OPENAI_API_KEY) and restart, or add a key in Settings → Model keys.");
+    expect(bar(host)?.textContent).toBe("No model yet. Add a key in Settings → Model keys (one OpenRouter key gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts, and restart.");
+    expect(bar(host)?.querySelector("a")?.textContent).toBe("Add a key in Settings → Model keys");
     expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
     ready = true;
     await act(async () => { window.dispatchEvent(new Event("focus")); });
@@ -534,6 +535,14 @@ describe("App, the no-model bar", () => {
     await act(async () => { vi.advanceTimersByTime(30_000); });
     expect(reads()).toBe(before + 1);
     vi.useRealTimers();
+  });
+
+  it("says to set a key and restart where the server keeps no keys, one OpenRouter key giving every harness its model", async () => {
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false);
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
+    expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
   it("names AGENT_MODEL when it is the problem, has no Settings link where the server keeps no keys, and is not on the first screen, which has the key card", async () => {
