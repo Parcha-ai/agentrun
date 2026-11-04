@@ -250,11 +250,15 @@ export function previewOf(text: string): string {
 /** `args` as JSON, at most ARGS_PREVIEW_BYTES: the request's own record of them, never shown as it is. */
 export const argsPreview = (args: unknown): string => previewOf(JSON.stringify(args ?? {}) ?? "");
 
+/** How the gate's resume message starts: the server knows its row by it, and redacts the row whole (runs.ts). */
+export const RESUME_PREFIX = "[tool approval] ";
+
 /** The one message that resumes a session once a person answered: it names the call it answers (its tool, call id and
  *  arguments), so the model tells it from a person's new input, and carries the call's result, or the refusal. */
-export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id" | "args_preview">, decision: "allow" | "deny", result: ToolAnswer): string {
-  const args = request.args_preview.length > 300 ? `${request.args_preview.slice(0, 299)}…` : request.args_preview;
-  const head = `[tool approval] This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
+export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
+  // `shown`: the arguments as the server shows them, redacted whole then cut (runs.ts): never the call's own.
+  const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
+  const head = `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
 }
 
@@ -406,14 +410,15 @@ export class RunGate {
     }
     this.settling = true;
     try {
-      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string }> | undefined;
+      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string; args_shown?: string }> | undefined;
       for (const held of open) {
         const answer = answers?.[held.id];
         if (answer?.decision !== "allow" && answer?.decision !== "deny") continue;
         const decision = answer.decision;
         // An allow runs the call, unless its tool was set to deny since it asked.
         const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool), isError: true } : await this.run(held);
-        await this.resume!(held.id, resumeText(held, decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
+        // The arguments the message names are the server's redacted ones: the gate never writes a held value there.
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, result), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
         held.resolved = true;
       }
     } catch (error) {

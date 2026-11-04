@@ -35,7 +35,7 @@ import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, mo
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
-import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, TURN_ORIGIN_FILE } from "./tool-gate.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -165,7 +165,8 @@ type RunMeta = {
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
 type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
-type ApprovalAnswer = { decision: "allow" | "deny" | "canceled"; note?: string; answered_at: string };
+/** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled"; note?: string; answered_at: string; args_shown?: string };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -364,6 +365,19 @@ const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undef
 /** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
  *  no cut leaves the head of a held key. */
 const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
+/** `entries` with the gate's resume messages (RESUME_PREFIX) redacted whole with `redact`, before the timeline cuts
+ *  them: the message carries a call's arguments and its result, which may hold a held key. */
+function redactGateMessages<T>(entries: readonly T[], redact: (text: string) => string): T[] {
+  return entries.map((entry) => {
+    const first = isObject(entry) && Array.isArray(entry.model) ? entry.model[0] : undefined;
+    if (!isObject(first) || first.role !== "user") return entry;
+    const content = first.content;
+    const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((block) => (isObject(block) && block.type === "text" ? String(block.text ?? "") : "")).join("") : "";
+    if (!text.startsWith(RESUME_PREFIX)) return entry;
+    const redacted = typeof content === "string" ? redact(content) : (content as Json[]).map((block) => (isObject(block) && block.type === "text" && typeof block.text === "string" ? { ...block, text: redact(block.text) } : block));
+    return { ...(entry as Json), model: [{ ...first, content: redacted }, ...((entry as Json).model as Json[]).slice(1)] } as T;
+  });
+}
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
 const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
@@ -885,7 +899,7 @@ export class Runs {
     run.working = false;
     noteTurns(run, entries, submissions);
     noteApprovals(run, entries);
-    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
+    this.take(run, timelineOf(redactGateMessages(entries, this.redactor(run)) as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
@@ -1340,7 +1354,8 @@ export class Runs {
         const entries = events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : []));
         noteTurns(run, entries, submissions, inputs);
         noteApprovals(run, entries);
-        reducer.apply(events as never);
+        const redact = this.redactor(run);
+        reducer.apply(events.map((e) => (Array.isArray(e.entries) ? { ...e, entries: redactGateMessages(e.entries, redact) } : e.entry !== undefined ? { ...e, entry: redactGateMessages([e.entry], redact)[0] } : e)) as never);
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
         // as the settled read counts it, never one in flight.
         if (!run.working && stopped(run)) reducer.idle();
@@ -2173,7 +2188,7 @@ export class Runs {
       if (given.decision === decision) return;
       throw new ApiError("not_continuable", `The tool call ${id} was already ${given.decision === "canceled" ? "canceled with its run" : `answered: ${given.decision}`}.`, { details: { reason: "already_answered", decision: given.decision } });
     }
-    run.meta.approvals = { ...run.meta.approvals, [id]: { decision, ...(note ? { note } : {}), answered_at: new Date().toISOString() } };
+    run.meta.approvals = { ...run.meta.approvals, [id]: { decision, ...(note ? { note } : {}), answered_at: new Date().toISOString(), args_shown: shownArgs(run.approvals!.get(id)!, this.redactor(run)) } };
     await this.saveMeta(run);
     this.refresh(run);
     if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));

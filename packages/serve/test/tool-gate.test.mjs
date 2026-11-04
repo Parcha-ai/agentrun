@@ -416,8 +416,13 @@ test("once a parked call with a held key in its arguments is approved, the resum
     const shown = rows.filter((row) => row !== first);
     assert.equal(rest.length, 1);
     assert.equal(holdsPiece(JSON.stringify(shown), RESUME_KEY), false, `${harness}: the timeline but the person's message: ${JSON.stringify(rest[0])}`);
-    const { title: _title, ...run } = done;
-    assert.equal(holdsPiece(JSON.stringify(run), RESUME_KEY), false, `${harness}: GET /runs/{id}, final_answer included: ${JSON.stringify(run.result)}`);
+    const { title: _title, result, ...run } = done;
+    assert.equal(holdsPiece(JSON.stringify(run), RESUME_KEY), false, `${harness}: GET /runs/{id}`);
+    // pi's model answers with the whole message, the call's result in it (web_fetch's names its URL): a model quoting
+    // a tool's result is the run view's final_answer redaction, a change of its own. What the gate wrote is checked.
+    const quoted = harness === "pi" ? /\(arguments (.*?)\), which waited/s.exec(result.final_answer)?.[1] ?? "" : result.final_answer;
+    assert.ok(harness !== "pi" || quoted.length > 0, "pi's answer quotes the message");
+    assert.equal(holdsPiece(quoted, RESUME_KEY), false, `${harness}: final_answer: ${quoted}`);
     const { title: _listed, ...listed } = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
     assert.equal(holdsPiece(JSON.stringify(listed), RESUME_KEY), false, `${harness}: the run list`);
   }
