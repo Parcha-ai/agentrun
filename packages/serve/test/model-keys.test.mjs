@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { claudeModel } from "../dist/adapters.js";
-import { chooseModel, hostModel, MODEL_KEYS } from "../dist/model.js";
+import { chooseModel, harnessRuns, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 
@@ -53,6 +53,17 @@ test("the host's model counts for a harness only when that harness runs it: clau
   // A tier's own model the harness can't run is skipped, never an error: the default stands in.
   assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast", "claude-agent"), "anthropic/claude-haiku-5");
   assert.equal(hostModel({ AGENT_MODEL_FAST: "openai/gpt-6-mini", AGENT_MODEL: "anthropic/claude-haiku-5" }, "fast"), "openai/gpt-6-mini");
+});
+
+// A gateway id is the gateway's own string: on the gateway route nothing reads a provider out of it, so codex runs a
+// namespaced one (team/model) and even one that looks like another vendor's. Without a gateway, codex runs OpenAI's only.
+test("behind a gateway, codex takes AGENT_MODEL as the gateway's own string, whatever it holds; without one, only OpenAI's ids", () => {
+  const gw = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
+  for (const id of ["team/model", "my-gw/gpt-x", "anthropic/x", "gpt-6-luna", "openai/gpt-6-luna", "openrouter/openai/gpt-6-sol"]) assert.equal(harnessRuns(gw, id, "codex"), true, `behind a gateway: ${id}`);
+  for (const [id, runs] of [["team/model", false], ["my-gw/gpt-x", false], ["anthropic/x", false], ["gpt-6-luna", false], ["openai/gpt-6-luna", true], ["openrouter/openai/gpt-6-sol", true]]) assert.equal(harnessRuns({}, id, "codex"), runs, `no gateway: ${id}`);
+  assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model" }, "default", "codex"), "team/model");
+  assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model", ...keyed("openai") }, "default", "codex"), "team/model", "never the OpenAI key's default instead");
+  assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model" }, "default", "claude-agent"), undefined, "claude-agent never takes the gateway");
 });
 
 test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway's: an OpenAI key gives it its default, and another provider's model is skipped for it", () => {

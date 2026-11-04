@@ -3,7 +3,8 @@
 // notes its instructions plan, one ```note block each (reflectPrompt's format), then "Reflected.", and calls no tool.
 // The instructions plan with one line:
 // - `Learn: <JSON>`: an array of [file, text] pairs, each a note of the answer;
-// - `Learn once: <JSON>`: the same, less the files the run's index names already (a later run of the agent adds none);
+// - `Learn once: <JSON>`: the same, less the files the run's `# Learned` names already, in the index or a note's heading
+//   (a later run of the agent adds none);
 // - `Answer: <JSON>`: the turn's whole answer, as given (a string), in place of the planned notes.
 // A user message "Remember for next time: <text>" is what a person asks the agent to keep: on pi the job turn writes it
 // to `.learning/notes.txt` first and says it saved it (what models do), and the end-of-run turn, which reads the whole
@@ -41,7 +42,7 @@ const systemOf = (context) => [context.systemPrompt, ...context.messages.filter(
 /** The notes the instructions in `system` plan, as [file, text] pairs. */
 export function planned(system) {
   const once = /^Learn once: (\[.*\])$/m.exec(system)?.[1];
-  if (once) return JSON.parse(once).filter(([file]) => !system.includes(`](${file})`));
+  if (once) return JSON.parse(once).filter(([file]) => !system.includes(`(${file})`));
   const always = /^Learn: (\[.*\])$/m.exec(system)?.[1];
   return always ? JSON.parse(always) : [];
 }

@@ -319,3 +319,56 @@ test("a claude-agent run's model proxy reports a refusal in the run's log: one h
   assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
   for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
 });
+
+test("a refused key ends a claude-agent run at the provider's first 401: one request, no retries, and the run's error in plain words", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // The provider refuses the key on every request, as OpenRouter does a wrong one. The CLI retries a 401 a dozen times
+  // over about three minutes (QA, run 01a1a56c: 187 s while the run read Working); no retry can pass, so the run ends at
+  // the first, with the provider's words.
+  const fake = await fakeAnthropic({ reply: () => ({ error: { status: 401, type: "authentication_error", message: "User not found." } }) });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake);
+  const started = Date.now();
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 30_000 });
+  const took = Date.now() - started;
+  const paid = fake.messages().filter((r) => r.method === "POST" && r.path === "/v1/messages");
+  assert.equal(paid.length, 1, `one paid request reached the provider, not ${paid.length}`);
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(view.error?.message ?? "", /^\S+ refused ANTHROPIC_API_KEY \(401: User not found\): /, JSON.stringify(view.error));
+  assert.ok(took < 30_000, `it failed in ${took} ms`);
+});
+
+test("a refused key whose 401 body never ends still ends a claude-agent run within seconds, after one request", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // A provider (or a proxy before it) that sends the 401's headers and part of its body, then holds the rest: the turn
+  // still ends at the first 401, with whatever words came, never waiting on a body that may not end.
+  const { createServer } = await import("node:http");
+  const asked = [];
+  const sockets = new Set();
+  const server = createServer((req, res) => {
+    asked.push(`${req.method} ${req.url}`);
+    req.resume();
+    res.writeHead(401, { "content-type": "application/json" });
+    res.write('{"type":"error","error":{"type":"authentication_error","message":"User not found."');
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+  });
+  const { api } = await claudeServe(t, { url: `http://127.0.0.1:${server.address().port}` });
+  const started = Date.now();
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 20_000 });
+  const took = Date.now() - started;
+  const paid = asked.filter((line) => /^POST \/v1\/messages(\?|$)/.test(line));
+  assert.equal(paid.length, 1, `one paid request reached the provider: ${JSON.stringify(asked)}`);
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(view.error?.message ?? "", /^\S+ refused ANTHROPIC_API_KEY \(401(: [^)]*)?\): /, JSON.stringify(view.error));
+  assert.ok(took < 20_000, `it failed in ${took} ms`);
+});

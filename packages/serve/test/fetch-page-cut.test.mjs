@@ -51,3 +51,22 @@ test("a cut page read in parts to its end: every part gives html_chars and none 
   assert.match(text, /^# Long page\n\nParagraph 0 of the page, with its words\./);
   assert.ok(!text.includes("The end."), "the page's end is past the cut");
 });
+
+test("a cut page read in parts from the run's pages: fetched once, every part gives html_chars, and the last part, read from memory, still says where the page was cut", async () => {
+  const html = `<html><head><title>Long</title></head><body><h1>Long page</h1>${Array.from({ length: 40_000 }, (_, i) => `<p>Paragraph ${i} of the page, with its words.</p>`).join("\n")}<p>The end.</p></body></html>`;
+  let fetched = 0;
+  const { lookup, fetchImpl } = net(html);
+  const counted = async (...args) => (fetched++, fetchImpl(...args));
+  const pages = new Map();
+  const parts = [];
+  for (let offset = 0, i = 0; i < 100; i += 1) {
+    const page = await webFetch(URL_, { lookup, fetchImpl: counted, pages, offset, maxChars: 50_000 });
+    assert.deepEqual([page.ok, page.html_chars, "original_chars" in page], [true, html.length, false], `part ${i}`);
+    parts.push(page);
+    if (!page.truncated) break;
+    offset = page.next_offset;
+  }
+  assert.ok(parts.length > 3, `${parts.length} parts`);
+  assert.equal(fetched, 1, "one fetch for every part");
+  assert.equal(where(parts.at(-1)), CUT, "the last part, from memory: the model is told the page was cut");
+});
