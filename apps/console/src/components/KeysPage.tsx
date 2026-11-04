@@ -29,10 +29,11 @@ function fieldState(f: ToolKeyField): string {
   return f.stored_unreadable ? "saved here, can't be opened" : "not set";
 }
 
-/** Settings → Tool keys: each key a tool needs, where each of its fields is set, and a form to add, change or remove the
- *  one saved here. A value goes to the server and nowhere else: the inputs are never filled from it, never kept in the
- *  page's state, and cleared after a save or a cancel. `atRest` is capabilities' `features.tool_keys.at_rest`;
- *  `onChange` follows each save and removal (the server's tools may change with its keys). */
+/** Settings → Keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
+ *  set, and a form to add, change or remove the one saved here. A value goes to the server and nowhere else: the
+ *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `atRest` is
+ *  capabilities' `features.tool_keys.at_rest`; `onChange` follows each save and removal (the server's tools and models
+ *  may change with its keys). */
 export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "sealed" | "unavailable"; onChange?: () => void }) {
   const [view, setView] = useState<ToolKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
@@ -63,13 +64,35 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
     ? <ReadError error={loadError} onRetry={load} />
     : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
   const reenter = view.reenter;
+  // The model providers' keys first, then the tools': headed only when there are both (an older server has no model keys).
+  const groups = [{ label: "Models", name: "Model keys", keys: view.keys.filter((k) => k.kind === "model") }, { label: "Tools", name: "Tool keys", keys: view.keys.filter((k) => k.kind !== "model") }].filter((g) => g.keys.length);
+  const row = (k: ToolKey) => (
+    <KeyRow key={k.id} tool={k} cantStore={cantStore} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}
+      open={open?.id === k.id ? open.mode : null} problem={problem?.id === k.id ? problem : null}
+      onOpen={(mode) => { setOpen(mode ? { id: k.id, mode } : null); setProblem(null); }}
+      onSave={async (values) => {
+        const started = open;
+        try { await v2.saveToolKey(k.id, values); } catch (e) {
+          if (e instanceof ClientError && e.status === 422) return e;
+          refused(k.id, "The key was not saved", e, started);
+          return null;
+        }
+        done(started);
+        return null;
+      }}
+      onRemove={async () => {
+        const started = open;
+        try { await v2.removeToolKey(k.id); } catch (e) { refused(k.id, "The key was not removed", e, started); return; }
+        done(started);
+      }} />
+  );
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
         <div>
           <p className="caps text-[11px] text-muted-foreground">Settings</p>
-          <h1 className="mt-1 text-2xl font-semibold">Tool keys</h1>
-          <p className="mt-2 text-[14px] text-muted-foreground">A tool's key, kept on this server for every agent that uses the tool. A saved key is never shown again.</p>
+          <h1 className="mt-1 text-2xl font-semibold">Keys</h1>
+          <p className="mt-2 text-[14px] text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
         </div>
         {loadError && <ReadError inline error={loadError} onRetry={load} />}
         {reenter && (
@@ -87,28 +110,12 @@ export function KeysPage({ v2, atRest, onChange }: { v2: Client; atRest?: "seale
             This server can't store keys: it was started without a seal key. Set each key where the server starts ({view.keys.flatMap((k) => k.fields.map((f) => f.name)).join(", ")}).
           </p>
         )}
-        <ul className="border">
-          {view.keys.map((k) => (
-            <KeyRow key={k.id} tool={k} cantStore={cantStore} again={!!reenter && k.fields.some((f) => f.stored_unreadable || reenter.fields.includes(f.name))}
-              open={open?.id === k.id ? open.mode : null} problem={problem?.id === k.id ? problem : null}
-              onOpen={(mode) => { setOpen(mode ? { id: k.id, mode } : null); setProblem(null); }}
-              onSave={async (values) => {
-                const started = open;
-                try { await v2.saveToolKey(k.id, values); } catch (e) {
-                  if (e instanceof ClientError && e.status === 422) return e;
-                  refused(k.id, "The key was not saved", e, started);
-                  return null;
-                }
-                done(started);
-                return null;
-              }}
-              onRemove={async () => {
-                const started = open;
-                try { await v2.removeToolKey(k.id); } catch (e) { refused(k.id, "The key was not removed", e, started); return; }
-                done(started);
-              }} />
-          ))}
-        </ul>
+        {groups.map((g) => (
+          <section key={g.label} aria-label={g.name}>
+            {groups.length > 1 && <h2 className="caps mb-2 text-[12px] font-semibold text-muted-foreground">{g.label}</h2>}
+            <ul className="border">{g.keys.map(row)}</ul>
+          </section>
+        ))}
       </div>
     </div>
   );
@@ -150,7 +157,7 @@ function KeyRow({ tool: k, cantStore, again, open, problem, onOpen, onSave, onRe
             {again && <Chip tone="warning">enter again</Chip>}
           </p>
           <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">
-            Unlocks {k.unlocks.join(", ")} · Harnesses {k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}
+            {k.kind === "model" ? "Model provider" : `Unlocks ${k.unlocks.join(", ")}`} · Harnesses {k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}
           </p>
           {checkLine(k.label, k.check) && <p className={`mt-1.5 text-[12px] ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
           <ul className="mt-3 space-y-1">
@@ -185,7 +192,7 @@ function KeyRow({ tool: k, cantStore, again, open, problem, onOpen, onSave, onRe
 
 /** One password input per field the page may set. The inputs are uncontrolled: React mirrors a controlled input's
  *  value into its `value` attribute, and a key must never be in the DOM. Only the fields typed in are sent. */
-function KeyForm({ tool: k, fields, cantStore, onSave, onCancel }: { tool: ToolKey; fields: ToolKeyField[]; cantStore: boolean; onSave: RowProps["onSave"]; onCancel: () => void }) {
+export function KeyForm({ tool: k, fields, cantStore, onSave, onCancel }: { tool: ToolKey; fields: ToolKeyField[]; cantStore: boolean; onSave: RowProps["onSave"]; onCancel: () => void }) {
   const form = useRef<HTMLFormElement>(null);
   const [typed, setTyped] = useState(false);
   const [busy, setBusy] = useState(false);

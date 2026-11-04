@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { CAPS, foldLabel, groupTimeline, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
+
+/** The root conversation of a Codex run in QA run 3 (F22: "Write a file called hello.md…", then "Now add a second line
+ *  saying goodbye"), as serve wrote it from the adapter's events: the first turn's commentary came in a request whose
+ *  only tool call was Codex's own exec (it read ALL_TOOLS), so its entry is text alone, stopReason "stop"; the host's
+ *  write came in the next request. */
+const CODEX_COMMENTARY = JSON.parse(readFileSync(new URL("./fixtures/codex-commentary-entries.json", import.meta.url), "utf8"));
 
 const GREP_FIELDS = [
   "id", "timestamp", "created_at", "kind", "summary", "agent_label", "tool_name", "tool_use_id", "tool_status",
@@ -59,6 +66,39 @@ test("a stop answer of one empty text block is an empty final_answer; a stop wit
 test("prose before calls is a text_block; a final stop answer is the final_answer", () => {
   const rows = timelineOf([assistant([{ type: "text", text: "Opening the portal." }, call("c", "read", { path: "a" })]), result("c", "read", "x"), assistant([{ type: "text", text: "Done.\nMore." }])]);
   assert.deepEqual(rows.filter((r) => /text|final/.test(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "Opening the portal."], ["final_answer", "Done."]]);
+});
+
+test("an answer the same turn goes on from is what the agent said, not its answer: Codex's commentary before a tool of its own, in the stored view and the live one alike", () => {
+  const live = (entries) => {
+    const reducer = timelineReducer();
+    reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
+    return reducer.rows();
+  };
+  const said = (rows) => rows.filter((r) => r.kind === "text_block" || r.kind === "final_answer").map((r) => [r.kind, r.summary]);
+  for (const view of [timelineOf, live]) {
+    assert.deepEqual(said(view(CODEX_COMMENTARY)), [
+      ["text_block", "I’ll create `hello.md` in the workspace with the single line `hello`."],
+      ["final_answer", "Wrote [hello.md](hello.md) with one line:"],
+      ["text_block", "I’ll update `hello.md` to contain `hello` followed by `goodbye` on the second line."],
+      ["final_answer", "Updated [hello.md](hello.md) with `goodbye` as the second line."],
+    ]);
+    // A text answer stays the answer when nothing with content follows it in its turn: a person's message, or a request
+    // with nothing in it (a harness's side request, cost only), ends nothing it said.
+    const kept = [user("Hi", 0), assistant([{ type: "text", text: "Hello." }], 1), assistant([], 2), user("Again", 3), assistant([{ type: "text", text: "Hello again." }], 4)];
+    assert.deepEqual(said(view(kept)), [["final_answer", "Hello."], ["final_answer", "Hello again."]]);
+    // Commentary, then an answer of only whitespace, then a call and the real answer: every earlier answer of the turn
+    // is what the agent said, the commentary too, and only the last is its answer.
+    const quiet = [
+      user("Write it.", 0), assistant([{ type: "text", text: "I'll check first." }], 1), assistant([{ type: "text", text: " " }], 2),
+      assistant([call("w1", "write", { path: "note.md", content: "noted" })], 3), result("w1", "write", "ok", 4), assistant([{ type: "text", text: "Wrote note.md." }], 5),
+    ];
+    assert.deepEqual(said(view(quiet)), [["text_block", "I'll check first."], ["text_block", ""], ["final_answer", "Wrote note.md."]]);
+  }
+  // The live view hears of the change: the row comes again, under its id, as a text_block.
+  const reducer = timelineReducer();
+  const ids = new Map();
+  for (const entry of CODEX_COMMENTARY) for (const row of reducer.apply([{ type: "entry_appended", entry }]).rows) ids.set(row.id, row.kind);
+  assert.equal(ids.get("1:33:0"), "text_block");
 });
 
 test("a host may name a call's file path its own way (path option): the tool rows and the Saved row use it, the input preview and the entries keep the call's own", () => {
@@ -571,6 +611,37 @@ test("a call an earlier process left open is interrupted in its place: the answe
   placed(rest(timelineOf(entries, { settled: true })));
 });
 
+test("a result stored before its call (a harness that wrote it first) reads as that call's: right after it, with its label, once, and the call never reads interrupted", () => {
+  // Two calls in one answer; the first one's result was stored before the answer that holds both.
+  const entries = [
+    user("Write the files.", 0),
+    result("w1", "write", "Successfully wrote a.md", 1),
+    assistant([call("w1", "write", { path: "a.md", content: "alpha" }), call("w2", "write", { path: "b.md", content: "beta" })], 2),
+    result("w2", "write", "Successfully wrote b.md", 3),
+    assistant([{ type: "text", text: "Wrote both." }], 4),
+  ];
+  const placed = (rows) => {
+    const shown = JSON.stringify(rows.map((r) => [r.id, r.kind, r.summary]));
+    assert.deepEqual(rows.filter((r) => r.id.includes(":interrupted:")), [], `no call reads interrupted: ${shown}`);
+    for (const [id, file] of [["w1", "a.md"], ["w2", "b.md"]]) {
+      const use = rows.findIndex((r) => r.kind === "tool_use" && r.tool_use_id === id);
+      const results = rows.filter((r) => r.kind === "tool_result" && r.tool_use_id === id);
+      assert.equal(results.length, 1, `${id}: one result: ${shown}`);
+      assert.ok(use >= 0 && rows.indexOf(results[0]) === use + 1, `${id}: its result right after its call: ${shown}`);
+      assert.match(results[0].summary, new RegExp(file.replace(".", "\\.")), `${id}: its result names ${file}: ${shown}`);
+      assert.equal(results[0].tool_status, "success", shown);
+    }
+    assert.equal(rows.filter((r) => r.kind !== "usage" && r.kind !== "phase").at(-1).kind, "final_answer", shown);
+  };
+  // Stored: the settled read.
+  placed(timelineOf(entries, { settled: true }));
+  // Live: the same store as a snapshot, then a turn that starts and ends.
+  const reducer = timelineReducer({ conversationId: 1 });
+  reducer.apply([{ type: "snapshot", entries }, { type: "run_start", inputs: [] }]);
+  reducer.apply([{ type: "run_end", inputs: [] }]);
+  placed(reducer.rows());
+});
+
 test("waits: a retry, a poll and a queue are live rows that clear", () => {
   const reducer = timelineReducer({ conversationId: 1, now: () => 1_000 });
   const rows = (events) => summaries(reducer.apply(events).rows);
@@ -659,6 +730,27 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   assert.equal(results[2].summary, "Ran `curl -s 'http://localhost:8080/v1?key=\u2026' | head` failed: refused https://z.example/e?auth=\u2026 by the server");
   const all = JSON.stringify(rows.filter((row) => row.kind !== "user_message"));
   for (const secret of ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "SECRET6", "frag-secret", userinfo("pw")]) assert.ok(!all.includes(secret), `a row holds ${secret}`);
+});
+
+test("a failed call answered only by the harness's diagnostics block is summarized by its error, not by the block's tag", () => {
+  const rows = timelineOf([
+    assistant([
+      call("a", "bash", { command: "true" }),
+      call("b", "bash", { command: "ls" }),
+      call("c", "read", { path: "a.md" }),
+      call("d", "bash", { command: "make" }),
+    ], 0),
+    result("a", "bash", "<harness>\n[error] Tool bash is not available\n</harness>", 1, { isError: true }),
+    result("b", "bash", "<harness>\n[warning] Output truncated: 3 lines, 9 bytes dropped\n[error] Tool call blocked: refused by the permission gate\n</harness>", 1, { isError: true }),
+    result("c", "read", "<harness>\n[error]\n</harness>", 1, { isError: true }),
+    result("d", "bash", "make: *** No rule to make target\n<harness>\n[error] Command exited with code 2\n</harness>", 1, { isError: true }),
+  ]);
+  const summary = (id) => rows.find((row) => row.tool_use_id === id && row.kind === "tool_result").summary;
+  assert.equal(summary("a"), "Ran `true` failed: Tool bash is not available");
+  assert.equal(summary("b"), "Ran `ls` failed: Tool call blocked: refused by the permission gate", "the error, before any warning");
+  assert.equal(summary("c"), "Read a.md failed: no detail");
+  assert.equal(summary("d"), "Ran `make` failed: make: *** No rule to make target", "a result with output keeps its first line");
+  assert.equal(rows.find((row) => row.tool_use_id === "a" && row.kind === "tool_result").tool_result_preview, "<harness>\n[error] Tool bash is not available\n</harness>", "the preview is the result as it is");
 });
 
 test("a saved file's phase row carries its path", () => {
@@ -806,4 +898,17 @@ test("web_search reads as a search, in the past tense: the query scrubbed and cu
   const [first] = text(rows).split("\n");
   assert.match(first, /^\S+\s+Searched the web 3 times: "acme anvils", "see https:\/\/x\.example\/a\?token=… for d\.\.\."\s+3 ok$/);
   assert.equal(foldLabel("web_search", [{ input: "a", output: null }]), 'Searched the web 1 times: "a"');
+});
+
+test("a run's process that opened again after the last one ended unfinished is a row of its own, from its entry: after a crash, or after the server stopped", () => {
+  const time = (s) => Date.UTC(2026, 9, 15, 20, 14, 0) + s * 1000;
+  const resumed = (after, s) => ({ kind: "agentrun.run_resumed", id: 900 + s, conversationId: 1, data: { generation: 2, after, at: time(s) } });
+  const entries = [user("hi", 0), assistant([{ type: "text", text: "a" }], 1), resumed("crash", 5), assistant([{ type: "text", text: "b" }], 6), resumed("server_stop", 9)];
+  const rows = timelineOf(entries);
+  const marks = (list) => list.filter((r) => r.kind === "phase").map((r) => [r.summary, r.timestamp]);
+  assert.deepEqual(marks(rows), [["Resumed after a crash", new Date(time(5)).toISOString()], ["Resumed after the server stopped", new Date(time(9)).toISOString()]], "each at the time its process opened");
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.02, requests: 2 }, "a mark is no request");
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "snapshot", entries }]);
+  assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
 });

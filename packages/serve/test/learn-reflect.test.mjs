@@ -10,6 +10,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
+import { ANSWER_TOKENS_LEAST } from "../dist/cap.js";
 import { homeOf } from "../dist/files.js";
 import { startServe } from "../dist/index.js";
 import { learningTestHooks } from "../dist/learning.js";
@@ -19,8 +20,9 @@ import { agent, client, follow, scratch, serve, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
-/** The faux model's max output tokens, at $100 per million: one request's worst case under OUTPUT_PRICED. */
-const WORST = (16_384 * 100) / 1e6;
+/** A request's least under OUTPUT_PRICED: its answer's 1,024 tokens (the faux model does not think), at $100 per million.
+ *  A cap sends any request it can buy this much of, limited to what it can buy, and refuses one it cannot. */
+const LEAST = (ANSWER_TOKENS_LEAST * 100) / 1e6;
 const PLAN = [["check-units.md", note("Check units", "Convert every amount to one unit before comparing")]];
 
 /** The bin on `data`, as an operator starts it. */
@@ -81,15 +83,17 @@ test("no_budget: a turn whose request the run's cap refuses, and a run whose cap
   const probe = await ended(api, await started(api, "probe", "hi"));
   const spent = probe.view.cost.usd;
   assert.ok(spent > 0);
-  // Room for one request's worst case and half of what the job costs: the job's request fits, the turn's never.
+  // Room for one request's least and half of what the job costs: the job's request is sent (limited), and once the job
+  // has spent, what is left is short of the turn's least, so its request is refused.
   await made(api, learner("tight"));
-  const tight = await ended(api, await started(api, "tight", "hi", { max_cost_usd: WORST + spent / 2 }));
+  const tight = await ended(api, await started(api, "tight", "hi", { max_cost_usd: LEAST + spent / 2 }));
   assert.deepEqual([tight.view.status, tight.view.error], ["completed", null]);
   settled(tight.view, tight.rows, "dropped", "no_budget");
   assert.equal(tight.view.cost.usd, spent, "only the job was paid for");
-  assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached: /);
+  assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$[\d.]+ of its \$[\d.]+ cap, and its next faux-1 request needs at least \$[\d.]+\. Raise the cap to at least \$[\d.]+ to run it\.$/);
   await made(api, learner("broke"));
-  const broke = await ended(api, await started(api, "broke", "hi", { max_cost_usd: WORST / 2 }), ["failed"]);
+  // Half a request's least: the job's first request is refused, so no turn is sent.
+  const broke = await ended(api, await started(api, "broke", "hi", { max_cost_usd: LEAST / 2 }), ["failed"]);
   assert.equal(broke.view.error.code, "spend_cap_reached");
   settled(broke.view, broke.rows, "dropped", "no_budget");
   assert.equal(reflectRows(broke.rows).length, 0, "no turn");

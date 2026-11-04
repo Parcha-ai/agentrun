@@ -212,6 +212,22 @@ function checkAnswers(
 	return { need: need.probability, where: where.choice };
 }
 
+const isSet = (value: string | undefined) => value !== undefined && value.trim() !== "";
+
+/**
+ * The classifier for Jev on the key an environment has, by the rule serve's decisions follow: TypeSafe's own API when
+ * `TYPESAFE_API_KEY` is set, else Jev through OpenRouter's System One when `OPENROUTER_API_KEY` is, by the name pi-ai's
+ * `openrouterProvider()` lists it under (`~typesafe/jev-latest`). `undefined` when neither is set. The host's `Models`
+ * must hold that provider: `jevPlacer` refuses a classifier it does not know (`no_classifier`).
+ */
+export function jevClassifier(
+	env: Readonly<Record<string, string | undefined>> = process.env,
+): { readonly provider: "typesafe" | "openrouter"; readonly modelId: string } | undefined {
+	if (isSet(env.TYPESAFE_API_KEY)) return { provider: "typesafe", modelId: "jev-latest" };
+	if (isSet(env.OPENROUTER_API_KEY)) return { provider: "openrouter", modelId: "~typesafe/jev-latest" };
+	return undefined;
+}
+
 /**
  * A placer that asks Jev through pi-ai's `Models.classify`: one call a decision, two questions (`need`, a yes or no on
  * whether the step needs something the current environment cannot do, and `where`, a choice among the environments,

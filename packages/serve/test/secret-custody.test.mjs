@@ -240,7 +240,7 @@ test("under its launcher, a tool key saved through the settings API reaches the 
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved.MONID_API_KEY } })).status, 204);
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: saved.BROWSERBASE_PROJECT_ID } })).status, 204);
   const fields = Object.fromEntries((await api("GET", "/settings/tool-keys")).body.keys.flatMap((key) => key.fields.map((field) => [field.name, field.source])));
-  assert.deepEqual(fields, { PARALLEL_API_KEY: null, MONID_API_KEY: "stored", BROWSERBASE_API_KEY: "server", BROWSERBASE_PROJECT_ID: "stored", TYPESAFE_API_KEY: null }, "the launcher's is the server's; the saved ones are stored, never the server's");
+  assert.deepEqual(fields, { PARALLEL_API_KEY: null, MONID_API_KEY: "stored", BROWSERBASE_API_KEY: "server", BROWSERBASE_PROJECT_ID: "stored", TYPESAFE_API_KEY: null, ANTHROPIC_API_KEY: null, OPENAI_API_KEY: null, OPENROUTER_API_KEY: null }, "the launcher's is the server's; the saved ones are stored, never the server's");
   const handed = async () => {
     const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
     await follow(api, run.run_id, ["completed"]);
@@ -309,7 +309,7 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${started.run_id}`)).body.error));
   const sent = readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => call.authorized), [true], "Parallel answered on the saved key, handed on the decision descriptor");
+  assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/monitors", true], ["/v1/decisions", true]], "checked as it was saved (a list of monitors, which costs nothing), then Parallel answered the run on the saved key, handed on the decision descriptor");
   for (const p of processes().filter((p) => treeOf(root).has(p.pid))) {
     assert.ok(!p.environ.includes(PARALLEL_CANARY), `pid ${p.pid}'s environment holds the key`);
     assert.ok(!p.cmdline.includes(PARALLEL_CANARY), `pid ${p.pid}'s command line holds the key`);
@@ -376,10 +376,9 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   assert.deepEqual(await secretsFor(agentic([])), without(...TOOL_KEYS));
   // Only a `tool` row's fields are scoped: a key of another kind (a model's) reaches a run that names no tool.
   const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
-  assert.deepEqual(ROWS.map((row) => row.kind), ["tool", "tool", "tool", "tool"]);
-  const rows = [...ROWS, { id: "openai", kind: "model", fields: ["OPENAI_API_KEY"], unlocks: [] }];
-  assert.deepEqual(await secretsFor(agentic([]), rows), without(...TOOL_KEYS), "OPENAI_API_KEY with them, the tool keys still not");
-  assert.deepEqual(await secretsFor(agentic([]), rows.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS, "OPENAI_API_KEY"), "the same row as a tool key is scoped");
+  assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["openrouter", "model"]]);
+  assert.deepEqual(await secretsFor(agentic([]), ROWS), without(...TOOL_KEYS), "the model keys with them, the tool keys still not");
+  assert.deepEqual(await secretsFor(agentic([]), ROWS.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS, "OPENAI_API_KEY"), "the same row as a tool key is scoped");
 
   // A workflow: the tools its model nodes name and its call nodes run, wherever the node is, never a name only its
   // definition lists, nor data shaped like a node.

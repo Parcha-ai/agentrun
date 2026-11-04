@@ -12,8 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
-import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, metersIn, spentIn } from "../dist/cap.js";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn } from "../dist/cap.js";
+import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -55,6 +56,16 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", usd } });
   assert.equal(Math.round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(0.003)])) * 1e6) / 1e6, 0.004, "a paid tool's charge is spent too");
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
+});
+
+test("a Parallel request whose settle record could not be written: the cap, and a restarted process, count it at its held price, never $0; the run's shown cost and the tools meter read it as unknown", async (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const marked = { kind: TOOL_STARTED, data: { tool: "web_search", charged_by: "parallel", call: "c1", heldUsd: 0.001 } };
+  const open = [started, answer({ total: 0.002 }), marked];
+  assert.equal(round(spentIn(storeOf(t, open))), 0.003, "a restarted process reads the held $0.001 as spent");
+  assert.equal(capToolSpend(open), 0.001, "and so does another harness's, read at its open");
+  assert.equal(timelineOf(open, { settled: true }).at(-1).usage.usd, null, "the run's shown cost: unknown, never the hold or $0");
+  assert.deepEqual(metersIn(storeOf(t, open)), { tools: null, tokens: 0.002 }, "the tools meter: unknown");
 });
 
 test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
@@ -125,9 +136,19 @@ test("a request a crash cut (marked as sent, no answer, no end) counts at the fi
   assert.equal(round(spentIn(storeOf(t, [startedHeld(0.5), startedHeld(0.4), answer({ total: 0.001 })]))), 0.501);
 });
 
+test("the cap's refusal in its own words (its code with a note) is left out as any refusal: it closes no request a crash cut", (t) => {
+  // pi's answer to a request the cap limited and then refused: "spend_cap_reached (out of budget): Not sent: ...".
+  const refusedNow = { kind: "pi.assistant", model: [{ role: "assistant", content: [], usage: { cost: { total: 0 } }, stopReason: "error", errorMessage: "spend_cap_reached (out of budget): Not sent: the run has spent $0.401 of its $0.5 cap, and its next m request needs at least $0.11. Raise the cap to at least $0.52 to run it.", timestamp: 0 }] };
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.001), answer({ total: 0.001 }), startedHeld(0.4), refusedStart, refusedNow]))), 0.401, "the cut request still counts at its figure");
+});
+
 test("a cut request is unknown when its start mark holds no figure (an older store), and one request is counted once whatever marks and entry it has", (t) => {
   assert.equal(spentIn(storeOf(t, [startedHeld(0.001), answer({ total: 0.001 }), started])), null, "a start with no figure, cut");
-  assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), startedHeld(0.4)])), null, "a figure on the cut one, but a start without one: which was cut is not certain");
+  // Read in order, the answer closed the start before it, which holds no figure: the cut one is certain, at its own.
+  assert.equal(Math.round(spentIn(storeOf(t, [started, answer({ total: 0.001 }), startedHeld(0.4)])) * 1e6) / 1e6, 0.401, "an older start, answered before the cut one started");
+  assert.equal(spentIn(storeOf(t, [started, startedHeld(0.4), answer({ total: 0.001 })])), null, "a start with no figure that may still be the open one: which was cut is not certain");
+  assert.equal(spentIn(storeOf(t, [startedHeld(0.2), started])), null, "a start with no figure still open at the crash, beside one with a figure: unknown, never the figure alone");
   const round = (usd) => Math.round(usd * 1e6) / 1e6;
   for (const [why, entries] of Object.entries({
     "start, aborted entry, end": [startedHeld(0.4), answer({ total: 0 }, "aborted"), ended(0.4)],
@@ -150,6 +171,131 @@ test("a request stopped before its end counts at the figure its end mark holds, 
   assert.equal(round(spentIn(storeOf(t, [started, ended(0.5), started, answer({ total: 0.002 }), refusedStart, refused]))), 0.502, "the cap's refusal, marked, answers its own mark");
 });
 
+test("after a crash, each request still open counts at its own start's figure: a start an answer or an end mark closed is never counted again", (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), answer({ total: 0.2 }), startedHeld(0.1)]))), 0.3, "answered at 0.20 before the cut one (held 0.10) started: 0.20 + 0.10, never the answered start's 0.30 again");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.1), startedHeld(0.3), ended(0.3)]))), 0.4, "one stopped at 0.30 (its end mark) and one a crash cut, held 0.10: 0.30 + 0.10");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), ended(0.3), startedHeld(0.1)]))), 0.4, "the same, the stop before the cut one started");
+  // Requests that overlap: the marks do not say which one an answer closed, so it closes the smallest figure still open.
+  // Its cost is not read as a clue: a held figure is the cap's worst case, and a reading that trusted it never to be
+  // passed would count less than was spent if it ever were.
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.1), startedHeld(0.3), answer({ total: 0.2 })]))), 0.5, "either can have been cut: at the larger, 0.30");
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.5), startedHeld(0.2), answer({ total: 0.1 }), startedHeld(0.3)]))), 0.9, "an overlap, then a request after it: 0.10 + 0.50 + 0.30");
+});
+
+/** The most the marks `events` allow the run to have spent: each answer can have closed any request open when it came,
+ *  each end mark one open with its figure, and each request still open at the end counts at its figure. */
+const mostOf = (events, open = [], i = 0) => {
+  if (i === events.length) return open.reduce((sum, figure) => sum + figure, 0);
+  const [kind, x] = events[i];
+  const without = (figure) => {
+    const at = open.indexOf(figure);
+    return [...open.slice(0, at), ...open.slice(at + 1)];
+  };
+  if (kind === "start") return mostOf(events, [...open, x], i + 1);
+  if (kind === "end") return open.includes(x) ? x + mostOf(events, without(x), i + 1) : -Infinity;
+  if (!open.length) return x + mostOf(events, open, i + 1);
+  return Math.max(...[...new Set(open)].map((figure) => x + mostOf(events, without(figure), i + 1)));
+};
+
+test("read in order, the spend after a crash is never less than any reading of the marks allows, and exactly what was spent when no requests overlap", (t) => {
+  // mulberry32: a 32-bit state stepped with Math.imul, so every bit is exact. A product past 2^53 would lose its low
+  // bits, and rand(2) with them.
+  let seed = 1377;
+  const rand = (n) => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return Math.floor((((x ^ (x >>> 14)) >>> 0) / 4294967296) * n);
+  };
+  const FIGURES = [0.1, 0.2, 0.3, 0.4, 0.5];
+  // A run's requests as they went: each one opens with its start mark, and may close by an answer (at most its figure)
+  // or a stop (its end mark); the process then crashes, cutting the rest. `serial`: each closes before the next opens.
+  const runOf = (serial) => {
+    const entries = [];
+    const events = [];
+    const open = [];
+    let spent = 0;
+    let overlapping = 0;
+    for (let step = 0, steps = 1 + rand(7); step < steps; step++) {
+      const opening = open.length === 0 || (!serial && rand(2) === 0);
+      if (opening) {
+        const figure = FIGURES[rand(FIGURES.length)];
+        open.push(figure);
+        entries.push(startedHeld(figure));
+        events.push(["start", figure]);
+        continue;
+      }
+      // A close while another request is open too: which one it closed is what the reading has to get right.
+      if (open.length > 1) overlapping += 1;
+      const [figure] = open.splice(rand(open.length), 1);
+      if (rand(2) === 0) {
+        const cost = Math.round(figure * rand(5) * 25_000) / 100_000;
+        entries.push(answer({ total: cost }));
+        events.push(["answer", cost]);
+        spent += cost;
+      } else {
+        entries.push(ended(figure));
+        events.push(["end", figure]);
+        spent += figure;
+      }
+    }
+    return { entries, events, overlapping, most: spent + open.reduce((sum, figure) => sum + figure, 0) };
+  };
+  const seen = { answers: 0, ends: 0, overlapping: 0 };
+  for (let i = 0; i < 300; i++) {
+    const { entries, events, overlapping, most: actual } = runOf(false);
+    seen.answers += events.filter(([kind]) => kind === "answer").length;
+    seen.ends += events.filter(([kind]) => kind === "end").length;
+    seen.overlapping += overlapping;
+    const got = spentIn(storeOf(t, entries));
+    assert.ok(got >= mostOf(events) - 1e-9, `never less than the marks allow: ${got} for ${JSON.stringify(events)}`);
+    assert.ok(got >= actual - 1e-9, `never less than what the run can have spent: ${got} < ${actual}`);
+  }
+  // The walk covers what it checks: answers, end marks, and closes while requests overlap, each well past a handful.
+  t.diagnostic(`overlapping runs: ${seen.answers} answers, ${seen.ends} end marks, ${seen.overlapping} closes while requests overlap`);
+  for (const [what, count] of Object.entries(seen)) assert.ok(count >= 50, `the generator made only ${count} ${what}`);
+  for (let i = 0; i < 300; i++) {
+    const { entries, events, most } = runOf(true);
+    assert.ok(Math.abs(spentIn(storeOf(t, entries)) - most) < 1e-9, `exact with no overlap: ${JSON.stringify(events)}`);
+  }
+});
+
+/** pi's entry for `message`, as it writes a request's answer or error. */
+const entryOf = (message) => ({ kind: "pi.assistant", model: [message] });
+/** A run whose store keeps the marks it is given, or refuses every write (`refusing`). */
+const markStore = (refusing = false) => {
+  const marks = [];
+  const commit = async (change) => (refusing ? Promise.reject(new Error("the store refused the write")) : change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }));
+  return { marks, run: { harness: { commit } } };
+};
+const FAUX_MODEL = { api: "faux", provider: "faux", id: "m" };
+
+test("a request that never left answers none: pi's error for one whose start mark could not be written, and a cancel's refusal, close no other request", async (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  // request-start's own path: the store refuses the start mark, so the request is not sent, and pi gets the error it
+  // writes as the request's entry. The cap reads that error by the same constant request-start builds it from.
+  let sent = 0;
+  const { models, open } = await markRequests({ streamSimple: () => (sent++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) });
+  open(markStore(true).run);
+  const notSent = await models.streamSimple(FAUX_MODEL, { messages: [] }, {}).result();
+  assert.equal(sent, 0, "the request did not leave");
+  assert.equal(notSent.stopReason, "error");
+  assert.ok(notSent.errorMessage.startsWith(MARK_NOT_WRITTEN), notSent.errorMessage);
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.4), entryOf(notSent)]))), 0.4, "the request in flight at the crash is not answered by it: counted at its figure");
+  // A figureless start in flight when another request's mark failed; that process crashed, the next sent a request (held
+  // 0.30) and crashed too. The figureless one was cut: unknown, never 0.30.
+  assert.equal(spentIn(storeOf(t, [started, entryOf(notSent), startedHeld(0.3)])), null, "a figureless start left open stays unknown");
+  // A cancel's refusal, through request-start's own path: its mark, then pi's error for it. Together they are no request.
+  const { marks, run } = markStore();
+  const cancelled = await markRequests({ streamSimple: () => (sent++, {}) }, () => true);
+  cancelled.open(run);
+  const refusal = await cancelled.models.streamSimple(FAUX_MODEL, { messages: [] }, {}).result();
+  assert.equal(sent, 0, "the cancelled request did not leave");
+  assert.deepEqual(marks.map((m) => m.kind), [REQUEST_REFUSED]);
+  assert.equal(round(spentIn(storeOf(t, [startedHeld(0.3), ...marks, entryOf(refusal)]))), 0.3, "the request in flight still counts; the refusal closes nothing");
+});
+
 test("the run's shown cost is the timeline's, unchanged: a stopped request is unknown there, and a refusal after it never makes it $0", () => {
   const shown = (entries) => timelineOf(entries.map((entry) => ({ conversationId: 1, ...entry })), { settled: true }).find((row) => row.kind === "usage")?.usage?.usd;
   assert.equal(shown([started, answer({ total: 0.001 }), started, answer({ total: 0 }, "aborted"), ended(0.5)]), null, "stopped with content: unknown");
@@ -164,18 +310,18 @@ const meterOf = (entries) => {
   return { usage: timelineOf(all, { settled: true }).find((row) => row.kind === "usage")?.usage, requests, unmetered };
 };
 /** pi's entry for a request the cap refused, as capModels makes it: an error with zero counts and no cost. */
-const refusalEntry = { kind: "pi.assistant", model: [{ role: "assistant", content: [], api: "faux", provider: "faux", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "error", errorMessage: "spend_cap_reached: the next model request was not sent. It could cost up to $1.000000, and with $0.001000 spent the run would pass its cap of $1: the run is out of budget.", timestamp: 0 }] };
+const refusalEntry = { kind: "pi.assistant", model: [{ role: "assistant", content: [], api: "faux", provider: "faux", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "error", errorMessage: "spend_cap_reached (out of budget): Not sent: the run has spent $0.001 of its $1 cap, and its next m request needs at least $1.01. Raise the cap to at least $1.02 to run it.", timestamp: 0 }] };
+/** The same refusal as an older store has it: the words serve wrote then, and no start mark of its own. */
+const olderRefusal = { kind: "pi.assistant", model: [{ role: "assistant", content: [], api: "faux", provider: "faux", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "error", errorMessage: "spend_cap_reached: the next model request was not sent. It could cost up to $1.000000, and with $0.001000 spent the run would pass its cap of $1: the run is out of budget.", timestamp: 0 }] };
 const paidEntry = { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "ok" }], api: "faux", provider: "faux", model: "m", usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.001 } }, stopReason: "stop", timestamp: 0 }] };
 
-test("a plain refusal for room balances on the run's meter: with its own start mark, written before or after pi's error entry, the cost stays known and the request count and unmetered are what they are without the mark", () => {
-  const without = meterOf([started, paidEntry, refusalEntry]);
-  assert.deepEqual(without, { usage: { usd: 0.001, requests: 2 }, requests: 2, unmetered: 0 }, "the refusal as an older store has it");
-  assert.deepEqual(meterOf([started, paidEntry, refusedStart, refusalEntry]), without, "its mark first, as the cap writes it");
-  assert.deepEqual(meterOf([started, paidEntry, refusalEntry, refusedStart]), without, "its entry first: after an earlier mark the counts still balance");
-  assert.deepEqual(meterOf([refusedStart, refusalEntry]), meterOf([refusalEntry]), "a refusal as the run's first request, its mark first");
-  // Its entry before its mark, with no mark before either, is a start no answer follows: a cut. The cap never writes them
-  // so (the refused request ends only once its mark is in: see the test of the order below).
-  assert.equal(meterOf([refusalEntry, refusedStart]).usage.usd, null);
+test("a refusal for room with its own start mark is no request on the run's meter: the cost stays known, and the count is the requests that were sent", () => {
+  // An older store's refusal, with no mark, cannot be told from a request that failed: it counts, as it did.
+  assert.deepEqual(meterOf([started, paidEntry, olderRefusal]), { usage: { usd: 0.001, requests: 2 }, requests: 2, unmetered: 0 }, "the refusal as an older store has it");
+  assert.deepEqual(meterOf([started, paidEntry, refusedStart, refusalEntry]), { usage: { usd: 0.001, requests: 1 }, requests: 1, unmetered: 0 }, "its mark first, as the cap writes it: no request");
+  assert.deepEqual(meterOf([refusedStart, refusalEntry]), { usage: { usd: 0, requests: 0 }, requests: 0, unmetered: 0 }, "a refusal as the run's first request: a run that sent none, its usage line saying so");
+  // A refusal's mark never makes a cut, even after its entry (the cap never writes them so): it marks no request.
+  assert.equal(meterOf([refusalEntry, refusedStart]).usage.usd, 0);
 });
 
 /** A Models whose every request is recorded and stays open until the test ends it with the answer it gives. */
@@ -251,7 +397,7 @@ test("after a crash, the cut request's held worst case is spent: the next reques
     const next = (await capModels(models, cap, spent)).streamSimple(outputOnly, context);
     assert.equal(sent.length, sends, `a cap of $${cap}`);
     if (sends) sent[0].end({ total: 0 });
-    else assert.match((await next.result()).errorMessage, /^spend_cap_reached: .*could cost up to \$0\.001000, and with \$0\.001000 spent/);
+    else assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
     await next.result();
   }
 });
@@ -265,7 +411,7 @@ test("the spend a reopened run reads is the full amount, never the timeline's to
   const { models, sent } = fakeModels();
   const next = (await capModels(models, 0.001 + 0.0000002, spent)).streamSimple(outputOnly, context);
   assert.equal(sent.length, 0, "not sent: $0.0000004 spent and $0.001 held pass the cap");
-  assert.match((await next.result()).errorMessage, /^spend_cap_reached: .*could cost up to \$0\.001000/);
+  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.0000004 of its \$0\.0010002 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
 });
 
 test("pi under a cap: a request stopped before its end counts at the worst case the cap held for it, which it hands its marks; the next goes while that leaves room, and is refused once it does not", async () => {
@@ -284,7 +430,7 @@ test("pi under a cap: a request stopped before its end counts at the worst case 
   assert.deepEqual(options, [0.001, 0.001], "each request carries what the cap held for it to its marks");
   const third = capped.streamSimple(outputOnly, context);
   assert.equal(sent.length, 2, "with $0.002 counted, $0.001 more passes $0.0025");
-  assert.match((await third.result()).errorMessage, /^spend_cap_reached: .*could cost up to \$0\.001000, and with \$0\.002000 spent.*out of budget/);
+  assert.match((await third.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.002 of its \$0\.0025 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
 });
 
 test("pi under a cap: a summary that fails with no answer counts at the worst case the cap held for it", async () => {
@@ -294,7 +440,7 @@ test("pi under a cap: a summary that fails with no answer counts at the worst ca
   await settle();
   const next = capped.streamSimple(outputOnly, context);
   assert.equal(sent.length, 0, "$0.001 counted and $0.001 more passes $0.0015");
-  assert.match((await next.result()).errorMessage, /could cost up to \$0\.001000, and with \$0\.001000 spent/);
+  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\. Raise the cap to at least \$0\.01 to run it\.$/);
 });
 
 test("pi under a cap: a refused request's own start mark is written before its error ends the request, and a mark that fails still ends it", async () => {
@@ -309,7 +455,7 @@ test("pi under a cap: a refused request's own start mark is written before its e
     const answer = await capped.streamSimple(outputOnly, context).result();
     order.push("answer");
     assert.deepEqual(order, ["mark", "answer"], fails ? "a failed mark" : "the mark first");
-    assert.match(answer.errorMessage, /^spend_cap_reached: /);
+    assert.match(answer.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: /);
   }
 });
 
@@ -405,18 +551,19 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   assert.equal(run.cost.usd, null);
 });
 
-test("a capped pi run stopped mid-answer, when what the cap held for the stopped request leaves no room: the next request is refused with the cap's message, and the run's cost shows unknown, never $0", async (t) => {
-  // $2 holds one request's worst case of about $1.64, not two.
+test("a capped pi run stopped mid-answer, when what the cap held for the stopped request leaves no room for another request's least: the next request is refused with the cap's message, and the run's cost shows unknown, never $0", async (t) => {
+  // $1.70 holds one request's worst case of about $1.64, and leaves $0.06 after it: not another's least, 1,024 tokens at
+  // $0.0001.
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
-  const runId = await stopped(api, "tight", 2);
+  const runId = await stopped(api, "tight", 1.7);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
   const run = await finished(api, runId);
   assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /could cost up to \$1\.638400, and with \$1\.638400 spent/);
+  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
   assert.equal(run.cost.usd, null, "the refusal never balances the stopped request: unknown, not $0");
 });
 
-test("a capped pi run refused for room with no stop: its cost stays the known total it spent, and its meter reads as it would without the refusal's own mark", async (t) => {
+test("a capped pi run refused for room with no stop: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   // A probe: one paid request (asking the person), to learn what one costs.
   assert.equal((await api("POST", "/agents", agent("probe", { tools: ["ask_person"] }))).status, 201);
@@ -424,9 +571,10 @@ test("a capped pi run refused for room with no stop: its cost stays the known to
   await follow(api, probe, ["input_required"]);
   const first = (await view(api, probe)).cost.usd;
   assert.ok(first > 0, "the ask was paid for");
-  // One request's worst case plus half the ask: the answer fits alone, not after the ask.
+  // One request's least (1,024 tokens at $0.0001) plus half the ask: the ask goes, limited to what the cap buys, and the
+  // answer cannot buy its least after it.
   assert.equal((await api("POST", "/agents", agent("plain", { tools: ["ask_person"] }))).status, 201);
-  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: FAUX_WORST + first / 2 })).body.run_id;
+  const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: (1_024 * 100) / 1e6 + first / 2 })).body.run_id;
   await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
   const run = await finished(api, runId);
@@ -438,8 +586,7 @@ test("a capped pi run refused for room with no stop: its cost stays the known to
   const isRefusalMark = (entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused === true;
   assert.equal(entries.filter(isRefusalMark).length, 1, "the refusal has its own start mark");
   const asWritten = meterOf(entries);
-  assert.deepEqual(asWritten, meterOf(entries.filter((entry) => !isRefusalMark(entry))), "the usage row, requests and unmetered, as without the mark");
-  assert.equal(asWritten.usage.usd, first);
+  assert.deepEqual([asWritten.usage.usd, asWritten.usage.requests, asWritten.requests], [first, 1, 1], "the ask alone: the refused request was never sent");
 });
 
 const SIGNAL = new URL("./fixtures/faux-signal.mjs", import.meta.url).pathname;
@@ -496,11 +643,11 @@ test("a capped pi run whose process is killed mid-request is opened again and go
   assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the cap counts the cut request at its held worst case: $${spent}`);
 });
 
-test("a capped pi run whose process is killed mid-request, when the held worst case leaves no room: the next process refuses the request with the cap's message", { timeout: 120_000 }, async (t) => {
-  // $2 holds one request's $1.64, not two.
-  const { api, runId, signal } = await killedMidRequest(t, 2);
+test("a capped pi run whose process is killed mid-request, when the held worst case leaves no room for another request's least: the next process refuses the request with the cap's message", { timeout: 120_000 }, async (t) => {
+  // $1.70 holds one request's $1.64, and leaves $0.06: not another's least.
+  const { api, runId, signal } = await killedMidRequest(t, 1.7);
   const run = await finished(api, runId);
   assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /could cost up to \$1\.638400, and with \$1\.638400 spent/);
+  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
   assert.equal(existsSync(signal), false, "the request is not sent again");
 });

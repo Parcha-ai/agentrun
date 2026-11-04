@@ -538,7 +538,11 @@ describe("a stop in progress", () => {
 					await box.exec(["sh", "-c", 'mkdir "$1/trim"', "sh", started.directory], undefined, context),
 				);
 				expect(getOrThrow(await finish(planted)).exitCode).toBe(0);
-				await until("the watchdog in its trim lock's mkdir", async () => fileIn(box, at("seam.held")));
+				// The stop's mkdir reads the pid in seam.held, which the shell creates empty before the echo writes it.
+				await until(
+					"the watchdog in its trim lock's mkdir",
+					async () => (await fileIn(box, at("seam.held")))?.trim() || undefined,
+				);
 				const began = Date.now();
 				const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 300 }, context));
 				const took = Date.now() - began;
@@ -591,7 +595,9 @@ describe("a stop in progress", () => {
 						),
 					);
 					const at = (file: string) => join(started.directory, file);
-					const program = Number(await until("the program's id", async () => fileIn(box, "prog.pid")));
+					const program = Number(
+						await until("the program's id", async () => (await fileIn(box, "prog.pid"))?.trim() || undefined),
+					);
 					// A record the stop cannot write: a directory where its file goes (a mv onto it moves the file inside).
 					mkdirSync(at("stop.killed"));
 					const stopped = await launchStop(box, started.launch, { graceMs: 300 }, context);

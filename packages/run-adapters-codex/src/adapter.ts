@@ -11,7 +11,7 @@
 // skills turned off. With no shell, the model reads a skill's files with `read_skill_file`.
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
+import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
@@ -26,6 +26,15 @@ import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/ho
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Codex's `tool_output_token_limit`: the host's result bound (HOST_RESULT_MAX_CHARS), as Codex counts it. Codex keeps a
+ * tool's output in the model's history within its truncation policy (10,000 tokens for each model its catalog holds, less
+ * for one it does not) and cuts the middle of a longer one; this sets the policy. Codex counts a token as four bytes of
+ * UTF-8, and a character (a UTF-16 unit) takes at most three, so a result within the bound in any script takes at most
+ * three quarters of a token a character: not a quarter, which holds for ASCII alone.
+ */
+export const CODEX_TOOL_OUTPUT_TOKENS = Math.ceil((HOST_RESULT_MAX_CHARS * 3) / 4);
 
 export interface CodexProvider {
   /** The provider's origin (`https://api.openai.com`): the proxy forwards to its `/v1/responses` only. */
@@ -173,7 +182,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         // Codex's `<permissions instructions>` message is off too. It describes Codex's own sandbox ("`sandbox_mode` is
         // `read-only`: The sandbox only permits reading files"), which binds only Codex's built-in tools, and those are off
         // here. The host's tools write, and a model that believed the message refused to write at all (autoqa F13).
-        config: { skills: { bundled: { enabled: false } }, include_permissions_instructions: false },
+        // A host tool's result within the host's bound reaches the model whole (CODEX_TOOL_OUTPUT_TOKENS).
+        config: { skills: { bundled: { enabled: false } }, include_permissions_instructions: false, tool_output_token_limit: CODEX_TOOL_OUTPUT_TOKENS },
         model: modelFor(spec),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(effort ? { effort } : {}),

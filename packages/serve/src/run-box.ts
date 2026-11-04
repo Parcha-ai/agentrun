@@ -1,6 +1,6 @@
-// A sandbox run's box: one per run, made on its first tool call and labelled with the run's id, so the label is the
-// record. A run's process that starts again finds it by that label and first kills the commands the process before it
-// left running. Serve destroys it at every settle (a cancel included) and at archive, and its start sweeps the boxes of
+// A sandbox run's box: one per run, made on the first call that runs in it and labelled with the run's id, so the label
+// is the record (a bound box's read, write and edit run on this machine: bound-files.ts). A run's process that starts
+// again finds it by that label and first kills the commands the process before it left running. Serve destroys it at every settle (a cancel included) and at archive, and its start sweeps the boxes of
 // runs that have ended. A box gets the run's work/ only, bound at BOX_WORK, a fixed environment (never this process's,
 // so no key or token enters it), no network, and this server's user. pi-transport is an optional peer of this package:
 // it is loaded only for a run whose place is a box.
@@ -60,7 +60,9 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
   if (place.mode !== "sandbox" || place.box !== "docker") throw new Error(`runs in the ${place.mode === "sandbox" ? place.box : "runner"} place have no box`);
   const { dockerBoxes } = await import("@parcha/pi-transport/box/docker");
   const user = process.getuid && process.getgid ? `${process.getuid()}:${process.getgid()}` : undefined;
-  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}) });
+  // With no capability and no way to gain one (no program in a run's box changes user): as root (serve run as uid 0) a
+  // box could otherwise make a device node in work/.
+  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}), dropCapabilities: true });
 }
 
 /** The tests' faux box provider, from its module. */
@@ -69,7 +71,7 @@ export const fauxBoxes = async (module: string, root: string): Promise<BoxProvid
 
 /** A run's box, as its tools' environment: found by its label or made on the first call, once; made again on the call
  *  after it was lost. A box that cannot be had fails that call; nothing falls back to this machine. */
-export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string };
+export type RunBox = { env(context: Context): Promise<ExecutionEnv>; hostWork: string; bound(): Promise<boolean>; leftEnded(context: Context): Promise<void> };
 
 export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; root: string; dir: string; place: Place }): RunBox {
   let held: Promise<ExecutionEnv> | undefined;
@@ -96,15 +98,40 @@ export function runBox(provider: () => Promise<BoxProvider>, run: { id: string; 
     }
     return boxEnv(box, { maxExecMs: BASH_TIMEOUT_MS, onLost: () => void (held = undefined) }) as unknown as ExecutionEnv;
   };
+  let binds: Promise<boolean> | undefined;
+  let checked: Promise<void> | undefined;
+  const env = (context: Context): Promise<ExecutionEnv> => {
+    held ??= open(context).catch((error: unknown) => {
+      held = undefined;
+      throw error;
+    });
+    return held;
+  };
   return {
     // The bind's source: a path another harness names under it is the same file in the box (coding-tools.ts boxPath).
     hostWork: join(run.dir, "work"),
-    env(context) {
-      held ??= open(context).catch((error: unknown) => {
-        held = undefined;
+    // Whether the provider binds it (BoxProvider.mounts): then the file tools may work on it here (bound-files.ts).
+    bound() {
+      binds ??= provider().then((boxes) => boxes.mounts === true, (error: unknown) => {
+        binds = undefined;
         throw error;
       });
-      return held;
+      return binds;
+    },
+    env,
+    // Before a file tool works on work/ here, once a process: a box an earlier process of the run left may still run a
+    // command that changes work/, so that box is taken over (env: its left commands killed first). None, none is made.
+    leftEnded(context) {
+      checked ??= (async () => {
+        if (held) return void (await held);
+        const listed = await (await provider()).list({ [RUN_LABEL]: run.id }, context);
+        if (!listed.ok) throw listed.error;
+        if (listed.value.length) await env(context);
+      })().catch((error: unknown) => {
+        checked = undefined;
+        throw error;
+      });
+      return checked;
     },
   };
 }

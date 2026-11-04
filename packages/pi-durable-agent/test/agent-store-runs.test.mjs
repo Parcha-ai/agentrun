@@ -152,6 +152,20 @@ test("carryBack ends the row once: state, ended_at, cost and summary; a second c
   await store.close();
 });
 
+test("carryBack's endedAt is the row's ended_at, the end time its host chose; one that is not an ISO time in UTC is refused and changes nothing", async () => {
+  const { dir, store, agent } = await aStore();
+  const run = await store.startRun({ agent: agent.id });
+  const chosen = "2026-11-03T07:00:00.123Z";
+  for (const endedAt of ["yesterday", "2026-02-30T07:00:00Z", 12]) {
+    assert.throws(() => store.carryBack(run.runId, { state: "completed", endedAt }), refused("invalid"));
+    assert.equal(runs(dir)[0].ended_at, null, "nothing written");
+  }
+  store.carryBack(run.runId, { state: "completed", endedAt: chosen });
+  assert.equal(runs(dir)[0].ended_at, chosen);
+  assert.equal(store.readRun(run.runId).endedAt, chosen);
+  await store.close();
+});
+
 test("reopenRun opens a completed run again: running, no end, its cost and summary kept until the next carryBack; any other state, a running run or an unknown one is refused and changes nothing", async () => {
   const { dir, store, agent } = await aStore();
   const done = await store.startRun({ agent: agent.id });
