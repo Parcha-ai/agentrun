@@ -866,8 +866,9 @@ export class Runs {
     return withoutLoopback(redacted(text, this.refusedValues(run)));
   }
 
-  /** The timeline's redaction of `run`'s error rows, applied before a row is cut (timelineOf's `redact`), so a cut never
-   *  leaves the head of a key. */
+  /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
+   *  before a row is cut (timelineOf's `redact`), so a cut never leaves the head of a key. Every such cut is within
+   *  redacted()'s SHOWN, so its window holds. */
   private redactor(run: Run): (text: string) => string {
     return (text) => redacted(text, this.refusedValues(run));
   }

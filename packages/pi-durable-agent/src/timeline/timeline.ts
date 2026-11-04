@@ -115,8 +115,9 @@ export type TimelineOptions = {
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
    *  to its workspace. The entries, the call's arguments and its input preview, are not changed. Default: as given. */
   path?: (path: string) => string;
-  /** What an error row says, made safe by the host before the row is cut (its secrets taken out): applied to an error
-   *  row's summary and text whole, so a cut never falls inside what it takes out. Default: as given. */
+  /** What an error row says, and what a tool's result row shows of its output, made safe by the host before the row is
+   *  cut (its secrets taken out): applied to an error row's summary and text, and to a tool's whole output before its
+   *  summary and preview are taken from it, so a cut never falls inside what it takes out. Default: as given. */
   redact?: (text: string) => string;
 };
 
@@ -455,11 +456,16 @@ function createProjector(options: TimelineOptions) {
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
   /** A call that returned but whose result says it did not do its work (a refused fetch) reads as that, failed. Its
    *  outcome is read once, for the summary and the status both. */
+  /** A tool's output, like an error, can carry a key its provider echoed: what the row shows of it (summary and preview)
+   *  comes from its whole text as the host's `redact` makes it, before either is taken or cut, so neither keeps a piece of
+   *  a key. Its status is read from the output as it came. */
   const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
+    const shownView = options.redact && view.text ? { ...view, text: options.redact(view.text) } : view;
+    const said = shownView === view ? outcome : outcomeOf(tool.name, shownView);
     return make("tool_result", conv, rowId, {
-      summary: view.isError ? `${named} failed: ${failure(view.text)}` : outcome ? `${named}: ${scrubUrls(firstLine(outcome.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: view.text ? cut(scrubUrls(view.text), caps.preview) : null,
+      summary: view.isError ? `${named} failed: ${failure(shownView.text)}` : said ? `${named}: ${scrubUrls(firstLine(said.text))}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shownView.text ? cut(scrubUrls(shownView.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
   };
@@ -608,7 +614,7 @@ function createProjector(options: TimelineOptions) {
         const child = obj(message.details)?.conversationId;
         if (typeof child === "number") {
           for (const row of adopt(conv, child, id, args, named)) touch(row);
-          add(make("subagent_completed", conv, `${conv}:done:${id}`, { summary: `Subagent done: ${scrubUrls(firstLine(view.text))}`, tool_use_id: id }));
+          add(make("subagent_completed", conv, `${conv}:done:${id}`, { summary: `Subagent done: ${scrubUrls(firstLine(options.redact ? options.redact(view.text) : view.text))}`, tool_use_id: id }));
         }
       }
     } else if (entry.kind === "pi.system") {
