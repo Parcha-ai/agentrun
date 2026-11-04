@@ -1243,19 +1243,21 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       case "/setup/import": {
-        if (!offersImport) throw new ApiError("not_found", "no route /v2/setup/import");
-        // Before the owner is set, to the setup page: that it can import (202 while it counts), and then how many projects
-        // and sessions it would, or null for each when the count failed.
+        // No offer is an answer, `{ offer: false }`, never a 404: the console reads this on its first page, and a browser
+        // logs every 404 as an error.
+        // Before the owner is set, to the setup page: none on a server that cannot import, else that it can (202 while it
+        // counts), and then how many projects and sessions it would, or null for each when the count failed.
         if (!me.hasPassword()) {
           pageRead(req);
+          if (!offersImport) return send(res, 200, { offer: false });
           countSessions();
           if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
           if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
           return send(res, 202, { counting: true });
         }
-        // After, to the signed-in owner: the import asked for at setup, running, done or stopped.
-        if (!signedIn(req, me) || importState === undefined) throw new ApiError("not_found", "no route /v2/setup/import");
-        return send(res, 200, importState);
+        // After, to the signed-in owner: the import asked for at setup, running, done or stopped, or none asked.
+        if (!signedIn(req, me)) throw new ApiError("not_found", "no route /v2/setup/import");
+        return send(res, 200, importState ?? { offer: false });
       }
       case "/auth/sign-in": {
         fromPage(req);
