@@ -293,6 +293,24 @@ describe("editing a note", () => {
     await t.click(/^Add note$/);
     expect(t.calls).toContain('write prices-in-the-shop-s-currency.md {"create":true}');
   });
+  it("a note added to an agent with none, whose refresh then fails, says so over the empty state; Try again shows it", async () => {
+    let reads = 0;
+    const none = () => view({ index: "", notes: { items: [], total: 0, next_cursor: null } });
+    const added = () => view({ notes: { items: [note("prices-in-the-shop-s-currency.md", "Prices in the shop's currency")], total: 1, next_cursor: null } });
+    const t = await open(agent(true), { learning: async () => { reads++; if (reads === 2) throw new TypeError("Failed to fetch"); return reads === 1 ? none() : added(); } });
+    await t.click(/^Or write a note yourself$/);
+    const editor = t.host.querySelector('section[aria-label="New note"]')!;
+    const [name, description] = [...editor.querySelectorAll("input:not([type=radio])")];
+    await t.type(name, "Prices in the shop's currency");
+    await t.type(description, "Quote fees as the policy writes them");
+    await t.type(editor.querySelector("textarea")!, "Never convert.\n");
+    await t.click(/^Add note$/);
+    expect(reads).toBe(2);
+    expect(t.host.querySelector('[role="alert"]')?.textContent).toContain("Couldn't refresh the notes: can't reach agentrun-serve. What's shown may be out of date.");
+    await t.click(/^Try again$/);
+    expect(t.card("Prices in the shop's currency")).toBeTruthy();
+    expect(t.host.querySelector('[role="alert"]')).toBeNull();
+  });
 });
 
 describe("retiring a note", () => {
@@ -337,6 +355,24 @@ describe("retiring a note", () => {
     await t.click(/^Retire Keep/);
     await t.click(/^Yes, retire$/);
     expect(t.text()).toContain("It changed since you opened it.");
+  });
+  it("a refresh that fails after a retire says so beside the notes still shown, and Try again reads them again", async () => {
+    let reads = 0;
+    const retired = () => { const v = view(); v.notes.items = v.notes.items.map((x) => (x.file === MINE ? { ...x, status: "retired" as const } : x)); return v; };
+    const t = await open(agent(true), { learning: async () => { reads++; if (reads === 2) throw new ClientError(503, "unavailable", "The server is restarting."); return reads === 1 ? view() : retired(); } });
+    await t.click(/^Retire Keep/);
+    await t.click(/^Yes, retire$/);
+    expect(reads).toBe(2);
+    // The notes read before stay, with a line that says they were not read again, and why.
+    expect(t.card("Keep it to three lines")).toBeTruthy();
+    const line = t.host.querySelector('section[aria-label="Notes"] [role="alert"]');
+    expect(line, "a line beside the notes that says the refresh failed").not.toBeNull();
+    expect(line!.textContent).toContain("Couldn't refresh the notes: the server is busy.");
+    expect(line!.textContent).toContain("What's shown may be out of date.");
+    await t.click(/^Try again$/);
+    expect(reads).toBe(3);
+    expect(t.text()).not.toContain("Couldn't refresh the notes");
+    expect(t.text()).toContain("1 note in use.");
   });
 });
 
@@ -519,6 +555,22 @@ describe("pages past the first", () => {
     });
     expect(t.calls).toContain("log after l1");
     expect(t.card("An older note")!.querySelector('a[href="#/runs/run-z"]')?.textContent).toBe("rei.com");
+  });
+  it("a page that fails says so; a good Try again clears it, and a linked note's pages are read on", async () => {
+    let pages = 0;
+    const t = await open(agent(true), {
+      learning: async () => paged(),
+      notes: async (cursor) => {
+        if (pages++ === 0) throw new ClientError(503, "unavailable", "The server is restarting.");
+        return cursor === "n1" ? { items: [note("middle-note.md", "A middle note")], total: 5, next_cursor: "n2" } : { items: [note(DEEP, "A deep note")], total: 5, next_cursor: null };
+      },
+    }, { focus: [DEEP] });
+    expect(t.text()).toContain("More notes could not be read.");
+    expect(t.calls.filter((c) => c.startsWith("notes after"))).toEqual(["notes after n1"]);
+    await t.click(/^Try again$/);
+    expect(t.text()).not.toContain("More notes could not be read.");
+    expect(t.calls.filter((c) => c.startsWith("notes after"))).toEqual(["notes after n1", "notes after n1", "notes after n2"]);
+    expect(t.card("A deep note")!.className.split(/\s+/)).toContain("border-primary");
   });
   it("says how many of the latest runs used a note when there are more runs than it read", async () => {
     const t = await open(agent(true), { runsNext: "r1" });

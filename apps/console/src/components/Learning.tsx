@@ -110,10 +110,14 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
 
   if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
   if (!view) return <Skeleton />;
+  // A refresh that failed (after an edit, a retire or a new note) leaves the notes read before it on screen: a line beside
+  // them says they were not read again, and why, and Try again reads them again.
+  const stale = error ? <RefreshFailed error={error} onRetry={read} /> : null;
 
   const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
   if (!all.length && !adding) return (
     <div className="space-y-6">
+      {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
       <NotKept runs={runs} />
     </div>
@@ -145,6 +149,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
             </div>
             {!readOnly && !adding && <Button size="sm" onClick={() => setAdding(true)}><Plus aria-hidden /> Add a note</Button>}
           </div>
+          {stale}
           {!on && <Off server={server} />}
           {adding && <NoteEditor key="new" title="New note" v2={v2} agentId={agent.agent_id} taken={all.map((x) => x.file)} onDone={(saved) => { setAdding(false); if (saved) read(); }} />}
           <ul className="space-y-3">
@@ -164,6 +169,19 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           <NextRun index={view.index} />
         </aside>
       </div>
+    </div>
+  );
+}
+
+/** A refresh that failed, beside the notes read before it: why, in the problem card's words, and Try again. The server's
+ *  own words and code are its tooltip. */
+function RefreshFailed({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const p = problem(error, "the notes");
+  const said = [p.said, p.code].filter(Boolean).join(" · ");
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border border-destructive/40 px-3 py-2 text-[13px]" role="alert" title={said || undefined}>
+      <span className="min-w-0 flex-1">Couldn't refresh the notes: {p.why.charAt(0).toLowerCase() + p.why.slice(1)} What's shown may be out of date.</span>
+      <button type="button" onClick={onRetry} className="caps border px-3 py-1.5 text-[12px] hover:bg-accent">Try again</button>
     </div>
   );
 }
