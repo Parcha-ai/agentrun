@@ -7,11 +7,13 @@
 // secret later is found only whole, so a part of it kept would show for good. A run's learning keeps the parts its
 // words are made of (`learned`, `verdict`), and each read says them again (wordsOf): every part cut of the host's
 // secrets as they are then, and only then the words cut short (DETAIL_MAX for a run, LIST_DETAIL for a list's row).
-import { CAPS, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
-import type { Learning } from "./learning.js";
+import { CAPS, learnedPlace, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
+import type { LearnedFile, Learning } from "./learning.js";
 
 /** `n` of `one`, said as a person says it: "1 note", "2 notes". */
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+/** `parts` as a person lists them: "a", "a and b", "a, b and c". */
+const listed = (parts: readonly string[]) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`);
 /** `text` on one line, at most `max` characters, cut at a word with an ellipsis when it is longer. */
 export function short(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -56,12 +58,24 @@ const RULE_WORDS: Record<string, string> = {
   skill_outcome: "a skill from a run that didn't finish its job",
   too_many_skills: `more than ${CAPS.skills} skill at once`,
   workflow: "a workflow that can't run here",
+  too_many_workflows: `more than ${CAPS.workflows} workflow at once`,
   no_tool_list: "a workflow whose tools couldn't be checked",
   executable_node: "a workflow that runs code or commands",
 };
+/** The rules whose words name a note, said of a skill's or a workflow's file instead. */
+const LEARNED_WORDS: Record<string, string> = {
+  file_name: "a skill or workflow name that can't be used",
+  file_mode: "a link or a folder where a skill or workflow goes",
+  deleted: "a deleted skill or workflow",
+  too_large: `a skill or workflow over ${CAPS.file / 1024} KB`,
+  status: "a skill status that only the server sets",
+};
+/** Whether a problem is about a skill or a workflow draft, by its path or its rule. */
+const isLearned = (problem: Pick<Problem, "rule" | "path">) => (problem.path !== undefined && learnedPlace(problem.path) !== undefined) || /skill|workflow|tool_list|executable/.test(problem.rule);
+const wordOf = (problem: Pick<Problem, "rule" | "path">) => (isLearned(problem) ? LEARNED_WORDS[problem.rule] : undefined) ?? RULE_WORDS[problem.rule] ?? problem.rule;
 /** What a person must not see stored in a note at all: a secret, or what hides text. */
 const MUST_NOT_STORE = new Set(["secret_value", "secret_shape", "invisible_unicode"]);
-const rulesIn = (problems: readonly Pick<Problem, "rule">[]) => [...new Set(problems.map((problem) => RULE_WORDS[problem.rule] ?? problem.rule))].join("; ");
+const rulesIn = (problems: readonly Pick<Problem, "rule" | "path">[]) => [...new Set(problems.map(wordOf))].join("; ");
 
 /** Why learning stopped, said plainly: the cause inside "Not kept: learning stopped (...)". */
 export const STOPPED = {
@@ -90,16 +104,20 @@ export const said = {
   reflecting: "Looking back on this run…",
   /** The end-of-run turn's message, as a person reads it in the timeline: never the prompt the model is sent. */
   asked: "Looking back on this run.",
-  proposed: (notes: number) => `Checking ${count(notes, "new note")}…`,
-  /** What it learned, by name, and how many older notes they replace; then what waits for the owner's OK, by name. A
-   *  merge that only holds notes for the OK says that alone. */
-  merged: (learned: readonly { name: string; supersedes: readonly string[] }[], pending: readonly { name: string }[] = []) => {
+  proposed: (notes: number, skills = 0, workflows = 0) => `Checking ${listed([...(notes || !(skills || workflows) ? [count(notes, "new note")] : []), ...(skills ? [count(skills, "skill")] : []), ...(workflows ? [count(workflows, "workflow")] : [])])}…`,
+  /** What it learned, by name, and how many older notes they replace, and its skill and workflow by name; then what
+   *  waits for the owner's OK, by name. A merge that only holds things for the OK says that alone. */
+  merged: (learned: readonly { name: string; supersedes: readonly string[] }[], pending: readonly { name: string }[] = [], files: readonly Pick<LearnedFile, "file" | "name" | "pending">[] = []) => {
     const flat = (name: string) => name.replace(/\s+/g, " ").trim();
-    const waiting = pending.length ? `Waiting for your OK: ${pending.map((note) => flat(note.name)).join("; ")}.` : "";
-    if (!learned.length && waiting) return waiting;
+    const kind = (file: Pick<LearnedFile, "file" | "name">) => `${file.file.startsWith("skills/") ? "skill" : "workflow"} ${flat(file.name)}`;
+    const held = [...pending.map((note) => flat(note.name)), ...files.filter((file) => file.pending).map(kind)];
+    const waiting = held.length ? `Waiting for your OK: ${held.join("; ")}.` : "";
+    const made = files.filter((file) => !file.pending).map(kind);
+    if (!learned.length && !made.length) return waiting;
     const names = learned.map((note) => flat(note.name));
     const replaced = learned.reduce((n, note) => n + note.supersedes.length, 0);
-    const kept = `${names.length === 1 ? `Learned: ${names[0]}` : `Learned ${names.length} notes: ${names.join("; ")}`}${replaced ? ` (replaces ${count(replaced, "older note")})` : ""}`;
+    const notes = names.length ? `${names.length === 1 ? `Learned: ${names[0]}` : `Learned ${names.length} notes: ${names.join("; ")}`}${replaced ? ` (replaces ${count(replaced, "older note")})` : ""}` : "";
+    const kept = [notes, made.length ? `${notes ? "Also learned" : "Learned"} ${listed(made.map((made) => `the ${made}`))}` : ""].filter(Boolean).join(". ");
     return waiting ? `${kept}. ${waiting}` : kept;
   },
   empty: "Nothing new to remember from this run.",
@@ -107,10 +125,11 @@ export const said = {
   unparsed: "Not kept: its notes weren't in the expected format.",
   /** The grader's word on why it kept nothing (a dropped note's why, or its reason), its first sentence. */
   grader: (reason: string) => `Not kept: ${firstSentence(reason) || "it was not judged worth remembering."}`,
-  /** The checks refused what the run wrote, at its end. */
-  checker: (problems: readonly Pick<Problem, "rule">[]) => problems.some((problem) => MUST_NOT_STORE.has(problem.rule))
+  /** The checks refused what the run wrote, at its end: its notes, or what it learned when a skill or a workflow is
+   *  among what was refused. */
+  checker: (problems: readonly Pick<Problem, "rule" | "path">[]) => problems.some((problem) => MUST_NOT_STORE.has(problem.rule))
     ? `Not kept: it held something that must not be stored (${rulesIn(problems.filter((problem) => MUST_NOT_STORE.has(problem.rule)))}).`
-    : `Not kept: it didn't pass the checks on notes (${rulesIn(problems)}).`,
+    : `Not kept: it didn't pass the checks on ${problems.some(isLearned) ? "what it learned" : "notes"} (${rulesIn(problems)}).`,
   /** The agent's notes as they are now no longer take what the run wrote (another run's or a person's change since). A
    *  note it would replace that is gone, or that a person changed after the grade read it, is the rule `supersedes`
    *  either way: said in one sentence true of both. */
@@ -141,12 +160,13 @@ export function notKept(verdict: Pick<Verdict, "reason" | "items">): string {
  *  grader kept nothing, said again from its parts (`learned`, `pending`, `verdict`) each cut by `cut` first (the host's
  *  secrets as they are now); any other detail, the server's own sentence, cut as well. The caller cuts the words short
  *  after. */
-export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict">, cut: (text: string) => string): string | null {
+export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict" | "skills" | "workflows">, cut: (text: string) => string): string | null {
   const { learned, pending, verdict } = learning;
   if (learning.state === "merged") {
     const kept = Array.isArray(learned) ? learned : [];
     const waiting = Array.isArray(pending) ? pending.filter((note) => typeof note?.name === "string") : [];
-    if (kept.length || waiting.length) return said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })));
+    const files = [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].filter((file) => typeof file?.file === "string" && typeof file.name === "string");
+    if (kept.length || waiting.length || files.length) return said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })));
   }
   if (learning.state === "dropped" && learning.reason === "grader" && verdict) return notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) });
   return learning.detail === null ? null : cut(learning.detail);

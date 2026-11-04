@@ -99,7 +99,13 @@ export type Learning = {
   /** A merge's notes that wait for a person's OK (`status: pending` on main): in no index, and no run reads them until
    *  approved. */
   pending?: { file: string; name: string }[];
+  /** A merge's skill and workflow draft, by name and the path of its SKILL.md or workflow.json; `pending` when it waits
+   *  for a person's OK (`status: pending` in its SKILL.md or README.md), and no run is given it until approved. */
+  skills?: LearnedFile[];
+  workflows?: LearnedFile[];
 };
+/** A skill or a workflow draft a merge added or changed. */
+export type LearnedFile = { file: string; name: string; pending?: true };
 /** What a run's learning keeps whatever its learning does after: what it read, how many notes it started from, and its
  *  answer's time and its costs (learning-run.ts setLearning). */
 export const KEPT_LEARNING = ["used", "seed_notes", "answered_at", "job_cost_usd", "look_back_usd"] as const;
@@ -150,11 +156,12 @@ export function shortOf<T extends { state: LearningState; reason: LearningReason
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
 
-/** A run's proposal, in its directory (propose.ts): the seed it was checked against, each new note's file and text, and
- *  what the user said in the run as the grader reads it (each message cut of the host's secrets, then shortened to
- *  GRADE_CAPS.askedMessage; absent in a proposal kept before the grader read them). */
+/** A run's proposal, in its directory (propose.ts): the seed it was checked against, each new note's file and text, its
+ *  skill's and workflow draft's files by path and text (`files`: a SKILL.md, a workflow.json and its README.md; absent
+ *  when it gives none), and what the user said in the run as the grader reads it (each message cut of the host's
+ *  secrets, then shortened to GRADE_CAPS.askedMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; asked?: string[] };
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[] };
 
 /** A run's pin, in its directory: written once, when the run is made, and never changed by a resume. */
 export const LEARNING_PIN = "learning.json";
