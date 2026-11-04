@@ -512,7 +512,15 @@ export async function readSkills(cwd: string, repo: string, sha: string): Promis
       continue;
     }
     const status = statusOf(texts["SKILL.md"]);
-    if (status === undefined || status === "active") skills.push({ name, bytes, files: texts });
+    if (status !== undefined && status !== "active") continue;
+    // The SKILL.md as a run is given it (servedSkill), counted as it will be laid: the budget is the laid files' own.
+    const served = { ...texts, "SKILL.md": servedSkill(texts["SKILL.md"]!) };
+    const laid = Object.values(served).reduce((sum, text) => sum + Buffer.byteLength(text), 0);
+    if (laid > LEARNED_SKILLS_BUDGET) {
+      skills.push({ name, bytes: laid });
+      continue;
+    }
+    skills.push({ name, bytes: laid, files: served });
   }
   return { skills, skipped };
 }

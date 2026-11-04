@@ -257,3 +257,19 @@ test("a learned skill the run's work no longer holds whole is left out of what i
   assert.deepEqual(inlined(system), ["cite"]);
   assert.ok(!system.includes(CANARY));
 });
+
+test("a learned skill's bytes are counted as the run is given it (servedSkill), so the budget the adapters' cap leaves is the laid files' own", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  const QUOTED = "---\nname: quoted\ndescription: Use when: a case asks\n---\nDo the job.\n";
+  mkdirSync(join(repo, "skills", "quoted"), { recursive: true });
+  writeFileSync(join(repo, "skills", "quoted", "SKILL.md"), QUOTED);
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const sha = git(repo, ["rev-parse", "main"]).trim();
+  const { skills } = await learning.readSkills(repo, repo, sha);
+  const [one] = skills;
+  assert.equal(one.files["SKILL.md"], '---\nname: quoted\ndescription: "Use when: a case asks"\n---\nDo the job.\n', "the text the run is given");
+  assert.equal(one.bytes, Buffer.byteLength(one.files["SKILL.md"]), "counted as it is laid, not as main holds it");
+  assert.notEqual(one.bytes, Buffer.byteLength(QUOTED));
+});
