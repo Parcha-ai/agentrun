@@ -283,10 +283,12 @@ test("the page's owner saves and forgets a key with the session cookie from the 
 async function launched(t, data, config, token) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !KEYS.includes(name)));
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--faux", FAUX], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...env, XDG_CONFIG_HOME: config, AGENTRUN_TOKEN: token } });
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+  // Signalled only while it lives: once it has exited, its group id may be another process's (PIDs wrap in minutes).
+  let alive = true;
+  const exited = new Promise((resolve) => child.once("exit", (code) => ((alive = false), resolve(code))));
   const stop = async () => {
     try {
-      process.kill(-child.pid, "SIGTERM");
+      if (alive) process.kill(-child.pid, "SIGTERM");
     } catch {}
     await exited;
   };
@@ -360,7 +362,7 @@ test("TypeSafe's key unlocks Jev's decisions: saved, the jev provider is availab
   const { api } = await serve(t);
   const jev = async () => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((provider) => provider.id === "jev").available;
   const row = async () => (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "typesafe");
-  assert.deepEqual(await row(), { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }] });
+  assert.deepEqual(await row(), { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", unlocks: ["decisions.jev"], harnesses: [], fields: [{ name: "TYPESAFE_API_KEY", ...UNSET }], check: null });
   assert.equal(await jev(), false);
   assert.equal((await api("PUT", "/settings/tool-keys/typesafe", { values: { TYPESAFE_API_KEY: made() } })).status, 204);
   assert.deepEqual([await jev(), (await row()).fields], [true, [{ name: "TYPESAFE_API_KEY", ...STORED }]], "no restart");

@@ -61,7 +61,7 @@ async function noSecretIn(text, server) {
   for (const [name, value] of Object.entries({ ...SENTINELS, token: server.token, door })) assert.ok(!text.includes(value), `${name} reached the box`);
 }
 
-test("live Docker (pi): bash, write, read and edit run in the box; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
+test("live Docker (pi): bash runs in the box, and write, read and edit on the work/ it binds; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
   withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker" });
   const server = await serve(t, { faux: PROBE });
   const { api, data } = server;
