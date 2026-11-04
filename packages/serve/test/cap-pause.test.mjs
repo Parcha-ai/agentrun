@@ -4,11 +4,10 @@
 // 409 budget_reached until the cap is raised. A refusal no cap fixes (a model with no price) still fails the run:
 // gateway-price.test.mjs holds that.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, scratch, serve, storeRun } from "./support.mjs";
+import { agent, client, follow, letGo, scratch, serve, storeRun } from "./support.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -49,12 +48,8 @@ test("a run paused at its cap lets its process go, takes no message (409 budget_
   t.after(() => server?.close());
   let api = client(server.baseUrl, server.token);
   const { runId } = await paused(api, "parked");
-  // Let go: its run.json says released, with its run still running in the agent store.
-  const record = () => (existsSync(join(data, "runs", runId, "run.json")) ? JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")) : null);
-  for (let i = 0; !["sleeping", "paused", "done", "failed"].includes(String(record()?.status)); i++) {
-    assert.ok(i < 200, `the process was not let go: ${JSON.stringify(record())}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  // Let go: its process has exited, with its run still running in the agent store.
+  await letGo(data, runId);
   assert.equal(storeRun(data, runId).state, "running", "not ended");
   const refused = await api("POST", `/runs/${runId}/messages`, { content: "go on" });
   assert.deepEqual([refused.status, refused.body.error?.code], [409, "budget_reached"], JSON.stringify(refused.body));

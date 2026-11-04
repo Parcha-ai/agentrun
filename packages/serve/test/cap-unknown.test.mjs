@@ -16,7 +16,7 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetri
 import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
@@ -527,14 +527,6 @@ const finished = async (api, runId) => (await follow(api, runId, ["completed", "
 /** The same, or the run paused at its cap (input_required, pending budget). */
 const pausedOrEnded = async (api, runId) => (await follow(api, runId, ["input_required", "completed", "failed", "cancelled"]), view(api, runId));
 const PAUSED = ["input_required", "waiting", null, "budget"];
-/** Once a paused run's process has let it go (its run.json says released): its store is then free to read. */
-async function letGo(data, runId) {
-  const record = () => (existsSync(join(data, "runs", runId, "run.json")) ? JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")) : null);
-  for (let i = 0; !["sleeping", "paused", "done", "failed"].includes(String(record()?.status)); i++) {
-    assert.ok(i < 400, `the paused run's process let it go: ${JSON.stringify(record())}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
 const pausedState = (run) => [run.status, run.state, run.error, run.pending?.kind];
 /** A run under a cap of `cap` whose turn is stopped while its first request is in flight, once it reads stopped. */
 async function stopped(api, id, cap) {
@@ -594,7 +586,8 @@ test("a capped pi run refused for room with no stop pauses at its cap: its cost 
   const run = await pausedOrEnded(api, runId);
   assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
   assert.equal(run.cost.usd, first, "the known total, never null");
-  // Paused, its process is let go: its store is read once that process has released it.
+  // Paused, its process is let go: its store is read once that process has exited (it marks itself released before
+  // it closes the store).
   await letGo(data, runId);
   const db = new DatabaseSync(storeFileOf(data, runId), { readOnly: true });
   const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
