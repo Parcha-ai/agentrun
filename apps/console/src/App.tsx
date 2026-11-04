@@ -251,8 +251,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(problem(e, "the runs")); });
   }, [v2, where, refreshed, runsTry]);
-  // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id.
-  const agentName = (id: string) => names[id] ?? (namesRead ? id : "");
+  // A name the lookup lacks while a read of it is under way shows as nothing yet, never as the id. An agent made since the
+  // names were read (made here, then tried in the Playground) is named from the Playground's own list, read on opening it.
+  const agentName = (id: string) => names[id] ?? agents?.find((a) => a.agent_id === id)?.definition.name ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
   // Whether a key saved in the first screen's card (ModelKeyCard) gives this server its model, so the start-here step can
   // point at the card: no model ready for want of a key, no AGENT_MODEL named (its provider's key may not be among the

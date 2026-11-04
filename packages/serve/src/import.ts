@@ -24,8 +24,8 @@ import { logLine } from "./print.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
-import { ToolKeys } from "./tool-keys.js";
-import { webhookSecretIn } from "./webhooks.js";
+import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
+import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
@@ -872,8 +872,9 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
  *  webhooks.ts), opened with the seal key of `env`, so left out when that key is not there. One pasted into a session is
  *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a run's own
  *  door token (one file a run; not read at each import), and a key-shaped value this server did not make (a `whsec_`
- *  from elsewhere). */
-export function ownSecrets(data: string, env: NodeJS.ProcessEnv): string[] {
+ *  from elsewhere). A webhook secret that does not open is said to `say`, as ToolKeys says a saved key that does not:
+ *  the import goes on, and does not cut it. */
+export function ownSecrets(data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): string[] {
   const read = (name: string) => {
     try {
       return readFileSync(join(data, name), "utf8").trim();
@@ -881,7 +882,9 @@ export function ownSecrets(data: string, env: NodeJS.ProcessEnv): string[] {
       return "";
     }
   };
-  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhookSecretIn(data, env) ?? ""];
+  const webhook = webhookSecretIn(data, env);
+  if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
+  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhook && "secret" in webhook ? webhook.secret : ""];
   return [...new Set(values)].filter((value) => value.length >= 8 && !/\s/.test(value));
 }
 
@@ -1085,8 +1088,13 @@ export async function importCommand(
   const print = out;
   const lines: string[] = [];
   out = (line: string) => void lines.push(line);
+  // What it says on stderr (a key or a secret that does not open here, its file named) is held and cut the same way, and
+  // printed first.
+  const warnings: string[] = [];
+  const say = (event: string) => (fields: Record<string, string>) => void warnings.push(`agentrun-serve import: ${logLine(event, fields)}`);
   const flush = async () => {
-    printed.add(await secretsIn(lines.join("\n")));
+    printed.add(await secretsIn([...warnings, ...lines].join("\n")));
+    for (const line of warnings.splice(0)) console.error(printed.text(line));
     for (const line of lines.splice(0)) print(printed.text(line));
   };
   try {
@@ -1124,7 +1132,7 @@ export async function importCommand(
     // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
     // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
     // server says it at its start.
-    const keys = new ToolKeys(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("tool_keys", fields)}`));
+    const keys = new ToolKeys(dir, env, say("tool_keys"));
     keys.view();
     const options: ImportOptions = {
       home,
@@ -1134,7 +1142,7 @@ export async function importCommand(
       temp,
       env,
       stored: keys.values(),
-      own: ownSecrets(dir, env),
+      own: ownSecrets(dir, env, say("webhook_secret")),
     };
     // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
     // keeps is.
