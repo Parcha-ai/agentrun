@@ -58,8 +58,15 @@ const SHOWN = 2000;
  *  error costs no more to redact than a short one, whatever it holds. */
 export function redacted(text: string, secrets: readonly string[]): string {
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
-  const head = text.length > SHOWN + 6 * longest + 16 ? text.slice(0, SHOWN + 6 * longest + 16) : text;
-  return redactSecrets(head, secrets, Buffer.byteLength(head));
+  const window = SHOWN + 6 * longest + 16;
+  if (text.length <= window) return redactSecrets(text, secrets, Buffer.byteLength(text));
+  const out = redactSecrets(text.slice(0, window), secrets, window * 4);
+  // A replacement moves what follows it left by at most S characters in all: the shortening, plus 2 for each "[redacted]"
+  // (a value of 8 or 9 characters grows into it). So output[0, SHOWN - S) comes from raw text before SHOWN, where every
+  // key that starts ends inside the window and was found whole; past that, a copy the window cut could come into view.
+  const shift = window - out.length + 2 * out.split("[redacted]").length - 2;
+  const keep = SHOWN - shift;
+  return keep <= 0 ? "[redacted]" : `${out.slice(0, keep)}...`;
 }
 
 /** A provider's 401 as each harness puts it, at the start of the run's error:
