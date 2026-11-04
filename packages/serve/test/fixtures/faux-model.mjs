@@ -36,6 +36,11 @@ export default function reply(context, faux) {
     if (canary.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '401 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
+    // A node that says which decision keys its process was handed on their descriptor: names only, never a value.
+    if (canary.includes("Report the decision keys")) {
+      if (answered) return faux.message("Submitted.");
+      return import(new URL("../../dist/decisions.js", import.meta.url).href).then(({ handedKeys }) => faux.message(faux.toolCall("submit", { names: Object.keys(handedKeys(process.env)).sort() }), { stopReason: "toolUse" }));
+    }
     if (canary.includes("Report the canary")) {
       if (answered) return faux.message("Submitted.");
       const gate = /Report the canary once (\S+?) exists\./.exec(canary)?.[1];

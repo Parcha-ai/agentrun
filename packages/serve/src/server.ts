@@ -175,6 +175,11 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
+  /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
+   *  process is launched, so a test can hold a reopen there. */
+  beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
+  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
   /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
@@ -398,7 +403,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
-    harnesses: harnesses.map((offer) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
+    // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
+    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes),
     models,
@@ -415,7 +421,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     secrets: {
       names: [...SECRET_NAMES],
       handoff: "pipe",
-      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token and seal key, and a tool key only when its revision names a tool the key unlocks, over a pipe of its own, whatever its harness: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
+      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and a run's process gets, over a pipe of its own, a tool key only when its revision names a tool the key unlocks and a model key only when its model needs it: a pi run its model's provider's (per tier for a workflow), or the gateway's behind AGENT_MODEL_BASE_URL; a codex run OPENAI_API_KEY, or the gateway's; a claude-agent run ANTHROPIC_API_KEY. It never gets the server's own (its token, the seal key, the boxes' keys), and the decision keys a run's decision nodes need, and Parallel's where its web_fetch or web_search resolves to Parallel, and no other, go on a descriptor of their own: none of them is in any process's environment or command line. No run's environment holds any variable named like a key (a KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN segment, or a last PWD after another), on this list or not; one not on it stays in the server's own. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
       limit: "In memory is not out of reach: a process of the same user can read another's memory (/proc/<pid>/mem) where the kernel lets it attach. Linux's Yama ptrace_scope of 1 or more refuses that to all but a process's own ancestors; a host at 0 exposes the secrets to a run's own code. A run's process holds its model keys in memory, since it calls the model itself. A harness's CLI (codex, claude-agent) holds a key of its own for its session's model proxy in its environment: not a provider's key, but one a process of the same user could spend through that run's proxy while the session lives. Started as the package's bin on a host, until it execs, the launcher and any subshell it forks show the caller's environment, secrets included, to a process of the same user (/proc keeps a process's environment as it was at its exec). A run's process gets its secrets over a socket, read and closed as it starts; another process can take a socket only through pidfd_getfd, which the same ptrace rule refuses.",
     },
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
@@ -647,6 +653,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (relay) stops.push(() => relay.close());
   const expected = digest(`Bearer ${token}`);
   if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
+  if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
+  if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
@@ -1509,7 +1517,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
-        return send(res, 200, toolKeys.view(caps.harnesses));
+        // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
+        return send(res, 200, toolKeys.view(offers));
       case "saveToolKey": {
         // Never through `idempotent`: its record keeps the body, and this body is the values. Checked against its
         // provider before it is kept: a key the provider refuses is 422, and nothing is kept.

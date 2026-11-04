@@ -84,6 +84,18 @@ test("docker listed: a docker that answers `docker version` is available, with i
   assert.deepEqual(boxesLog(registry.offers(), new Set(["docker", "bwrap"])), { available: "docker", unavailable: BOX_IDS.filter((id) => id !== "docker").join(","), bwrap: NOT_YET });
 });
 
+test("docker's probe gets the server's environment through the one cut a run's takes: no box key, no listed secret, no name shaped like a key; the rest, DOCKER_HOST among it, passes", async (t) => {
+  const seen = join(await scratch(t), "env-names");
+  // Names only, never a value.
+  const docker = await fakeDocker(t, `env | cut -d= -f1 > '${seen}'\n${ANSWERS}`);
+  const env = { PATH: docker.PATH, AGENTRUN_BOXES: "docker", DOCKER_HOST: "unix:///nowhere.sock", ...keys(), GEMINI_API_KEY: `${CANARY}-GEMINI`, FOO_API_KEY: `${CANARY}-FOO`, FOO_PASSWORD: `${CANARY}-PW`, GITHUB_TOKEN: `${CANARY}-GH` };
+  const registry = await boxRegistry(env);
+  assert.deepEqual(offerOf(registry, "docker"), { id: "docker", available: true });
+  const names = readFileSync(seen, "utf8").split("\n").filter(Boolean);
+  assert.deepEqual(names.filter((name) => [...BOX_KEYS, "GEMINI_API_KEY", "FOO_API_KEY", "FOO_PASSWORD", "GITHUB_TOKEN"].includes(name)), [], "a key reached docker's environment");
+  assert.ok(names.includes("DOCKER_HOST") && names.includes("AGENTRUN_BOXES"), names.join(" "));
+});
+
 test("docker listed: a docker that fails, or none on PATH, leaves it unavailable with a short reason, no stack and none of its output", async (t) => {
   const docker = await fakeDocker(t, FAILS);
   const failed = await boxRegistry({ PATH: docker.PATH, AGENTRUN_BOXES: "docker" });

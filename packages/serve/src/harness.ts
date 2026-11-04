@@ -26,8 +26,10 @@ export const RUN_MIB: Readonly<Record<HarnessId, number>> = { pi: 128, "claude-a
 /** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
  *  mid-turn (`steer`), or queues it for the turn's end. */
 /** `default_model`: the model this server runs for the harness when a definition names none (`provider/model-id`), or
- *  null when it runs none there; harnessOffers sets it. */
-export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null };
+ *  null when it runs none there; harnessOffers sets it. `keys`, on one unavailable only for want of a model key: the keys
+ *  any one of which, saved, lets it run here, so a key's row names it before it is saved (tool-keys.ts' rowUnlocks).
+ *  The server's own: capabilities never serve it. */
+export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[] };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
 export type HarnessCapability = HarnessOffer & { default_model: string | null; run_memory_mib: number };
@@ -56,19 +58,22 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       const { hostMemory, neverFits } = await import("./host.js");
       const memory = hostMemory();
       const probed = env[FAUX_HARNESS_ENV] ? harnessesOf(env) : await (async () => {
-        const { harnessReason } = await import("./adapters.js");
+        const { harnessRefusal } = await import("./adapters.js");
         return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
           if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
           // The start's probe: these offers hold until a restart (server.ts), so the reason says so where installing fixes it.
-          const reason = await harnessReason(id, env, undefined, { atStart: true });
-          return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
+          const refused = await harnessRefusal(id, env, undefined, { atStart: true });
+          return refused === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), ...refused };
         }));
       })();
       // A harness that runs here but whose one run is more than this host's memory for runs never starts: said here, so
-      // a save warns and a run is refused at once with why (runnable.ts), never a 429 to try again.
+      // a save warns and a run is refused at once with why (runnable.ts), never a 429 to try again. One that lacks only a
+      // key keeps its reason, but no key would run it: it has no `keys`.
       const base = probed.map((offer): HarnessOffer => {
-        const tooBig = offer.available ? neverFits(offer.id, memory) : undefined;
-        return tooBig ? { ...offer, available: false, reason: tooBig } : offer;
+        const tooBig = offer.available || offer.keys ? neverFits(offer.id, memory) : undefined;
+        if (!tooBig) return offer;
+        const { keys: _keys, ...rest } = offer;
+        return offer.available ? { ...rest, available: false, reason: tooBig } : rest;
       });
       // Each harness's model when a definition names none, as a save and a run resolve it (runnable.ts): none for a
       // harness that does not run here, or that no model here would run on.

@@ -5,13 +5,14 @@
 // same OpenRouter key Jev's OpenRouter route reads. A node names its provider (`provider: "parallel"`); one that names
 // none is answered by Jev.
 //
-// The server chooses the keys (decisionKeysOf) and hands them over once, by name, on an inherited pipe
-// (`DECISION_KEY_FD_ENV` names it), at each launch of a workflow run, and Parallel's alone at each launch of an agentic
-// run whose revision names a web tool. The run's process reads them once (handedKeys) into its providers and the web
-// tools' Parallel client (web-fetch.ts), and nowhere else; no provider reads a key from the environment. The TypeSafe and
-// Parallel keys never enter a run's environment, which the run's tools and its model's provider read (`ToolHost.env`, a
-// call node's effect): the server drops the variables from the run's process. On the OpenRouter route the Jev key is
-// also the model gateway's key, which the run's process holds for its model nodes.
+// The server chooses the keys a run needs (decisionKeysFor) and hands them over once, by name, on an inherited pipe
+// (`DECISION_KEY_FD_ENV` names it), at each launch of the run: its workflow's decision providers' keys, and Parallel's
+// where one of its web tools resolves to Parallel (tool-plane.ts); a run that needs none gets no pipe. The run's process
+// reads them once (handedKeys) into its providers and the web tools' Parallel client (web-fetch.ts), and nowhere else;
+// no provider reads a key from the environment. The TypeSafe and Parallel keys never enter a run's environment, which
+// the run's tools and its model's provider read (`ToolHost.env`, a call node's effect): the server drops the variables
+// from the run's process. On the OpenRouter route the Jev key is also the model gateway's key, which the run's process
+// holds for its model nodes.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
@@ -78,6 +79,26 @@ export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
     ...(openrouter ? { [JEV_OPENROUTER_KEY_ENV]: env[openrouter]! } : {}),
     ...(isSet(env[PARALLEL_KEY_ENV]) ? { [PARALLEL_KEY_ENV]: env[PARALLEL_KEY_ENV]! } : {}),
   };
+}
+
+/** What a run's decision keys are for: the providers of its workflow's typed questions (providersNamed), and whether one
+ *  of its web tools resolves to Parallel (tool-plane.ts' handsParallel), whose client reads Parallel's key (web-fetch.ts). */
+export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean };
+
+/** The decision keys the server hands a run's process for `needs`, of those it holds (decisionKeysOf): Jev's by its route
+ *  (TypeSafe's, or OpenRouter's), OpenRouter's for an OpenRouter decision node, Parallel's for a Parallel one or for a
+ *  web tool that resolves to Parallel. None else: a run with no decision node and no web tool on Parallel gets no
+ *  descriptor at all. */
+export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): Record<string, string> {
+  const names = new Set<string>();
+  for (const id of needs.providers) {
+    const route = id === DEFAULT_DECISION_PROVIDER ? jevRoute(env) : undefined;
+    if (route) names.add(route === "typesafe" ? JEV_KEY_ENV : JEV_OPENROUTER_KEY_ENV);
+    if (id === "openrouter") names.add(JEV_OPENROUTER_KEY_ENV);
+    if (id === "parallel") names.add(PARALLEL_KEY_ENV);
+  }
+  if (needs.parallelWeb) names.add(PARALLEL_KEY_ENV);
+  return Object.fromEntries(Object.entries(decisionKeysOf(env)).filter(([name]) => names.has(name)));
 }
 
 /** Why Jev does not run here, naming the variable to set. */
