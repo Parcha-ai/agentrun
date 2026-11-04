@@ -7,7 +7,6 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { randomBytes } from "node:crypto";
 import { BOUND_TOOLS, toolsView } from "../dist/tools.js";
 import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, explainsView, settingsIssues, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";

@@ -245,7 +245,8 @@ test("a Parallel search under way holds its fee for the cap: a model request bes
   await reached;
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "not sent while the search is under way");
-  assert.match((await request.result()).errorMessage ?? "", /^spend_cap_reached: the next model request was not sent\./);
+  // The refusal counts the search's fee as held (#1539's words, as main's paid-call hold test reads them).
+  assert.equal((await request.result()).errorMessage, "spend_cap_reached (out of budget): Not sent: the run has spent $0 and holds $0.001 for requests still answering, of its $0.0015 cap, and its next m request needs at least $0.01. Raise the cap to at least $0.01 to run it.");
   // Parallel refused the search (422): it charged nothing, and its hold is gone.
   release();
   assert.deepEqual(await search, { error: "Parallel's search answered 422" });
