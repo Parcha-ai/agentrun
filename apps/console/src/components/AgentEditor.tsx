@@ -112,8 +112,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
     const p = await onSave(fields, note);
-    // A provider picked while the save was under way is not in it: the form keeps that pick, unsaved. Saved and unchanged
-    // since, the tool settings are the agent's own: the form shows them as the definition has them.
+    // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
+    // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
     setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
     if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
@@ -239,7 +239,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {!workflow && (
                 <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={providerChoices}
                   value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
-                  onChange={(next) => (same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+                  // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
+                  // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
+                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
               )}
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>

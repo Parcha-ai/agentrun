@@ -18,11 +18,11 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, writeDurable } from "./files.js";
+import { DATA_ENV, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
-import { FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
-import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
+import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
@@ -139,7 +139,8 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
-  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else from this host's memory: host.ts); over it, 429. */
+  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
+   *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
   /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
   minFreeBytes?: number;
@@ -313,13 +314,15 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
 function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const models = modelSource(env);
+  // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
+  const memory = hostMemory();
   return {
     backend: "local",
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
-    /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses,
+    /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
+    harnesses: harnesses.map((offer) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes),
     models,
@@ -379,7 +382,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       max_upload_bytes: MAX_UPLOAD_BYTES,
       max_files_per_run: MAX_FILES_PER_RUN,
       max_message_chars: MAX_MESSAGE,
-      max_concurrent_runs: maxRuns,
+      // pi's: the smallest run, so the most at once. A heavier harness fits fewer (harnesses[].max_concurrent_runs).
+      max_concurrent_runs: Math.min(maxRuns, runsThatFit(DEFAULT_HARNESS, memory)),
       timeline_max_wait_ms: MAX_WAIT_MS,
       timeline_page_rows: PAGE_ROWS,
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
@@ -464,7 +468,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const base = { ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
