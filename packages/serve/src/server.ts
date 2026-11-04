@@ -710,17 +710,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
-  // The tool keys the server is started with, each checked once against its provider, in the background: the start never
-  // waits on one, and capabilities are made again as each answers (a refused one leaves its tools unavailable).
-  // Under faux, only a check's own fake (fauxBrowserbase, fauxMonidCheck) is asked: the fakes the runs use (monid,
-  // Parallel, Jev) see the runs' calls alone, and a key with no check fake is not checked.
+  // Under faux, a key the server starts with is checked only against a check's own fake (fauxBrowserbase,
+  // fauxMonidCheck): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
+  // is not checked.
   const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck };
   const startFetch = async (id: string): Promise<typeof fetch | null> => {
     if (!options.faux) return fetch;
     const fake = checkFakes[id];
     return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : null;
   };
-  void toolKeys.checkServer(startFetch, stopping.signal, () => recompose());
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then, however
@@ -1709,6 +1707,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       throw last > first ? Object.assign(new Error(`every port from ${first} to ${last} on ${host} is taken`), { code: "EADDRINUSE" }) : error;
     }
   }
+  // The tool keys the server is started with, each checked once against its provider, in the background, once it
+  // listens: a start that fails sends no check, and the start never waits on one. Capabilities are made again as each
+  // answers (a refused one leaves its tools unavailable); close() aborts one still waiting. It never rejects.
+  void toolKeys.checkServer(startFetch, stopping.signal, () => recompose()).catch(() => undefined);
   // Only a server that started takes up the import its owner asked for, or counts for setup's offer: one that failed to
   // listen hands back no close to stop them.
   if (offersImport && existsSync(importAsked)) void importAtSetup();
