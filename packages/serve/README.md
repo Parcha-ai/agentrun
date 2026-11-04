@@ -968,7 +968,8 @@ A run's input files. Send one in one call, its bytes the body and its path in th
 curl -s "$AGENTRUN_BASE_URL/files?path=plan.md" -H "authorization: Bearer $AGENTRUN_API_KEY" --data-binary @plan.md
 ```
 
-It answers `201` with the file `ready`: its `file_id`, `size_bytes` (the body's length) and `sha256` (the body's own).
+It answers `201` with the file, `ready`, under `file`: its `file_id`, `size_bytes` (the body's length) and `sha256`
+(the body's own).
 Its `content_type` is the query's `content_type`, else the request's own type when it names one (not
 `application/octet-stream`, not curl's `application/x-www-form-urlencoded`), else its path's extension's, as a run's files
 are served (`plan.md` is `text/markdown; charset=utf-8`), else `application/octet-stream`. A `sha256` in the query is
@@ -1609,11 +1610,13 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Safety
 
 - An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
-  environment's key-shaped variables and the keys saved on this server, and the keys [secretlint](https://github.com/secretlint/secretlint)'s
+  environment's key-shaped variables and the keys saved on this server, the secrets this server made and keeps (its API
+  token, its door token, its sign-in secret, and its webhook's signing secret when the seal key opens it), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
-  it removed. Known key formats are removed. Other secrets in your session history, like passwords in config files, are
-  imported as they are.
+  distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
+  config files, are imported as they are. So are a key-shaped value this server did not make (a `whsec_` secret from
+  another service) and a run's own door token.
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
   a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
   providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev
