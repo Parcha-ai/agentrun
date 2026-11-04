@@ -788,7 +788,7 @@ const LEARNING = {
     }, RUN_NOTES),
     { type: "null" },
   ],
-  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, which answers with the notes it would keep (no tool is needed, and nothing the run writes in \`.learning/\` counts); what it answers is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. ${LEARNING_NULL}`,
+  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its active notes, whole, in its instructions within the learning budget (past it, the index and the notes changed last, whole), and from the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, which answers with the notes it would keep (no tool is needed, and nothing the run writes in \`.learning/\` counts); what it answers is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };
 const LEARNING_SHORT = {
