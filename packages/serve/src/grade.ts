@@ -12,7 +12,9 @@
 //   them supersedes marked, and MEMORY.md rebuilt (buildIndex). Its message is `learning: <run id>: merged`, the verdict's
 //   reason and a `Run-Id` trailer, and main moves only from the commit it was made on (compare and swap), once more on a
 //   main that moved meanwhile. A run a commit on main already names is merged, never twice. The merge's own questions
-//   (learn/check.ts mergeProblems) are asked again of main as it is then. The checked-out files are brought in line.
+//   (learn/check.ts mergeProblems) are asked again of main as it is then, and each note superseded must still be the
+//   blob the grade read: one a person changed since is theirs, and nothing merges. The checked-out files are brought in
+//   line.
 // The merge runs in the agent's queue; the screen and the grader never do, so no run's seed waits on a model.
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -33,8 +35,9 @@ const GRADE_TIMEOUT_MS = 180_000;
 const GRADE_MAX_TOKENS = 16_000;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
-/** Main as a grade reads it: its commit, every entry at its top, and its notes' texts by file (any status). */
-export type Main = { sha: string; files: string[]; texts: Map<string, string> };
+/** Main as a grade reads it: its commit, every entry at its top, its notes' texts by file (any status), and each
+ *  entry's object id. */
+export type Main = { sha: string; files: string[]; texts: Map<string, string>; oids: Map<string, string> };
 /** What a grade spent: the screen's judge and the grader. The dollars, null when any call's are unknown, and the tokens,
  *  null when any call's are. */
 export type GradeCost = { usd: number | null; tokens: Tokens | null };
@@ -64,7 +67,7 @@ async function readMain(home: string, repo: string, sha: string): Promise<Main> 
       // Not UTF-8: no note of the folder's, and never read as one.
     }
   });
-  return { sha, files: listed.map((entry) => entry.path), texts };
+  return { sha, files: listed.map((entry) => entry.path), texts, oids: new Map(listed.map((entry) => [entry.path, entry.oid])) };
 }
 
 /** Main's notes, parsed: the ones out of shape left out, as a run's seed leaves them. */
@@ -82,9 +85,9 @@ const proposedOf = (proposal: Proposal): LearnedNote[] => proposal.notes.map(({ 
 /** What stops the proposal joining `main` as it is now (learn/check.ts mergeProblems). */
 const problemsOf = (main: Main, notes: readonly LearnedNote[]) => mergeProblems({ files: main.files, active: notesOf(main).filter((note) => note.status === "active") }, notes);
 
-/** What a grade reads of main: each active note as the index lists it, and the whole text of the ones the proposal
- *  supersedes. */
-export type GradeMain = { active: IndexEntry[]; superseded: NoteText[] };
+/** What a grade reads of main: each active note as the index lists it, the whole text of the ones the proposal
+ *  supersedes, and the blob each of those was on main then (`graded`, by file), which its merge checks. */
+export type GradeMain = { active: IndexEntry[]; superseded: NoteText[]; graded: Record<string, string> };
 
 /** Main now, for run `runId`'s grade, in the agent's queue: merged already (a commit names the run), what stops its
  *  proposal joining main as it is now, or its active notes' index lines and the notes the proposal supersedes in full. */
@@ -102,7 +105,7 @@ export function readForGrade(data: string, agentId: string, runId: string, propo
     const active = notesOf(main).filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description }));
     // mergeProblems passed: each note superseded is active on main, and named once.
     const superseded = added.flatMap((note) => note.supersedes).map((file) => ({ file, text: main.texts.get(file)! }));
-    return { active, superseded };
+    return { active, superseded, graded: Object.fromEntries(superseded.map(({ file }) => [file, main.oids.get(file)!])) };
   });
 }
 
@@ -251,9 +254,11 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
  *  note's wait for its approval) and rebuilds MEMORY.md, its message `learning: <run>: merged`,
  *  `reason` and the run's Run-Id; moved onto main only from the commit it was made on, once more on a main that moved
  *  meanwhile. Then the checked-out files are main's. A run a commit on main already names is that commit. `problems`
- *  when main, as it is now, takes the notes no more (mergeProblems). `checkout` is why the files could not be brought in
- *  line, when they could not: main is merged all the same. */
-export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string, verdict?: Verdict): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
+ *  when main, as it is now, takes the notes no more (mergeProblems), or when a note the merge marks superseded is not
+ *  the blob the grade read (`graded`, readForGrade's): a person changed it since, and their text stands. A note held for
+ *  its owner's OK marks nothing (supersededBy), so what it names is not checked. `checkout` is why the files could not
+ *  be brought in line, when they could not: main is merged all the same. */
+export function mergeProposal(data: string, agentId: string, runId: string, proposal: Proposal, reason: string, graded: Readonly<Record<string, string>>, verdict?: Verdict): Promise<{ merged: string; checkout: Error | undefined } | { problems: Problem[] }> {
   const home = homeOf(data, agentId);
   // Each note as main keeps it: its origin, the grader's (a run's when it names none), and a pending one waiting.
   const judged = new Map((verdict?.items ?? []).map((item) => [item.file, item]));
@@ -269,11 +274,16 @@ export function mergeProposal(data: string, agentId: string, runId: string, prop
       const main = await readMain(home, repo, sha);
       const problems = problemsOf(main, added);
       if (problems.length) return { problems };
+      // What the merge marks superseded (a note held for its owner's OK marks nothing).
+      const replaced = supersededBy(added);
+      // The verdict was on the text the grade read: a note this merge marks that is another blob now is never marked on
+      // it.
+      const changed = [...replaced].filter(([old]) => main.oids.get(old) !== graded[old]).map(([old, by]): Problem => ({ rule: "supersedes", path: by, detail: `${old} changed after the grade read it` }));
+      if (changed.length) return { problems: changed };
       const notes = notesOf(main);
       // The new tree: main's, with the new notes, the ones the kept notes supersede marked, and the index rebuilt from
       // what is active then (a pending note is not).
       const files = new Map(texts.map(({ file, text }) => [file, text]));
-      const replaced = supersededBy(added);
       for (const [old, by] of replaced) files.set(old, supersede(main.texts.get(old)!, by));
       const after = [...notes.filter((note) => !replaced.has(note.file)), ...added];
       files.set(INDEX_FILE, buildIndex(after));

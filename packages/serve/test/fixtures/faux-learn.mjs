@@ -22,7 +22,8 @@
 // the user asked in their own words (decision keep, origin you), and the rest, "Grade: sly." says merge and keeps
 // none, "Grade: garbage." is no JSON, "Grade: fail." fails the call, "Grade: drop at length." keeps no note for a reason
 // whose first sentence runs past 140 characters, "Grade: drop saying <text>." keeps no note for a reason that names
-// <text>; anything else keeps every note. With
+// <text>; anything else keeps every note. "Grade once <file> exists." holds the answer until the test makes that file
+// (or the call is aborted). With
 // AGENTRUN_TEST_FAUX_GRADE_HOLD set (in the server's environment), the grader answers only once it is aborted; set to
 // `never`, it never answers at all, aborted or not. Each grader call is filed as a line in the file
 // AGENTRUN_TEST_FAUX_CALLS names, with the model it ran on and the user's messages its prompt holds.
@@ -79,6 +80,21 @@ function grade(prompt, faux) {
   const files = /^Give one item for each of these files, each once, and for no other: (.*)\.$/m.exec(prompt)?.[1].split(", ") ?? [];
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD === "never") return new Promise(() => {});
   if (process.env.AGENTRUN_TEST_FAUX_GRADE_HOLD) return slow(faux, 600_000, "");
+  const gate = /Grade once (\S+) exists\./.exec(rules)?.[1];
+  if (gate) {
+    return (async () => {
+      while (!(await access(gate).then(() => true, () => false))) {
+        if (faux.signal?.aborted) return faux.message("", { stopReason: "aborted" });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return verdictOf(rules, files, faux);
+    })();
+  }
+  return verdictOf(rules, files, faux);
+}
+
+/** The grader's verdict on `files`, by the agent's instructions `rules`. */
+function verdictOf(rules, files, faux) {
   if (rules.includes("Grade: fail.")) return faux.message("", { stopReason: "error", errorMessage: "the faux grader failed on purpose" });
   if (rules.includes("Grade: garbage.")) return faux.message("Looks fine to me.");
   const long = rules.includes("Grade: drop at length.");
