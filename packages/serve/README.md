@@ -567,7 +567,8 @@ run's records before it is sent, held at the price an earlier `monid.inspect` of
 at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
-never $0: the run's cost reads `null`, and under a cap every later request is refused, as for any spend no one knows;
+never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
+a crash-cut mark does, so the run goes on while its cap allows, in its process and in one opened again from its store;
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
 cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
 price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is

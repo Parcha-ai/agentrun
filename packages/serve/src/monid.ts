@@ -11,8 +11,9 @@
 //
 // What a run charged is the run's spend (cap.ts): marked before it is sent at the price an inspect quoted (else an
 // allowance), then booked once in the run's records as a TOOL_COST (`monid.run`, charged by monid), its cost if monid
-// reports one, else unknown unless monid says it charged nothing; and under a cap a run is refused before it is sent
-// unless the run's spend plus what it is held at fits. discover and inspect cost nothing, and are never refused.
+// reports one, else unknown unless monid says it charged nothing, which the cap counts at what the run was held at; and
+// under a cap a run is refused before it is sent unless the run's spend plus what it is held at fits. discover and
+// inspect cost nothing, and are never refused.
 import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
@@ -99,8 +100,8 @@ function outcome(status: number, record: Json): MonidAnswer {
 
 /** What a run's answer says monid charged, in USD: its cost; else undefined when monid charged nothing (UNCHARGED), and
  *  null for every other answer, which may have been charged (one with no cost, FAILED, TIMED_OUT, a run stopped by its
- *  caller or the wait, a run whose sending failed): never $0 for a charge no one knows. A cost in another currency is
- *  unknown too. */
+ *  caller or the wait, a run whose sending failed): never $0 for a charge no one knows, and counted by the cap at what
+ *  the run was held at (paidCall). A cost in another currency is unknown too. */
 export function chargeOf(answer: MonidAnswer): number | null | undefined {
   const cost = money(answer.cost);
   if (cost) return cost.currency === "USD" ? cost.value : null;
