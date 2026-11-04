@@ -160,3 +160,47 @@ test("an agentic run's error that is no 401 but echoes a held key: the Timeline 
   assert.ok(!JSON.stringify(timeline).includes(ECHOED), JSON.stringify(errorRows(timeline.rows)));
   assert.equal(run.error?.message, '500 {"message":"Key [redacted] is not valid"}', JSON.stringify(run.error));
 });
+
+// The Timeline cuts a row (its summary at 500 characters, its text at 2000) as it makes it. A held key the cut falls
+// inside must leave no part of itself, not even the head before the cut: the row is redacted before it is cut, by the
+// one rule learning's checker uses (learn/secrets.ts redactSecrets), which also finds a key base64-encoded.
+const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
+/** Each run of 8 characters of `value`: none may be anywhere a person reads. */
+const pieces = (value) => Array.from({ length: value.length - 7 }, (_, i) => value.slice(i, i + 8));
+
+for (const [what, content] of [["across the summary's and the text's cut", "Fail across the cut."], ["base64-encoded", "Fail echoing an encoded key."]]) {
+  test(`an agentic run's error echoing a held key ${what}: no 8 characters of it on the Timeline or in the run's error`, { timeout: 60_000 }, async (t) => {
+    withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+    const { api } = await serve(t);
+    assert.equal((await api("POST", "/agents", agent("cut"))).status, 201);
+    const started = await api("POST", "/agents/cut/runs", { input: { content } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await follow(api, started.body.run_id, ["failed"], { deadlineMs: 50_000 });
+    const run = JSON.stringify((await api("GET", `/runs/${started.body.run_id}`)).body);
+    const timeline = JSON.stringify((await api("GET", `/runs/${started.body.run_id}/timeline`)).body);
+    const encoded = Buffer.from(CUT_KEY).toString("base64");
+    for (const piece of [...pieces(CUT_KEY), ...pieces(encoded)]) {
+      assert.ok(!timeline.includes(piece), `the Timeline holds ${piece}`);
+      assert.ok(!run.includes(piece), `the run holds ${piece}`);
+    }
+    assert.ok(timeline.includes("[redacted]"), "the row says where the key was");
+  });
+}
+
+// A loopback rewrite takes time in proportion to the text, so no caller can block the loop with a long one; and a
+// loopback address with no scheme (a refused connection to serve's proxy) is rewritten as the others are.
+test("the loopback rewrite is linear: 200 KB of the worst shapes in under 200 ms each", () => {
+  for (const text of [`,${" ".repeat(200_000)}x`, "url: ".repeat(40_000), `url: http://127.0.0.1${"a".repeat(200_000)} x`, `${"http://localhost:1/".repeat(10_000)}`]) {
+    const started = performance.now();
+    withoutLoopback(text);
+    const took = performance.now() - started;
+    assert.ok(took < 200, `${text.slice(0, 24)}…: ${took.toFixed(0)} ms`);
+  }
+});
+
+test("a bare loopback address with its port (a refused connection to serve's proxy) is rewritten; the word localhost alone is not", () => {
+  assert.equal(withoutLoopback("connect ECONNREFUSED 127.0.0.1:39543"), "connect ECONNREFUSED a local address");
+  assert.equal(withoutLoopback("connect ECONNREFUSED [::1]:39543 again"), "connect ECONNREFUSED a local address again");
+  assert.equal(withoutLoopback("it runs on localhost"), "it runs on localhost");
+  assert.equal(withoutLoopback("see localhost.run:443"), "see localhost.run:443");
+});

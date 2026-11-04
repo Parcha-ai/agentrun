@@ -13,6 +13,9 @@ const untilExists = async (file) => {
   while (!(await access(file).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
 };
 
+/** The key timeline-key-words.test.mjs holds, which the provider errors above echo. */
+const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
+
 export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
@@ -194,6 +197,11 @@ export default function reply(context, faux) {
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
   // A follow-up whose answer stops at its length (max output tokens): text, no tool call, stopReason "length".
   if (first.includes("Stop the follow-up at its length") && users.length > 1) return faux.message("The follow-up's answer, cut at its length", { stopReason: "length" });
+  // A provider error long enough to be cut on its Timeline row, echoing the key it was sent across the summary's cut (its
+  // 497 characters, after "Model request failed: ") and the text's (1997), 20 of its characters before each; and one that echoes the key base64-encoded (timeline-key-words.test.mjs holds
+  // CUT_KEY as a key).
+  if (first.includes("Fail across the cut")) return faux.message("", { stopReason: "error", errorMessage: `${"a".repeat(455)}${CUT_KEY}${"b".repeat(1977 - 455 - CUT_KEY.length)}${CUT_KEY} end` });
+  if (first.includes("Fail echoing an encoded key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${Buffer.from(CUT_KEY).toString("base64")} is not valid"}` });
   // A provider error that is no 401 but echoes the key it was sent.
   if (first.includes("Fail echoing a held key")) return faux.message("", { stopReason: "error", errorMessage: '500 {"message":"Key not-a-secret-echoed-key-0123 is not valid"}' });
   // pi-ai's words for a provider that refused the key (401), as a model request on any tier would end.
