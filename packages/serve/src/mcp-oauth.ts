@@ -34,13 +34,14 @@ const LOOPBACK = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: lo
 
 export class McpSignIns {
   private readonly pending = new Map<string, Pending>();
-  /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash. */
-  base = "http://127.0.0.1"; // key-gate: loopback-rule a placeholder until attach() names the address it listens on
+  /** This server's address as a browser reaches it (AGENTRUN_PUBLIC_URL, else where it listens), no trailing slash:
+   *  set by McpServers.attach as the server starts listening. */
+  base = "";
 
   /** CIMD only from a public https address: an authorization server must be able to fetch the document. */
   private get metadataUrl(): string | undefined {
-    const at = new URL(this.base);
-    return at.protocol === "https:" && !LOOPBACK.test(at.hostname) ? `${this.base}${OAUTH_CLIENT_DOCUMENT}` : undefined;
+    if (!this.base.startsWith("https://")) return undefined;
+    return !LOOPBACK.test(new URL(this.base).hostname) ? `${this.base}${OAUTH_CLIENT_DOCUMENT}` : undefined;
   }
 
   clientMetadata(): OAuthClientMetadata {
