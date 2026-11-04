@@ -58,6 +58,16 @@ test("the spend read from a run's store is each known cost summed, a compaction'
   assert.equal(spentIn(storeOf(t, [started, answer({ total: 0.001 }), charged(null)])), null, "an unknown charge leaves the spend unknown");
 });
 
+test("a Parallel request whose settle record could not be written: the cap, and a restarted process, count it at its held price, never $0; the run's shown cost and the tools meter read it as unknown", async (t) => {
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const marked = { kind: TOOL_STARTED, data: { tool: "web_search", charged_by: "parallel", call: "c1", heldUsd: 0.001 } };
+  const open = [started, answer({ total: 0.002 }), marked];
+  assert.equal(round(spentIn(storeOf(t, open))), 0.003, "a restarted process reads the held $0.001 as spent");
+  assert.equal(capToolSpend(open), 0.001, "and so does another harness's, read at its open");
+  assert.equal(timelineOf(open, { settled: true }).at(-1).usage.usd, null, "the run's shown cost: unknown, never the hold or $0");
+  assert.deepEqual(metersIn(storeOf(t, open)), { tools: null, tokens: 0.002 }, "the tools meter: unknown");
+});
+
 test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
   const marked = (heldUsd) => ({ kind: TOOL_STARTED, data: { tool: "monid.run", charged_by: "monid", call: "c1", heldUsd } });
   const charged = (usd) => ({ kind: TOOL_COST, data: { tool: "monid.run", charged_by: "monid", call: "c1", usd } });

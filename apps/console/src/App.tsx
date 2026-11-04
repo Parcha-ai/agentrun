@@ -35,12 +35,15 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
+type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   if (h === "#/agents/new") return { section: "agents", agent: null };
+  // An agent's notes, pointed at from a run: its Learning tab with each `note` to show.
+  m = h.match(/^#\/agents\/([^/?]+)\/learning\?(.*)$/);
+  if (m) return { section: "agents", agent: decodeURIComponent(m[1]), tab: "learning", notes: new URLSearchParams(m[2]).getAll("note") };
   m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
@@ -371,6 +374,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     }
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
+  // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
+  const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
+  editorCaps.learning = learningCap ?? undefined;
   // While no model is ready, the capabilities are read again every MODEL_CHECK_MS and whenever the page comes back into
   // view, so the bar (and the first screen's card) goes by itself once a key is set where the server starts, or saved.
   const modelsReady = caps?.models?.ready;
@@ -419,7 +425,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
         : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} go={go} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />

@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/agents/release-notes"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"80fda6cf098fe70b03966953933ecf8bc9605ac071d992d222af30cbdc3e0db0\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "release-notes",
+    "definition": {
+      "id": "release-notes",
+      "version": 1,
+      "name": "Release notes writer",
+      "description": "Turns merged pull requests into release notes.",
+      "instructions": "Write release notes from the pull requests given.",
+      "harness": "pi",
+      "skills": [],
+      "tools": [
+        "read"
+      ]
+    },
+    "kind": "agentic",
+    "revision": "80fda6cf098fe70b03966953933ecf8bc9605ac071d992d222af30cbdc3e0db0",
+    "revisions": 1,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 0,
+      "live": 0
+    },
+    "region": "local",
+    "home_etag": "\"80fda6cf098fe70b03966953933ecf8bc9605ac071d992d222af30cbdc3e0db0\"",
+    "archived_at": null,
+    "created_at": "2026-11-03T18:50:13.096Z",
+    "updated_at": "2026-11-03T18:50:13.097Z"
+  }
+}

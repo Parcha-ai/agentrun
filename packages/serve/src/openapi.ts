@@ -4,7 +4,7 @@
 // own routes are added as operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed
 // in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
+import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
@@ -213,6 +213,11 @@ const RESOLVES = {
   type: "object", additionalProperties: false, required: [...HARNESSES], properties: Object.fromEntries(HARNESSES.map((harness) => [harness, RESOLUTION])),
   description: "What the tool resolves to on each harness: native (the harness's own tool, or on pi one request to the model provider's hosted search), kernel (the guarded direct fetch), exa-keyless (Exa's keyless MCP search), parallel, or unavailable: <reason>.",
 };
+/** Why a capability resolves as it does on each harness: one plain sentence each, from the same resolution. */
+const WHY = {
+  type: "object", additionalProperties: false, required: [...HARNESSES], properties: Object.fromEntries(HARNESSES.map((harness) => [harness, { type: "string" }])),
+  description: "Why the tool resolves as it does on each harness, one plain sentence each, made by the same resolution as resolves: the harness's or model provider's own search (`Codex's own search`), what leaves none and what serves instead (`behind a gateway Codex has no own search; your Parallel key (saved)`, where saved is a key saved on Tool keys and server the server's own), a pick (`keyless Exa, picked in settings: Exa's free search, no key`), or `turned off in settings`. A client shows it as is.",
+};
 /** GET and PUT /settings/tools's answer: each capability's provider, its default where none is set. */
 const TOOL_SETTINGS_ANSWER = closed(Object.fromEntries(PICKABLE.map((name) => [name, closed({ provider: { enum: [...PROVIDERS[name]] } })])));
 /** GET /agents/{agent_id}'s `tools`: each tool the agent's current revision grants, in capabilities.tools' order; one
@@ -270,9 +275,9 @@ const LEARNING_REASON = {
     "Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships.",
     "`seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned.",
     "`no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown.",
-    "`no_write_tool`: the agent has no `write` tool. `tool_denied`: the agent's tool permissions deny `write` (not sent by this server yet).",
+    "`no_write_tool`, `tool_denied`: older runs only, from before the end-of-run turn answered with its notes (an agent with no `write` tool, or one a tool gate denied it); no run gets them now.",
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
-    "`empty`: the turn added no note. `propose_failed`: what it wrote could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
+    "`empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
     "`screen`, `screen_down`: the injection screen (only with an independent judge) refused a new note, or could not judge one. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
   ].join(" "),
 };
@@ -283,9 +288,11 @@ const PAGE = (item: Json, description: string) => closed({ items: { type: "array
 const LEARNING_NOTE = closed({
   file: { type: "string", description: "The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name)." },
   name: { type: "string" }, description: { type: "string" }, type: { enum: [...NOTE_TYPES] },
-  status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md." },
+  status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the grader held as risky, the user's or the run's own, to wait for its owner's OK; no run reads it." },
+  origin: { enum: [...NOTE_ORIGINS], description: "`you`: kept from what the user asked in their own words; `run`: what the run worked out (absent from older notes: `run`)." },
   superseded_by: { ...NULL_STRING, description: "The note that superseded it, on a superseded note; `[redacted]` as `file` is." },
   text: { type: "string", description: "The note's whole file, front matter included." },
+  etag: { type: "string", description: "The note's version on main, the same ETag as `GET .../learning/files/{file}` answers: send it as `If-Match` to edit or retire the version shown, and a 412 means it changed since.", "x-agentrun-serve": "learning/2" },
 });
 const LEARNING_CHANGE = closed({
   by: { oneOf: [closed({ run: { type: "string" } }), closed({ user: { type: "boolean", const: true } })], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation or retirement through this API (`Changed-By: user`)." },
@@ -298,6 +305,14 @@ const LEARNING_COUNTS = closed({
   dropped: { type: "object", additionalProperties: COUNT, propertyNames: { enum: [...LEARNING_REASONS] }, description: "By reason (Run.learning.reason): only reasons with one run or more." },
   in_progress: { ...COUNT, description: "Seeded, reflecting or proposed: runs this server holds." },
 }, "How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`, counted as it counts them, from the runs this server holds and its learning ledger, no run's files opened.");
+/** One side of an agent's impact (learning-run.ts learningImpact). */
+const IMPACT_SIDE = (side: "before" | "after") => closed({
+  runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first note." : "The completed runs that started from at least one active note." },
+  median_duration_s: { type: "number", minimum: 0, description: "Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before it looks back (a run that does not look back: to its end)." },
+  median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is." },
+  cost_runs: { ...COUNT, description: "Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of." },
+  median_learning_usd: { type: ["number", "null"], minimum: 0, description: "The median of what learning itself cost a run, its end-of-run turn and its grade (the grade's is on GET /usage's `learning` meter), over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off)." },
+});
 const AGENT_LEARNING = closed({
   agent: { type: "string" },
   main: { ...NULL_STRING, description: "Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty." },
@@ -305,29 +320,68 @@ const AGENT_LEARNING = closed({
   notes: PAGE(LEARNING_NOTE, "The first 50 notes: active first, then by their newest change, newest first. GET .../learning/notes for more."),
   log: PAGE(LEARNING_CHANGE, "The first 20 changes on main, newest first. GET .../learning/log for more."),
   counts: LEARNING_COUNTS,
+  impact: {
+    oneOf: [closed({ before: IMPACT_SIDE("before"), after: IMPACT_SIDE("after") }), { type: "null" }],
+    description: "What learning changed for the agent: its completed agentic runs that started from at least one active note (`after`) against those that started before its first note (`before`: before the earlier of its first merge and the start of its first run that started from a note, so a person's first note counts too). A later run with learning off, or seeded with no note (every note retired), an imported and an archived run are on neither side. Null unless both sides count 2 runs or more: say it \"on N runs\", N `after.runs`. Read from the runs' rows and the learning ledger, no run's files opened.",
+    "x-agentrun-serve": "learning/2",
+  },
 });
 const PROBLEM = { type: "object", additionalProperties: false, required: ["rule", "detail"], properties: { rule: { type: "string" }, path: { type: "string" }, detail: { type: "string" } } };
 const VERDICT_ITEM = {
   type: "object", additionalProperties: false, required: ["file", "keep", "why"],
   properties: {
     file: { type: "string", description: "The new note's file name; `[redacted]` when it holds one of the host's secrets as they are now." },
-    keep: { type: "boolean", description: "Whether the rubric keeps the note." },
-    question: { type: "string", description: "The rubric's question the note failed (General, From content, Duplicate or Contradicts), when it is not kept." },
+    keep: { type: "boolean", description: "Whether the rubric keeps the note: true for one that waits for the owner's OK too." },
+    pending: { type: "boolean", const: true, description: "Present on a note kept to wait for the owner's OK: a risky rule, the user's or the run's own (its question is Risky)." },
+    origin: { enum: [...NOTE_ORIGINS], description: "On a kept note: `you`, from what the user asked in their own words, or `run`." },
+    question: { type: "string", description: "The rubric's question the note failed (General, Planted, Secret, Duplicate or Contradicts) when it is not kept, or Risky when it waits." },
     why: { type: "string", description: "One sentence, the grader's, cut of the host's secrets." },
   },
 };
+/** A note's file name, as a run's learning names one. */
+const NOTE_NAME_FILE = { type: "string", description: "The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now." };
+/** The notes a run read and learned, on its learning block (runs.ts, learning.ts notesView): each present only when it
+ *  holds a note. */
+const LEARNING_NOTES: Record<string, Json> = {
+  used: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
+    description: "The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none.",
+    "x-agentrun-serve": "learning/2",
+  },
+  learned: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." }, supersedes: { type: "array", items: NOTE_NAME_FILE, description: "The older notes it replaced, each now `superseded` by it; empty when it replaced none." } }),
+    description: "The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise.",
+    "x-agentrun-serve": "learning/2",
+  },
+};
+/** A run's learning block, past its read and learned notes: the notes its merge holds for the owner's OK. The run's
+ *  learning whole (RUN_LEARNING) says the same as a list that is always there. */
+const RUN_NOTES: Record<string, Json> = {
+  ...LEARNING_NOTES,
+  pending: {
+    type: "array", minItems: 1,
+    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
+    description: "The notes this run's merge holds for the owner's OK (status `pending` in the folder: a risky rule, the user's or the run's own), in no index and read by no run until approved, never among `learned`: present once `state` is `merged` and one waits, absent otherwise.",
+    "x-agentrun-serve": "learning/2",
+  },
+};
+/** `properties` as a closed object, its `optional` ones left out of `required`. */
+const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
 const RUN_LEARNING = {
   oneOf: [
-    closed({
+    closedWith({
       run: { type: "string" }, state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
-      detail: { ...NULL_STRING, description: "One plain sentence: never a secret or a value from the input." }, at: { type: "string", format: "date-time" },
+      detail: { ...NULL_STRING, maxLength: 300, description: "Run.learning's detail, the same words: at most 300 characters, cut of the host's secrets as they are now before it is cut short." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
+      pending: { type: "array", items: closed({ file: { type: "string" }, name: { type: "string" } }), description: "The merge's notes that wait for the owner's OK (status `pending` on main), in no index and read by no run until approved; empty when none." },
       verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" }, items: { type: "array", items: VERDICT_ITEM, description: "One for each new note the run proposed." } }), { type: "null" }], description: "The grader's, once it judged; null when no grade ran." },
       problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`." },
       cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
       tokens: closed({ grade: { oneOf: [closed({ input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT }), { type: "null" }], description: "The grade's tokens; `input` excludes cached input." } }),
-    }),
+    }, LEARNING_NOTES),
     { type: "null" },
   ],
   description: "The run's learning whole. Null for a run that does not learn.",
@@ -393,7 +447,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "writeLearningFile", tags: ["agents"], summary: "Edit a note (If-Match) or create one (If-None-Match: *)",
-      description: `The body is the note's whole text, front matter included; a person may set any field, \`status\` too (an active note is in the index). With neither header, 428. ${WRITE_DESCRIPTION}`,
+      description: `The body is the note's whole text, front matter included; a person may set any field, \`status\` too (an active note is in the index), except that a note waiting for its owner's OK stays waiting: an edit of a \`pending\` note that drops or changes its status is 400 \`bad_request\` with the rule \`status\`, and only an approval makes it active. With neither header, 428. ${WRITE_DESCRIPTION}`,
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH, { name: "If-None-Match", in: "header", required: false, description: "`*`: create the note, only if the name is not taken, else 412.", schema: { type: "string", const: "*" } }],
       requestBody: {
         required: true,
@@ -409,7 +463,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/files/{file}/retire": {
     post: {
       operationId: "retireLearningFile", tags: ["agents"], summary: "Retire a note: out of the index, kept in history",
-      description: `Sets \`status: retired\` (and drops \`superseded_by\`); a note that is not active is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 \`bad_request\` with \`problems\` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. ${WRITE_DESCRIPTION}`,
+      description: `Sets \`status: retired\` (and drops \`superseded_by\`), on an active note or one that waits for its owner's OK (\`pending\`); any other note is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 \`bad_request\` with \`problems\` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. ${WRITE_DESCRIPTION}`,
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, retired."), ...WRITE_ERRORS }, ...MARK,
     },
   },
@@ -649,7 +703,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider: web_search auto (the harness's own search or the model provider's hosted one, else Exa's keyless search), native (that alone), exa-keyless or parallel; web_fetch kernel or parallel. An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.",
+      description: "Each capability that has a choice, and its provider: web_search auto (codex's own search or, on pi, the model provider's hosted one, else Parallel where the server holds its key, which bills it, else Exa's keyless search; claude-agent's own search only as native), native (that alone), exa-keyless (that alone) or parallel; web_fetch kernel or parallel. An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
@@ -772,18 +826,25 @@ const LEARNING_NULL = "Null for a run that does not learn: its agent's `learning
 /** A run's learning (runs.ts): whether it started from what its agent learned. */
 const LEARNING = {
   oneOf: [
-    closed({
+    closedWith({
       state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run turn runs, and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `proposed` once the new notes passed the checks, while they are graded; `merged` once they are on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
       reason: LEARNING_REASON,
-      detail: { type: ["string", "null"], description: "One plain sentence: never a secret or a value from the input." },
+      detail: { type: ["string", "null"], maxLength: 300, description: "Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a note's name or the grader's reason in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: \"Started from 2 notes.\", \"Looking back on this run…\", \"Checking 1 new note…\", \"Learned: <note's name> (replaces 1 older note)\", \"Learned: <note's name>. Waiting for your OK: <note's name>.\", \"Nothing new to remember from this run.\", \"Not kept: <the grader's reason, its first sentence>\", \"Not kept: its notes weren't in the expected format.\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
       at: { type: "string", format: "date-time", description: "When the state last changed." },
-    }),
+    }, RUN_NOTES),
     { type: "null" },
   ],
-  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, to add notes there; what it adds is checked, graded by one grader on the agent's own model, and merged into the folder, or dropped. ${LEARNING_NULL}`,
+  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's learning folder, the index of its notes in its instructions and the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, which answers with the notes it would keep (no tool is needed, and nothing the run writes in \`.learning/\` counts); what it answers is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };
-const LEARNING_SHORT = { oneOf: [closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON }), { type: "null" }], description: `The run's learning, in short (GET /runs/{run_id} has it whole). ${LEARNING_NULL}`, "x-agentrun-serve": "learning/1" };
+const LEARNING_SHORT = {
+  oneOf: [closedWith({
+    state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
+    detail: { type: ["string", "null"], maxLength: 140, description: "Run.learning's detail, in the same words, cut short: at most 140 characters, ending in an ellipsis when cut (a grader's long reason). Cut of the host's secrets first, so none is ever shown in part.", "x-agentrun-serve": "learning/2" },
+  }, RUN_NOTES), { type: "null" }],
+  description: `The run's learning, in short (GET /runs/{run_id} has it whole, with its whole detail and its time). ${LEARNING_NULL}`,
+  "x-agentrun-serve": "learning/1",
+};
 
 /** What this server's run answers carry beyond the contract's Run and RunSummary: added before they were marked, so
  *  `serve/1`. */
@@ -863,7 +924,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   TimelineRow: {
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
-      description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
+      description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. Its \`summary\` and \`text\` are its \`detail\` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
       "x-agentrun-serve": "learning/1",
     },
   },
@@ -899,6 +960,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    learning: {
+      type: "object", additionalProperties: false, required: ["grade_model", "pending"],
+      properties: {
+        grade_model: { type: ["string", "null"], description: "The model that grades what a run proposes to learn: `--grade-model` (AGENTRUN_SERVE_GRADE_MODEL), else the strong tier (AGENT_MODEL_STRONG), named as the strong tier takes one; null when the server names none, and each run is graded on its agent's own model." },
+        pending: { type: "boolean", const: true, description: "A risky rule, one a run's user asked for or one the run worked out (to trust a site or a seller, skip or loosen an approval or a check, or send money or data somewhere), is kept to wait for its owner's OK: committed as a note with status `pending`, in no MEMORY.md and read by no run. This server has no route that approves one yet; a person can retire it." },
+      },
+      description: "How this server judges what a run proposes to learn.",
+      "x-agentrun-serve": "learning/1",
+    },
     places: {
       type: "object", additionalProperties: false, required: ["modes", "default", "boxes"],
       properties: {
@@ -929,6 +999,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
           provider: { type: "string", description: "A tool with a provider choice: the server's, its default where it sets none.", "x-agentrun-serve": "providers/1" },
           default_provider: { type: "string", description: "A tool with a provider choice: the built-in default.", "x-agentrun-serve": "providers/1" },
           resolves: { ...RESOLVES, "x-agentrun-serve": "providers/1" },
+          why: { ...WHY, "x-agentrun-serve": "providers/1" },
           key: { enum: TOOL_KEYS.map((row) => row.id), description: "The tool key that unlocks it (GET /settings/tool-keys' id): saved there, it is read by name like a secret the server is started with, and the tool's `missing` goes at once. Absent when no tool key does.", "x-agentrun-serve": "toolkeys/1" },
         },
       },
