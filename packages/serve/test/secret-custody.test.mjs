@@ -397,6 +397,54 @@ process.on("SIGUSR2", async () => {
   }
 });
 
+/** Model settings a host may hold: none of the test's own reaches a server started by launchedWith. */
+const MODEL_SETTINGS = ["AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL_PRICE", "ANTHROPIC_BASE_URL", "AGENT_THINKING"];
+const CUSTODY_HARNESS = new URL("./fixtures/faux-custody-harness.mjs", import.meta.url).pathname;
+/** The server under its launcher, on the faux model for pi and the faux custody harness for claude-agent and codex (each
+ *  run answers what its process was handed), with `env` as its only secrets and model settings. */
+function launchedWith(t, env) {
+  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(CUSTODY)}, fauxHarness: ${JSON.stringify(CUSTODY_HARNESS)} });
+process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
+  const only = { ...Object.fromEntries([...SECRET_NAMES, ...MODEL_SETTINGS].map((name) => [name, undefined])), AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ...env };
+  return launched(t, only, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
+}
+
+test("under its launcher, a pi run on the host's default model, which a model key gives, is handed that key: one set where AgentRun starts, or one saved in Settings → Model keys, though neither is ever in the server's environment", { timeout: 120_000 }, async (t) => {
+  const canary = `not-a-secret-default-${process.pid}-${Date.now()}`;
+  const token = `${canary}-AGENTRUN_TOKEN`;
+  // Set where AgentRun starts: the launcher takes it out of the environment, so only the server's secrets hold it.
+  const started = await launchedWith(t, { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: `${canary}-started` });
+  assert.equal((await started.api("POST", "/agents", agent("on-default"))).status, 201);
+  const fromStart = await custodyReport(started.api, "on-default");
+  assert.deepEqual(heldBy(fromStart.handed), ["OPENROUTER_API_KEY"], "the key its default model (OpenRouter's) needs, and no other");
+  assert.equal(fromStart.handed.OPENROUTER_API_KEY, digest(`${canary}-started`), "over its pipe, whole");
+  // Saved in Settings → Model keys, never in any environment.
+  const saved = await launchedWith(t, { AGENTRUN_TOKEN: token });
+  assert.equal((await saved.api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: `${canary}-saved` } })).status, 204);
+  assert.equal((await saved.api("POST", "/agents", agent("on-default"))).status, 201);
+  const fromSaved = await custodyReport(saved.api, "on-default");
+  assert.deepEqual(heldBy(fromSaved.handed), ["OPENROUTER_API_KEY"], "the saved key its default model needs, and no other");
+  assert.equal(fromSaved.handed.OPENROUTER_API_KEY, digest(`${canary}-saved`), "the saved value, over its pipe");
+});
+
+test("under its launcher, a claude-agent or codex run on OpenRouter's route is handed OPENROUTER_API_KEY, the key its requests carry, and no other: on that key alone, and for a model named on OpenRouter beside Anthropic's key", { timeout: 120_000 }, async (t) => {
+  const canary = `not-a-secret-route-${process.pid}-${Date.now()}`;
+  const token = `${canary}-AGENTRUN_TOKEN`;
+  const alone = await launchedWith(t, { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: `${canary}-openrouter` });
+  for (const harness of ["claude-agent", "codex"]) {
+    assert.equal((await alone.api("POST", "/agents", agent(`on-${harness}`, { harness }))).status, 201);
+    const report = await custodyReport(alone.api, `on-${harness}`);
+    assert.deepEqual(heldBy(report.handed), ["OPENROUTER_API_KEY"], `${harness} on OpenRouter's key alone is handed it, and no other`);
+    assert.equal(report.handed.OPENROUTER_API_KEY, digest(`${canary}-openrouter`), "over its pipe, whole");
+  }
+  const both = await launchedWith(t, { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: `${canary}-openrouter`, ANTHROPIC_API_KEY: `${canary}-anthropic` });
+  assert.equal((await both.api("POST", "/agents", agent("named", { harness: "claude-agent", model: "openrouter/anthropic/claude-sonnet-5.5" }))).status, 201);
+  const named = await custodyReport(both.api, "named");
+  assert.deepEqual(heldBy(named.handed), ["OPENROUTER_API_KEY"], "a model named on OpenRouter goes there on OpenRouter's key; Anthropic's stays with the server");
+});
+
 test("secretsFor: a tool key's fields only for a revision naming a tool its row unlocks, the tools read as the run's process binds them; every other secret for each", async () => {
   const { RUN_SECRETS, secretsFor } = await import("../dist/runs.js");
   // On no host model: a revision naming no model takes no provider's key (the next test).
@@ -460,6 +508,13 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   assert.deepEqual(await held(agentic({ harness: "codex" }), { ...GATEWAY, AGENT_MODEL: "gpt-test" }), ["AGENT_MODEL_API_KEY"], "codex behind a gateway: the gateway's");
   assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }), {}), ["ANTHROPIC_API_KEY"], "claude-agent: Anthropic's");
   assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }), { ...GATEWAY, ANTHROPIC_BASE_URL: "http://127.0.0.1:2" }), ["ANTHROPIC_API_KEY"], "claude-agent's model is its own, never the gateway's");
+  // OpenRouter's route (#1537): the key a harness's requests carry there.
+  const OPENROUTER = { OPENROUTER_API_KEY: "set" };
+  assert.deepEqual(await held(agentic({ harness: "claude-agent" }), OPENROUTER), ["OPENROUTER_API_KEY"], "claude-agent on OpenRouter's key alone: OpenRouter's");
+  assert.deepEqual(await held(agentic({ harness: "codex" }), OPENROUTER), ["OPENROUTER_API_KEY"], "codex on OpenRouter's key alone: OpenRouter's");
+  assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "openrouter/anthropic/claude-sonnet-5.5" }), { ...OPENROUTER, ANTHROPIC_API_KEY: "set" }), ["OPENROUTER_API_KEY"], "a model named on OpenRouter, beside Anthropic's key: OpenRouter's");
+  assert.deepEqual(await held(agentic({ harness: "codex", model: "openrouter/openai/gpt-6-sol" }), { ...OPENROUTER, OPENAI_API_KEY: "set" }), ["OPENROUTER_API_KEY"], "codex on a model named on OpenRouter, beside OpenAI's key: OpenRouter's");
+  assert.deepEqual(await held(agentic(), OPENROUTER), ["OPENROUTER_API_KEY"], "a pi run on the default OpenRouter's key gives");
   // A workflow: the host's model of each tier its model nodes and `llm` calls use.
   const flow = answerFlow();
   flow.root.steps[0].tier = "fast";
