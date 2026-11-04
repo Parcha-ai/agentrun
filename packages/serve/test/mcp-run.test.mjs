@@ -65,6 +65,19 @@ test("pi: an agent granted mcp:fake/add calls it with the server's bearer; the t
   assert.deepEqual(leaked, [], "no file of the run holds the token");
 });
 
+// The fake's SDK server cannot list a tool named toString itself; mcp-gateway.test.mjs pins one, mcp-route.test.mjs serves one.
+test("pi: a server named like an object's own property (constructor) grants, launches and calls through", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const fake = await addFake(t, api, "constructor");
+  assert.equal((await api("POST", "/agents", agent("proto", { tools: ["mcp:constructor/add"] }))).status, 201);
+  const runId = await runOf(api, "proto", 'Call mcp__constructor__add with {"a":2,"b":3}');
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.at(-1)));
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: 5");
+  assert.equal(rows.find((row) => row.kind === "tool_use")?.summary, "constructor · add");
+  assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]]);
+});
+
 test("pi: the credential reaches only a run whose revision grants one of the server's tools", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP });
   const fake = await addFake(t, api);
@@ -89,6 +102,11 @@ test("a save that grants a tool the server does not have is refused, naming the 
   for (const tool of ["add", "slow_write", "delete_thing", "paid"]) assert.ok(said.includes(tool), `the refusal names ${tool}: ${said}`);
   const unknown = await api("POST", "/agents", agent("ghost", { tools: ["mcp:ghost/add"] }));
   assert.equal(unknown.status, 422, JSON.stringify(unknown.body));
+  // A server saved as hands, the name the harnesses keep for their own tools, is never granted.
+  await addFake(t, api, "hands");
+  const reserved = await api("POST", "/agents", agent("own", { harness: "claude-agent", tools: ["mcp:hands/add"] }));
+  assert.equal(reserved.status, 422, JSON.stringify(reserved.body));
+  assert.match(JSON.stringify(reserved.body), /keep for their own tools/);
 });
 
 test("pi: a run killed mid-call resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
@@ -163,6 +181,43 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   assert.deepEqual(calls(fake).map((entry) => [entry.tool, entry.authorization]), [["add", true]], "one call, with the bearer");
   const leaked = (await filesUnder(join(data, "runs", runId))).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file of the run, the CLI's own state among them, holds the token");
+});
+
+test("claude-agent: a run killed mid-call resumes with the call reported interrupted to the model, and the server saw the call once", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // The model asks for the call once; every later answer says what it was told of it.
+  let asked = false;
+  const anthropic = await fakeAnthropic({
+    reply: (request) => {
+      if (!request.tools.includes("mcp__fake__slow_write")) return { text: "Noted." };
+      if (asked) return { text: "Done after the cut." };
+      asked = true;
+      return { tool: { name: "mcp__fake__slow_write", input: { line: "once", seconds: 60 } } };
+    },
+  });
+  t.after(() => anthropic.close());
+  const saved = { ...process.env };
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+  delete process.env.AGENT_MODEL_BASE_URL;
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
+  const { api, data } = await serve(t, { faux: undefined });
+  const fake = await addFake(t, api);
+  assert.equal((await api("POST", "/agents", agent("claude-writer", { harness: "claude-agent", model: "anthropic/claude-haiku-4-5", tools: ["mcp:fake/slow_write"] }))).status, 201);
+  const runId = await runOf(api, "claude-writer", "Write the line once with the slow_write tool.");
+  for (let i = 0; calls(fake, "slow_write").length === 0; i++) {
+    assert.ok(i < 1200, "the call reaches the server");
+    await sleep(100);
+  }
+  const record = async () => JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8").catch(() => "{}"));
+  process.kill((await record()).holder.pid, "SIGKILL");
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind.startsWith("tool"))));
+  // The resumed session's model is told the call was cut and not run again, in the harness's recovery note.
+  const resumed = anthropic.messages().filter((request) => request.tools.includes("mcp__fake__slow_write")).slice(1);
+  assert.ok(resumed.some((request) => /interrupted[\s\S]*none was run again[\s\S]*mcp__fake__slow_write/.test(JSON.stringify(request.body.system ?? ""))), "the recovery note names the interrupted call");
+  assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
 });
 
 /** serve's gateway on loopback: each Responses request answered with the text it carries, and its usage. */
@@ -263,4 +318,3 @@ test("codex: a run killed mid-call resumes with the call answered interrupted, a
   assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /interrupted/i);
   assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
 });
-

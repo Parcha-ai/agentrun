@@ -4,7 +4,7 @@ Upstream: ours
 Pins: claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through the session's proxy; the fake saw the bearer, the CLI never held it
 ---
 diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
-index e4d549c..4c4e173 100644
+index e4d549c..c56ad85 100644
 --- a/packages/harness-claude-code/src/harness.ts
 +++ b/packages/harness-claude-code/src/harness.ts
 @@ -196,6 +196,15 @@ export interface ClaudeCodeHarnessOptions {
@@ -33,7 +33,7 @@ index e4d549c..4c4e173 100644
  /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
  export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
  
-@@ -382,6 +394,28 @@ async function bwrapWorks(machine: SessionMachine, signal: AbortSignal): Promise
+@@ -382,6 +394,29 @@ async function bwrapWorks(machine: SessionMachine, signal: AbortSignal): Promise
    }
  }
  
@@ -55,14 +55,15 @@ index e4d549c..4c4e173 100644
 +  const entry = (name: string) => ({ type: 'http', url: `${machine.modelUrl}/mcp/${name}`, headers: { authorization: `Bearer ${machine.modelKey}` }, timeout: Math.floor(timeoutMs), alwaysLoad: true });
 +  const set = await q.setMcpServers({ ...own, ...Object.fromEntries(names.map((name) => [name, entry(name)])) });
 +  const status = new Map((await q.mcpServerStatus()).map((server) => [server.name, server]));
-+  const failed = names.filter((name) => set.errors?.[name] !== undefined || status.get(name)?.status !== 'connected');
-+  if (failed.length) throw new Error(`the MCP server${failed.length > 1 ? 's' : ''} ${failed.join(', ')} did not connect: ${failed.map((name) => set.errors?.[name] ?? status.get(name)?.error ?? status.get(name)?.status ?? 'no status').join('; ').slice(0, 300)}`);
++  const error = (name: string) => (set.errors && Object.hasOwn(set.errors, name) ? set.errors[name] : undefined);
++  const failed = names.filter((name) => error(name) !== undefined || status.get(name)?.status !== 'connected');
++  if (failed.length) throw new Error(`the MCP server${failed.length > 1 ? 's' : ''} ${failed.join(', ')} did not connect: ${failed.map((name) => error(name) ?? status.get(name)?.error ?? status.get(name)?.status ?? 'no status').join('; ').slice(0, 300)}`);
 +}
 +
  export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harness {
    const tools = options.tools ?? [];
    const allowed = builtinTools(options.builtins);
-@@ -394,6 +428,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+@@ -394,6 +429,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
    const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
    const providerTools = options.providerTools ?? [];
    const webSearch = providerTools.includes('web_search');
@@ -71,7 +72,7 @@ index e4d549c..4c4e173 100644
    const log = options.log ?? (() => {});
    let sdk: Promise<ClaudeAgentSdk> | undefined;
    const loadSdk = (): Promise<ClaudeAgentSdk> => {
-@@ -584,7 +620,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+@@ -584,7 +621,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                        return name === asked ? allow() : allow({ ...input, skill: name });
                      }
                      // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs.
@@ -81,7 +82,7 @@ index e4d549c..4c4e173 100644
                      if (ctx.signal.aborted) return deny('the session stopped');
                      let updated: Record<string, unknown> | undefined;
                      const field = FILE_TOOLS[hook.tool_name];
-@@ -670,6 +707,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+@@ -670,6 +708,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
            // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).
            mcpOutputTokens: MCP_OUTPUT_TOKENS,
          });
@@ -90,7 +91,7 @@ index e4d549c..4c4e173 100644
          const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
          const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
          const sessionId = uuidFrom(ctx.runId);
-@@ -692,7 +731,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+@@ -692,7 +732,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
            hooks,
            ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),
            ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
@@ -99,7 +100,7 @@ index e4d549c..4c4e173 100644
            permissionMode: 'dontAsk',
            strictMcpConfig: true,
            // No user, project or local settings (and so no CLAUDE.md): a model-planted .claude/ on the Drive is ignored.
-@@ -704,7 +743,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+@@ -704,7 +744,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
            systemPrompt: {
              type: 'preset',
              preset: 'claude_code',
@@ -108,7 +109,7 @@ index e4d549c..4c4e173 100644
              snapshot: !recovered,
            },
            ...(store.hasSession ? { resume: sessionId } : { sessionId }),
-@@ -726,6 +765,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+@@ -726,6 +766,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
          };
          const q = query({ prompt: input, options: queryOptions });
          const messages = q[Symbol.asyncIterator]();

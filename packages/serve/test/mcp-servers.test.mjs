@@ -41,14 +41,9 @@ async function started(t, data) {
   t.after(close);
   return { api: client(server.baseUrl, server.token), close };
 }
-/** A loopback port nothing listens on. */
-async function closedPort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
+/** A loopback port nothing listens on: privileged, so no test process can bind it, and outside fetch's blocked ports.
+ *  A port a test frees and then calls can be taken meanwhile by another file's fake, which then logs that call. */
+const CLOSED_PORT = 2;
 
 test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, lists every tool, and stores nothing", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
@@ -109,7 +104,7 @@ test("preview tells a server that wants a credential (bearer or OAuth), one that
   const api404 = await plain(t, (req, res) => { res.writeHead(404, { "content-type": "application/json" }); res.end('{"error":"no such route"}'); });
   assert.equal((await preview(`${api404}/mcp`)).body.error.code, "not_mcp");
 
-  const down = await preview(`http://127.0.0.1:${await closedPort()}/mcp`);
+  const down = await preview(`http://127.0.0.1:${CLOSED_PORT}/mcp`);
   assert.equal(down.status, 424, JSON.stringify(down.body));
   assert.equal(down.body.error.code, "upstream_failed");
   const failing = await plain(t, (req, res) => { res.writeHead(502); res.end("bad gateway"); });
@@ -237,7 +232,7 @@ test("what is refused before any connection: no seal key for a credential (409),
   const refused = await api("PUT", "/settings/mcp-servers/again", { url: server.url, auth: { type: "bearer", token } });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "no_sealing_key");
-  assert.equal(server.log.length, before, "refused before the server is contacted");
+  assert.deepEqual(server.log.slice(before), [], "refused before the server is contacted");
   assert.equal((await api("PUT", "/settings/mcp-servers/open", { url: open.url })).status, 200, "a server with no credential needs no seal key");
   const listed = (await api("GET", "/settings/mcp-servers")).body.servers;
   assert.deepEqual(listed.map((s) => [s.name, s.credential]), [["guarded", "seal_key_missing"], ["open", null]]);
