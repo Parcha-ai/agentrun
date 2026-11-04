@@ -109,7 +109,8 @@ test("a run's view redacts its answer once per held key set: a second view reads
   const second = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(refusal.answerPasses.count, read, "the second view read the answer from what the first one redacted");
   assert.equal(second.result.final_answer, first.result.final_answer);
-  assert.equal(second.result.final_answer, "[redacted] ".repeat(128), "each sk- run is redacted whole");
+  // A run's final answer is kept trimmed, so the last run's space is not in it.
+  assert.equal(second.result.final_answer, "[redacted] ".repeat(128).trimEnd(), "each sk- run is redacted whole");
 });
 
 test("a value saved as a key after a run's answer was first served is redacted from the next view", { timeout: 90_000 }, async (t) => {
