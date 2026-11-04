@@ -573,7 +573,9 @@ cap, each `monid.run` is held as a model request is: unless what the run has spe
 price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is
 refused with a `spend_cap_reached` error the model reads, naming its price and the cap (and, when the allowance was
 used, that `monid.inspect` gives a quote), and monid is never called. Runs go one at a time under a cap, and on
-claude-agent and codex the check holds each model request still in flight at its worst case. `discover` and `inspect`
+claude-agent and codex the check holds each model request still in flight at its worst case. A run sent holds its
+figure until its charge is in, on every harness: a model request checked meanwhile counts it beside what the run has
+spent, and a run that fails without an answer counts at it. `discover` and `inspect`
 cost nothing and are never refused. They run on every harness: pi binds them, and claude-agent and codex call them as
 host tools in the run's process, where a `monid.run` call a crash cut off is answered interrupted, never sent again
 (`discover` and `inspect` may run again). On each, the model, the call's journal and the run's timeline name them
