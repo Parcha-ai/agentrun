@@ -471,6 +471,10 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
     post: {
       operationId: "approveLearningFile", tags: ["agents"], summary: "Approve a note that waits for its owner's OK",
       description: `Makes a pending note active: in MEMORY.md, read by every later run, and each note it supersedes that is active still marked superseded. One host commit on main, \`learning: approved by a person: <file>\`, with the trailers \`Changed-By: user\` and \`Approved-Via: console\`; the log shows it as \`by: {user: true, via: "console"}\` at the commit's time, and never the note's text. Only the owner, signed in with their password, approves: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since an agent's MCP client, the MCP endpoint's tools or a script may hold one, to a run's door token, and to every request on a server with accounts off, whose page cookie the token mints (\`capabilities.learning.approve\` is false there, with \`approve_needs: "password"\`); with no credential at all it is 401, as every route. A run that uses bash on the host runs as the server's user and can read its files, so for untrusted tasks use the sandbox. A note that is not pending is 400 \`bad_request\`. Under If-Match, as a retire: a stale ETag is 412, none 428.`,
+      // The owner's password session alone (ownerSession), never the document's bearer, with the empty JSON body every
+      // page write sends: a client generated from this document sends what the route takes.
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, approved."), ...WRITE_ERRORS, ...errors(403) }, ...MARK,
     },
   },
@@ -1145,6 +1149,12 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       unsupported.push(`${method.toUpperCase()} ${path}`);
     }
   }
+  // The console's password session, the one credential approving a note takes (approveLearningFile).
+  ((doc.components as Json).securitySchemes as Record<string, Json>).ownerSession = {
+    type: "apiKey", in: "cookie", name: "agentrun-PORT",
+    description: "The owner's console session: the cookie `agentrun-<port>` (this server's port) the console sets when the owner signs in with their password (accounts on). Sent from this server's own origin; a token never stands for it.",
+    "x-agentrun-serve": "learning/2",
+  };
   const schemas = (doc.components as Json).schemas as Record<string, Json>;
   const fields: string[] = [];
   for (const [where, added] of Object.entries(FIELD_EXTENSIONS)) {

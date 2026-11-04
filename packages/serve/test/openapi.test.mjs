@@ -43,6 +43,18 @@ test("GET /v2/openapi.json without a credential: the contract it vendors, named 
   assert.deepEqual(doc.info["x-agentrun-serve"].contract_servers, VENDORED.servers);
 });
 
+test("approving a note is the owner's password session alone, from the console with a JSON body: the operation names a cookie scheme and no token, and declares its empty JSON body, so a client generated from the document sends what the route takes", async (t) => {
+  const { doc } = await served(t);
+  const op = doc.paths["/agents/{agent_id}/learning/files/{file}/approve"].post;
+  assert.deepEqual(op.security, [{ ownerSession: [] }], "never the document's bearer: the route answers 403 to every token");
+  const scheme = doc.components.securitySchemes.ownerSession;
+  assert.deepEqual([scheme.type, scheme.in], ["apiKey", "cookie"]);
+  assert.match(scheme.description, /password/);
+  assert.equal(op.requestBody?.required, true);
+  assert.deepEqual(op.requestBody.content["application/json"].schema, { type: "object", additionalProperties: false, maxProperties: 0 });
+  assert.deepEqual(doc.components.securitySchemes.bearer, VENDORED.components.securitySchemes.bearer, "the contract's scheme is as vendored");
+});
+
 test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why", async (t) => {
   const { doc } = await served(t);
   const ops = operations(doc);
@@ -184,6 +196,8 @@ test("the contract's operations are as vendored; this server's own are added and
     }
     strip(schema, name);
   }
+  // A security scheme this server adds is its own, marked (the owner's session that approving a note takes).
+  for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details].sort(), "info lists the contract properties it notes");
