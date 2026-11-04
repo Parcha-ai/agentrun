@@ -2,6 +2,7 @@
 // async backoff, so the event loop goes on answering. A run's end waits as long as it takes; a request waits about
 // 2 s, then answers home_busy.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
@@ -101,6 +102,39 @@ test("a read while the agent store is held exclusively waits, then answers once 
   const answer = await read;
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
+});
+
+test("a message to a working run, the first after a key is saved too, never waits on a read of its revision from the agent store: held for 1 s, it is answered 202 as soon as the store is free", async (t) => {
+  const dir = await scratch(t);
+  // A key is kept sealed: this server's seal key, as its launcher would give it.
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  // A run's read of its revision from the agent store waits 5 s before its next try: a message that made one would be
+  // answered after that. The answer's own read of the run (its status) waits about 2 s, as any request's does.
+  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: [5_000] } });
+  assert.equal((await api("POST", "/agents", agent("steered", { instructions: `Answer once ${join(dir, "go")} exists.` }))).status, 201);
+  const run = await api("POST", "/agents/steered/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  for (let i = 0; (await api("GET", `/runs/${run.body.run_id}`)).body.state !== "working"; i++) {
+    assert.ok(i < 200, "the run works");
+    await sleep(50);
+  }
+  // Each message sent while another connection holds the agent store exclusively, for HOLD_MS.
+  const message = async (content) => {
+    const release = hold(t, data, "EXCLUSIVE");
+    const sent = timed(port, token, "POST", `/runs/${run.body.run_id}/messages`, { content });
+    await sleep(HOLD_MS);
+    release();
+    const answer = await sent;
+    assert.equal(answer.status, 202, JSON.stringify(answer.body));
+    assert.ok(answer.took < HOLD_MS + 2_000, `"${content}" was answered at ${answer.took} ms: it waited on a read of its revision`);
+  };
+  await message("Before any key is saved.");
+  // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "not-a-secret-saved-openai" } })).status, 204);
+  await message("The first message after a key is saved.");
+  await writeFile(join(dir, "go"), "");
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify(last));
 });
 
 test("an edit whose commit meets a reader of the agent store waits for it, then answers 200 with the new revision", async (t) => {
