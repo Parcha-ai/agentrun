@@ -11,7 +11,7 @@ import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 import { wireName } from "../dist/catalog.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
-import { TABLE_TOOLS } from "../dist/tool-plane.js";
+import { LEGACY_NAMES, TABLE_TOOLS } from "../dist/tool-plane.js";
 import { scratch } from "./support.mjs";
 
 const { deniedText, noApproverText, RunGate, waitingText } = gate;
@@ -19,22 +19,25 @@ const { deniedText, noApproverText, RunGate, waitingText } = gate;
 const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
 const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
+/** A host tool's settings key: its own name, or for a legacy name the capability the tool plane folds it into. */
+const folded = (name) => LEGACY_NAMES[name] ?? name;
 
 /** Every name a call reaches the gate by, on each harness, and the key it must map to. */
 const NAMES = {
   pi: [
-    ...["read", "write", "edit", "bash", "ask_person", "web_fetch", "fetch_page", "web_search"].map((name) => [name, name]),
+    ...["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search"].map((name) => [name, name]),
+    ["fetch_page", "web_fetch"],
     ...MONID.map((name) => [wireName(name), name]),
     ...BROWSER_TOOL_NAMES.map((name) => [name, "browser"]),
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
   "claude-agent": [
-    ...Object.keys(REPLAY).flatMap((name) => [[name, name], [wireName(name), name], [`mcp__hands__${wireName(name)}`, name]]),
+    ...Object.keys(REPLAY).flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)], [`mcp__hands__${wireName(name)}`, folded(name)]]),
     ["WebSearch", "web_search"], ["WebFetch", "web_fetch"], ["Bash", "bash"],
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
   codex: [
-    ...Object.keys(REPLAY).flatMap((name) => [[name, name], [wireName(name), name]]),
+    ...Object.keys(REPLAY).flatMap((name) => [[name, folded(name)], [wireName(name), folded(name)]]),
     ["web_search", "web_search"], ["shell", "bash"],
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
