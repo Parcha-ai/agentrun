@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { release } from "node:os";
@@ -32,7 +32,15 @@ const BOX_ALLOW_ENV = "AGENTRUN_BOX_ALLOW";
 const EGRESS_MOUNT = "/run/agentrun/egress";
 const PROXY = "http://127.0.0.1:3128";
 const PROXY_ENV = { HTTP_PROXY: PROXY, HTTPS_PROXY: PROXY, http_proxy: PROXY, https_proxy: PROXY, NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1" };
-const FORWARDER_START = ["sh", "-c", "command -v socat >/dev/null 2>&1 || exit 127; setsid socat TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/run/agentrun/egress/egress.sock </dev/null >/dev/null 2>&1 &"];
+const FORWARDER_START = ["sh", "-c", [
+  "command -v socat >/dev/null 2>&1 || exit 127",
+  "command -v setsid >/dev/null 2>&1 || exit 126",
+  "listening() { grep -q ' 0100007F:0C38 00000000:0000 0A ' /proc/net/tcp 2>/dev/null; }",
+  "listening && exit 0",
+  'log=$(mktemp); setsid socat TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/run/agentrun/egress/egress.sock </dev/null >/dev/null 2>"$log" &',
+  'i=0; while [ "$i" -lt 30 ]; do listening && { rm -f "$log"; exit 0; }; i=$((i + 1)); sleep 0.1; done',
+  'head -c 300 "$log" >&2; rm -f "$log"; exit 124',
+].join("; ")];
 const ALLOW_HINT = "use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW";
 const NO_SOCAT = "This box's image has no socat, so it has no network. Add socat to the image, or set AGENTRUN_BOX_ALLOW=none to silence this.";
 /** A run's proxy directory: short, under /tmp, by this user and the run's id. */
@@ -51,7 +59,7 @@ async function fakeDocker(t, marks = {}, vars = {}) {
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker", AGENTRUN_DOCKER_IMAGE: IMAGE, ...vars }, [BOX_ALLOW_ENV]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
   const lines = (name) => (existsSync(join(state, name)) ? readFileSync(join(state, name), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
-  return { state, runs: () => lines("argv.jsonl").filter((args) => args[0] === "run"), relays: () => lines("relays.jsonl") };
+  return { state, runs: () => lines("argv.jsonl").filter((args) => args[0] === "run"), removed: () => lines("argv.jsonl").filter((args) => args[0] === "rm").map((args) => args.at(-1)), relays: () => lines("relays.jsonl") };
 }
 
 const until = async (done, what, ms = 30_000) => {
@@ -123,7 +131,7 @@ test("a server whose AGENTRUN_BOX_ALLOW is not a list of names refuses to start,
 });
 
 test("demo through the API, with a list: the run's box stays --network none and gets the run's egress proxy, its directory bound read-only, the proxy variables and no key in its environment, and its relay; the proxy reaches a listed host and refuses another in words; the directory goes when the run ends", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
-  const docker = await fakeDocker(t, {}, { [BOX_ALLOW_ENV]: LIST, OPENAI_API_KEY: "planted-openai-sentinel" });
+  const docker = await fakeDocker(t, {}, { [BOX_ALLOW_ENV]: LIST, OPENAI_API_KEY: "not-a-secret" });
   const { hold, release } = await holdFile(t);
   const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
   // The run's bash holds its box open until the test is done with it (the fake runs it on this machine).
@@ -355,4 +363,45 @@ test("golden: with AGENTRUN_BOX_ALLOW=none, a run's `docker run` is byte for byt
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   const [run] = docker.runs();
   assert.deepEqual(normalized(run, data, runId), NONE_GOLDEN);
+});
+
+test("a relay that cannot start (an image with socat but no setsid, or a relay that never listens) leaves the box with no network, and the run's timeline says why once; its tools still run", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
+  for (const [mark, text, row] of [
+    ["no-setsid", "", "This box's image has no setsid, so it has no network. Add util-linux's setsid to the image, or set AGENTRUN_BOX_ALLOW=none to silence this."],
+    ["relay-dead", "2026/11/04 socat[7] E bind(5, {AF=2 127.0.0.1:3128}, 16): Address in use", "This box's network relay did not start within 3 s (2026/11/04 socat[7] E bind(5, {AF=2 127.0.0.1:3128}, 16): Address in use), so it has no network."],
+  ]) {
+    const docker = await fakeDocker(t, { [mark]: text });
+    const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+    const runId = await boxedRun(api, [{ tool: "bash", args: { command: "printf one" } }]);
+    await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+    assert.deepEqual(answers(data, runId).map((a) => [a.error, a.text]), [[false, "one"]], mark);
+    assert.deepEqual((await rowsOf(api, runId)).filter((r) => r.summary?.startsWith("This box")).map((r) => r.summary), [row], mark);
+    assert.equal(docker.relays().length, 1);
+    await rm(docker.state, { recursive: true, force: true });
+  }
+});
+
+test("a box an earlier process of the run made with another network (none) is made again with the list, not reused offline", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+  const go = await holdFile(t);
+  const runId = await boxedRun(api, [{ wait: go.hold }, { tool: "bash", args: { command: "printf again > out.txt" } }]);
+  const work = join(realpathSync(data), "runs", runId, "work");
+  await until(() => existsSync(work), "the run's work/");
+  // The box an earlier process of the run made under AGENTRUN_BOX_ALLOW=none, as Docker would list it: no network label.
+  const id = "e".repeat(64);
+  const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: "/run/agentrun/run/work", isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run" };
+  await mkdir(join(docker.state, "containers"), { recursive: true });
+  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: { NetworkMode: "none", CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"] }, env: ["LANG=C.UTF-8", "HOME=/tmp"], mounts: [{ source: work, target: "/run/agentrun/run/work" }], workdir: "/run/agentrun/run/work" }));
+  await go.release();
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
+  assert.equal(readFileSync(join(work, "out.txt"), "utf8"), "again", "work/ is this machine's: nothing lost");
+  assert.ok(docker.removed().includes(id), "the box made offline is ended");
+  const [made] = docker.runs();
+  assert.ok(made, "a box is made again");
+  assert.ok(flags(made, "--env").includes(`HTTPS_PROXY=${PROXY}`), "with the proxy");
+  assert.ok(flags(made, "--mount").some((mount) => mount.includes(`target=${EGRESS_MOUNT},readonly`)), "and its socket's directory");
+  const net = flags(made, "--label").find((label) => label.startsWith("agentrun.net="));
+  assert.equal(net, `agentrun.net=${createHash("sha256").update(DEFAULT.join(",")).digest("hex").slice(0, 16)}`, "labelled with its list");
 });

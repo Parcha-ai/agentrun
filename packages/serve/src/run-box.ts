@@ -21,7 +21,7 @@ import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context"
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
 import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
-import { type BoxEgress, type BoxNetwork, egressBlockedBy, forwarderStart, hostEgress, NO_SOCAT, PROXY_ENV, runBoxAllowOf } from "./box-egress.js";
+import { type BoxEgress, type BoxNetwork, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
 import { readJson, writeDurable } from "./files.js";
@@ -30,6 +30,11 @@ import { agentWorkDir, BOX_WORK, type Place } from "./place.js";
 
 /** The label a run's box carries: the run's id. */
 export const RUN_LABEL = "agentrun.run";
+/** And, on a box made with a network list, this one: the list's hash (netLabelOf). A box with none carries no such label,
+ *  so its `docker run` is as it was. */
+export const NET_LABEL = "agentrun.net";
+/** The network label's value for a list. */
+export const netLabelOf = (allow: readonly string[]): string => createHash("sha256").update(allow.join(",")).digest("hex").slice(0, 16);
 /** And this one, the same on every run's box, which the start's sweep lists them by. */
 export const KIND_LABEL = "agentrun.box";
 /** The whole environment of a box's programs: a constant, never this process's. */
@@ -162,7 +167,7 @@ export async function boxMounts(root: string, runDir: string, place: Place): Pro
 
 /** The provider runs' boxes come from, what a create of its box waits on first (`ready`, run-box below), and, for a box
  *  that reaches the server's host list, where it finds its egress proxy (`egress`, box-egress.ts). */
-export type RunBoxes = BoxProvider & { ready?: BoxReady; egress?: BoxEgress };
+export type RunBoxes = BoxProvider & { ready?: BoxReady; egress?: BoxEgress; net?: string };
 
 /** The provider runs' boxes come from: under `--faux` with a faux box, its module's; else Docker on this machine, run as
  *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's, within the
@@ -183,7 +188,7 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
     ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true }),
     ready: (context, note) => awaitImage(root, image, context, note),
     // Where the proxy runs: the one line that picks it (box-egress.ts BoxEgress).
-    ...(allow === "none" ? {} : { egress: hostEgress(allow, env, egressLog) }),
+    ...(allow === "none" ? {} : { egress: hostEgress(allow, env, egressLog), net: netLabelOf(allow) }),
   };
 }
 
@@ -336,6 +341,9 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
   } catch (error) {
     throw new Error(`the run's box could not have its network: ${(error as Error).message}`);
   }
+  // A box a process before this one made with another network (none, or another list: the server's setting changed
+  // since) is made again: its mounts and environment are fixed at its create. Its work/ is this machine's, bound.
+  await destroyListed(boxes, { [RUN_LABEL]: run.id }, (labels) => labels[NET_LABEL] !== boxes.net, context);
   const found = await attachRunBox(boxes, run.id, context);
   if (found) {
     if (egress) await startRelay(found, egress.socket, context, note);
@@ -354,7 +362,7 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
   const spec: BoxSpec = {
     env: egress ? { ...BOX_ENV, ...PROXY_ENV } : BOX_ENV, workspace: agentWorkDir(run.dir, run.place),
     mounts: [...(await boxMounts(run.root, run.dir, run.place)), ...(egress ? [egress.mount] : [])],
-    labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
+    labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run", ...(boxes.net ? { [NET_LABEL]: boxes.net } : {}) }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
   };
   const made = await boxes.create(spec, context);
   if (!made.ok) {
@@ -366,18 +374,19 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
   return { box: made.value, made: true };
 }
 
-/** The box's relay to its proxy's `socket` (box-egress.ts forwarder), started in the background; an image with no socat
- *  leaves the box with no network, and the run's timeline says so (`note`). */
+/** The box's relay to its proxy's `socket` (box-egress.ts forwarder), started in the background and answered once it
+ *  listens. One that cannot start (an image with no socat or setsid, or a relay not listening in time) leaves the box with
+ *  no network, nothing listening on its proxy port, and the run's timeline says why (`note`). */
 async function startRelay(box: Box, socket: string, context: Context, note: (summary: string) => Promise<void> | void): Promise<void> {
   const started = await box.exec(forwarderStart(socket), undefined, context);
   if (!started.ok) throw new Error(`the run's box could not start its network relay: ${started.error.message}`);
-  const drain = async (stream: AsyncIterable<Uint8Array>) => {
-    for await (const chunk of stream) void chunk;
+  let said = "";
+  const drain = async (stream: AsyncIterable<Uint8Array>, keep: boolean) => {
+    for await (const chunk of stream) if (keep && said.length < 1000) said += new TextDecoder().decode(chunk);
   };
-  const [ended] = await Promise.all([started.value.wait(), drain(started.value.stdout), drain(started.value.stderr)]);
+  const [ended] = await Promise.all([started.value.wait(), drain(started.value.stdout, false), drain(started.value.stderr, true)]);
   if (!ended.ok) throw new Error(`the run's box could not start its network relay: ${ended.error.message}`);
-  if (ended.value === 127) await Promise.resolve(note(NO_SOCAT)).catch(() => undefined);
-  else if (ended.value !== 0) throw new Error(`the run's box could not start its network relay (exit ${ended.value})`);
+  if (ended.value !== 0) await Promise.resolve(note(relayFailed(ended.value, said))).catch(() => undefined);
 }
 
 /** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's

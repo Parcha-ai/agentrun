@@ -24,8 +24,10 @@ export const EGRESS_MOUNT = "/run/agentrun/egress";
 export const EGRESS_SOCKET = "egress.sock";
 /** The box's loopback port socat relays to the socket. */
 export const EGRESS_PORT = 3128;
-/** The proxy's address in the box: EGRESS_PORT on its loopback (written out, for the key gate's reading). */
-const PROXY_URL = "http://127.0.0.1:3128"; // key-gate: loopback-rule the box own proxy port inside the box
+/** The box's own loopback, where its relay listens: never a service of this machine's. */
+const BOX_LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the box own loopback where its relay listens
+/** The proxy's address in the box: EGRESS_PORT on its loopback. */
+const PROXY_URL = `http://${BOX_LOOPBACK}:${EGRESS_PORT}`;
 const NO_PROXY = "localhost,127.0.0.1,::1"; // key-gate: loopback-rule the box own loopback names the proxy leaves out
 /** What a box with a list adds to its fixed environment (run-box.ts BOX_ENV): constants, no user, no password. */
 export const PROXY_ENV: Readonly<Record<string, string>> = Object.freeze({ HTTP_PROXY: PROXY_URL, HTTPS_PROXY: PROXY_URL, http_proxy: PROXY_URL, https_proxy: PROXY_URL, NO_PROXY, no_proxy: NO_PROXY });
@@ -33,10 +35,31 @@ export const PROXY_ENV: Readonly<Record<string, string>> = Object.freeze({ HTTP_
  *  or found): a second one finds the port taken and exits. Each connection opens the socket by its path, so a proxy
  *  started again is reached with no new relay. */
 export const forwarder = (socket: string = EGRESS_SOCKET): string[] => ["socat", `TCP-LISTEN:${EGRESS_PORT},bind=127.0.0.1,reuseaddr,fork`, `UNIX-CONNECT:${EGRESS_MOUNT}/${socket}`]; // key-gate: loopback-rule the box own proxy port inside the box
-/** The relay's start, in the box: exit 127 when the image has no socat. */
-export const forwarderStart = (socket: string = EGRESS_SOCKET): string[] => ["sh", "-c", `command -v socat >/dev/null 2>&1 || exit 127; setsid ${forwarder(socket).join(" ")} </dev/null >/dev/null 2>&1 &`];
-/** The timeline row of a box whose image has no socat. */
-export const NO_SOCAT = `This box's image has no socat, so it has no network. Add socat to the image, or set AGENTRUN_BOX_ALLOW=none to silence this.`;
+/** How long the relay has to listen once started, in tenths of a second. */
+const RELAY_WAIT_TENTHS = 30;
+/** EGRESS_PORT on the box's loopback as /proc/net/tcp writes a listening socket: address and port in hex, state 0A. */
+const LISTENING = ` 0100007F:${EGRESS_PORT.toString(16).toUpperCase().padStart(4, "0")} 00000000:0000 0A `;
+/** The relay's start, in the box, answered once it listens: exit 127 when the image has no socat, 126 when it has no
+ *  setsid, and 124 when the relay is not listening within 3 s (its own error, if it gave one, on stderr). A relay a
+ *  process before this one started still listens, so a second start finds the port taken and answers at once. */
+export const forwarderStart = (socket: string = EGRESS_SOCKET): string[] => ["sh", "-c", [
+  "command -v socat >/dev/null 2>&1 || exit 127",
+  "command -v setsid >/dev/null 2>&1 || exit 126",
+  `listening() { grep -q '${LISTENING}' /proc/net/tcp 2>/dev/null; }`,
+  "listening && exit 0",
+  `log=$(mktemp); setsid ${forwarder(socket).join(" ")} </dev/null >/dev/null 2>"$log" &`,
+  `i=0; while [ "$i" -lt ${RELAY_WAIT_TENTHS} ]; do listening && { rm -f "$log"; exit 0; }; i=$((i + 1)); sleep 0.1; done`,
+  `head -c 300 "$log" >&2; rm -f "$log"; exit 124`,
+].join("; ")];
+/** The timeline row of a box whose relay could not start, by the start's exit (forwarderStart): the box keeps no network. */
+export function relayFailed(code: number, said: string): string {
+  if (code === 127) return "This box's image has no socat, so it has no network. Add socat to the image, or set AGENTRUN_BOX_ALLOW=none to silence this.";
+  if (code === 126) return "This box's image has no setsid, so it has no network. Add util-linux's setsid to the image, or set AGENTRUN_BOX_ALLOW=none to silence this.";
+  const why = said.trim().replace(/[\u0000-\u001f]+/g, " ").slice(0, 200);
+  return `This box's network relay did not start within 3 s (${code === 124 ? why || "it was not listening" : `exit ${code}`}), so it has no network.`;
+}
+/** The row for an image with no socat (relayFailed 127). */
+export const NO_SOCAT = relayFailed(127, "");
 /** What a refusal of a host off the list says to do, after its words. */
 export const ALLOW_HINT = `use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW`;
 /** Each run's proxy: connections open at once, and in all. */
