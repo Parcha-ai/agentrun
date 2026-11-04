@@ -287,3 +287,27 @@ test("a pi run's model finds, reads and runs a monid endpoint through monid_disc
   db.close();
   assert.deepEqual(paid.map((entry) => [entry.kind, entry.data.heldUsd ?? entry.data.usd]), [["agentrun.tool_started", 0.003], ["agentrun.tool_cost", 0.003]]);
 });
+
+test("a pi run cancelled while its monid.run is under way still settles the call: its charge is booked, so the run's cost stays known", { timeout: 90_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, data } = await serve(t, { fauxMonid: FAUX_MONID });
+  assert.equal((await api("POST", "/agents", agent("stopped-monid", { tools: ["monid.run"] }))).status, 201);
+  const run = await api("POST", "/agents/stopped-monid/runs", { input: { content: "Run monid's /slow." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const id = run.body.run_id;
+  for (const end = Date.now() + 30_000; !(await readFile(log, "utf8").catch(() => "")).includes('"path":"/v1/run"'); ) {
+    assert.ok(Date.now() < end, "the monid call was sent");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok((await api("POST", `/runs/${id}/cancel`, {})).status < 300);
+  await follow(api, id, ["cancelled", "failed", "completed"], { deadlineMs: 60_000 });
+  let settled = [];
+  for (const end = Date.now() + 15_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
+    settled = entriesOf(data, id, "agentrun.tool_cost");
+    if (settled.length) break;
+  }
+  assert.equal(entriesOf(data, id, "agentrun.tool_started").length, 1, "marked before it was sent");
+  assert.deepEqual(settled.map((entry) => entry.data.tool), ["monid.run"], "settled though its turn was stopped");
+  assert.notEqual((await api("GET", `/runs/${id}`)).body.cost.usd, null, "the run's cost is known");
+});
