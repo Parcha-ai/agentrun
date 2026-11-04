@@ -83,3 +83,15 @@ describe("LearningChips", () => {
     expect(html).not.toContain("<a ");
   });
 });
+
+describe("LearningChips, skills and workflows", () => {
+  it("says the skill and the workflow a run learned, and one that waits for the OK", () => {
+    const html = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, skills: [{ file: "skills/find-policies/SKILL.md", name: "find-policies" }], workflows: [{ file: "workflows/check-refunds/workflow.json", name: "check-refunds" }] } as Run["learning"]), link: true }));
+    expect(text(html)).toContain("Learned 1 skill");
+    expect(text(html)).toContain("Learned 1 workflow");
+    expect(html).toContain('href="#/agents/refunds/learning"');
+    const waits = renderToStaticMarkup(createElement(LearningChips, { run: run({ state: "merged", reason: null, skills: [{ file: "skills/find-policies/SKILL.md", name: "find-policies", pending: true }] } as Run["learning"]) }));
+    expect(text(waits)).toContain("1 skill waits for your OK");
+    expect(text(waits)).not.toContain("Learned 1 skill");
+  });
+});

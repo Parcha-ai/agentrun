@@ -4,6 +4,7 @@
 // pipe went. "Hold." holds the turn until it is stopped.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { keep } from "./custody-report.mjs";
 
 const secrets = await import(new URL("../../dist/secrets.js", import.meta.url).href);
 const digest = (value) => (value === undefined ? "none" : createHash("sha256").update(value).digest("hex").slice(0, 16));
@@ -14,12 +15,14 @@ const namesSeen = (options = {}) => spawnSync("sh", ["-c", "env"], { encoding: "
 export default function reply(context, faux) {
   const last = textOf(context.messages.filter((m) => m.role === "user").at(-1));
   if (last.includes("Hold.")) return new Promise((resolve) => faux.signal?.addEventListener("abort", () => resolve(faux.message("", { stopReason: "aborted" })), { once: true }));
-  return faux.message(JSON.stringify({
+  const report = {
     handed: Object.fromEntries(secrets.SECRET_NAMES.map((name) => [name, digest(secrets.secret(name))])),
     inEnv: secrets.SECRET_NAMES.filter((name) => name in process.env),
     env: Object.keys(process.env),
     child: namesSeen(),
     toolChild: namesSeen({ env: secrets.withSecrets(process.env) }),
     pipe: secrets.handoverState() ?? null,
-  }));
+  };
+  keep(report);
+  return faux.message(JSON.stringify(report));
 }

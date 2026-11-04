@@ -28,6 +28,24 @@ describe("Timeline, a tool result", () => {
   });
 });
 
+// QA: a browser step read "run" or "snapshot" above what it did: the browser tool's wire name. It reads as the timeline
+// library names the tool (the name a run's tool counts show), and every other tool keeps its own name.
+describe("Timeline, a browser step", () => {
+  it("is labelled with what the browser tool does, not its wire name", () => {
+    const acted = html(row({ kind: "tool_use", tool_name: "run", tool_status: "success", summary: "Opened example.com" }));
+    expect(acted).toMatch(/>Open or act on a page in the browser</);
+    expect(acted).not.toMatch(/>run</);
+    const looked = html(row({ kind: "tool_result", tool_name: "snapshot", tool_status: "success", summary: "Looked at the page structure" }));
+    expect(looked).toMatch(/>Look at the page structure</);
+    expect(looked).not.toMatch(/>snapshot</);
+    expect(html(row({ kind: "tool_use", tool_name: "browser_read", summary: "Read the page" }))).toMatch(/>Read the browser&#x27;s page</);
+  });
+  it("leaves every other tool's name as it is", () => {
+    expect(html(row({ kind: "tool_use", tool_name: "write", summary: "Wrote notes.md" }))).toMatch(/>write</);
+    expect(html(row({ kind: "tool_use", tool_name: "web_fetch", summary: "Fetched example.com" }))).toMatch(/>web_fetch</);
+  });
+});
+
 describe("Timeline, a decision", () => {
   it("is labelled Decision with its own icon, and opens to its sources and refused questions", () => {
     const text = "Registry https://example.com/coi\nrefused: is_sanctioned";
