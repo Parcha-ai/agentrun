@@ -117,7 +117,8 @@ for (const [tools, other] of [[["browser", "read"], false], [["browser", "web_fe
     assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools } })).status, 201);
     const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    const { rows } = await follow(api, started.body.run_id, ["completed"]);
+    // A refused create may still land at the provider, so its run settles once the create deadline (60 s) passed.
+    const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 150_000 });
     const failed = rows.find((row) => row.kind === "tool_result" && row.tool_name === "snapshot");
     assert.equal(failed?.tool_status, "failed", JSON.stringify(rows));
     const said = (await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer;
