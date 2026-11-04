@@ -14,6 +14,10 @@ export const LONG_ANSWER = `${"The long answer goes on. ".repeat(119)}The end.`;
  *  admitted: the faux adapter asks whether an action is a cut right after the request's beforeRequest has passed (and
  *  asks "hang" and "halt" before it), so the file exists only once the session holds the request. */
 const cutSignalled = (signal) => new Proxy({ cut: true }, { has(target, key) { if (key === "cut") writeFileSync(signal, ""); return key in target; } });
+/** The faux harness's `{ hang: true }` (the turn holds with no request open, until it is aborted) that writes `signal`
+ *  once the turn reaches it: the faux adapter asks whether an action is a hang first, after the request before it has
+ *  been booked and has shown its text. */
+const hangSignalled = (signal) => new Proxy({ hang: true }, { has(target, key) { if (key === "hang") writeFileSync(signal, ""); return key in target; } });
 
 export function script(spec) {
   const text = spec.system.join("\n");
@@ -28,12 +32,17 @@ export function script(spec) {
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   // One answer that asks for two tools, as a model writing two files in one turn does, then the closing answer.
   if (/Write two files in one answer\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001 }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
-  // As the Claude CLI sends a path (F25): absolute, under its working directory, which is the run's work/ (the run's
+  // Reads outside the run: a path up out of its directory, and an absolute one elsewhere, both refused.
+  if (/Read outside the run\./.test(text)) return [{ call: "read", args: { path: "../../.token" }, usd: 0.001 }, { call: "read", args: { path: "/etc/hostname" }, usd: 0.001 }, { say: "Read none.", usd: 0.001 }];
+  // As the Claude CLI sends a path: absolute, under its working directory, which is the run's work/ (the run's
   // process runs with --dir <run dir>); then one outside the run's directory, which the tool refuses.
   if (/Write by the absolute path\./.test(text)) {
     const runDir = process.argv[process.argv.indexOf("--dir") + 1];
     return [{ call: "write", args: { path: `${runDir}/work/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
   }
+  // The same two calls, each ending before its request is paid, as with Claude Code, whose cost comes in after its
+  // response: each result is stored before the answer that holds its call.
+  if (/Write two files while answering\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001, bookAfter: true }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   // Reads a file the run was given (an upload, copied into its inputs/), then says so.
   const upload = /Read the upload (\S+)\./.exec(text)?.[1];
@@ -66,6 +75,11 @@ export function script(spec) {
   // F2: a request admitted (the signal file says so) and never answered: the turn holds until it is cancelled.
   const unanswered = /Hold a request unanswered \(signal (\S+)\)\./.exec(text)?.[1];
   if (unanswered) return [cutSignalled(unanswered)];
+  // An answer, then one more request that says nothing (at $0.001, or at the price named), and the turn holds with no
+  // request open until it is cancelled. The second request's start writes the answer's entry, so the answer's row is in
+  // while the turn works; the second request's entry waits for the turn's end.
+  const answered = /Answer, then hold the turn(?: after a request at \$(\S+))? \(signal (\S+)\)\./.exec(text);
+  if (answered) return [{ say: "Done.", usd: 0.001 }, { say: "", usd: answered[1] === undefined ? 0.001 : Number(answered[1]) }, hangSignalled(answered[2])];
   // The same, after an answer past the store's 2,000-character summary: the run's answer is the whole of it.
   if (/The second turn answers nothing, after a long answer\./.test(text)) return [{ say: LONG_ANSWER, usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
   if (/The second turn answers nothing\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { end: true, usd: 0.001 }];
