@@ -213,6 +213,25 @@ test("demo: run from npx, a missing Codex says the npx line that starts this ser
   assert.equal(startReason(new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.")), "codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.", "a reason a setting fixes: as it is");
 });
 
+test("an npx line for another harness keeps OpenCode's package when it is here, as it keeps theirs, so following one hint never takes OpenCode away", () => {
+  const opencodeHere = (name) => (name === "opencode-ai" ? "1.19.5" : undefined);
+  assert.equal(adapters.npxLine?.("@openai/codex@0.164.0", {}, opencodeHere), `npx -p @parcha/agentrun-serve@${SERVE} -p opencode-ai@1.19.5 -p @openai/codex@0.164.0 agentrun-serve`, "codex's line");
+  assert.equal(adapters.npxLine?.("@anthropic-ai/claude-agent-sdk@0.3.286", {}, opencodeHere), `npx -p @parcha/agentrun-serve@${SERVE} -p opencode-ai@1.19.5 -p @anthropic-ai/claude-agent-sdk@0.3.286 agentrun-serve`, "claude-agent's line");
+});
+
+test("demo: run from npx, a missing OpenCode says the npx line that starts this same AgentRun with it, on this server's store, keeping the other harnesses here", async () => {
+  const opencode = await import("../dist/harness-opencode/index.js");
+  const absent = async () => ({ ...opencode, verifyOpenCode: () => { throw new opencode.OpenCodeNotInstalled("no binary for this platform"); } });
+  const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
+  const store = `${HOME_DIR}/store`;
+  const reason = await adapters.opencodeOf({ AGENTRUN_SERVE_DATA: store }, needs, absent, true).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
+  const kept = ["@anthropic-ai/claude-agent-sdk", "@openai/codex"].flatMap((name) => {
+    const version = adapters.installedHere?.(name);
+    return version ? [`-p ${name}@${version}`] : [];
+  });
+  assert.ok(reason.endsWith(`; restart AgentRun with it: npx -p @parcha/agentrun-serve@${SERVE} ${[...kept, "-p opencode-ai@1.19.5"].join(" ")} agentrun-serve --data ${store}`), reason);
+});
+
 test("demo: a server started by npx @parcha/agentrun hints that same command, one line for a Claude Code user: the SDK beside it, on ~/.agentrun", () => {
   const sdk = "@anthropic-ai/claude-agent-sdk@0.3.286";
   const env = home({ AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.3.0", AGENTRUN_SERVE_DATA: `${HOME_DIR}/.agentrun` });
