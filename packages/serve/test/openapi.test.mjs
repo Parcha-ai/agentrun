@@ -395,6 +395,13 @@ test("an agent's home is its own addition, home/1: its routes and capabilities.h
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Error" }, forbidden), []);
 });
 
+test("a tool key's save documents every status it answers, 503 unavailable among them: a save still checking its key when the server closes keeps nothing", async (t) => {
+  const { doc } = await served(t);
+  const save = doc.paths["/settings/tool-keys/{key_id}"].put;
+  assert.deepEqual(Object.keys(save.responses).sort(), ["204", "400", "401", "409", "415", "422", "429", "500", "503"]);
+  assert.equal(save.responses["503"]?.$ref, "#/components/responses/Unavailable");
+});
+
 test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
   const { doc } = await served(t);
   // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
