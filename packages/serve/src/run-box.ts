@@ -2,8 +2,9 @@
 // is the record (a bound box's read, write and edit run on this machine: bound-files.ts). A run's process that starts
 // again finds it by that label and first kills the commands the process before it left running. Serve destroys it at
 // every settle (a cancel included) and at archive, and its start sweeps the boxes of runs that have ended. A box gets the
-// run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it) and no network.
-// pi-transport is an optional peer of this package: it is loaded only for a run whose place is a box.
+// run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it), no network,
+// and limits on its CPUs, memory and processes. pi-transport is an optional peer of this package: it is loaded only for a
+// run whose place is a box.
 //
 // Docker's box is made here, in the run's process, as this server's user, with work/ bound. A Daytona box is remote: it
 // cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), seeds
@@ -37,6 +38,53 @@ export const BOX_LIFETIME_MS = 24 * 60 * 60_000;
 export const BASH_TIMEOUT_MS = 300_000;
 /** The image a Docker box starts from (box-image.ts, where the server makes it ready). */
 export { DEFAULT_DOCKER_IMAGE, DOCKER_IMAGE_ENV } from "./box-image.js";
+/** The settings that bound a Docker box; unset, their defaults: enough for a build, and safe on a laptop, where one run's
+ *  runaway build or fork bomb would otherwise starve everything else. */
+export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
+export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
+export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
+/** 2 CPUs' time: a CFS quota (pi-transport's Docker provider), which holds whatever CPU count Docker's VM has. */
+export const DEFAULT_BOX_CPUS = 2;
+/** 4 GiB, swap included (--memory-swap the same). */
+export const DEFAULT_BOX_MEMORY = "4g";
+/** Processes and threads at once. */
+export const DEFAULT_BOX_PIDS = 1024;
+
+/** A Docker box's limits, as pi-transport's Docker provider takes them. */
+export type BoxLimits = { cpus: number; memory: string; pidsLimit: number };
+
+/** The fewest CPUs a quota gives: the kernel's least quota is 1 ms of each 100 ms period. A quota is also a whole number of
+ *  µs, so a count too large for one (or a long string of digits, which reads as Infinity) is refused too. */
+const MIN_BOX_CPUS = 0.01;
+const MIB = 1024 * 1024;
+/** A size's units as Docker reads them, each 1024 of the one before. */
+const SIZE_UNITS: Readonly<Record<string, number>> = { b: 1, k: 1024, m: MIB, g: 1024 * MIB };
+/** The least memory Docker gives a container. */
+const MIN_BOX_MEMORY = 6 * MIB;
+/** The most processes a cgroup may be given (the kernel's PID_MAX_LIMIT); above it, every create fails. */
+const MAX_BOX_PIDS = 4_194_304;
+
+/** A Docker box's limits from `env`: each setting's value, or its default when unset or empty. A value that is not one, or
+ *  that every create would fail on (less than a 1 ms quota, less memory than Docker gives, more processes than the kernel
+ *  allows), throws, naming its setting: the start checks them (startServe), so no run meets one. */
+export function boxLimitsOf(env: NodeJS.ProcessEnv): BoxLimits {
+  const read = (name: string, what: string, takes: (value: string) => boolean): string | undefined => {
+    const value = env[name];
+    if (!value) return undefined;
+    if (!takes(value)) throw new Error(`${name} is ${what}; it is ${JSON.stringify(value)}`);
+    return value;
+  };
+  const cpus = read(BOX_CPUS_ENV, "a number of CPUs of at least 0.01, such as 2 or 1.5", (value) => /^\d+(\.\d+)?$/.test(value) && Number(value) >= MIN_BOX_CPUS && Number.isSafeInteger(Math.round(Number(value) * 100_000)));
+  const memory = read(BOX_MEMORY_ENV, "a size of at least 6m with its unit (b, k, m or g), such as 512m or 4g", (value) => {
+    const size = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(value);
+    // Its bytes as Docker reads them, and pi-transport's Docker provider: the number times the unit, the fraction dropped.
+    const bytes = size ? Math.floor(Number(size[1]) * SIZE_UNITS[size[2].toLowerCase()]) : 0;
+    return Number.isSafeInteger(bytes) && bytes >= MIN_BOX_MEMORY;
+  });
+  const pids = read(BOX_PIDS_ENV, "a whole number from 1 to 4194304, such as 1024", (value) => /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= MAX_BOX_PIDS);
+  return { cpus: cpus === undefined ? DEFAULT_BOX_CPUS : Number(cpus), memory: memory ?? DEFAULT_BOX_MEMORY, pidsLimit: pids === undefined ? DEFAULT_BOX_PIDS : Number(pids) };
+}
+
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
@@ -76,8 +124,9 @@ export async function boxMounts(root: string, runDir: string, place: Place): Pro
 export type RunBoxes = BoxProvider & { ready?: BoxReady };
 
 /** The provider runs' boxes come from: under `--faux` with a faux box, its module's; else Docker on this machine, run as
- *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's, whose
- *  create first waits while the server pulls its image (box-image.ts). */
+ *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's, within the
+ *  box limits the server's settings give (boxLimitsOf), and whose create first waits while the server pulls its image
+ *  (box-image.ts). */
 export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root: string): Promise<RunBoxes> {
   const faux = env[FAUX_ENV] ? env[FAUX_BOX_ENV] : undefined;
   if (faux) return fauxBoxes(faux, root);
@@ -87,7 +136,7 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
   // With no capability and no way to gain one (no program in a run's box changes user): as root (serve run as uid 0) a
   // box could otherwise make a device node in work/.
   const image = boxImageOf(env);
-  return { ...dockerBoxes({ image, ...(user ? { user } : {}), dropCapabilities: true }), ready: (context, note) => awaitImage(root, image, context, note) };
+  return { ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true }), ready: (context, note) => awaitImage(root, image, context, note) };
 }
 
 /** What a run's box create waits on first, `note` taking its one timeline row: the server's pull of the Docker image

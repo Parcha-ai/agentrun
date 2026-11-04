@@ -70,6 +70,17 @@ export function openRouterOnly(harness: "claude-agent" | "codex" | "opencode", e
   return harness === "claude-agent" ? !env.ANTHROPIC_BASE_URL && !env.ANTHROPIC_API_KEY : !env.AGENT_MODEL_BASE_URL && !env.OPENAI_API_KEY;
 }
 
+/** Whether `harness`'s model requests for `model` (as named, `provider/model-id`; none, the host's for the harness) go
+ *  through OpenRouter: a model named on it (`openrouter/<vendor>/...`), or the harness's vendor reached only through it
+ *  (openRouterOnly). The route claudeProvider and codexProvider take (adapters.ts); a gateway (AGENT_MODEL_BASE_URL)
+ *  comes first for codex. On it a harness's own search does not run: OpenRouter runs no OpenAI hosted web_search for
+ *  Codex and no Anthropic server search for Claude, and its answers carry no count of searches to price. */
+export function viaOpenRouter(env: NodeJS.ProcessEnv, harness: string, model?: string): boolean {
+  if (harness === "codex") return !env.AGENT_MODEL_BASE_URL && (Boolean(model?.startsWith("openrouter/openai/")) || openRouterOnly("codex", env));
+  if (harness === "claude-agent") return Boolean(model?.startsWith("openrouter/anthropic/")) || openRouterOnly("claude-agent", env);
+  return false;
+}
+
 /** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
  *  starts (MODEL_KEYS' fields), OpenRouter's named first, as its one key runs every harness. The order a default is
  *  taken in is MODEL_KEYS' own. */
@@ -138,14 +149,19 @@ export function nodeTiers(nodes: readonly Record<string, unknown>[]): Tier[] {
   return TIERS.filter((tier) => tiers.has(tier));
 }
 
+/** A `{dot.path}` the DSL fills in from the state when the node runs. */
+const TEMPLATE = /\{[a-zA-Z0-9_.$]+\}/;
+
 /** `tiers` with those a workflow's `llm` calls name (`args.tier`, else default) added: an `llm` call completes on the
- *  model of its tier, as a model node does. */
+ *  model of its tier, as a model node does. A tier the state fills in when the call runs (`"{requestedTier}"`, or args
+ *  filled in whole) may be any of the three, so it adds all three. */
 export function llmTiers(nodes: readonly Record<string, unknown>[], tiers: readonly Tier[]): Tier[] {
   const all = new Set(tiers);
   for (const node of nodes) {
     if (node.node !== "call" || node.via !== "tool" || node.tool !== "llm") continue;
-    const tier = (node.args as { tier?: unknown } | undefined)?.tier;
-    all.add((TIERS as readonly unknown[]).includes(tier) ? (tier as Tier) : "default");
+    const tier = typeof node.args === "string" ? node.args : (node.args as { tier?: unknown } | undefined)?.tier;
+    if (typeof tier === "string" && TEMPLATE.test(tier)) TIERS.forEach((each) => all.add(each));
+    else all.add((TIERS as readonly unknown[]).includes(tier) ? (tier as Tier) : "default");
   }
   return TIERS.filter((tier) => all.has(tier));
 }

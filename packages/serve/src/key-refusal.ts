@@ -69,6 +69,25 @@ export function redacted(text: string, secrets: readonly string[]): string {
   return keep <= 0 ? "[redacted]" : `${out.slice(0, keep)}...`;
 }
 
+/** What a thinking or text block may show while it streams (pi-durable-agent's `redactLive`): what has streamed so far,
+ *  redacted by the same rule as redacted(), less a fixed tail held back until the block ends, when its settled row
+ *  replaces this one whole. A key whose head has streamed but not its tail cannot be found by any redactor, and a key
+ *  ending inside the tail would show its head. So the tail is the most a held value takes in its widest form (6 times it,
+ *  plus 16), and only output that comes from raw text before it is kept: as in redacted(), each replacement moves what
+ *  follows it left by at most S characters in all, so output[0, visible - S) comes from raw text before `visible`, where
+ *  every key that starts ends inside what was read and was found whole, a key split by a line break among them. At most
+ *  SHOWN characters are read past the tail, so a long stream costs no more than a short one. */
+export function redactedLive(text: string, secrets: readonly string[]): string {
+  const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
+  const visible = Math.min(SHOWN, text.length - hold);
+  if (visible <= 0) return "";
+  const window = Math.min(text.length, visible + hold);
+  const out = redactSecrets(text.slice(0, window), secrets, window * 4);
+  const shift = window - out.length + 2 * (out.split("[redacted]").length - 1);
+  const keep = visible - shift;
+  return keep <= 0 ? "" : out.slice(0, keep);
+}
+
 /** A provider's 401 as each harness puts it, at the start of the run's error:
  *  - pi-ai: `401: <body>` (its OpenAI-shaped APIs, OpenRouter's chat completions among them), `401 <body>` (Anthropic's
  *    SDK), or `<provider> API error (401): <body>` (its Responses API, serve's gateway's `agent-model API error (401): …`);
