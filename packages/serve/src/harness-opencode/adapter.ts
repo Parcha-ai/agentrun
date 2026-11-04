@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { OPENCODE_VERSION } from "./binary.js";
 import { openCodeHarness, type DriveControl } from "./harness.js";
@@ -197,7 +197,9 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
       const open = () => openDrive({ writer, signal: io.signal, live });
       let drive = await open();
       const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+      // A turn is open while the session holds input no turn placed, or a turn with no end (its recovery note).
+      const holdsTurn = (folded: typeof initial) => Boolean(recoveryNote(folded)) || pendingSubmissions(folded).length > 0;
+      let state: AdapterSession["state"] = holdsTurn(initial)
         ? "open_turn"
         : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
 
@@ -243,16 +245,28 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
           await ready();
           void run();
         },
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("opencode: there is no turn to settle");
+          await ready();
+          // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
+          // and the next turn carries no recovery of this one. Nothing is sent, and OpenCode is not started.
+          await settleTurn(drive);
+          state = "idle";
+        },
         async turnEnd() {
           if (!running) throw new Error("opencode: no turn is in flight");
           return running;
         },
         async interrupt() {
           // OpenCode ends the turn itself, and its end is in the log: the next message is a plain turn. If it does not
-          // within INTERRUPT_MS, the drive is halted, and the next turn is a recovery.
+          // within INTERRUPT_MS, the drive is halted, and the turn stays open: its host settles it, or the next process
+          // recovers it.
           const stopped = control ? await control.interrupt(INTERRUPT_MS).catch(() => false) : false;
           if (!stopped) drive.halt?.(new SessionHalt("interrupted"));
           await running?.catch(() => {});
+          // A turn the halt stopped is still open in the session (a halt writes no end, and a prompt it stopped before the
+          // drive placed it is still pending): open_turn, so a host that is done with it settles it here.
+          if (holdsTurn(drive.state())) state = "open_turn";
         },
         async close() {
           if (closed) return;
