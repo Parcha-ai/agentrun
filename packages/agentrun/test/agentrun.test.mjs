@@ -108,7 +108,7 @@ test("the server is this package's one dependency, at the exact version of the s
   assert.equal(start.OWN_SPEC, `@parcha/agentrun@${VERSION}`, "what the server is told started it, so its hints name this command");
 });
 
-// The command passes its arguments through: the server's CLI picks the port, the model a key gives and opens the browser.
+// The command passes its arguments through: the server's CLI picks the port and opens the browser.
 // A stand-in server installed beside a copy of this package records what it was started with.
 async function throughStub(t, args, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
@@ -159,25 +159,6 @@ test("with the server missing from beside it, the command says so in one line an
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, part), { recursive: true });
   const run = spawnSync(process.execPath, [join(dir, "bin", "agentrun.mjs"), "--no-open"], { encoding: "utf8", env: bare(t).env });
   assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun's server (@parcha/agentrun-serve) is not installed beside this command; run it as npx @parcha/agentrun@${VERSION}.\n`]);
-});
-
-test("demo: with a provider key and no model, the server the command starts runs a current model of that provider", { timeout: 120_000 }, async (t) => {
-  const { env } = bare(t);
-  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, ANTHROPIC_API_KEY: "not-a-secret" }, stdio: ["ignore", "pipe", "pipe"] });
-  const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(async () => { child.kill("SIGTERM"); await exited; });
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !out.includes("\n"); i++) {
-    assert.ok(i < 1000 && child.exitCode === null, `the bin printed its line: ${out}${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(out)?.[1];
-  assert.ok(base, out);
-  const caps = await (await fetch(`${base}/v2/capabilities`)).json();
-  assert.equal(caps.models.default, "anthropic/claude-sonnet-5-5", "the server's own default for the key");
 });
 
 // A stub server: its output as the server prints it, a line at a time, then it waits. The command takes the URL of the first

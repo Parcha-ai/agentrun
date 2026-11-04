@@ -9,7 +9,6 @@ import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { defaultData } from "./files.js";
 import { canOpen } from "./host.js";
-import { keyModel } from "./model.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
@@ -40,9 +39,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
-keys from the environment (with no AGENT_MODEL and no gateway, the first key of ANTHROPIC_API_KEY, OPENAI_API_KEY and
-OPENROUTER_API_KEY sets AGENT_MODEL to a current model of that provider), or, with AGENT_MODEL_BASE_URL, by that one
-OpenAI Responses gateway (AGENT_MODEL_API_KEY when it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
+keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
+it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
@@ -127,9 +125,6 @@ if (publicName) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
-// A provider key and no model: the server runs a current model of that provider, which every run and capabilities read.
-const keyed = keyModel(process.env, (name) => Boolean(secret(name)));
-if (keyed) process.env.AGENT_MODEL = keyed;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
 const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";

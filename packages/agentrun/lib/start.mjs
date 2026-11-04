@@ -1,6 +1,6 @@
 // `npx @parcha/agentrun`: AgentRun Server on this machine. The server is this package's dependency at its exact version, so
 // npx installs the two together and this command always runs the server it was released with. The server's own CLI picks
-// the port, the model a provider key gives and whether to open the browser; this command passes its arguments through.
+// the port and whether to open the browser; this command passes its arguments through.
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";

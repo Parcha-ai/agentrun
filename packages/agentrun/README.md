@@ -17,10 +17,12 @@ pi runs every agent out of the box. The Claude Code and Codex harnesses need the
 one is missing, AgentRun says so with the one command to paste: `npx` with this package, the server and that harness's
 package at their versions, with `--data` naming the same store.
 
-With `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your environment and no `AGENT_MODEL`, the server
-runs a current model of that provider. Other commands are the server's: `npx @parcha/agentrun import` brings in your
-local Claude Code, Codex and pi sessions, and `npx @parcha/agentrun reset-password` clears the console's password.
-`--data DIR` and `--port N` change where it keeps its data and the port it takes.
+With no `AGENT_MODEL`, the server runs a current model of the first provider it has a key for, Anthropic, then OpenAI,
+then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your environment, or a key saved in
+the console's Settings → Model keys, which counts from the save on. Other commands are the server's:
+`npx @parcha/agentrun import` brings in your local Claude Code, Codex and pi sessions, and
+`npx @parcha/agentrun reset-password` clears the console's password. `--data DIR` and `--port N` change where it keeps
+its data and the port it takes.
 
 The TypeScript SDK for the hosted AgentRun API is published as `@parcha/agentrun` 0.2.x, from its own repository; this
 package starts with 0.3.0, so a dependency on `^0.2` keeps the SDK.

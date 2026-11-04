@@ -157,17 +157,6 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   return { model: { provider, modelId } };
 }
 
-/** The model a server started with no `AGENT_MODEL` and no gateway runs, from the first provider key it has: Anthropic's,
- *  then OpenAI's, then OpenRouter's. Each is in pi-ai's catalog. The server's CLI sets it (cli.ts), so every harness's
- *  default, as capabilities says it, follows from it. */
-export const KEY_MODELS: ReadonlyArray<readonly [string, string]> = [["ANTHROPIC_API_KEY", "anthropic/claude-sonnet-5-5"], ["OPENAI_API_KEY", "openai/gpt-6.1-sol"], ["OPENROUTER_API_KEY", "openrouter/anthropic/claude-sonnet-5.5"]];
-
-/** The model `AGENT_MODEL` defaults to here: none when it, or a gateway, is set, else KEY_MODELS's first whose key `has`. */
-export function keyModel(env: NodeJS.ProcessEnv, has: (name: string) => boolean): string | undefined {
-  if (env.AGENT_MODEL || env.AGENT_MODEL_BASE_URL) return undefined;
-  return KEY_MODELS.find(([key]) => has(key))?.[1];
-}
-
 /** A run's thinking level: its `effort`, else its revision's `thinking`, else the host's `AGENT_THINKING`, else medium.
  *  Never off. */
 export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThinkingLevel {

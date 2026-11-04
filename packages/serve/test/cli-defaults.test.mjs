@@ -1,14 +1,15 @@
 // What agentrun-serve picks when it is not told: the first free port from its default (found by listening, so a port
-// taken by another process at the same moment is passed over), the model a provider key gives when no AGENT_MODEL is
-// set, and, with --open, the browser on the console's address where there is one to open.
+// taken by another process at the same moment is passed over) and, with --open, the browser on the console's address
+// where there is one to open. Its default model is the server's (model.ts' hostModel), never one the CLI fixes at start.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import * as host from "../dist/host.js";
 import { startServe } from "../dist/index.js";
 import * as model from "../dist/model.js";
@@ -35,19 +36,6 @@ async function heldFirstFree(t, from = 7340) {
 }
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN", "CI", "DISPLAY", "WAYLAND_DISPLAY"];
 
-test("a provider key gives the server its model when none is set: the first of Anthropic, OpenAI and OpenRouter; a model or a gateway already set wins; each is in pi-ai's catalog", () => {
-  const has = (...keys) => (name) => keys.includes(name);
-  assert.equal(model.keyModel?.({}, has("OPENAI_API_KEY", "ANTHROPIC_API_KEY")), "anthropic/claude-sonnet-5-5");
-  assert.equal(model.keyModel?.({}, has("OPENAI_API_KEY")), "openai/gpt-6.1-sol");
-  assert.equal(model.keyModel?.({}, has("OPENROUTER_API_KEY")), "openrouter/anthropic/claude-sonnet-5.5");
-  assert.equal(model.keyModel?.({}, has()), undefined, "no key: no model");
-  assert.equal(model.keyModel?.({ AGENT_MODEL: "openai/gpt-5" }, has("ANTHROPIC_API_KEY")), undefined);
-  assert.equal(model.keyModel?.({ AGENT_MODEL_BASE_URL: "https://gateway.example/v1" }, has("OPENAI_API_KEY")), undefined);
-  const models = builtinModels({});
-  for (const [, ref] of model.KEY_MODELS ?? []) assert.ok(models.getModel(ref.slice(0, ref.indexOf("/")), ref.slice(ref.indexOf("/") + 1)), ref);
-  assert.equal(model.KEY_MODELS?.length, 3);
-});
-
 test("--open opens a browser unless in CI or on a Linux with no display", () => {
   assert.deepEqual([host.canOpen?.({}, "darwin"), host.canOpen?.({ CI: "1" }, "darwin"), host.canOpen?.({}, "linux"), host.canOpen?.({ DISPLAY: ":0" }, "linux"), host.canOpen?.({ WAYLAND_DISPLAY: "w" }, "freebsd")], [true, false, false, true, true]);
 });
@@ -73,13 +61,29 @@ async function serve(t, args, env = {}, data = undefined) {
   return { home, base: /AGENTRUN_BASE_URL=(\S+)\/v2/.exec(out)[1], out, stop };
 }
 
-test("demo: with no --port the server takes the first free port from its default, and a provider key with no model gives it one", { timeout: 120_000 }, async (t) => {
+test("demo: with no --port the server takes the first free port from its default", { timeout: 120_000 }, async (t) => {
   const busy = await heldFirstFree(t);
-  const { base } = await serve(t, [], { ANTHROPIC_API_KEY: "not-a-secret" });
+  const { base } = await serve(t, []);
   const port = Number(new URL(base).port);
   assert.ok(port > busy, `${port} passes over ${busy}, which is in use`);
-  const caps = await (await fetch(`${base}/v2/capabilities`)).json();
-  assert.equal(caps.models.default, "anthropic/claude-sonnet-5-5");
+});
+
+// The default model is the server's reading of its keys (model.ts' hostModel), never fixed at its start: a key saved in
+// the console after a start on another provider's key moves it to the first of MODEL_KEYS with a key.
+test("demo: started on an OpenAI key alone, pi's default model follows an Anthropic key saved in the console, with no restart", { timeout: 120_000 }, async (t) => {
+  // The Anthropic key's check (key-check.ts) answered on loopback: no network.
+  const provider = createHttpServer((req, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"data":[]}'));
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => provider.close(resolve)));
+  const token = randomBytes(24).toString("hex");
+  const env = { OPENAI_API_KEY: "not-a-secret", AGENTRUN_TOKEN: token, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ANTHROPIC_BASE_URL: `http://127.0.0.1:${provider.address().port}` };
+  const { base } = await serve(t, ["--port", "0"], env);
+  const api = (method, path, body) => fetch(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const piDefault = async () => (await (await api("GET", "/capabilities")).json()).harnesses.find((harness) => harness.id === "pi").default_model;
+  const firstKeyed = (keys) => model.MODEL_KEYS.find((row) => keys.includes(row.field)).model;
+  assert.equal(await piDefault(), firstKeyed(["OPENAI_API_KEY"]));
+  assert.equal((await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: "not-a-secret" } })).status, 204);
+  assert.equal(await piDefault(), firstKeyed(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]), "the saved key moves the default, with no restart");
 });
 
 test("demo: --open opens the console's address in the browser where there is a display, and never in CI; never a link with the token, even the one the banner prints", { timeout: 180_000 }, async (t) => {
