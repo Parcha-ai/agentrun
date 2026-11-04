@@ -1820,6 +1820,16 @@ export class Runs {
     return (durationMs(this.options.drainTimeout ?? DRAIN) ?? 30_000) + 1_000;
   }
 
+  /** What close() will wait on: the runs whose processes are left to finish their turn (those this server started, and
+   *  those it adopted), and the longest it can wait on them: a kill bound for the started ones, and one more for the
+   *  adopted ones, which it stops after them. */
+  stopping(): { runs: number; boundMs: number } {
+    const all = [...this.runs.values()];
+    const started = all.filter((run) => run.child).length;
+    const adopted = all.filter((run) => !run.child && run.orphan && alive(run.orphan)).length;
+    return { runs: started + adopted, boundMs: (started ? this.killAfterMs() : 0) + (adopted ? this.killAfterMs() : 0) };
+  }
+
   async close(): Promise<void> {
     this.closing = true;
     this.learning.close();

@@ -1,37 +1,36 @@
 import { writeFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { typesafeProvider } from "@earendil-works/pi-ai/providers/typesafe";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
-import { jevPlacer, type PlacementRecord } from "../src/place/placer.ts";
+import { jevClassifier, jevPlacer, type PlacementRecord } from "../src/place/placer.ts";
 import { type ReplayHeader, type ReplayLine, recordingClassifications } from "../src/testing/replay-classifier.ts";
 import { STEPS } from "./place-steps.ts";
 
 const context = BACKGROUND_CONTEXT;
 /**
- * Never more calls than this in one recording, and never more tokens: pi-ai's catalog has no price for TypeSafe (its
- * usage says 0), so the guard counts what is billed, not dollars.
+ * Never more calls than this in one recording, and never more tokens: pi-ai's catalog has no price for TypeSafe's own
+ * API (its usage says 0), so the guard counts what is billed, not dollars.
  */
 const MAX_CALLS = 50;
 const MAX_TOKENS = 40_000;
 
-// Needs TypeSafe's key, so it runs only when asked: `PI_TRANSPORT_LIVE_JEV=1`, with `TYPESAFE_API_KEY` set. With
-// `PI_TRANSPORT_REPLAY_OUT=<file>` it writes the replay set there.
+// Needs Jev's key, so it runs only when asked: `PI_TRANSPORT_LIVE_JEV=1`, with `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`
+// set (`jevClassifier` picks the route: TypeSafe's own API when both are). With `PI_TRANSPORT_REPLAY_OUT=<file>` it
+// writes the replay set there.
 if (process.env.PI_TRANSPORT_LIVE_JEV === "1") {
 	describe("the placer against Jev itself", () => {
 		it("decides every step of the replay set, each by jev or config, and records what Jev answered", async () => {
 			const lines: ReplayLine[] = [];
 			const models = createModels();
 			models.setProvider(typesafeProvider());
+			models.setProvider(openrouterProvider());
+			const jev = jevClassifier(process.env);
+			if (jev === undefined) throw new Error("set TYPESAFE_API_KEY or OPENROUTER_API_KEY for Jev");
 			const recorded = recordingClassifications(models, (line) => lines.push(line));
-			const placer = getOrThrow(
-				await jevPlacer(
-					recorded,
-					{ provider: "typesafe", modelId: "jev-latest" },
-					{ rest: "local", timeoutMs: 30_000 },
-				),
-			);
+			const placer = getOrThrow(await jevPlacer(recorded, jev, { rest: "local", timeoutMs: 30_000 }));
 			let tokens = 0;
 			const decided: PlacementRecord[] = [];
 			const out: ReplayLine[] = [];
@@ -57,14 +56,22 @@ if (process.env.PI_TRANSPORT_LIVE_JEV === "1") {
 			);
 			const target = process.env.PI_TRANSPORT_REPLAY_OUT;
 			if (target !== undefined) {
+				// OpenRouter's catalog prices Jev; TypeSafe's has no price. A decision with no usage (a timeout, an error)
+				// may still have been billed. Either way the recording's cost is unknown, not a partial sum or 0.
+				const costs = decided.map((one) => one.usage?.costUsd ?? null);
+				const costUsd = costs.includes(null) ? null : costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0);
 				const header: ReplayHeader = {
 					replaySet: "placement",
 					recordedAt: new Date().toISOString(),
-					classifier: "typesafe/jev-latest",
+					classifier: `${jev.provider}/${jev.modelId}`,
 					decisions: out.length,
 					tokens,
-					costUsd: null,
-					note: "No TypeSafe price is configured, so the cost of this recording is unknown, not 0.",
+					costUsd,
+					...(costUsd === null
+						? {
+								note: "The classifier has no price, or a decision has no usage, so the cost of this recording is unknown, not 0.",
+							}
+						: {}),
 				};
 				writeFileSync(target, `${[header, ...out].map((line) => JSON.stringify(line)).join("\n")}\n`);
 			}
@@ -75,7 +82,7 @@ if (process.env.PI_TRANSPORT_LIVE_JEV === "1") {
 		}, 600_000);
 	});
 } else {
-	describe.skip("the placer against Jev itself (set PI_TRANSPORT_LIVE_JEV=1 and TYPESAFE_API_KEY)", () => {
+	describe.skip("the placer against Jev itself (set PI_TRANSPORT_LIVE_JEV=1 and TYPESAFE_API_KEY or OPENROUTER_API_KEY)", () => {
 		it("decides every step of the replay set", () => {});
 	});
 }
