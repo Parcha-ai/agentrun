@@ -29,7 +29,7 @@ test("the grader's verdict decides: a drop, a merge that keeps no note and an an
   // Each in words: the grader's own reason; where the reason is the host's (it refused the answer), the grader's word on
   // the note it did not keep; an answer that held neither said as one that could not be read.
   const cases = [
-    ["Grade: drop.", "grader", { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: A note is about the one case it came from."],
+    ["Grade: drop.", "grader", { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: It is about one case."],
     ["Grade: sly.", "grader", { merge: false, reason: "the grader said merge, but did not keep every item", items: [{ file: "check-units.md", keep: false, question: "General", why: "It is about one case." }] }, "Not kept: It is about one case."],
     ["Grade: garbage.", "grader", { merge: false, reason: "the grader's verdict could not be read", items: [] }, "Not kept: learning stopped (the review of the new notes gave an answer that could not be read)."],
     ["Grade: fail.", "grade_failed", undefined, "Not kept: learning stopped (the review of the new notes gave no answer)."],

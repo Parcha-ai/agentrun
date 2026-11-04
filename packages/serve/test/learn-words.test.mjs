@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { firstSentence, said, STOPPED, wordsOf } from "../dist/learning-words.js";
+import { firstSentence, notKept, said, STOPPED, wordsOf } from "../dist/learning-words.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, LEARN, learner, learningRows, made, settled, sleep, started, UNSAID } from "./learn-support.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
@@ -69,6 +69,20 @@ async function until(what, check) {
   }
 }
 
+test("a verdict that keeps nothing is said by why its dropped note failed, never by a kept note's reason: the first note not kept, its why's first sentence; the grader's reason only when it dropped no note; the host's own reason never", () => {
+  // As a grader said it: the reason's first sentence is about the note it kept, and the note it dropped sank both.
+  const verdict = { merge: false, reason: "The refund policy note is a general standing rule the user asked to be remembered. The second note is tied to one setup limitation, so none are kept.", items: [
+    { file: "refund-policy.md", keep: true, origin: "you", why: "It records the user's own refund threshold, a standing rule." },
+    { file: "workspace-files.md", keep: false, question: "General", why: "It describes a workaround for one run's tool limitation. Nothing to reuse." },
+    { file: "third.md", keep: false, question: "Duplicate", why: "An active note says the same." },
+  ] };
+  assert.equal(notKept(verdict), "Not kept: It describes a workaround for one run's tool limitation.");
+  assert.equal(wordsOf({ state: "dropped", reason: "grader", detail: "Not kept: x", verdict }, (text) => text), "Not kept: It describes a workaround for one run's tool limitation.", "a read says the same");
+  assert.equal(notKept({ reason: "Each note is about one case. None is kept.", items: [{ file: "a.md", keep: true, why: "It holds." }] }), "Not kept: Each note is about one case.", "no note dropped: the grader's reason");
+  assert.equal(notKept({ reason: "Each note is about one case.", items: [{ file: "a.md", keep: false, why: "" }] }), "Not kept: Each note is about one case.", "a dropped note with no why: the grader's reason");
+  assert.equal(notKept({ reason: "the grader's verdict could not be read", items: [] }), said.stopped(STOPPED.unread), "the host's own reason is never said as the grader's");
+});
+
 test("each run's learning in words, from its start to its end, its learning row saying the same: started from nothing, then from a note; looking back; checking; learned, and what it replaced; learned one and holds one for the owner's OK; not kept for the grader's reason, a secret, a note too large, or notes out of format; nothing new", { timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
@@ -111,9 +125,9 @@ test("each run's learning in words, from its start to its end, its learning row 
   const askerListed = (await api("GET", "/agents/asker/runs")).body.runs[0].learning;
   assert.deepEqual([askerListed.detail, askerListed.learned, askerListed.pending], [asker.view.learning.detail, asker.view.learning.learned, asker.view.learning.pending], "a list says and names the same");
 
-  // Not kept: the grader's own reason, its first sentence; a secret; a note over the cap; notes out of format. Nothing new.
+  // Not kept: why the grader dropped the note, its first sentence; a secret; a note over the cap; notes out of format. Nothing new.
   const cases = [
-    ["graded", learner("graded", { instructions: "Answer the question. Grade: drop.", plan: [["narrow.md", note("Narrow", "One shop's page")]] }), "grader", "Not kept: A note is about the one case it came from."],
+    ["graded", learner("graded", { instructions: "Answer the question. Grade: drop.", plan: [["narrow.md", note("Narrow", "One shop's page")]] }), "grader", "Not kept: It is about one case."],
     ["leaky", learner("leaky", { plan: [["leak.md", note("Leak", "A key", `The key is sk-${"a1".repeat(16)}.\n`)]] }), "checker", "Not kept: it held something that must not be stored (text that looks like a key or a password)."],
     ["big", learner("big", { plan: [["big.md", note("Big", "A long note", `${"x".repeat(5000)}\n`)]] }), "checker", "Not kept: it didn't pass the checks on notes (a note over 4 KB)."],
     ["loose", learner("loose", { instructions: `Answer: ${JSON.stringify(`I would keep this:\n\n${UNITS}`)}` }), "unparsed", "Not kept: its notes weren't in the expected format."],
@@ -132,7 +146,7 @@ test("each run's learning in words, from its start to its end, its learning row 
   const long = (await ended(api, await started(api, "long"))).view;
   const whole = long.learning.detail;
   const listed = (await api("GET", "/agents/long/runs")).body.runs[0].learning.detail;
-  assert.ok(whole.startsWith("Not kept: A note is about the one case it came from, and it holds") && whole.endsWith("so it is not kept.") && whole.length > 140, whole);
+  assert.ok(whole.startsWith("Not kept: It is about the one case it came from, and it holds") && whole.endsWith("so it is not kept.") && whole.length > 140, whole);
   assert.ok(listed.length <= 140 && listed.endsWith("…") && whole.startsWith(listed.slice(0, -1)), listed);
 
   // Checking: a grade held until the server closes, which leaves it checking.
@@ -158,7 +172,7 @@ test("a note's name and a grader's reason holding a long value that becomes a se
   settled(quoted.view, quoted.rows, "dropped", "grader");
   // Shown whole while it is no secret: the run's view cuts nothing short that it can show.
   assert.equal(named.view.learning.detail, `Learned: Use ${value} first`);
-  assert.equal(quoted.view.learning.detail, `Not kept: A note is about ${value} alone, which no later run can use.`);
+  assert.equal(quoted.view.learning.detail, `Not kept: It is about ${value} alone, which no later run can use.`);
 
   // Saved as a key, the server running on: every read after it cuts the value whole, and only then shortens.
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: value } })).status, 204);
