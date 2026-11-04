@@ -2,6 +2,7 @@
 // through /settings/tool-keys with no restart; capabilities say whether a revision that names no model runs
 // (`models.ready`) and what it needs. No network: the run below talks to a Responses endpoint on loopback.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { claudeModel } from "../dist/adapters.js";
 import { chooseModel, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
-import { agent, FAUX, follow, responsesEndpoint, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SEAL_KEY", ...MODEL_KEYS.map((row) => row.field)];
 /** A throwaway value: none is a real key. */
@@ -117,16 +118,26 @@ test("a model key's PUT or DELETE changes capabilities' models.needs on the next
 });
 
 // Key writes that overlap (a PUT still remaking whether a model runs when a DELETE lands) leave the capabilities agreeing
-// with the keys as they end up: the latest write's answer stands, never an older one that finished after it.
-test("overlapping model key writes leave capabilities' models.needs agreeing with the keys as they end up", { timeout: 90_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, MODEL_VARS);
-  const { api } = await serve(t, { faux: undefined });
-  for (let round = 0; round < 12; round++) {
-    const writes = [api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: made() } }), api("DELETE", "/settings/tool-keys/openai")];
-    await Promise.all(writes);
+// with the keys as they end up: the latest write's answer stands, never an older one that finished after it. Each server
+// is a process of its own, so its first key write loads the model catalog for the first time, the slow part a DELETE can
+// land in.
+test("overlapping model key writes leave capabilities' models.needs agreeing with the keys as they end up, on a server's first write", { timeout: 120_000 }, async (t) => {
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_VARS.includes(name))), AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+  for (let round = 0; round < 3; round++) {
+    const data = join(await scratch(t), "agents");
+    const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const server = await startServe({ data: ${JSON.stringify(data)}, port: 0 });
+process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"], env });
+    t.after(() => child.kill("SIGKILL"));
+    const out = await printed(child, /\n/);
+    const { base, token } = JSON.parse(out.slice(0, out.indexOf("\n")));
+    const api = client(base, token);
+    await Promise.all([api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: made() } }), api("DELETE", "/settings/tool-keys/openai")]);
     const set = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openai").fields[0].set;
     const { ready, needs } = (await api("GET", "/capabilities")).body.models;
     assert.deepEqual([ready, needs], set ? [true, null] : [false, "key"], `round ${round}: the key is ${set ? "set" : "not set"}`);
+    child.kill("SIGKILL");
   }
 });
 
