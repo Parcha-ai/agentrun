@@ -489,8 +489,9 @@ reads why, and a workflow can branch on it. An agent gets the Page as JSON text;
 default, `out` a schema of that shape). A call node naming a tool the table cannot run that way is refused before the
 run starts (`409`).
 
-On another harness, every host tool's result stays under the host's bound of 120,000 characters
-(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
+On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
+(`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
+saying where it was cut, and flags the call `truncated`. Each CLI adapter tells its CLI to pass a result that long to
 the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
 to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
@@ -642,7 +643,8 @@ run's records before it is sent, held at the price an earlier `monid.inspect` of
 at an allowance of $1; its charge settles the mark. A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
-never $0: the run's cost reads `null`, and under a cap every later request is refused, as for any spend no one knows;
+never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
+a crash-cut mark does, so the run goes on while its cap allows, in its process and in one opened again from its store;
 one monid says it did not charge (refused as sent, `BLOCKED`, `STOPPED`, the provider's error) books nothing. Under a
 cap, each `monid.run` is held as a model request is: unless what the run has spent plus what the run is held at (the
 price an inspect quoted, else the $1 allowance) fits its `max_cost_usd`, or when the spend is unknown, the call is

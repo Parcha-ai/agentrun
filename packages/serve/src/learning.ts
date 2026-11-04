@@ -26,7 +26,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
 import { INDEX_FILE, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, valueMatcher, type Verdict } from "./learn/index.js";
-import { homeOf, writeDurable } from "./files.js";
+import { homeOf, serialBy, writeDurable } from "./files.js";
 import { DETAIL_MAX, LIST_DETAIL, short, wordsOf } from "./learning-words.js";
 import { isObject } from "./validate.js";
 
@@ -322,11 +322,7 @@ export const withAgentRepo = <T>(data: string, agentId: string, work: () => Prom
 export const withAgentGrade = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => queued(`${learningRepo(data, agentId)}\0grade`, work);
 
 function queued<T>(key: string, work: () => Promise<T>): Promise<T> {
-  const next = (queues.get(key) ?? Promise.resolve()).then(work, work);
-  const settled = next.catch(() => undefined);
-  queues.set(key, settled);
-  void settled.then(() => queues.get(key) === settled && queues.delete(key));
-  return next;
+  return serialBy(queues, key, work);
 }
 
 /** Main's commit, or undefined when there is no main yet: no repository, one whose `init` never finished, or one whose
@@ -603,6 +599,7 @@ export async function dropSeed(runDir: string, work: string): Promise<boolean> {
   const pinFile = join(runDir, LEARNING_PIN);
   const dir = join(work, LEARNED_DIR);
   const there = Boolean((await lstat(pinFile).catch(() => null)) ?? (await lstat(dir).catch(() => null)));
+  if (!there) return false;
   await rm(pinFile, { force: true });
   await rm(dir, { recursive: true, force: true });
   return there;

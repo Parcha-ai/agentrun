@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
@@ -409,13 +409,13 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; args?: unknown; reason?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
           calls.end(e.callId);
-          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}) });
+          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}), ...(e.truncated === true ? { truncated: true as const } : {}) });
         }
         // A call the CLI refused itself (a tool the session doesn't have): shown as a call that failed, by the name the
         // model gave. The CLI's transcript, mirrored to the store, keeps the refusal.
@@ -431,7 +431,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const open = (attempt = 0) => openDrive({ writer, signal: io.signal, live, attempt });
       let drive = await open();
       const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+      // A turn is open while the session holds input no turn placed, or a turn with no end (its recovery note).
+      const holdsTurn = (folded: typeof initial) => Boolean(recoveryNote(folded)) || pendingSubmissions(folded).length > 0;
+      let state: AdapterSession["state"] = holdsTurn(initial)
         ? "open_turn"
         : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
 
@@ -483,6 +485,14 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           await ready();
           void run();
         },
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to settle");
+          await ready();
+          // The turn's end in the session's own transcript, as a turn that ends writes it: the next open finds no open turn,
+          // and the next turn carries no recovery of this one. Nothing is sent.
+          await settleTurn(drive);
+          state = "idle";
+        },
         async turnEnd() {
           if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
           return running;
@@ -497,6 +507,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             if (drainMs > 0) await calls.idle(drainMs);
             drive.halt?.(new SessionHalt("interrupted"));
             await running?.catch(() => {});
+            // The turn it stopped is still open in the session (an interrupt writes no end, and a prompt it stopped before
+            // the harness placed it is still pending): open_turn, so a host that is done with it settles it here.
+            if (holdsTurn(drive.state())) state = "open_turn";
           } finally {
             // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
             calls.clear();
