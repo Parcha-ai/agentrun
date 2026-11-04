@@ -453,7 +453,12 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             } catch (error) {
               // Stopped by the session or its host: interrupted. Halted by anything else (a spend cap, the mirror, a refused
               // spawn): failed, naming why.
-              if (current.signal.aborted) outcome = abortedOutcome(current.signal, io.signal);
+              if (current.signal.aborted) {
+                outcome = abortedOutcome(current.signal, io.signal);
+                // A stop that landed before this turn ran (while send() was still recording its prompt) found no turn to
+                // stop, and reads the session as it was: the turn is open now, its prompt pending, so it reads open_turn.
+                state = holdsTurn(current.state()) ? "open_turn" : "idle";
+              }
               // The CLI exited mid-turn: the drive is rebuilt from the log and the turn resumes, a few times.
               else if (error instanceof Restart && attempt < RESTARTS) drive = await open(attempt + 1);
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
