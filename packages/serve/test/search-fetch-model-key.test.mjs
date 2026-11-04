@@ -149,27 +149,29 @@ test("with a Parallel key saved on Tool keys, auto is Parallel where there is no
   const { api } = await serve(t, FAUX);
   assert.deepEqual((await resolves(api)).web_search, each("exa-keyless"), "no key yet: keyless Exa");
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
+  const checked = (await seen()).parallel.length; // the save checks the key against Parallel first (#1508): the run's requests are the ones after
   assert.deepEqual((await resolves(api)).web_search, each("parallel"), "the saved key, with no restart: Parallel before keyless Exa, on claude-agent too");
   assert.deepEqual((await resolves(api)).web_fetch, each("kernel"), "web_fetch stays the kernel's fetch");
   const run = await research(api, "auto-parallel", {});
   assert.match(run.results.web_search, /^\{"provider":"parallel","query":"widgets","results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
   assert.deepEqual(run.rows.filter((row) => row.kind === "phase" && row.tool_name === "web_search").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_search"], "its fee booked");
   let calls = await seen();
-  assert.deepEqual([calls.parallel.map((call) => [call.path, call.authorized]), calls.exa], [[["/v1/search", true]], []], "Parallel on the saved key; Exa never asked");
+  assert.deepEqual([calls.parallel.slice(checked).map((call) => [call.path, call.authorized]), calls.exa], [[["/v1/search", true]], []], "Parallel on the saved key; Exa never asked");
   const keyless = await research(api, "picked-exa", { tool_settings: { web_search: { provider: "exa-keyless" } } });
   assert.match(keyless.results.web_search, /^\{"provider":"exa-keyless"/, "a pick of exa-keyless is keyless, the key held or not");
   calls = await seen();
-  assert.deepEqual([calls.parallel.length, calls.exa.filter((call) => call.method === "tools/call").length], [1, 1]);
+  assert.deepEqual([calls.parallel.length - checked, calls.exa.filter((call) => call.method === "tools/call").length], [1, 1]);
 });
 
 test("a capped pi run whose auto search is Parallel, under a cap just short of one search's price, is refused in the cap's words before anything is sent: no request reaches Parallel, and none goes to keyless Exa in its place", { timeout: 90_000 }, async (t) => {
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t, FAUX);
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
+  const checked = (await seen()).parallel.length; // the save checks the key against Parallel first (#1508): the run's requests are the ones after
   const run = await research(api, "auto-capped", {}, { max_cost_usd: 0.0009 });
   assert.equal(run.results.web_search, JSON.stringify({ error: "spend_cap_reached: Parallel's search was not sent. It could cost up to $0.001 (Parallel's list price for a fast search), and with $0.000000 spent the run would pass its cap of $0.0009: the run is out of budget." }));
   const calls = await seen();
-  assert.deepEqual([calls.parallel, calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
+  assert.deepEqual([calls.parallel.slice(checked), calls.exa], [[], []], "nothing sent to Parallel, nor to Exa instead");
 });
 
 test("a capped claude-agent run on auto never sends Claude's own search: it resolves to Parallel where the server holds the key, else to keyless Exa, and its adapter is opened with no WebSearch, web_search a host tool", { timeout: 120_000 }, async (t) => {
