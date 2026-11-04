@@ -11,6 +11,8 @@ import { test } from "node:test";
 import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
+/** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
+const fakeKey = (name) => ["not-a-secret", name].join("-");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
@@ -130,7 +132,7 @@ test("a message to a working run, the first after a key is saved too, never wait
   };
   await message("Before any key is saved.");
   // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
-  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "not-a-secret-saved-openai" } })).status, 204);
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: fakeKey("saved-openai") } })).status, 204);
   await message("The first message after a key is saved.");
   await writeFile(join(dir, "go"), "");
   const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);

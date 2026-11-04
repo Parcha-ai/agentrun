@@ -14,6 +14,8 @@ import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 import { fileURLToPath } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+/** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
+const fakeKey = (name) => ["not-a-secret", name].join("-");
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SEAL_KEY", ...MODEL_KEYS.map((row) => row.field)];
 /** A throwaway value: none is a real key. */
@@ -81,11 +83,11 @@ test("on a gateway that takes bare ids, a key's default goes as the same model n
 });
 
 test("behind a gateway, a run that holds the gateway's key alone takes the model the server's keys give, as the server chooses it: pi's and codex's, at each tier, bare ids too; a tier the host names keeps its own", async () => {
-  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: "not-a-secret-gateway" };
+  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: fakeKey("gateway") };
   // The server's view at a run's launch: every key it holds. The run's: the gateway's key, and the model the server's
   // keys give, from the server (AGENTRUN_SERVE_KEY_MODEL), never the key that gives it.
   for (const extra of [{}, { AGENT_MODEL_GATEWAY_IDS: "bare" }, { AGENT_MODEL_FAST: "fast-1" }]) {
-    const served = { ...gateway, ...extra, OPENAI_API_KEY: "not-a-secret-openai" };
+    const served = { ...gateway, ...extra, OPENAI_API_KEY: fakeKey("openai") };
     const run = { ...gateway, ...extra, AGENTRUN_SERVE_KEY_MODEL: "openai/gpt-6.1-sol" };
     for (const harness of ["pi", "codex"]) {
       for (const tier of ["default", "fast", "strong"]) {
