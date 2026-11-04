@@ -411,7 +411,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
-                startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns} /> : undefined} />
+                startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
+                  keyCard={caps?.models?.ready === false && caps.models.needs !== "model" && !!caps.features?.tool_keys?.routes} /> : undefined} />
             </div>
           </div>
         : where.section === "playground"

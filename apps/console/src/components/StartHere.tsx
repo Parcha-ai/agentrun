@@ -12,13 +12,15 @@ export type StartHereProps = {
   onTry: (t: Template) => Promise<string | null>;
   /** Sessions imported from this machine's coding agents, if any: history to read while nothing of the owner's has run. */
   imported?: number;
+  /** The model-key card is on screen above (the server keeps keys and has no model ready): the model step points at it. */
+  keyCard?: boolean;
 };
 
 const ICONS: Record<string, typeof FileText> = { hello: FileText, web: Globe, plan: ListChecks };
 
 /** Mission Control before the owner's first run: three templates, each one click from an agent at work, or the model
  *  step first when no harness here has a model to run. */
-export function StartHere({ harnesses, tools, onTry, imported = 0 }: StartHereProps) {
+export function StartHere({ harnesses, tools, onTry, imported = 0, keyCard = false }: StartHereProps) {
   const [trying, setTrying] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const harness = templateHarness(harnesses);
@@ -51,7 +53,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0 }: StartHerePr
                 );
               })}
             </ul>
-          ) : <ModelStep />}
+          ) : <ModelStep keyCard={keyCard} />}
           {problem && <p className="mt-3 font-mono text-[13px] text-destructive-text" role="alert">{problem}</p>}
         </div>
       </div>

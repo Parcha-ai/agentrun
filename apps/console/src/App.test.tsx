@@ -593,6 +593,13 @@ describe("App, the no-model bar", () => {
     expect(step(none)?.textContent).toContain("AGENT_MODEL");
     expect(step(none)?.textContent).toContain("Then reload this page");
     expect(step(none)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
+    // AGENT_MODEL is the problem, which the card says no key fixes: the step keeps the env text.
+    serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), true, fresh);
+    const model = await mount("");
+    await until(() => !!step(model)?.textContent?.includes("Add a model key"));
+    expect(step(model)?.textContent).toContain("AGENT_MODEL");
+    expect(step(model)?.textContent).not.toContain("card above");
   });
 
   it("shows nothing while a model is ready", async () => {
