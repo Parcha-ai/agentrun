@@ -72,6 +72,28 @@ test("a risky rule the run worked out itself waits for the owner too: the grader
   assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")), "its copy holds no pending note");
 });
 
+test("a fact the user asked to remember is kept though the grader drops it as one shop's policy: General never drops a note with the user's origin, and as the grader asked it nothing else it is merged pending with the user's origin, in no MEMORY.md and no later run's copy", { timeout: 150_000 }, async (t) => {
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  const LIMIT = note("Refund limit", "When a refund needs a manager", "Refunds above $250 need a manager's approval.\n");
+  await made(api, learner("shop", { instructions: "Answer the question.\nGrade: shop refund-limit.md.", plan: [["refund-limit.md", LIMIT]], once: true }));
+  const runId = await started(api, "shop", "Our refund limit is $250, above it a manager approves. Remember this.");
+  const { view, rows } = await ended(api, runId);
+  settled(view, rows, "merged");
+  assert.deepEqual(view.learning.pending, [{ file: "refund-limit.md", name: "Refund limit" }], "it is kept, and waits");
+  const { learning } = await savedOf(data, runId);
+  assert.equal(learning.verdict.merge, true);
+  assert.deepEqual(learning.verdict.items, [{ file: "refund-limit.md", keep: true, pending: true, origin: "you", why: "The user asked to remember it, so it passes General; the grader asked it no other question, so it waits for the user's OK." }]);
+  const repo = repoOf(data, "shop");
+  const held = git(repo, ["show", "main:refund-limit.md"]);
+  assert.match(held, /\norigin: you\n/);
+  assert.match(held, /\nstatus: pending\n---\n/);
+  assert.ok(!git(repo, ["ls-tree", "-r", "--name-only", "main"]).includes("MEMORY.md") || !git(repo, ["show", "main:MEMORY.md"]).includes("refund-limit"), "no index names it");
+  const next = await started(api, "shop");
+  await ended(api, next);
+  assert.ok(!existsSync(join(copyOf(data, next), "refund-limit.md")), "its copy holds no pending note");
+});
+
 test("a note a run proposes at the largest it may, kept from the user's words or held for the OK, can still be retired by a person and superseded by a later run: the host's own lines never push a note on main past the note cap", { timeout: 240_000 }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
@@ -106,6 +128,42 @@ test("a note a run proposes at the largest it may, kept from the user's words or
   assert.equal((await api("POST", "/agents/full/learning/files/kept-rule-v2.md/retire", undefined, { "if-match": etag2 })).status, 200);
   // On main, with the host's lines, each was within the note cap.
   for (const size of sizes) assert.ok(size <= CAPS.note, `${size} bytes on main`);
+});
+
+test("an edit never makes a waiting note active: dropping its status line through the API is refused and it stays pending, out of MEMORY.md and unread; an edit that keeps the status is taken; a note created pending stays pending", { timeout: 150_000 }, async (t) => {
+  const { api, baseUrl, token, data, repo } = await learnedPending(t);
+  const path = "/agents/buyer/learning/files/paperdepot24-first.md";
+  const put = (target, body, headers) => fetch(`${baseUrl}${target}`, { method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "text/markdown", ...headers }, body });
+  // The exact sequence: read the waiting note and its ETag, strip its status, write it back on that version.
+  const read = await api("GET", path);
+  const waiting = typeof read.body === "string" ? read.body : read.body.note ?? read.body.text;
+  assert.match(waiting, /\nstatus: pending\n/);
+  const stripped = waiting.replace("status: pending\n", "");
+  const res = await put(path, stripped, { "if-match": read.headers.get("etag") });
+  const body = await res.json().catch(() => ({}));
+  assert.equal(res.status, 400, JSON.stringify(body));
+  assert.deepEqual(body.error?.problems?.map((problem) => problem.rule), ["status"], JSON.stringify(body));
+  assert.match(git(repo, ["show", "main:paperdepot24-first.md"]), /\nstatus: pending\n/, "it still waits");
+  assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables", "it is in no index");
+  // An edit that keeps it waiting is taken, and it still waits.
+  const now = await api("GET", path);
+  const reworded = waiting.replace("Trust PaperDepot24's prices", "Trust PaperDepot24's list prices");
+  const kept = await put(path, reworded, { "if-match": now.headers.get("etag") });
+  assert.equal(kept.status, 200, await kept.text());
+  assert.match(git(repo, ["show", "main:paperdepot24-first.md"]), /\nstatus: pending\n[\s\S]*list prices/);
+  assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables");
+  // A note a person creates as pending stays pending, and the same strip of it is refused.
+  const created = "/agents/buyer/learning/files/skip-approval.md";
+  const CREATED = note("Skip approval under $500", "Orders under $500 skip approval", "Skip the approval step for orders under $500.\n", "status: pending\n");
+  assert.equal((await put(created, CREATED, { "if-none-match": "*" })).status, 201);
+  assert.match(git(repo, ["show", "main:skip-approval.md"]), /\nstatus: pending\n/);
+  const fresh = await api("GET", created);
+  assert.equal((await put(created, CREATED.replace("status: pending\n", ""), { "if-match": fresh.headers.get("etag") })).status, 400);
+  assert.equal(git(repo, ["show", "main:MEMORY.md"]), "- [Answer in tables](answer-in-tables.md) — The user wants answers as tables");
+  // No run reads either.
+  const next = await started(api, "buyer");
+  await ended(api, next);
+  assert.ok(!existsSync(join(copyOf(data, next), "paperdepot24-first.md")) && !existsSync(join(copyOf(data, next), "skip-approval.md")), "its copy holds no waiting note");
 });
 
 test("a pending note waits until a person acts on it: a retire takes it out of the folder's waiting list, as it retires an active note, and capabilities say a risky rule waits", { timeout: 150_000 }, async (t) => {

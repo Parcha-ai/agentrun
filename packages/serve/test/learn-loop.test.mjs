@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learnedIn, learner, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf, wholeIn } from "./learn-support.mjs";
+import { copyOf, ended, git, KEEPS, LEARN, learnedIn, learner, NOTHING_YET, onMain, learningRows, made, mergesOf, reflectRows, repoOf, savedOf, settled, started, turnOf, wholeIn } from "./learn-support.mjs";
 import { scratch, serve } from "./support.mjs";
 
 const FILE = "check-units.md";
@@ -39,6 +39,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const answer = first.view.result.final_answer;
     assert.ok(answer.includes("Say your prompt.") && !answer.includes("Reflected."), `the answer is the job's, never the turn's: ${answer}`);
     assert.equal(learnedIn(answer), undefined, "run 1 had nothing learned");
+    assert.ok(answer.includes(`\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), `run 1 is told it learns, and that nothing is learned yet: ${answer}`);
     settled(first.view, first.rows, "merged");
     assert.equal(first.view.learning.detail, "Learned: Check units");
     // What it learned is on its learning block, in its view and in every list; it used no note: the one it tried to read

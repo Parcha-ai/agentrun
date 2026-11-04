@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, lookedBack, money, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, originOf, pendingBy, provenance, type RunLearning, shortTitle, shownImpact, took, typeLabel, underWay, usedBy, waitsForOk, waitWords } from "./learning";
+import { recorded } from "@/fixtures";
 import type { TimelineRow } from "./v2";
 
 // What the console reads of a run's and an agent's learning, and the words it says it in.
@@ -240,3 +241,46 @@ describe("the look-back on a run's timeline", () => {
     expect(learningSteps(rows, null)).toEqual(rows);
   });
 });
+
+// What a run's learning changed, note by note, from GET /v2/runs/{id}/learning/diff as a faux server answered it
+// (src/fixtures learning.diff and learning.diff-run: Brooklinen's run added a note that replaces an older one).
+describe("what a run's learning changed", () => {
+  const diff = recorded<LearningDiff>("learning.diff").body;
+  const learning = recorded<{ learning: RunLearning }>("learning.diff-run").body.learning;
+  const lines = (side: { text: string; mark: string }[] | null) => side?.map((l) => (l.mark === "gap" ? "…" : `${l.mark === "added" ? "+" : l.mark === "removed" ? "-" : " "}${l.text}`)) ?? null;
+  it("says each note by its name: what it added, and what it replaced with what; the index is not a note", () => {
+    const changes = noteChanges(diff, learning);
+    expect(changes.map((c) => [c.said, c.file])).toEqual([
+      ["Added: Try /policies/refund-policy first", "try-policies-refund-policy-first.md"],
+      ["Replaced: Shopify refund policy path → Try /policies/refund-policy first", "shopify-refund-policy-path.md"],
+    ]);
+  });
+  it("an added note has no before, and all of it after; a replaced one shows the lines around what changed, the change marked", () => {
+    const [added, replaced] = noteChanges(diff, learning);
+    expect(added!.before).toBeNull();
+    expect(lines(added!.after)!.slice(0, 3)).toEqual(["+---", "+name: Try /policies/refund-policy first", "+description: Open /policies/refund-policy before any other page; fall back to /pages/returns"]);
+    expect(added!.after!.every((l) => l.mark === "added")).toBe(true);
+    expect(lines(replaced!.before)).toEqual(["…", " name: Shopify refund policy path", " description: On a Shopify store the refund policy is at /policies/refund-policy", " type: reference", " ---", " Shopify stores serve their refund policy at `/policies/refund-policy`.", " "]);
+    expect(lines(replaced!.after)).toEqual(["…", " name: Shopify refund policy path", " description: On a Shopify store the refund policy is at /policies/refund-policy", " type: reference", "+status: superseded", "+superseded_by: try-policies-refund-policy-first.md", " ---", " Shopify stores serve their refund policy at `/policies/refund-policy`.", " "]);
+  });
+  it("a retired note, a removed one, and one whose text is not shown say so; a note with no name in view goes by its file", () => {
+    const changes = noteChanges({ base: "a", head: "b", files: [
+      { path: "old-rule.md", status: "modified", patch: "@@ -3,3 +3,4 @@\n description: d\n type: feedback\n+status: retired\n ---\n" },
+      { path: "gone.md", status: "deleted", patch: "@@ -1,3 +0,0 @@\n----\n-name: Gone rule\n----\n" },
+      { path: "big-one.md", status: "added", withheld: "too_large" },
+      { path: "holds-a-key.md", status: "added", withheld: "secret" },
+    ] }, null);
+    expect(changes.map((c) => [c.said, c.withheld ?? null])).toEqual([
+      ["Added: big-one", "It's too large to show here."],
+      ["Added: holds-a-key", "Not shown: it holds one of this server's secrets."],
+      ["Retired: old-rule", null],
+      ["Removed: Gone rule", null],
+    ]);
+    expect(changes[0]!.before).toBeNull();
+    expect(changes[0]!.after).toBeNull();
+  });
+  it("says none of the machine's words", () => {
+    for (const c of noteChanges(diff, learning)) expect(c.said).not.toMatch(/\b(main|merge|merged|commit|diff|patch|proposal|end-of-run)\b/i);
+  });
+});
+

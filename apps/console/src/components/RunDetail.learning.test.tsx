@@ -2,7 +2,8 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
-import { messageFeatures } from "@/fixtures";
+import { messageFeatures, recorded } from "@/fixtures";
+import type { LearningDiff } from "@/lib/learning";
 import type { Run, TimelineRow } from "@/lib/v2";
 
 // A run's timeline, as its page shows it: the end-of-run look-back is one step, "Looked back: kept 2 notes (…)", with
@@ -73,3 +74,68 @@ describe("a run's timeline, its look-back", () => {
     expect(steps[2]).toContain("Skipped: no budget left in this run to look back.");
   });
 });
+
+// What a run's learning changed, on its page, from the server's diff of it (recorded: Brooklinen's run added a note
+// that replaces an older one): each note by its name, opening to its text before and after with what changed marked.
+describe("a run's page, what its learning changed", () => {
+  const DIFF = recorded<LearningDiff>("learning.diff").body;
+  const BROOKLINEN = recorded<Run>("learning.diff-run").body;
+  const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+  async function open(r: Run, read: () => Promise<LearningDiff>, tab: "report" | "timeline" = "report") {
+    const reads: string[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunDetail, { run: r, agentName: "Refund policy finder", messages: messageFeatures, harnessSteers: true, rows: [], files: [], tab, readLearningDiff: () => { reads.push(r.run_id); return read(); } })));
+    await settle();
+    const section = () => host.querySelector('section[aria-label="What it changed"]') as HTMLElement | null;
+    return { host, reads, section };
+  }
+  it("lists each note it added or replaced, by name, its file in small; each opens to before and after, the change marked", async () => {
+    const t = await open(BROOKLINEN, async () => DIFF);
+    const section = t.section()!;
+    expect(section).not.toBeNull();
+    const items = [...section.querySelectorAll("li > button")];
+    expect(items.map((b) => b.querySelector("[data-said]")?.textContent)).toEqual([
+      "Added: Try /policies/refund-policy first",
+      "Replaced: Shopify refund policy path → Try /policies/refund-policy first",
+    ]);
+    expect(items[1]!.textContent).toContain("shopify-refund-policy-path.md");
+    expect(items[1]!.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => { (items[1] as HTMLButtonElement).click(); });
+    const li = items[1]!.closest("li")!;
+    const [before, after] = [...li.querySelectorAll("[data-side]")];
+    expect([before!.getAttribute("data-side"), after!.getAttribute("data-side")]).toEqual(["before", "after"]);
+    expect([...after!.querySelectorAll('[data-mark="added"]')].map((l) => l.textContent)).toEqual(["status: superseded", "superseded_by: try-policies-refund-policy-first.md"]);
+    expect(before!.querySelectorAll('[data-mark="added"], [data-mark="removed"]')).toHaveLength(0);
+    expect(before!.textContent).toContain("name: Shopify refund policy path");
+    // The added note: nothing before it.
+    await act(async () => { (items[0] as HTMLButtonElement).click(); });
+    expect(items[0]!.closest("li")!.querySelector('[data-side="before"]')!.textContent).toContain("Not there before.");
+    expect(section.textContent).not.toMatch(/\b(main|merge|merged|commit|diff|patch|proposal|end-of-run)\b/i);
+    expect(t.reads).toEqual([BROOKLINEN.run_id]);
+  });
+  it("shows on the timeline too, read once", async () => {
+    const t = await open(BROOKLINEN, async () => DIFF, "timeline");
+    expect(t.section()).not.toBeNull();
+    expect(t.reads).toHaveLength(1);
+  });
+  it("a run that kept nothing, or does not learn, shows nothing more and asks for nothing", async () => {
+    for (const learning of [{ state: "dropped", reason: "empty" }, null] as Run["learning"][]) {
+      const t = await open(run(learning), async () => DIFF);
+      expect(t.section()).toBeNull();
+      expect(t.reads).toEqual([]);
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
+  });
+  it("a read that fails says so in a line, and Try again reads it again", async () => {
+    let n = 0;
+    const t = await open(BROOKLINEN, async () => { if (n++ === 0) throw new TypeError("Failed to fetch"); return DIFF; });
+    expect(t.section()!.textContent).toContain("Couldn't read what it changed: can't reach agentrun-serve.");
+    const retry = [...t.section()!.querySelectorAll("button")].find((b) => b.textContent === "Try again")!;
+    await act(async () => { retry.click(); });
+    await settle();
+    expect(t.section()!.textContent).toContain("Added: Try /policies/refund-policy first");
+    expect(t.reads).toHaveLength(2);
+  });
+});
+

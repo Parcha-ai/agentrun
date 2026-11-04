@@ -988,8 +988,10 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   Past it, the run reads the first 200 lines of `MEMORY.md` (and no more than 25 KB, as Claude Code loads its own),
   then the notes changed last, whole, while they fit what is left; the rest are named only in the index, and an agent
   with the `read` tool is told they are in `.learning/`, to open one when it applies (one without is not). A line
-  before them says to follow a note when it applies, and that only what the run answers when it is asked at the end is
-  kept. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
+  before them says to follow a note when it applies. `# Learned` opens, for every run that learns, notes or none, with
+  what the run is told of learning: that only what it answers when it is asked at the end is kept, never a file it
+  writes, so it tells the person it will keep what they ask it to remember, and that a secret is never kept. A run with
+  nothing learned yet is told so. A run that does not learn (or whose seed failed) gets no `# Learned`. Every name, description, text and index line is cut of the server's secrets as they are when the run is made,
   as a person's reads are. That is pi's system prompt and claude-agent's and codex's instructions: the same channel
   `CLAUDE.md` and `AGENTS.md` travel in. No such file is written into the run's work (claude-agent keeps project
   settings off, so a `.claude/` in the work never loads), and no skill is learned. The pin keeps the section the run
@@ -1122,7 +1124,9 @@ with the token, an archived agent's too:
   `application/json` `{text}`, the form the console's page sends under its session) edits it under `If-Match: <etag>`,
   or creates it under `If-None-Match: *` (201); `POST .../learning/files/{file}/retire` under `If-Match` sets `status: retired`,
   on an active or a pending note. This server has no route that approves a pending note yet: it waits, listed with
-  `status: pending` and read by no run. A stale
+  `status: pending` and read by no run, and an edit keeps it waiting: a `PUT` that drops or changes its status is 400
+  with the rule `status`, so a token holder cannot make a held rule active by writing it back. A note a person
+  creates with `status: pending` waits the same way. A stale
   ETag, or a name already taken, is 412; neither header (or `If-Match: *`) is 428 `precondition_required`. The note
   passes the same structural checks as a run's (`checkNote`, in `src/learn/check.ts`), and no grader: a refusal is 400 with
   `problems`, and nothing is written. A retire is how a person revokes a note, so it checks the note's format alone:
