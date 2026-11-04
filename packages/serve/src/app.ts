@@ -12,28 +12,30 @@ import { authContextOf, withSecrets } from "./secrets.js";
 import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
-import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
+import { createRegistry, type Extension, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
+import { RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudeSkillCheck, type ConfineChild, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { withLearned } from "./learning.js";
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
-import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { promptOf, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
+import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
@@ -45,9 +47,32 @@ const TOOL_FAILED = "agentrun_serve_tool_failed";
 
 export { promptOf };
 
+/** A run's process that opens to go on with a run its last process left unfinished writes that on the root
+ *  (RUN_RESUMED), so the run's timeline shows it from the store, which the settle's read keeps: after a crash (that
+ *  process died holding the run, and left it `running`) or after the server stopped (it drained, `sleeping`). A first
+ *  open, a follow-up's and a wake from a park get none. A run whose root conversation was never made writes nothing
+ *  and opens as before: the root comes with a workflow run's task (its start) and with an agentic run's first message,
+ *  so a process that died or drained before then left none. */
+async function markResumed({ harness, context, generation, previous }: BeforeResume): Promise<void> {
+  const drained = previous?.status === "sleeping" && isObject(previous.detail) && previous.detail.reason === "drained";
+  const after = previous?.status === "running" ? "crash" : drained ? "server_stop" : undefined;
+  if (!after || !(await harness.conversation(ROOT_CONVERSATION_ID, context))) return;
+  await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: RUN_RESUMED, data: { after, generation, at: Date.now() } })), context);
+}
+
 /** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
 async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   const choice = claudeModel(env, ref);
+  if ("why" in choice) throw new Error(choice.why);
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
+}
+
+/** codex's model and pi-ai's catalog that prices it, where codex reaches OpenAI only through OpenRouter (codexModel: no
+ *  OpenAI key needed); anywhere else, the run's usual models (runModels). */
+async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
+  if (env[FAUX_HARNESS_ENV] || !openRouterOnly("codex", env)) return runModels(env, ref, ["default"], "codex");
+  const choice = await codexModel(env, ref);
   if ("why" in choice) throw new Error(choice.why);
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
@@ -71,7 +96,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && revision.body.harness === "codex" ? await codexModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -93,6 +119,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(coding.extension);
   // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
   const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
+  // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
+  // (effort-guidance.ts). None without an effort.
+  const guidance = effortGuidance(process.env[EFFORT_ENV]);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
@@ -101,7 +130,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions].filter(Boolean), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
     // The harness's own files (its homes, its state) go in a private directory beside the workspace, never in it. It works
@@ -112,10 +141,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
     const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
-    const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never, { listed: !chosen.unpriced.has(model!.modelId) });
+    // claude-agent's run is capped at the price of whoever bills it (claudeProvider's priceModel), as its adapter prices it.
+    const priced = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? claudePriceModel(env, model!) : model!;
+    const guard = await capBefore(cap, chosen.models.getModel(priced.provider, priced.modelId) as never, { listed: !chosen.unpriced.has(priced.modelId) });
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools);
-    return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
+    return { models: {}, registry: createRegistry(), door, onOpen, beforeResume: markResumed } as unknown as AppOptions;
   }
   // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
   searchOn(models);
@@ -140,7 +171,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   const hooks = {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
-    beforeResume: async ({ harness }: BeforeResume) => { for (const settle of settles) await settle(harness); },
+    beforeResume: async (run: BeforeResume) => { await markResumed(run); for (const settle of settles) await settle(run.harness); },
   };
   // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
   // by default (sleeping, due at `at`).
@@ -150,7 +181,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = await promptOf(learned, Object.keys(revision.body.skills), where.work);
+    const instructions = [await promptOf(learned, Object.keys(revision.body.skills), where.work), guidance].filter(Boolean).join("\n\n");
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};

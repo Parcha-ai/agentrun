@@ -109,12 +109,12 @@ test("a sandbox place saves with a warning naming its box, and a run of it is 40
     const made = await api("POST", "/agents", body);
     assert.equal(made.status, 201, JSON.stringify(made.body));
     assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), [["definition.place", "not_set_up_here"]]);
-    assert.match(made.body.warnings[0].message, new RegExp(`on ${box}, and this server cannot run it there: ${box === "bwrap" ? "the bwrap box is not in this release yet" : "not enabled on this server"}`));
+    assert.equal(made.body.warnings[0].message, `This agent's place is sandbox on ${box}, and this server cannot run it there: ${box === "bwrap" ? "the bwrap box is not in this release yet: use the docker box" : `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box}`}.`);
     const run = await api("POST", `/agents/${id}/runs`, { input });
     assert.equal(run.status, 409, JSON.stringify(run.body));
     assert.equal(run.body.error.code, "agent_not_runnable");
     assert.equal(run.body.error.details.box, box);
-    assert.match(run.body.error.message, new RegExp(box));
+    assert.equal(run.body.error.message, made.body.warnings[0].message, "the 409 says what the warning said");
   }
   assert.equal((await api("GET", "/runs")).body.runs.length, 0, "no run started");
 });
@@ -176,7 +176,7 @@ test("capabilities lists the place modes, this host's default, and each box: non
   assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.equal(places.default, "runner");
   assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["bwrap", false], ["docker", false], ["modal", false], ["daytona", false]]);
-  for (const box of places.boxes) assert.equal(box.reason, box.id === "bwrap" ? "the bwrap box is not in this release yet" : "not enabled on this server");
+  for (const box of places.boxes) assert.equal(box.reason, box.id === "bwrap" ? "the bwrap box is not in this release yet: use the docker box" : `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box.id}`);
 });
 
 test("one box table: capabilities' boxes, a place's 422 and every box enum of the OpenAPI document come from the box registry's ids", async (t) => {

@@ -504,7 +504,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
       let name: string;
       try {
         // By path (macOS): made under tmp/'s path once that path is checked to still name the directory held.
-        if (confinement.byPath && !(await namesHeld(tempRoot, held))) throw new PathOutsideWorkError(tempRoot, "changed", `${tempRoot}: changed while it was being resolved`);
+        if (confinement.byPath && !(await namesHeld(tempRoot, held))) throw new PathOutsideWorkError(tempRoot, "changed", "changed while it was being resolved");
         name = basename(await mkdtemp(`${confinement.byPath ? tempRoot : fdPath(held)}/${prefix ?? "tmp-"}`));
       } finally {
         await held.close();

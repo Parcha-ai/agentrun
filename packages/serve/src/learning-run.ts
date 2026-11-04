@@ -18,7 +18,7 @@ import { join, posix } from "node:path";
 import { ANSWER_MAX, INDEX_FILE, parseNoteFile, redactSecrets, type Verdict } from "./learn/index.js";
 import type { AnalyticsFilter, Revision, RunRow, StartedRun } from "@parcha/pi-durable-agent";
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
 import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, LEARNED_DIR, type Learning, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, type Seed, seedAt, seedOf, secretsShown, shortLearning, type Shown, type Turn, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
@@ -643,6 +643,9 @@ export class LearningRuns {
     if (learning?.state === "seeded") return this.setLearning(run, "dropped", ...((run.cancel || outcome === "cancelled" ? ["cancelled", said.stopped(STOPPED.cancelled)] : ["crashed", said.stopped(STOPPED.crashed)]) as [LearningReason, string]));
     if (!reflect || reflect.until !== undefined) return;
     reflect.until = run.lastEntry ?? reflect.after;
+    // The run ends now, when its end-of-run turn closed: `answered_at` keeps when its job answered, and the end the run's
+    // settle writes once (runs.ts carryBack) is this one, not the answer's.
+    run.endedAt = new Date().toISOString();
     // What the turn cost: the run's cost now, its job's set apart; unknown when either is.
     if (learning) {
       const total = this.kernel.costOf(run.rows);
@@ -653,7 +656,7 @@ export class LearningRuns {
     const last = run.rows.findLast((row) => row.agent_label === LEARNING_LABEL && shows(row));
     if (run.cancel) this.setLearning(run, "dropped", "cancelled", said.stopped(STOPPED.cancelledLooking));
     else if (reflect.timedOut) this.setLearning(run, "dropped", "reflect_timeout", said.stopped(STOPPED.timedOut));
-    else if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) this.setLearning(run, "dropped", "no_budget", said.noBudget);
+    else if (last?.kind === "error" && CAP_REFUSAL_PREFIX.test(last.text ?? "")) this.setLearning(run, "dropped", "no_budget", said.noBudget);
     else if (last?.kind === "error") this.setLearning(run, "dropped", "reflect_failed", said.stopped(STOPPED.failed));
     else if (!reflect.ended) this.setLearning(run, "dropped", "crashed", said.stopped(STOPPED.crashedLooking));
     else this.setLearning(run, "reflecting", null, said.reflecting);

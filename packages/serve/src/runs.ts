@@ -15,7 +15,8 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, thinkingFor } from "./adapters.js";
-import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOfBody, steersMidTurn } from "./harness.js";
+import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
@@ -29,7 +30,7 @@ import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV,
 import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { FAUX_MONID_ENV } from "./monid.js";
-import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_ENV, CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, FAUX_UPSTREAM_ENV, thinkingOf, withoutFaux, workflowNodes } from "./model.js";
 import { pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
@@ -39,12 +40,15 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
+import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "./turn-end.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, storedPlace } from "./place.js";
 import { destroyRunBoxes, FAUX_BOX_ENV, sweepRunBoxes } from "./run-box.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { Emitted } from "./webhooks.js";
 
 export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -151,8 +155,8 @@ export type Run = {
   agentId: string;
   kind: RevisionKind;
   revision: string;
-  /** The harness its revision names, read at its first message. */
-  harness?: string;
+  /** The harness its revision names (pi when it names none, or its revision is gone). */
+  harness: string;
   /** The newest store entry the run has shown. */
   lastEntry?: number;
   /** What the live path's rows keep served (keepCommitted), for a learning row shown between its snapshots. */
@@ -184,6 +188,12 @@ export type Run = {
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
+  /** Whether, in the run's entries, an answer that ended its request (stopReason "stop") comes after the person's newest
+   *  message: the turn that took the message answered it, though perhaps with nothing it shows (noteAnswer). */
+  answeredMessage?: boolean;
+  /** The messages a claude-agent or codex run's door accepted and has not sent yet, by id (MESSAGE with no MESSAGE_END in
+   *  its entries, noteAnswer): each still waits for its turn, also when this server started after it was accepted. */
+  waiting?: Set<string>;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
@@ -225,10 +235,6 @@ export type Run = {
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
-  /** Where its status stood for its notices (`notify`): input_required, an end once carried back, or `other`. Unset
-   *  until this server has first read the run, so a run it adopts notices nothing of where it already stood; UNREAD for
-   *  an agentic run adopted live, whose rows come with its first snapshot. */
-  moment?: string;
 };
 
 const ASKED = "Asked you: ";
@@ -270,12 +276,44 @@ function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
     const entry = isObject(value) && typeof value.id === "number" ? value.id : undefined;
     if (entry !== undefined) run.lastEntry = Math.max(run.lastEntry ?? 0, entry);
-    const turn = entry !== undefined && reflects(run.meta.reflect, entry);
-    if (!isObject(value) || value.kind !== "pi.assistant" || !Array.isArray(value.model) || !isObject(value.model[0])) continue;
-    const content = value.model[0].content;
+    // The end-of-run turn's entries are never the run's answer, nor a message it waits on: each assistant message's
+    // whole text is noted in `turnText`, by entry.
+    if (entry !== undefined && reflects(run.meta.reflect, entry)) {
+      if (isObject(value) && value.kind === "pi.assistant" && Array.isArray(value.model) && isObject(value.model[0])) {
+        const content = value.model[0].content;
+        (run.turnText ??= new Map()).set(entry, typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "");
+      }
+      continue;
+    }
+    if (!isObject(value) || typeof value.kind !== "string") continue;
+    // A message a claude-agent or codex run accepted, and its end (harness-app.ts): one with no end still waits.
+    if (value.kind === MESSAGE || value.kind === MESSAGE_END) {
+      const id = isObject(value.data) && typeof value.data.id === "string" ? value.data.id : undefined;
+      if (id !== undefined && value.kind === MESSAGE) (run.waiting ??= new Set()).add(id);
+      else if (id !== undefined) run.waiting?.delete(id);
+      continue;
+    }
+    // The person's message, as the timeline shows one (a user entry: pi's, or a host's own kind), or their sign-in: no
+    // answer has followed it yet.
+    const first = Array.isArray(value.model) && isObject(value.model[0]) ? value.model[0] : undefined;
+    if (value.kind === "agent.handover" || (first?.role === "user" && (value.kind === "pi.user" || !value.kind.startsWith("pi.")))) run.answeredMessage = false;
+    // A claude-agent or codex turn's end (harness-app.ts): its turn took the message and answered it, if it completed.
+    if (value.kind === TURN_END) {
+      if (isObject(value.data) && value.data.status === "completed") run.answeredMessage = true;
+      continue;
+    }
+    if (value.kind !== "pi.assistant" || !first) continue;
+    // An answer, as the timeline shows one (timeline.ts): a request that ended without an error or an abort and called no
+    // tool, whatever else stopped it (its length, max output tokens, too). Never commentary that came with a call.
+    if (first.stopReason === "error" || first.stopReason === "aborted") continue;
+    if (Array.isArray(first.content) && first.content.some((block) => isObject(block) && block.type === "toolCall")) continue;
+    // pi's own stop answer ends its turn (one commit with the run's end). The bridge's entries (api "agentrun-adapter")
+    // never say so: a request without content is written alike whether it is a cost, a cut, an interruption or an answer.
+    if (first.stopReason === "stop" && first.api !== ADAPTER_API) run.answeredMessage = true;
+    // The answer's text: an answer's, never commentary that came with a call.
+    const content = first.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "";
-    if (turn) (run.turnText ??= new Map()).set(entry, text);
-    else if (text) run.answerText = text;
+    if (text) run.answerText = text;
   }
 }
 
@@ -317,7 +355,7 @@ export function costView(rows: readonly TimelineEvent[], stored: number | null |
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
-const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => (r.kind === "final_answer" || r.kind === "text_block") && r.agent_label !== LEARNING_LABEL)?.text ?? null;
+const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
 // A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
@@ -341,22 +379,8 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
   return (id) => !live.has(id) && !isLive(id);
 }
 
-/** A live run adopted with no rows yet: where it stands is read from its first snapshot, notifying nothing. */
-const UNREAD = "unread";
-/** What a run's `moment` becomes (`keep`) as its status is recorded, and whether that is a notice. A run not yet read
- *  (undefined) keeps none. A live run adopted with no rows (UNREAD) takes where its first snapshot stands, silently; an
- *  end it comes to is always new, and noticed. */
-export function nextMoment(seen: string | undefined, moment: string, rows: number): { keep: string | undefined; notify: boolean } {
-  if (seen === undefined) return { keep: undefined, notify: false };
-  if (seen === UNREAD && (moment === "other" || moment === "input_required")) return { keep: rows ? moment : UNREAD, notify: false };
-  return { keep: moment, notify: moment !== seen && moment !== "other" };
-}
-
-/** Where a run's status stands for its notices: input_required, an end once carried back, else other. */
-const momentOf = (run: Run): string => {
-  const { status } = statusOf(run);
-  return status === "input_required" || (TERMINAL.has(status) && run.settled) ? status : "other";
-};
+/** A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on). */
+const waitMark = (run: Run): string => (stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "";
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -387,9 +411,10 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
 export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxOpenrouter?: string; fauxMonid?: string; fauxUpstream?: string; fauxExa?: string; fauxHarness?: string; fauxBox?: string; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
-/** Told when a run comes to need its person and when it ends (webhooks.ts), once each time: `marker` names the moment
- *  (the person's turn it waits at, the end's time), the same when a server adopting the run sees it again. */
-export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => void;
+/** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
+ *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
+ *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
+export type RunNotify = (event: "run.needs_input" | "run.ended", run: { run_id: string; agent_id: string; status: Status; title: string; pending?: { kind: "question" | "stopped" } }, marker: string) => Emitted;
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value, the seal key
  *  the tool keys are kept under (tool-keys.ts), and the boxes' keys (boxes.ts), which only the server's box providers use. */
@@ -507,6 +532,10 @@ export class Runs {
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
   private starting = 0;
+  /** The memory the starts counted in `starting` reserve, in MiB. */
+  private startingMib = 0;
+  /** This host's memory, out of which each live run reserves what its harness takes (host.ts), beside `maxRuns`. */
+  private readonly memory = hostMemory();
   /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
   private swept?: Promise<void>;
   /** The runs' learning (learning-run.ts): a step this file calls as a run starts, ends, settles, opens again and is
@@ -588,14 +617,15 @@ export class Runs {
     // follow-up (learning-run.ts onLoad).
     if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
     const known = await this.options.agents.revision(row.agent, row.revision);
-    const run = this.blank(row, dir, meta, known?.version ?? 0, known ? await toolingOf(known.revision) : undefined, known?.revision);
+    const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
+    // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
+    if (row.state !== "running") run.outcome = STATUS_OF[row.state];
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
     if (row.state !== "running") {
-      run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
@@ -616,16 +646,14 @@ export class Runs {
       this.learning.onAdopt(run, adopted !== null);
     }
     this.refresh(run);
-    run.moment = run.kind === "agentic" && run.orphan !== undefined && !run.rows.length ? UNREAD : momentOf(run);
     return run;
   }
 
-  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, tooling?: Tooling, revision?: Revision): Run {
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, harness: string, tooling?: Tooling, revision?: Revision): Run {
     return {
-      id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
+      id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [], harness,
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
       ...(tooling ? { tooling } : {}),
-      // Its harness is read at its first message (steers), not here: stop-vs-message.test.mjs holds a message in that read.
     };
   }
 
@@ -723,15 +751,38 @@ export class Runs {
    *  when it stopped, waits or parked. A workflow run ends when its workflow does. */
   private decide(run: Run): { outcome: Status; error?: RunError; abort?: boolean } | undefined {
     if (run.kind === "workflow") return undefined;
+    // A cancel ends the run cancelled, by its settle (whatever the turn it cut wrote, a cost over the cap too): nothing
+    // ends it otherwise meanwhile, so its first terminal status is its last. The cancel has aborted the turn already.
+    if (run.cancel) return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
     if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
+    // A message accepted and not sent yet waits for its turn: a server started after it counts none submitted, and a turn's
+    // end before it is no end of the run (harness-app.ts writes a turn's end, then sends the next message).
+    if (run.waiting?.size) return undefined;
     const last = meaningful(run.rows);
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
-    if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
-    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
+    // Its code is `spend_cap_reached: `, or with a note after it (`spend_cap_reached (out of budget): `, cap.ts); the message is
+    // the words after it.
+    const capped = last?.kind === "error" ? CAP_REFUSAL_PREFIX.exec(last.text ?? "") : null;
+    if (capped) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last!.text!.slice(capped[0].length), retryable: false } };
+    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: this.plainKey(run, last.text ?? undefined) ?? last.text ?? last.summary ?? "The run failed.", retryable: false } };
+    if (stopped(run)) return undefined;
+    // Its newest row is the answer; or the person's message, which an answer that ended its request follows in the entries
+    // (the Claude CLI's /compact: a summary request, no text): its turn took it and is over, and the earlier answer stands.
+    // From the entries' own order, never from when the door said idle.
+    if (answerOf(run.rows) || (last?.kind === "user_message" && run.answeredMessage === true)) return { outcome: "completed" };
+    return undefined;
+  }
+
+  /** A run's model error in a person's words when its provider refused the run's key (key-refusal.ts): the key its
+   *  harness's route sends, by this server's settings and keys, and no secret's value. */
+  private plainKey(run: Run, text: string | undefined): string | undefined {
+    if (!text) return undefined;
+    const env = withSecrets(process.env, "all", this.options.storedKeys);
+    const secrets = SECRET_NAMES.map((name) => env[name]).filter((value): value is string => typeof value === "string");
+    return keyRefusal(text, runKeyOf(env, run.harness ?? run.tooling?.harness, run.tooling?.model), secrets);
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -886,23 +937,24 @@ export class Runs {
     await recoverLearning(rows);
   }
 
-  /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. */
+  /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. A wait
+   *  is told each time it is seen: webhooks.ts queues each wait once, whichever server sees it first. */
   private mark(run: Run): void {
     const { status, state } = statusOf(run);
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
-    const moment = momentOf(run);
-    const { keep, notify } = nextMoment(run.moment, moment, run.rows.length);
-    run.moment = keep;
-    if (!notify || !this.options.notify) return;
-    const waits = moment === "input_required";
+    // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state === "waiting" ? "question" : "stopped" });
+  }
+
+  /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
+   *  has (settle, persistLater, reopen). What it already queued it queues no more. */
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "stopped" }): Emitted | undefined {
+    if (!this.options.notify || !marker) return undefined;
     try {
-      // A wait's mark: the stop it stands at, while that stop holds, else its newest row (the question it waits on).
-      const at = waits ? ((stopped(run) && run.meta.stopped_at) || meaningful(run.rows)?.id || "") : (run.endedAt ?? "");
-      // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-      const pending = waits ? { pending: { kind: state === "waiting" ? ("question" as const) : ("stopped" as const) } } : {};
-      this.options.notify(waits ? "run.needs_input" : "run.ended", { run_id: run.id, agent_id: run.agentId, status, title: run.meta.title, ...pending }, at);
+      return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
     } catch (error) {
       warn(run.id, `its notice was not queued: ${(error as Error).message}`);
+      return undefined;
     }
   }
 
@@ -1015,6 +1067,10 @@ export class Runs {
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
+        // A run already going is never refused a place, but one whose harness this host's memory never holds (after a
+        // restart on a smaller one) is not started: said, never tried.
+        const never = fresh ? undefined : neverFits(run.harness, this.memory);
+        if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness: run.harness } });
         if (!fresh) this.launch(run), (launched = true);
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
@@ -1266,11 +1322,14 @@ export class Runs {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
       if (!gone || !stalled || this.closing) return this.refresh(run);
-      if (run.relaunches < MAX_RELAUNCHES) {
+      // Opened again without a place, as a run already going, unless its harness never fits this host (a restart on a
+      // smaller one): that run fails with why.
+      const never = neverFits(run.harness, this.memory);
+      if (!never && run.relaunches < MAX_RELAUNCHES) {
         await this.pinSecrets(run);
         return this.relaunch(run);
       }
-      run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
+      run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
@@ -1316,7 +1375,10 @@ export class Runs {
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
-    const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
+    // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
+    // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.
+    const endedAt = (run.endedAt ??= new Date().toISOString());
+    const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}), endedAt } as const;
     const counted = run.metrics;
     const end = (metrics?: StoredMetrics) => {
       try {
@@ -1344,11 +1406,11 @@ export class Runs {
     } catch (error) {
       // A store that refuses the write (a full disk, a store fenced by it) must not leave the run unended: it ends here
       // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
-      // run as it was in the store.
+      // run as it was in the store. Its run.ended waits for the store (persistLater), so a receiver that reads the run
+      // back on its notice reads it ended there too.
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
       // An unknown cost stays unknown: never stored as 0.
       if (cost !== null) run.costUsd = cost;
-      run.endedAt ??= new Date().toISOString();
       run.outcome = outcome;
       run.finishing = undefined;
       run.settled = true;
@@ -1358,7 +1420,9 @@ export class Runs {
       return;
     }
     const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
-    run.endedAt = row?.endedAt ?? run.endedAt ?? new Date().toISOString();
+    // The store's time is the one it was given, unless an earlier end of the run's own landed first (a refused write that
+    // went through after all): the row's then. A read that fails keeps the chosen time, never a new one.
+    if (row?.endedAt) run.endedAt = row.endedAt;
     if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
     this.options.log?.("run_ended", { run: run.id, agent: run.agentId, status: outcome, cost_usd: row?.costUsd ?? cost ?? "unknown" });
     run.outcome = outcome;
@@ -1366,6 +1430,7 @@ export class Runs {
     run.settled = true;
     run.updatedAt = new Date().toISOString();
     this.refresh(run);
+    this.notice(run, "run.ended", run.endedAt);
     // Only once the run has ended as it would without learning: a slow or failing check never holds the job.
     void this.learning.afterSettle(run);
   }
@@ -1397,6 +1462,8 @@ export class Runs {
         const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
         if (row?.endedAt) run.endedAt = row.endedAt;
         if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
+        // In the store at last: its run.ended goes now.
+        this.notice(run, "run.ended", run.endedAt);
         await this.learning.afterSettle(run);
       }, () => this.persistLater(run, persist));
     }, this.options.settleRetryMs ?? SETTLE_RETRY_MS);
@@ -1425,34 +1492,51 @@ export class Runs {
 
   /** Start a run of `revision` (number `version`) of `entry`'s agent: `startRun` in the store, then its process, then an
    *  agentic run's first message, `input.content`. */
-  /** A place for one more live run, taken for this start (counted in `starting` from here, so two starts at once cannot
-   *  both take the last place), or 429 rate_limited. A run that has ended (failed, completed, cancelled) still holds its
-   *  place until its process exits; a start that needs that place waits for it, up to that process's drain and kill,
-   *  never refused for a place already being given back. */
-  private async takePlace(): Promise<void> {
-    const max = this.options.maxRuns;
-    for (const deadline = Date.now() + this.killAfterMs() + 1_000; max !== undefined; await sleep(50)) {
+  /** A place for one more live run of `harness`, taken for this start (counted in `starting` and `startingMib` from
+   *  here, so two starts at once cannot both take the last place), or 429 rate_limited; the function returned gives it
+   *  back once the run holds it as a live run, or did not start. A place is one under the cap on the count and the
+   *  memory a run of its harness reserves (host.ts): both must be free. A run that has ended (failed, completed,
+   *  cancelled) still holds its place until its process exits; a start that needs that place waits for it, up to that
+   *  process's drain and kill, never refused for a place already being given back. A harness whose one run is more than
+   *  the whole memory for runs is refused at once, never a 429 (capabilities say so too). From the read of what is held
+   *  to the reservation nothing awaits, so two starts at once never both take the last of it. */
+  private async takePlace(harness: string): Promise<() => void> {
+    const { memory, options: { maxRuns: max } } = this;
+    const need = runMibOf(harness);
+    const never = neverFits(harness, memory);
+    if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness } });
+    for (const deadline = Date.now() + this.killAfterMs() + 1_000; ; await sleep(50)) {
       const holding = [...this.runs.values()].filter((run) => this.live(run));
-      if (holding.length + this.starting < max) break;
+      const counted = max === undefined || holding.length + this.starting < max;
+      const held = holding.reduce((sum, run) => sum + runMibOf(run.harness), this.startingMib);
+      // With nothing held, a run that fits at all starts: pi's one place on a host smaller than a pi run (host.ts).
+      const fits = held === 0 || held + need <= runsMemoryMib(memory);
+      if (counted && fits) break;
       const leaving = holding.some((run) => run.outcome || run.finishing || run.cancel);
       if (!leaving || Date.now() > deadline) {
-        throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+        if (!counted) throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+        throw new ApiError("rate_limited", memoryFull(harness, memory, held), { retry_after_ms: 5_000, details: { max_concurrent_runs: max ?? null, harness, needs_mb: need, free_mb: Math.max(0, runsMemoryMib(memory) - held) } }, { "retry-after": "5" });
       }
     }
     this.starting++;
+    this.startingMib += need;
+    return () => {
+      this.starting--;
+      this.startingMib -= need;
+    };
   }
 
   /** `inputs` copies the run's files into its work/ (uploads.ts), after the store made it and before its process starts. */
   async create(entry: AgentEntry, revision: Revision, version: number, options: StartOptions): Promise<Run> {
     await this.sweepOnce();
-    await this.takePlace();
+    const release = await this.takePlace(harnessOfBody(revision.body));
     try {
       // Read again: the place may have been waited for, and the agent archived meanwhile.
       const now = await this.options.agents.get(entry.agent.id);
       if (now?.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${entry.agent.id} is archived: unarchive it to run it.`, { details: { archived_at: now.agent.archivedAt } });
       return await this.start(entry, revision, version, options);
     } finally {
-      this.starting--;
+      release();
     }
   }
 
@@ -1495,8 +1579,7 @@ export class Runs {
       meta.learning = await pin(started, at);
       await this.setUp(started.runId, started.dir, meta);
     }
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, tooling, revision);
-    run.moment = "other";
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
     // Before the run is known here, so nothing launches it first.
     await this.pinSecrets(run, revision);
     this.runs.set(run.id, run);
@@ -1558,16 +1641,13 @@ export class Runs {
   }
 
   /** Whether the run's harness takes a message mid-turn. */
-  private async steers(run: Run): Promise<boolean> {
-    if (run.kind !== "agentic") return true;
-    run.harness ??= ((await this.options.agents.revision(run.agentId, run.revision))?.revision.body as { harness?: string } | undefined)?.harness ?? DEFAULT_HARNESS;
-    return steersMidTurn(run.harness);
+  private steers(run: Run): boolean {
+    return run.kind !== "agentic" || steersMidTurn(run.harness);
   }
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
-    let steers: boolean;
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -1578,9 +1658,8 @@ export class Runs {
       // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
       if (run.finishing && !run.outcome) await this.endWritten(run);
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
-      // Its harness, read from the agent store at the run's first message.
-      steers = await this.steers(run);
     } while (run.stopping);
+    const steers = this.steers(run);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
@@ -1624,12 +1703,15 @@ export class Runs {
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    await this.takePlace();
+    const release = await this.takePlace(run.harness);
     try {
       // Read again: the place may have been waited for, and the run (or its agent) archived meanwhile.
       const now = this.store.readRun(run.id);
       if (now?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
       if (now?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+      // Its end's run.ended in the outbox on disk before the run opens again, or not opened: once the row runs, no start finds
+      // the end to queue it.
+      if (now?.endedAt && this.notice(run, "run.ended", now.endedAt) === "unsaved") throw new ApiError("unavailable", "The run's end is still being announced to its webhook; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
       try {
         this.store.reopenRun(run.id);
       } catch (error) {
@@ -1647,7 +1729,7 @@ export class Runs {
       this.launch(run);
     } finally {
       // Launched, it holds its place as a live run.
-      this.starting--;
+      release();
     }
     // An end-of-run turn its process went in is aborted before the follow-up is sent (learning-run.ts).
     await this.learning.afterReopen(run);
@@ -1768,6 +1850,16 @@ export class Runs {
     return (durationMs(this.options.drainTimeout ?? DRAIN) ?? 30_000) + 1_000;
   }
 
+  /** What close() will wait on: the runs whose processes are left to finish their turn (those this server started, and
+   *  those it adopted), and the longest it can wait on them: a kill bound for the started ones, and one more for the
+   *  adopted ones, which it stops after them. */
+  stopping(): { runs: number; boundMs: number } {
+    const all = [...this.runs.values()];
+    const started = all.filter((run) => run.child).length;
+    const adopted = all.filter((run) => !run.child && run.orphan && alive(run.orphan)).length;
+    return { runs: started + adopted, boundMs: (started ? this.killAfterMs() : 0) + (adopted ? this.killAfterMs() : 0) };
+  }
+
   async close(): Promise<void> {
     this.closing = true;
     this.learning.close();
@@ -1796,14 +1888,19 @@ export class Runs {
     return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
-  /** `Run`, as the contract shows it. */
-  async view(run: Run) {
-    const stored = await this.options.agents.request(() => this.store.readRun(run.id));
+  /** `Run`, as the contract shows it. `known`: its stored row as the caller already has it, so nothing is read; a run
+   *  just written has none worth reading (`{ stored: null }`: it is neither archived nor ended), and its start's answer
+   *  must not read the store once the run exists, since a busy store would then refuse a run that runs. */
+  async view(run: Run, known?: { stored: RunRow | null }) {
+    const stored = known ? (known.stored ?? undefined) : await this.options.agents.request(() => this.store.readRun(run.id));
     // After the read: the run may have moved on while it waited, and every field below is of this one moment.
     const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
     const answer = answerOf(run.rows);
-    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
+    // A run that ended on the person's message, which its turn answered with nothing it shows (decide()), answered with its
+    // newest answer: the whole text (answerText, read from the entries again on a later server), never the line the store
+    // keeps, which is cut.
+    const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : status === "completed" ? (lastAnswer(run) ?? row?.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
     const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
     const endedAt = TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null;

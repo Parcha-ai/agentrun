@@ -2,11 +2,12 @@
 // server's settings and probed once at its start. bwrap comes later. No run uses a box yet: the registry says which boxes
 // this server has, why it lacks the others, and hands out an available box's provider.
 //
-// AGENTRUN_BOXES lists the boxes to set up. A box it does not list is never probed and is unavailable; a name in it that
-// is no box refuses the start. pi-transport is an optional peer of this package and the VM provider's SDK is the host's,
-// so each is loaded by the probe that needs it, and a box whose module is not installed says what to install. The keys
-// are the server's own: the launcher hands them over with its other secrets (secrets.ts), the probes read them here, and
-// no run's process is handed one (SERVER_ONLY in runs.ts).
+// AGENTRUN_BOXES lists the boxes to set up. A box it does not list is never probed and is unavailable, its reason naming
+// the setting that lists it; a name in it that is no box refuses the start. Every reason says what to do next.
+// pi-transport is an optional peer of this package and the VM provider's SDK is the host's, so each is loaded by the
+// probe that needs it, and a box whose module is not installed says what to install. The keys are the server's own: the
+// launcher hands them over with its other secrets (secrets.ts), the probes read them here, and no run's process is
+// handed one (SERVER_ONLY in runs.ts).
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -43,8 +44,9 @@ export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 /** How long one box's probe may take; the probes run at once, so this bounds them all. */
 export const PROBE_TIMEOUT_MS = 5_000;
 
-const NOT_ENABLED = "not enabled on this server";
-const NOT_YET = "the bwrap box is not in this release yet";
+/** Why box `id` is unavailable when AGENTRUN_BOXES does not list it: the setting that does, keeping what it lists now. */
+const notEnabled = (id: BoxId, enabled: ReadonlySet<BoxId>) => `not enabled on this server: start AgentRun with ${BOXES_ENV}=${BOX_IDS.filter((box) => box === id || enabled.has(box)).join(",")}`;
+const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 const NOT_PROBED = "configured; not probed at start";
 const TRANSPORT = "@parcha/pi-transport";
 
@@ -69,7 +71,7 @@ export async function boxRegistry(env: NodeJS.ProcessEnv, options: { timeoutMs?:
   const probed = await Promise.all(
     BOX_IDS.map((id) => {
       if (id === "bwrap") return unavailable(id, NOT_YET);
-      if (!enabled.has(id)) return unavailable(id, NOT_ENABLED);
+      if (!enabled.has(id)) return unavailable(id, notEnabled(id, enabled));
       return bounded(id, timeoutMs, (signal) => PROBES[id](env, signal));
     }),
   );
@@ -134,9 +136,10 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
         resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error) } : {}), out: String(stdout) });
       }),
     );
-    if (answer.failed === "ENOENT") return unavailable("docker", "no docker command on this server's PATH");
-    if (answer.failed) return unavailable("docker", `docker version failed (${answer.failed}): is the Docker daemon running, and open to this server's user?`);
-    if (!answer.out.trim()) return unavailable("docker", "docker version named no Docker daemon");
+    // The probe runs once, at the start: each fix takes a restart.
+    if (answer.failed === "ENOENT") return unavailable("docker", "no docker command on this server's PATH: install Docker, then restart this server");
+    if (answer.failed) return unavailable("docker", `docker version failed (${answer.failed}): start Docker, or add this server's user to the docker group, then restart this server`);
+    if (!answer.out.trim()) return unavailable("docker", "docker version named no Docker daemon: start Docker, then restart this server");
     return available("docker", boxes.value());
   },
 
