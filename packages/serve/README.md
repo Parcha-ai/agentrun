@@ -479,7 +479,8 @@ run starts (`409`).
 On another harness, every host tool's result stays under the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`), and each CLI adapter tells its CLI to pass a result that long to
 the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
-to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
+to read it, which a run's confinement refuses, Codex keeps only the ends of a result past 10,000 tokens, and OpenCode
+would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the session has no tool to read. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
 
 ### Search and fetch

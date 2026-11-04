@@ -7,6 +7,10 @@
 //  - Every OpenCode tool denied and only the adapter's MCP tools (`hands_*`) allowed; OpenCode's own sharing,
 //    snapshots, formatters, language servers, instruction files and automatic compaction off.
 //  - One MCP server, `hands`, the adapter's, with a call timeout long enough for a person to answer (progress resets it).
+//  - A host tool's result within the host's bound (HOST_RESULT_MAX_CHARS) reaches the model whole: OpenCode cuts a
+//    longer tool output (by default 2,000 lines or 51,200 bytes) and saves the rest to a file, which the session has no
+//    tool to read.
+import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 
 export interface OpenCodeConfigOptions {
   model: string;
@@ -25,6 +29,10 @@ export interface OpenCodeConfigOptions {
 /** The longest an MCP call may go without progress: a day. The server reports progress every 15 s while a call runs. */
 export const MCP_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
+/** OpenCode's `tool_output` limits, from the host's result bound: a result within it holds at most that many characters
+ *  (UTF-16 units), so at most that many lines plus one, and three bytes of UTF-8 to a character. */
+export const TOOL_OUTPUT = Object.freeze({ max_lines: HOST_RESULT_MAX_CHARS + 1, max_bytes: HOST_RESULT_MAX_CHARS * 3 });
+
 /** The permission rules: everything denied, the adapter's MCP tools allowed (the last matching rule wins). */
 export const PERMISSION: Readonly<Record<string, string>> = Object.freeze({ "*": "deny", "hands_*": "allow" });
 
@@ -40,6 +48,7 @@ export function openCodeConfig(options: OpenCodeConfigOptions): Record<string, u
     lsp: false,
     instructions: [],
     compaction: { auto: false },
+    tool_output: { ...TOOL_OUTPUT },
     enabled_providers: ["openai"],
     provider: {
       openai: {
