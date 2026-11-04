@@ -608,6 +608,13 @@ describe("App, the no-model bar", () => {
     expect(step(unsealed)?.textContent).toContain("Then reload this page");
     expect(step(unsealed)?.textContent).not.toContain("card above");
     act(() => root!.unmount()); root = undefined;
+    // A gateway with no AGENT_MODEL: a provider's key saved in the card names no gateway model, so the env text stays.
+    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), "sealed", fresh);
+    const gateway = await mount("");
+    await until(() => !!step(gateway)?.textContent?.includes("Add a model key"));
+    expect(step(gateway)?.textContent).toContain("AGENT_MODEL_BASE_URL");
+    expect(step(gateway)?.textContent).not.toContain("card above");
+    act(() => root!.unmount()); root = undefined;
     // AGENT_MODEL is the problem, which the card says no key fixes: the step keeps the env text.
     serve(() => ({ source: "providers", default: "acme/unknown", ready: false, needs: "model" }), "sealed", fresh);
     const model = await mount("");
