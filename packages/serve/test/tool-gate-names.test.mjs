@@ -16,7 +16,7 @@ import { scratch } from "./support.mjs";
 
 const { deniedText, noApproverText, RunGate, waitingText } = gate;
 /** The mapping, where the module has one; none (the red), every name maps to nothing. */
-const keyOf = (harness, name) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name) : undefined);
+const keyOf = (harness, name, servers) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name, servers) : undefined);
 const isKey = (key) => typeof key === "string" && (TABLE_TOOLS.includes(key) || /^monid\.[a-z]+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 const MONID = ["monid.discover", "monid.inspect", "monid.run"];
 
@@ -38,7 +38,7 @@ const NAMES = {
     ["web_search", "web_search"], ["shell", "bash"],
     ["mcp__srv__echo", "mcp:srv/echo"],
   ],
-  opencode: [["srv_echo", "mcp:srv/echo"], ["mcp__srv__echo", "mcp:srv/echo"]],
+  opencode: [["mcp__srv__echo", "mcp:srv/echo"]],
 };
 
 test("every name a call reaches the gate by, on every harness, maps to its settings key", () => {
@@ -93,4 +93,28 @@ test("on pi, browser set to deny refuses each of its registrations, run and snap
     const { text, ran } = await onPi(t, { browser: { permission: "deny" } }, name);
     assert.deepEqual([text, ran], [deniedText("browser"), 0], name);
   }
+});
+
+test("OpenCode's <server>_<tool> is an MCP tool only for a server the run has configured, never by its shape alone; a table tool's name stays the table tool's", () => {
+  assert.equal(keyOf("opencode", "srv_echo", ["srv"]), "mcp:srv/echo");
+  assert.equal(keyOf("opencode", "srv_echo"), undefined, "no server configured: unmapped, so it asks");
+  assert.equal(keyOf("opencode", "srv_echo", ["other"]), undefined, "another server's name");
+  assert.equal(keyOf("opencode", "web_fetch", ["web"]), "web_fetch", "a table tool, though `web` is a server");
+  assert.equal(keyOf("opencode", "ask_person", ["ask"]), "ask_person");
+});
+
+test("an MCP-named call reaches no enter() of this gate's on any harness: the MCP gateway enters it once, itself", async (t) => {
+  const { hostTools } = await import("../dist/host-tools.js");
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  const runGate = new RunGate({ root, work, data, runId: "r1", harness: "claude-agent" });
+  let entered = 0;
+  runGate.enter = async () => void entered++;
+  const park = { commit: async () => undefined };
+  // claude-agent and codex: the host tools bind no MCP tool, by any of its names.
+  const bound = hostTools({}, ["mcp:srv/echo", "mcp__srv__echo", "srv_echo"], {}, new Map(), [], { gate: runGate, park });
+  assert.deepEqual(bound.map((tool) => tool.name), []);
+  // pi: the gate's extension wraps no MCP tool.
+  const registration = { name: "mcp__srv__echo", description: "", parameters: {}, execute: async () => ({ content: [] }) };
+  assert.deepEqual(runGate.extension([registration]).wraps, []);
+  assert.equal(entered, 0);
 });
