@@ -12,6 +12,8 @@ import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { DATA_ENV, defaultData } from "./files.js";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import { chooseModel, FAUX_ENV, hostModel, type ModelRef, openRouterOnly } from "./model.js";
+import { keyShaped } from "./secret-cut.js";
+import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
 import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
@@ -92,9 +94,6 @@ export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
  *  is never taken from one (runs.ts lastLogLine). */
 export const HARNESS_LOG_EVENT = "harness";
 
-/** Names whose values are secrets: no line of the run's log carries one. */
-const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
-
 /**
  * A harness's log, into the run's log: the run process's stderr, which serve opens on the run's process.log. One JSON
  * line per call, as pi-durable-disk writes them (`{at, event, message, ...}`). A request's path loses its query string,
@@ -105,7 +104,7 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
   // Every own name, enumerable or not: an environment object may hold a key it does not list.
   const secrets = Object.getOwnPropertyNames(env)
     .map((name) => [name, env[name]] as const)
-    .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
+    .filter(([name, value]) => keyShaped(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string);
   const cut = (text: string) => secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
   // Every string is cut before it is serialized, field names included: JSON escapes a quote or a backslash, and a
@@ -131,9 +130,10 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
  *  `pins`, what is installed is not the pinned build. */
 export type InstallFix = "install" | "pins";
 
-/** Why this server cannot run a harness here, in words a person can act on; `fix`, when installing is the fix. */
+/** Why this server cannot run a harness here, in words a person can act on; `fix`, when installing is the fix; `keys`,
+ *  when a model key is all it lacks: the keys, any one of which, set, lets it run (a key row names it: tool-keys.ts). */
 export class HarnessUnavailable extends Error {
-  constructor(message: string, readonly fix?: InstallFix) {
+  constructor(message: string, readonly fix?: InstallFix, readonly keys?: readonly string[]) {
     super(message);
   }
 }
@@ -213,6 +213,17 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
+/** The model key a run on `harness` (claude-agent or codex) of `model` (the revision's; none, the host's default for the
+ *  harness) takes: the one its requests carry on the route its provider below takes, as key-refusal.ts' runKeyOf names
+ *  it. codex: the gateway's when AGENT_MODEL_BASE_URL is set, else OpenAI's, or OpenRouter's on OpenRouter's route;
+ *  claude-agent: Anthropic's, for api.anthropic.com or ANTHROPIC_BASE_URL alike, or OpenRouter's on OpenRouter's route.
+ *  None for pi, whose keys are its models' (model.ts' modelKeys). */
+export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?: string): string[] {
+  if (harness !== "codex" && harness !== "claude-agent") return [];
+  const key = runKeyOf(env, harness, model);
+  return key ? [key.field] : [];
+}
+
 /** OpenRouter's API: its Anthropic Messages endpoint (`<base>/v1/messages`) and its Responses API (`<base>/v1/responses`)
  *  under one base, its key taken as a bearer token. The OpenRouter key goes nowhere else. */
 export const OPENROUTER_BASE = "https://openrouter.ai/api";
@@ -222,7 +233,7 @@ export { openRouterOnly };
 /** OpenRouter's key, read per request, refused by name where it is not set (a model named on OpenRouter, a host
  *  without its key). */
 function openRouterKey(env: NodeJS.ProcessEnv, harness: string, named: string): () => string {
-  if (!env.OPENROUTER_API_KEY) throw new HarnessUnavailable(`${harness} runs ${named} through OpenRouter, which needs OPENROUTER_API_KEY.`);
+  if (!env.OPENROUTER_API_KEY) throw new HarnessUnavailable(`${harness} runs ${named} through OpenRouter, which needs OPENROUTER_API_KEY.`, undefined, ["OPENROUTER_API_KEY"]);
   return () => env.OPENROUTER_API_KEY ?? "";
 }
 
@@ -238,7 +249,7 @@ export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): CodexPro
   if (model.provider === "openrouter" && model.modelId.startsWith("openai/")) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "codex", named), modelId: model.modelId };
   if (model.provider !== "openai") throw new HarnessUnavailable(`codex runs OpenAI models; the run's model is ${named}.`);
   if (openRouterOnly("codex", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "codex", named), modelId: named };
-  if (!env.OPENAI_API_KEY) throw new HarnessUnavailable("codex needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.");
+  if (!env.OPENAI_API_KEY) throw new HarnessUnavailable("codex needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.", undefined, ["OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
   return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "", modelId: model.modelId };
 }
 
@@ -288,8 +299,10 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): ClaudeP
   if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${named}.`);
   const own = claudeModelId(model);
   if (openRouterOnly("claude-agent", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "claude-agent", named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", id: `anthropic/${openRouterName(own)}` } };
-  if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable(env.ANTHROPIC_BASE_URL ? "claude-agent needs ANTHROPIC_API_KEY." : "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.");
+  // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
+  // takes Anthropic's key alone: OpenRouter's never goes there.
   const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : "https://api.anthropic.com";
+  if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.", undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", id: own } };
 }
 
@@ -442,13 +455,20 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
  *  `atStart`: asked by the start's probe, whose offers hold until a restart, so a reason installing fixes ends saying
  *  to restart AgentRun once it is installed (startReason). */
 export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined, { atStart = false }: { atStart?: boolean } = {}): Promise<string | undefined> {
+  return (await harnessRefusal(harness, env, given, { atStart }))?.reason;
+}
+
+/** harnessReason's reason, with the model keys any one of which lets the harness run when a key is all it lacks
+ *  (HarnessUnavailable's `keys`): the start's probe keeps them on the offer, for the key rows (tool-keys.ts). */
+export async function harnessRefusal(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined, { atStart = false }: { atStart?: boolean } = {}): Promise<{ reason: string; keys?: readonly string[] } | undefined> {
   if (env[FAUX_HARNESS_ENV]) return undefined;
   const needs = given ?? { model: { provider: harness === "claude-agent" ? "anthropic" : "openai", modelId: "default" }, models: { getModel: () => undefined } };
   try {
     const adapter = await adapterFor(harness, env, needs);
     const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
-    return problems.length ? problems.join(" ") : undefined;
+    return problems.length ? { reason: problems.join(" ") } : undefined;
   } catch (error) {
-    return atStart ? startReason(error) : (error as Error).message;
+    const keys = error instanceof HarnessUnavailable ? error.keys : undefined;
+    return { reason: atStart ? startReason(error) : (error as Error).message, ...(keys?.length ? { keys } : {}) };
   }
 }

@@ -2,7 +2,8 @@
 // host's default (`AGENT_MODEL`). A workflow's model node names a tier, and the host maps it: fast to
 // `AGENT_MODEL_FAST`, strong to `AGENT_MODEL_STRONG`, each falling back to the default. With `--faux` every model is the
 // faux module's (no key, no network); with `AGENT_MODEL_BASE_URL` every model id goes to that one OpenAI Responses
-// gateway; otherwise pi-ai's providers serve it, with their keys from the environment.
+// gateway; otherwise pi-ai's providers serve it, each with its keys from the server's secrets (PROVIDER_KEYS): the
+// launcher hands the server every one, and a run's process those of its model's provider, never in an environment.
 import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
@@ -21,6 +22,11 @@ export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object
 export const FAUX_UPSTREAM_ENV = "AGENTRUN_SERVE_FAUX_UPSTREAM";
 /** A run's `effort`, passed to its child. */
 export const EFFORT_ENV = "AGENTRUN_SERVE_EFFORT";
+/** The model the server's keys give a run that names none (hostModel at the run's launch, from every key the server
+ *  holds), passed to its child as its effort is: behind a gateway the run holds the gateway's key alone, never the key
+ *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment (pi-durable-disk's
+ *  secret-name rule): a harness's log keeps it (adapters.ts harnessLog). */
+export const DEFAULT_MODEL_ENV = "AGENTRUN_SERVE_DEFAULT_MODEL";
 export const MODEL_PROVIDER = "agent-model";
 export const EFFORTS = ["low", "medium", "high"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -88,12 +94,13 @@ export function harnessRuns(env: NodeJS.ProcessEnv, id: string, harness: string)
 
 /** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
  *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
- *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on. Undefined when none
- *  is: the harness has no default here. */
+ *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on, else, in a run's
+ *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV). Undefined when none is:
+ *  the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
   for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
   const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness));
-  return row && rowModel(row, harness);
+  return row ? rowModel(row, harness) : env[DEFAULT_MODEL_ENV] || undefined;
 }
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";
@@ -185,6 +192,76 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   return { model: { provider, modelId } };
 }
 
+/**
+ * The keys each of pi-ai's providers reads, by its id: pi-ai's own table (env-api-keys' findEnvKeys), and Amazon
+ * Bedrock's AWS keys, which that table leaves out as ambient. Every one is on the launcher's list (secrets.ts'
+ * SECRET_NAMES), so the server holds it and no environment does, and a run's process is handed a provider's keys over
+ * its pipe only when a model it runs is that provider's (runs.ts' secretsFor), as its model's provider reads them from
+ * the run's auth context. The custody test checks this against the pi-ai installed, so one that reads another key fails
+ * there.
+ */
+export const PROVIDER_KEYS: Readonly<Record<string, readonly string[]>> = {
+  "amazon-bedrock": ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"],
+  "ant-ling": ["ANT_LING_API_KEY"],
+  anthropic: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+  azure: ["AZURE_OPENAI_API_KEY"],
+  baseten: ["BASETEN_API_KEY"],
+  cerebras: ["CEREBRAS_API_KEY"],
+  "cloudflare-ai-gateway": ["CLOUDFLARE_API_KEY"],
+  "cloudflare-workers-ai": ["CLOUDFLARE_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  fireworks: ["FIREWORKS_API_KEY"],
+  "github-copilot": ["COPILOT_GITHUB_TOKEN"],
+  google: ["GEMINI_API_KEY"],
+  "google-vertex": ["GOOGLE_CLOUD_API_KEY"],
+  groq: ["GROQ_API_KEY"],
+  huggingface: ["HF_TOKEN"],
+  "kimi-coding": ["KIMI_API_KEY"],
+  meta: ["META_API_KEY"],
+  minimax: ["MINIMAX_API_KEY"],
+  "minimax-cn": ["MINIMAX_CN_API_KEY"],
+  mistral: ["MISTRAL_API_KEY"],
+  moonshotai: ["MOONSHOT_API_KEY"],
+  "moonshotai-cn": ["MOONSHOT_API_KEY"],
+  nvidia: ["NVIDIA_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  opencode: ["OPENCODE_API_KEY"],
+  "opencode-go": ["OPENCODE_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
+  "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
+  "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
+  radius: ["RADIUS_API_KEY"],
+  together: ["TOGETHER_API_KEY"],
+  typesafe: ["TYPESAFE_API_KEY"],
+  "vercel-ai-gateway": ["AI_GATEWAY_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  xiaomi: ["XIAOMI_API_KEY"],
+  "xiaomi-token-plan-ams": ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"],
+  "xiaomi-token-plan-cn": ["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
+  "xiaomi-token-plan-sgp": ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
+  zai: ["ZAI_API_KEY"],
+  "zai-coding-cn": ["ZAI_CODING_CN_API_KEY"],
+};
+
+/** The keys pi-ai reads at a request, from the request's `env` option (else the process's environment), past the auth
+ *  context: Bedrock's, whose request builds its AWS credentials itself. */
+const REQUEST_KEYS = PROVIDER_KEYS["amazon-bedrock"]!;
+
+/** The gateway's key (AGENT_MODEL_BASE_URL's), which its every model is reached on. */
+export const GATEWAY_KEY_ENV = "AGENT_MODEL_API_KEY";
+
+/** The model keys a pi run takes, by the models chooseModel picks for it: the keys of each one's provider (PROVIDER_KEYS),
+ *  the default tier's from `ref` (an agentic revision's own) else the host's default, each other tier's the host's model
+ *  of that tier; through a gateway (`AGENT_MODEL_BASE_URL`), where every model is the gateway's, its key alone. Asked as
+ *  chooseModel is, faux or not, so a run on the faux model is handed what a run on its model would be. */
+export function modelKeys(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"]): string[] {
+  if (env.AGENT_MODEL_BASE_URL) return [GATEWAY_KEY_ENV];
+  const named = tiers.map((tier) => (tier === "default" ? ref : undefined) ?? hostModel(env, tier));
+  const providers = named.flatMap((name) => (name && name.indexOf("/") > 0 ? [name.slice(0, name.indexOf("/"))] : []));
+  return [...new Set(providers.flatMap((provider) => PROVIDER_KEYS[provider] ?? []))];
+}
+
 /** A run's thinking level: its `effort`, else its revision's `thinking`, else the host's `AGENT_THINKING`, else medium.
  *  Never off. */
 export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThinkingLevel {
@@ -224,7 +301,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   if (!faux && !env.AGENT_MODEL_BASE_URL) {
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
     // Each provider's key from `env`, which holds this process's secrets, never from process.env (secrets.ts).
-    return { models: builtinModels({ authContext: authContextOf(env) }), model, byTier, unpriced: new Set<string>() };
+    return { models: withRequestKeys(builtinModels({ authContext: authContextOf(env) }), env), model, byTier, unpriced: new Set<string>() };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
   const models = createModels({ authContext: authContextOf(env) });
@@ -315,7 +392,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   models.setProvider(createProvider({
     id: MODEL_PROVIDER,
     baseUrl,
-    auth: { apiKey: { name: "AGENT_MODEL_API_KEY", resolve: async () => ({ auth: { apiKey: env.AGENT_MODEL_API_KEY || "none" }, source: "AGENT_MODEL_API_KEY" }) } },
+    auth: { apiKey: { name: GATEWAY_KEY_ENV, resolve: async () => ({ auth: { apiKey: env[GATEWAY_KEY_ENV] || "none" }, source: GATEWAY_KEY_ENV }) } },
     models: ids.map((id) => ({
       id, name: id, api: "openai-responses", provider: MODEL_PROVIDER, baseUrl, reasoning: true, input: ["text", "image"] as ("text" | "image")[],
       cost: priceOf(id), contextWindow: 128_000, maxTokens: 32_000, compat: { supportsDeveloperRole: false },
@@ -323,6 +400,25 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     api: unpriced.size ? unpricedApi(openAIResponsesApi(), unpriced, ai) : openAIResponsesApi(),
   }));
   return { models, model, byTier, unpriced };
+}
+
+/** The requests a Models object sends, each with its options third. */
+const REQUESTS = new Set<PropertyKey>(["stream", "streamSimple", "complete", "completeSimple"]);
+
+/** `models` with each request's `env` option carrying the REQUEST_KEYS that `env` holds (a run's process holds only
+ *  those of its model's provider), so Bedrock's request finds its AWS keys there: in no environment, which would hand
+ *  them to every program the run starts. A request's own `env` wins. With none held, `models` as it is. */
+function withRequestKeys<M extends object>(models: M, env: NodeJS.ProcessEnv): M {
+  const keys = Object.fromEntries(REQUEST_KEYS.flatMap((name) => (env[name] ? [[name, env[name]!]] : [])));
+  if (!Object.keys(keys).length) return models;
+  return new Proxy(models, {
+    get: (target, key) => {
+      const value = Reflect.get(target, key, target) as unknown;
+      if (typeof value !== "function") return value;
+      if (!REQUESTS.has(key)) return value.bind(target);
+      return (model: unknown, context: unknown, options?: { env?: Record<string, string> }) => value.call(target, model, context, { ...options, env: { ...keys, ...options?.env } });
+    },
+  });
 }
 
 /** `api`, with each answer of a model in `unpriced` written as an unpriced one: its usage's cost has no total, as

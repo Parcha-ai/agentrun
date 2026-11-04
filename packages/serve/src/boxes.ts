@@ -12,6 +12,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { BoxProvider } from "@parcha/pi-transport";
+import { withoutSecrets } from "./secrets.js";
 
 /** The VM provider: its box id, which is also its SDK's npm name, the SDK's client class and the token's names. */
 export const VM_PROVIDER = { id: "modal", client: "ModalClient", keys: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] } as const;
@@ -137,8 +138,9 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
   async docker(env, signal) {
     const boxes = await load(TRANSPORT, () => import("@parcha/pi-transport/box/docker").then((module) => module.dockerBoxes));
     if (!boxes.ok) return unavailable("docker", boxes.reason);
-    // Its environment is the server's without the boxes' keys; the server's other secrets do not enumerate (withSecrets).
-    const dockerEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !BOX_KEYS.includes(name)));
+    // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
+    // name shaped like a key.
+    const dockerEnv = withoutSecrets(env);
     const answer = await new Promise<{ failed?: string; out: string }>((resolve) =>
       execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout) => {
         const code = (error as { code?: unknown } | null)?.code;
