@@ -73,6 +73,10 @@ export function redacted(text: string, secrets: readonly string[]): string {
  *  so its cost grows with the square of what it reads; pieces this size keep each pass small. */
 const ANSWER_PIECE = 8192;
 
+/** How many texts redactedAnswer has read in this process: a test reads it to see a run's view served from what an
+ *  earlier view redacted (runs.ts servedOnce). */
+export const answerPasses = { count: 0 };
+
 /** `text`, a run's answer as serve serves it (its final answer, or a string in its workflow output), with no held secret
  *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
  *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
@@ -82,6 +86,7 @@ const ANSWER_PIECE = 8192;
  *  output, and then the whole answer is "[redacted]", as redactSecrets does with a text that still holds a value. */
 export function redactedAnswer(text: string, secrets: readonly string[]): string {
   if (!text) return text;
+  answerPasses.count++;
   const parts: string[] = [];
   for (let from = 0; from < text.length; ) {
     let to = Math.min(text.length, from + ANSWER_PIECE);
