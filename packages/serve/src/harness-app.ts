@@ -173,6 +173,8 @@ export function adapterRun(
   let openedDone: () => void = () => {};
   opened = new Promise((resolve) => (openedDone = resolve));
   let turn: Promise<void> | undefined;
+  // A person's stop of the turn in flight: its interrupt, which the turn's end waits for before it settles the turn.
+  let stopping: Promise<void> | undefined;
   // The door's emit, from attach as the door opens: a recovered turn, started by no submit, reports through it too.
   let emit: ((event: DoorEvent) => void) | undefined;
   let attached = false;
@@ -371,6 +373,15 @@ export function adapterRun(
         } catch (error) {
           failed = String((error as Error)?.message ?? error);
         } finally {
+          // A turn the person stopped can still be open in the session (an interrupt writes no end there, and a prompt it
+          // stopped before the harness placed it is still pending). It is settled once the interrupt is done, before the
+          // turn's end and any next message, so nothing of it goes on or is sent again. An adapter without the settle is
+          // left as before. A settle that fails leaves the turn to the next open, which settles it from the stop record.
+          if (stopping) {
+            await stopping.catch(() => undefined);
+            stopping = undefined;
+            if (session?.state === "open_turn" && typeof session.settleOpenTurn === "function") await session.settleOpenTurn().catch(() => undefined);
+          }
           // The last request's cost, booked once the proxy has answered: waited for, so the answer is written with it.
           await bookings(BOOKING_WAIT_MS);
           await flush(true);
@@ -392,6 +403,8 @@ export function adapterRun(
       // Nothing from here to run_end waits: a message that comes in once the run reads idle starts the next busy period,
       // after this run_end. A cost that comes in from now on is written as it comes in (onModel).
       turn = undefined;
+      // A stop that came after this busy period's last turn had ended stopped nothing: it is not the next one's.
+      stopping = undefined;
       emit?.({ type: "run_end" });
     })();
   };
@@ -423,7 +436,8 @@ export function adapterRun(
         });
       }
       if (!turn) return "idle";
-      await session?.interrupt();
+      stopping = session?.interrupt();
+      await stopping;
       return "aborted";
     },
     busy: () => turn !== undefined,
