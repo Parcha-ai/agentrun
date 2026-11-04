@@ -67,5 +67,9 @@ them. Each note in the learning carries its `etag`, the same value as `learning.
 retires on the version a card shows; the note's own reads are kept for the reload after a refused save. The runs list
 carries each run's learning in words (`detail`), and the impact each side's time to the answer, the job's own cost and
 what learning itself costs a run.
+`learning.diff-run` and `learning.diff` are a pair from one later recording of the same story: Brooklinen's run, and what
+its learning changed (`GET /v2/runs/{id}/learning/diff`: the note it added, the note it replaced, and the index), for
+the run page's "What it changed". `record.mjs` records them with the rest; until the set is recorded again whole, their
+run is not the one in `learning.runs`.
 To record them again: build the server and the console, then `node serve.mjs ...`, `node seed.mjs <url> <data>` and
 `node record.mjs <url> <data> apps/console/src/fixtures`. No token is written: the token stays in the data directory.

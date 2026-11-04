@@ -344,6 +344,64 @@ export function learningSteps(rows: readonly TimelineRow[], learning?: RunLearni
   return rows.flatMap((r) => (r === first ? [step] : r.agent_label === LEARNING || r.kind === LEARNING ? [] : [r]));
 }
 
+/** What a run's learning changed in its agent's notes, as GET /v2/runs/{id}/learning/diff answers: each file with its
+ *  `patch` (git's hunks, no header), or why the server withholds it (`too_large`, or a value of its secrets in it). */
+export type LearningDiffFile = { path: string; status: "added" | "deleted" | "modified"; patch?: string; withheld?: "too_large" | "secret" };
+export type LearningDiff = { base: string | null; head: string | null; files: LearningDiffFile[] };
+/** A line of a note's text before or after: unchanged (`same`), taken out (`removed`), new (`added`), or a `gap` where
+ *  unchanged lines are left out. */
+export type DiffLine = { text: string; mark: "same" | "removed" | "added" | "gap" };
+/** One note a run's learning changed, in words ("Added: Refund limit"), with its text before and after: null where
+ *  there was none, or where the server withholds it (`withheld`, why, in words). */
+export type NoteChange = { file: string; said: string; before: DiffLine[] | null; after: DiffLine[] | null; withheld?: string };
+
+const WITHHELD: Record<string, string> = { too_large: "It's too large to show here.", secret: "Not shown: it holds one of this server's secrets." };
+const SAID_ORDER = ["Added", "Replaced", "Retired", "Removed", "Changed"];
+
+/** A patch's text before and after, its hunks one after another, a gap where unchanged lines are left out. */
+function sides(patch: string): { before: DiffLine[]; after: DiffLine[] } {
+  const before: DiffLine[] = [], after: DiffLine[] = [];
+  let hunks = 0;
+  for (const line of patch.split("\n")) {
+    const at = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (at) {
+      if (hunks || Number(at[1]) > 1) before.push({ text: "…", mark: "gap" });
+      if (hunks || Number(at[2]) > 1) after.push({ text: "…", mark: "gap" });
+      hunks++;
+    } else if (hunks && line.startsWith(" ")) { before.push({ text: line.slice(1), mark: "same" }); after.push({ text: line.slice(1), mark: "same" }); }
+    else if (hunks && line.startsWith("-")) before.push({ text: line.slice(1), mark: "removed" });
+    else if (hunks && line.startsWith("+")) after.push({ text: line.slice(1), mark: "added" });
+  }
+  return { before, after };
+}
+
+/** What a run's learning changed, note by note, in a person's words: each note it added, replaced (with the note that
+ *  replaces it), retired or removed, by its name (as the run's `learned` and `used` name it, else its own `name:` line,
+ *  else its file), added first. The index (MEMORY.md) is not a note, and is left out. */
+export function noteChanges(diff: LearningDiff, learning: RunLearning | undefined): NoteChange[] {
+  const files = diff.files.filter((f) => f.path !== "MEMORY.md");
+  const parts = new Map(files.map((f) => [f.path, f.patch === undefined ? null : sides(f.patch)]));
+  const known = new Map([...refs(learning?.used), ...learnedBy(learning)].map((r) => [r.file, r.name]));
+  const nameOf = (file: string) => {
+    const p = parts.get(file);
+    const line = [...(p?.after ?? []), ...(p?.before ?? [])].find((l) => l.mark !== "gap" && /^name:\s*\S/.test(l.text));
+    return known.get(file) ?? line?.text.replace(/^name:\s*/, "").trim() ?? file.replace(/\.md$/, "");
+  };
+  const out = files.map((f): NoteChange => {
+    const p = parts.get(f.path);
+    const name = nameOf(f.path);
+    const added = (p?.after ?? []).filter((l) => l.mark === "added").map((l) => l.text.trim());
+    const by = added.find((l) => l.startsWith("superseded_by:"))?.replace(/^superseded_by:\s*/, "") ?? learnedBy(learning).find((r) => r.supersedes?.includes(f.path))?.file;
+    const said = f.status === "added" ? `Added: ${name}`
+      : f.status === "deleted" ? `Removed: ${name}`
+      : added.includes("status: superseded") || (!p && by) ? `Replaced: ${name}${by ? ` → ${nameOf(by)}` : ""}`
+      : added.includes("status: retired") ? `Retired: ${name}` : `Changed: ${name}`;
+    if (!p) return { file: f.path, said, before: null, after: null, withheld: WITHHELD[f.withheld ?? ""] ?? "Not shown." };
+    return { file: f.path, said, before: f.status === "added" ? null : p.before, after: f.status === "deleted" ? null : p.after };
+  });
+  return out.sort((a, b) => SAID_ORDER.indexOf(a.said.split(":")[0]!) - SAID_ORDER.indexOf(b.said.split(":")[0]!));
+}
+
 /** The run that first kept each note, and the last time a person changed it, from the changes on the page read. */
 export function provenance(log: readonly LearningChange[]): Map<string, { run?: { id: string; at: string; reason: string }; edited?: string }> {
   const out = new Map<string, { run?: { id: string; at: string; reason: string }; edited?: string }>();

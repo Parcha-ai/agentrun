@@ -3,8 +3,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AgentPage } from "./AgentPage";
+import { RunDetail } from "./RunDetail";
 import { RunHeader } from "./RunHeader";
-import { recorded } from "@/fixtures";
+import { messageFeatures, recorded } from "@/fixtures";
 import { createClient } from "@/lib/client";
 
 // The demo, end to end on recorded answers: the console's own client and pages over what a faux AgentRun Server answered
@@ -190,5 +191,18 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     const a = await header(allbirds);
     expect(a).toContain('aria-label="Used 2 notes: Keep the summary to three lines, Try /policies/refund-policy first"');
     expect(a).not.toContain("Learned");
+  });
+  it("a run's page says what its learning changed, note by note, from the server's own answer", async () => {
+    const s = replay(["learning.diff-run", "learning.diff"]);
+    const id = recorded<{ run_id: string }>("learning.diff-run").body.run_id;
+    const run = await s.v2.getRun(id);
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(RunDetail, { run, agentName: "Refund policy finder", messages: messageFeatures, harnessSteers: true, rows: [], files: [], tab: "report", readLearningDiff: () => s.v2.runLearningDiff(id) })));
+    for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(s.sent.map((x) => `${x.method} ${x.path}`)).toEqual([`GET /runs/${id}`, `GET /runs/${id}/learning/diff`]);
+    const said = [...host.querySelectorAll('section[aria-label="What it changed"] [data-said]')].map((x) => x.textContent);
+    expect(said).toEqual(["Added: Try /policies/refund-policy first", "Replaced: Shopify refund policy path → Try /policies/refund-policy first"]);
+    act(() => root.unmount());
   });
 });
