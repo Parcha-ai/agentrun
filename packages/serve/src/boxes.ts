@@ -39,6 +39,15 @@ export const BOXES_ENV = "AGENTRUN_BOXES";
 export const BOX_APP_ENV = "AGENTRUN_BOX_APP";
 const DEFAULT_BOX_APP = "agentrun";
 const DAYTONA_KEY = "DAYTONA_API_KEY";
+/** Daytona's API when DAYTONA_API_URL names none: pi-transport's own default. */
+export const DAYTONA_API_URL = "https://app.daytona.io/api";
+
+/** Daytona's API and this server's key for it, from its environment (its secrets readable); undefined without a key. The
+ *  key goes to the server's Daytona provider and its box relay, never further (box-relay.ts). */
+export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: string } | undefined {
+  const apiKey = env[DAYTONA_KEY];
+  return apiKey ? { apiKey, apiUrl: env.DAYTONA_API_URL || DAYTONA_API_URL } : undefined;
+}
 /** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
 export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 

@@ -247,6 +247,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             outcome = current.signal.aborted
               ? abortedOutcome(current.signal, io.signal)
               : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
+            // A stop that landed before this turn ran (while send() was still recording its prompt) found no turn to stop,
+            // and reads the session as it was: the turn is open now, its prompt pending, so it reads open_turn.
+            if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
           io.onEvent({ type: "turn_end", status: outcome.status });
           return outcome;
