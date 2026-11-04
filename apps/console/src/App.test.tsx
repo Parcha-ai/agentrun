@@ -570,8 +570,17 @@ describe("App, the no-model bar", () => {
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
-  it("says to name the gateway's model in AGENT_MODEL, with no OpenRouter promise and no Settings link, where the server sends its models to a gateway", async () => {
+  it("says to name the gateway's model in AGENT_MODEL, or add a model key in Settings, with no OpenRouter promise, where the server sends its models to a gateway", async () => {
     serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }));
+    const host = await mount("#/runs");
+    await until(() => !!bar(host));
+    expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart, or add a model key in Settings → Model keys.");
+    expect(bar(host)?.querySelector("a")?.textContent).toBe("add a model key in Settings → Model keys");
+    expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
+  });
+
+  it("says only to name the gateway's model in AGENT_MODEL, with no Settings link, on a gateway server that can't keep a key", async () => {
+    serve(() => ({ source: "gateway", default: null, ready: false, needs: "key" }), true, "unavailable");
     const host = await mount("#/runs");
     await until(() => !!bar(host));
     expect(bar(host)?.textContent).toBe("No model yet. This server sends its models to a gateway: name the gateway's model in AGENT_MODEL where AgentRun starts, and restart.");
