@@ -129,6 +129,10 @@ export interface Gate {
 
 /** The refusal of a call whose tool is set to deny. */
 export const deniedText = (tool: string): string => `Permission denied: ${tool} is set to deny on this server. Don't retry it.`;
+/** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
+export const noApproverText = (tool: string): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;
+/** Set by the server in a run's environment when no one can approve here (accounts off): the gate refuses each ask. */
+export const NO_APPROVER_ENV = "AGENTRUN_SERVE_NO_APPROVER";
 /** A parked call's answer: the run pauses here. */
 export const waitingText = (tool: string): string => `This ${tool} call waits for a person's approval; the run pauses here and continues with the result when they answer.`;
 /** A call a person denied, with their reason when they gave one. */
@@ -223,7 +227,7 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id" | "
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
 export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic");
+  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -239,8 +243,9 @@ export class RunGate {
   private readonly stop = new AbortController();
 
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
-   *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot. */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string }, private readonly overrides: PermissionSettings = {}, private readonly parks = true) {}
+   *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
+   *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
@@ -263,6 +268,8 @@ export class RunGate {
     const verdict = gateToolCall({ tool, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
     if (verdict === "allow") return undefined;
     if (verdict === "deny") return { text: deniedText(tool), isError: true };
+    // No one can answer here: refused at once with why, never parked until a cancel.
+    if (!this.approvers) return { text: noApproverText(tool), isError: true };
     if (!this.parks) return { text: `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`, isError: true };
     // Named by the call, so a call run again after a crash parks as the same request.
     const id = `ap_${createHash("sha256").update(JSON.stringify([callId, tool, args ?? null])).digest("hex").slice(0, 16)}`;
