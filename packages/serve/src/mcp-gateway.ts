@@ -51,15 +51,31 @@ export const mcpNameOf = (name: string): { server: string; tool: string } | unde
   return match ? { server: match[1]!, tool: match[2]! } : undefined;
 };
 
+/** The most schema nodes, and the deepest nesting, a tool's declarations are checked through: past either the tool is
+ *  refused, never walked further. */
+export const HEADER_SCAN_NODES = 10_000;
+export const HEADER_SCAN_DEPTH = 64;
+
 /** Why a tool's `x-mcp-header` declarations (SEP-2243, the 2026-07-28 revision) cannot be mirrored into `Mcp-Param-*`
  *  headers, by the rules the SDK client applies when it lists tools: only on a property reached through `properties`
  *  alone, a non-empty RFC 9110 token, on a string, integer or boolean, unique without regard to case. Undefined when they
- *  can, or there are none. The SDK does the mirroring itself (callTool's `toolDefinition`); it does not export this
- *  check, which it runs only inside its own `listTools()`. */
+ *  can, or there are none. The SDK does the mirroring itself (callTool's `toolDefinition`), but it exports no form of this
+ *  check, which it runs only inside its own `listTools()`. Each object is visited once, from an explicit stack, within
+ *  HEADER_SCAN_NODES and HEADER_SCAN_DEPTH. */
 export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
   const seen = new Map<string, string>();
-  const visit = (node: unknown, path: string[], reachable: boolean): string | undefined => {
-    if (!node || typeof node !== "object") return undefined;
+  const visited = new WeakSet<object>();
+  const stack: { node: unknown; path: readonly string[]; reachable: boolean }[] = [{ node: inputSchema, path: [], reachable: true }];
+  for (let nodes = 0; stack.length; ) {
+    const { node, path, reachable } = stack.pop()!;
+    if (!node || typeof node !== "object" || visited.has(node)) continue;
+    visited.add(node);
+    if (++nodes > HEADER_SCAN_NODES) return `its input schema is larger than ${HEADER_SCAN_NODES} parts, more than its headers are checked through`;
+    if (path.length > HEADER_SCAN_DEPTH) return `its input schema nests deeper than ${HEADER_SCAN_DEPTH} levels, more than its headers are checked through`;
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push({ node: item, path, reachable: false });
+      continue;
+    }
     const schema = node as Record<string, unknown>;
     const where = path.length ? path.join(".") : "the schema's root";
     if (Object.hasOwn(schema, "x-mcp-header")) {
@@ -72,21 +88,12 @@ export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
       seen.set(name.toLowerCase(), name);
     }
     for (const [key, child] of Object.entries(schema)) {
-      if (key === "properties" && child && typeof child === "object") {
-        for (const [name, property] of Object.entries(child)) {
-          const problem = visit(property, [...path, name], reachable);
-          if (problem) return problem;
-        }
-      } else if (child && typeof child === "object" && key !== "x-mcp-header") {
-        for (const branch of Array.isArray(child) ? child : [child, ...Object.values(child)]) {
-          const problem = visit(branch, [...path, `<${key}>`], false);
-          if (problem) return problem;
-        }
-      }
+      if (!child || typeof child !== "object" || key === "x-mcp-header") continue;
+      if (key === "properties" && !Array.isArray(child)) for (const [name, property] of Object.entries(child)) stack.push({ node: property, path: [...path, name], reachable });
+      else stack.push({ node: child, path: [...path, `<${key}>`], reachable: false });
     }
-    return undefined;
-  };
-  return visit(inputSchema, [], true);
+  }
+  return undefined;
 }
 
 /** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. Keyed by server name

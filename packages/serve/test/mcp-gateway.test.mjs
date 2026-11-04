@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { mcpRoute, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
+import { HEADER_SCAN_DEPTH, MCP_CLIP, mcpCredentialsOf, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
@@ -163,4 +163,33 @@ test("a declared header that cannot be sent is named, and its tool is never pinn
   ]) assert.match(mcpHeaderProblem(schema) ?? "", said);
   const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "bad", inputSchema: { type: "object", properties: { a: { type: "object", "x-mcp-header": "A" } } } }, { name: "good", inputSchema: valid }] }), headers: () => undefined };
   assert.deepEqual(mcpPinOf(["mcp:fake/bad", "mcp:fake/good"], source).fake.tools.map((tool) => tool.name), ["good"]);
+});
+
+/** A schema `levels` deep in additionalProperties, every level also holding a property. */
+const deepSchema = (levels) => {
+  let schema = { type: "string" };
+  for (let i = 0; i < levels; i++) schema = { type: "object", properties: { [`p${i}`]: { type: "string" } }, additionalProperties: schema };
+  return schema;
+};
+
+test("the header check visits each part of a schema once, within its bounds: deep, wide and shared schemas finish at once", () => {
+  const timed = (schema) => {
+    const start = performance.now();
+    const said = mcpHeaderProblem(schema);
+    return { said, ms: performance.now() - start };
+  };
+  const deep = timed(deepSchema(60));
+  assert.equal(deep.said, undefined);
+  assert.ok(deep.ms < 50, `60 levels of additionalProperties: ${deep.ms} ms`);
+  const wide = timed({ type: "object", properties: Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`p${i}`, { type: "string", ...(i === 4999 ? { "x-mcp-header": "Last" } : {}) }])) });
+  assert.equal(wide.said, undefined);
+  assert.ok(wide.ms < 50, `5,000 properties: ${wide.ms} ms`);
+  // One object reached from many places, and a cycle, as a parsed schema never holds but an object can: each visited once.
+  const shared = { type: "string" };
+  const fan = { type: "object", properties: Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`p${i}`, shared])) };
+  const cyclic = { type: "object", properties: {} };
+  cyclic.additionalProperties = cyclic;
+  for (const schema of [fan, cyclic]) assert.ok(timed(schema).ms < 50);
+  assert.match(mcpHeaderProblem(deepSchema(HEADER_SCAN_DEPTH + 10)) ?? "", /nests deeper than 64 levels/);
+  assert.match(mcpHeaderProblem({ type: "object", properties: Object.fromEntries(Array.from({ length: 20_000 }, (_, i) => [`p${i}`, { type: "string" }])) }) ?? "", /larger than 10000 parts/);
 });
