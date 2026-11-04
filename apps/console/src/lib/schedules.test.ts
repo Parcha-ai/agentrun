@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, type Draft, draftOf, emptyDraft, firingWords, instantIn, issuesOf, localIn, span, whenWords } from "./schedules";
+import { bodyOf, type Draft, draftOf, emptyDraft, firingWords, instantIn, issuesOf, localIn, patchOf, span, whenWords } from "./schedules";
 import type { Firing, Trigger } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -76,6 +76,20 @@ describe("a schedule in the form, to edit", () => {
     expect(draftOf(trigger({ source: { kind: "schedule", at: "2026-11-05T09:30:00Z" } }))).toMatchObject({ kind: "at", at: "2026-11-05T09:30", timezone: "UTC" });
     expect(draftOf(trigger({ source: { kind: "schedule", every_s: 7200, start_at: "2026-11-05T09:00:00Z" } }))).toMatchObject({ kind: "every", every: "2", everyUnit: "hours", startAt: "2026-11-05T09:00" });
     expect(draftOf(trigger({ source: { kind: "schedule", every_s: 90, start_at: "2026-11-05T09:00:00Z" } }))).toMatchObject({ every: "90", everyUnit: "seconds" });
+  });
+});
+
+describe("an edit's body", () => {
+  // The server starts a schedule again from now whenever an edit names its source, and turns it on or off by `enabled`:
+  // an edit sends only what changed, and never `enabled` (Pause and Resume do).
+  it("names only the parts that changed, and never enabled", () => {
+    const t = trigger({ enabled: false });
+    expect(patchOf(t, bodyOf(draftOf(t)).body!)).toEqual({});
+    expect(patchOf(t, bodyOf({ ...draftOf(t), name: "nightly" }).body!)).toEqual({ name: "nightly" });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), maxCost: "3" }).body!)).toEqual({ target: { kind: "start_run", agent_id: "triage", input: { content: "Triage last night's issues." }, max_cost_usd: 3 } });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), cron: "0 2 * * *" }).body!)).toEqual({ source: { kind: "schedule", cron: "0 2 * * *", timezone: "America/Los_Angeles" } });
+    const every = trigger({ source: { kind: "schedule", every_s: 300, start_at: "2026-11-05T09:00:00Z" } });
+    expect(patchOf(every, bodyOf(draftOf(every)).body!)).toEqual({});
   });
 });
 
