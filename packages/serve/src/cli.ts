@@ -11,7 +11,7 @@ import { defaultData } from "./files.js";
 import { canOpen } from "./host.js";
 import { keyModel } from "./model.js";
 import { resetPassword } from "./owner.js";
-import { banner, consoleLink } from "./print.js";
+import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
@@ -147,13 +147,12 @@ try {
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
-const printed: Parameters<typeof banner>[0] = { url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) };
-for (const line of banner(printed)) console.log(line);
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // With a public address the setup link and its code are printed as the code is made (owner.ts).
 if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
-// The address the banner's Open line names, once the server listens: with accounts off, its sign-in link when this
-// start made the token.
-if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [consoleLink(printed)], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+// The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
+// and the browser's history.
+if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

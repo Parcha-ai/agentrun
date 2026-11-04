@@ -82,7 +82,7 @@ test("demo: with no --port the server takes the first free port from its default
   assert.equal(caps.models.default, "anthropic/claude-sonnet-5-5");
 });
 
-test("demo: --open opens the console's address in the browser where there is a display, and never in CI; with accounts off, the banner's sign-in link when this start made the token", { timeout: 180_000 }, async (t) => {
+test("demo: --open opens the console's address in the browser where there is a display, and never in CI; never a link with the token, even the one the banner prints", { timeout: 180_000 }, async (t) => {
   const fake = mkdtempSync(join(tmpdir(), "serve-open-"));
   t.after(() => rmSync(fake, { recursive: true, force: true }));
   const opened = join(fake, "opened");
@@ -95,13 +95,15 @@ test("demo: --open opens the console's address in the browser where there is a d
   for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(readFileSync(opened, "utf8"), `${base}/\n`);
   rmSync(opened);
-  // Accounts off, on a fresh store: the browser gets the link the banner prints, whose token signs it in.
+  // Accounts off, on a fresh store: the banner prints its sign-in link, but the opener's arguments (any process's to read)
+  // and the browser's history get the page alone.
   const store = join(fake, "store");
   const made = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", AGENTRUN_ACCOUNTS: "0" }, store);
   for (let i = 0; !existsSync(opened) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
-  const link = /^Open (\S+)/m.exec(made.out)?.[1];
-  assert.match(link ?? "", /^http:\/\/127\.0\.0\.1:\d+\/\?token=[\w%.-]+$/, made.out);
-  assert.equal(existsSync(opened) && readFileSync(opened, "utf8"), `${link}\n`, "the sign-in link, as the banner prints it");
+  assert.match(/^Open (\S+)/m.exec(made.out)?.[1] ?? "", /^http:\/\/127\.0\.0\.1:\d+\/\?token=[\w%.-]+$/, made.out);
+  const handed = existsSync(opened) ? readFileSync(opened, "utf8") : "";
+  assert.doesNotMatch(handed, /token=/, "no token in the opener's arguments");
+  assert.equal(handed, `${made.base}/\n`);
   rmSync(opened);
   await made.stop();
   // The same store started again: the token is not printed, so the browser gets the plain address, never a placeholder.
