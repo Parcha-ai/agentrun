@@ -73,7 +73,9 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
   if (place.mode !== "sandbox" || place.box !== "docker") throw new Error(`runs in the ${place.mode === "sandbox" ? place.box : "runner"} place have no box`);
   const { dockerBoxes } = await import("@parcha/pi-transport/box/docker");
   const user = process.getuid && process.getgid ? `${process.getuid()}:${process.getgid()}` : undefined;
-  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}) });
+  // With no capability and no way to gain one (no program in a run's box changes user): as root (serve run as uid 0) a
+  // box could otherwise make a device node in work/.
+  return dockerBoxes({ image: env[DOCKER_IMAGE_ENV] || DEFAULT_DOCKER_IMAGE, ...(user ? { user } : {}), dropCapabilities: true });
 }
 
 /** The tests' faux box provider, from its module. */
