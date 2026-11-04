@@ -375,3 +375,23 @@ test("on pi, monid's calls at their default ask park by their settings keys, and
   const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(seen.map((call) => call.path), ["/v1/discover", "/v1/inspect", "/v1/run"], "each approved call once");
 });
+
+/** A held key for the cut cases, its words none a row says itself. */
+const CUT_KEY = ["not-a-secret", "gate-cut-key", randomBytes(6).toString("hex")].join("-");
+
+test("a held key straddling the 2 KiB cut of a parked call's arguments shows no 8 characters of it: the arguments are redacted whole, then cut", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { PARALLEL_API_KEY: CUT_KEY });
+  await network(t);
+  const server = await serve(t, GATE);
+  assert.equal((await server.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  // {"url":"<PAGE>?pad=<pad>&k=<key>"}: the key starts 20 bytes before the cut (ARGS_PREVIEW_BYTES less its "…").
+  const pad = "a".repeat(2048 - 3 - 20 - `{"url":"${PAGE}?pad=&k=`.length);
+  const runId = await fetching(server.api, "straddle", "pi", `${PAGE}?pad=${pad}&k=${CUT_KEY}`);
+  const { view, rows } = await parked(server.api, runId);
+  const row = rows.find((r) => r.kind === "tool_approval_requested");
+  assert.ok(row && view.pending?.kind === "approval", "parked");
+  assert.equal(holdsPiece(JSON.stringify(row), CUT_KEY), false, "the approval row");
+  assert.equal(holdsPiece(JSON.stringify(view.pending), CUT_KEY), false, "GET /runs/{id}'s pending");
+  const listed = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
+  assert.equal(holdsPiece(JSON.stringify(listed.pending), CUT_KEY), false, "the run list's pending");
+});
