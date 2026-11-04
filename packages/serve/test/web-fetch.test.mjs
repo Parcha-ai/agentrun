@@ -555,3 +555,28 @@ test("a call stopped before its page arrived says so: not via direct, as no page
   assert.match(page.error, /stopped before the page arrived/);
   assert.equal(page.parallel, undefined, "no reason why Parallel gave no page: it was not asked to stop");
 }));
+
+test("only reads that have ended count toward the run's pages: one page done while eight are still being read stays, and its next part asks nothing", inCall(async () => {
+  const asked = [];
+  const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const urls = Array.from({ length: web.PAGES_HELD + 1 }, (_, n) => `${PUBLIC}${n}`);
+  const quick = urls[web.PAGES_HELD];
+  // Parallel answers the last URL at once and the other eight after 300 ms.
+  const send = async (_url, init) => {
+    const url = JSON.parse(init.body).urls[0];
+    asked.push(url);
+    await later(url === quick ? 5 : 300);
+    return new Response(JSON.stringify({ results: [{ url, title: "Page", full_content: `page ${url} ${"y ".repeat(15_000)}` }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const extract = parallelExtract(CANARY, send);
+  const held = new Map();
+  const read = (url, offset) => webFetch(url, { ...network(), parallel: extract, pages: held, ...(offset ? { offset } : {}) });
+  const slow = urls.slice(0, web.PAGES_HELD).map((url) => read(url));
+  const first = await read(quick);
+  assert.equal(first.ok, true, first.error);
+  const next = await read(quick, 20_000);
+  assert.equal(next.ok, true, next.error);
+  assert.equal(asked.filter((url) => url === quick).length, 1, `the page that ended while eight were being read is kept: its next part asks Parallel nothing: ${JSON.stringify(asked)}`);
+  await Promise.all(slow);
+  assert.equal(asked.length, urls.length, "one extract a page");
+}));
