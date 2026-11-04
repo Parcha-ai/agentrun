@@ -277,3 +277,15 @@ test("a result stored before its call (a harness that wrote it first) counts onc
   ];
   assert.deepEqual(runMetricsOf(entries).tools, { write: { calls: 2, errors: 0 } });
 });
+
+test("a result stored before its call counts under its call's name and with its outcome, once, though it names no tool itself", () => {
+  // A refused fetch is a failure only as web_fetch reads its page: counted before its call, it was an unnamed tool's success.
+  const refused = JSON.stringify({ ok: false, url: "http://127.0.0.1/", refused: "refused: 127.0.0.1 is not a public host" });
+  const entries = [
+    user("Fetch it.", 0),
+    result("f1", undefined, refused, 1),
+    assistant([call("f1", "web_fetch", { url: "http://127.0.0.1/" })], 2),
+    assistant([{ type: "text", text: "It was refused." }], 3),
+  ];
+  assert.deepEqual(runMetricsOf(entries).tools, { web_fetch: { calls: 1, errors: 1 } });
+});
