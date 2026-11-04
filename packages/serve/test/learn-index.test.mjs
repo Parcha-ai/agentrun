@@ -12,15 +12,15 @@ import * as reflect from "../dist/learn/reflect.js";
 import * as secrets from "../dist/learn/secrets.js";
 
 const VALUES = {
-  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable"],
+  check: ["CAPS", "checkNote", "checkProposal", "mergeProblems", "printable", "supersededBy"],
   grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradePrompt", "parseVerdict"],
   invisible: ["hiddenCharacter"],
-  reflect: ["reflectPrompt"],
-  notes: ["activeNotes", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "NOTE_FILE", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
+  reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectPrompt"],
+  notes: ["activeNotes", "approve", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "mergedNote", "NOTE_FILE", "NOTE_ORIGINS", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
   secrets: ["MIN_SECRET", "PRINT_MAX", "redactSecrets", "secretShapes", "valueMatcher"],
 };
 const MODULES = { check, grade, invisible, reflect, notes, secrets };
-const TYPES = ["Base", "Change", "CheckInput", "GradeInput", "IndexEntry", "LearnedNote", "NoteStatus", "NoteText", "NoteType", "Problem", "ProposalCheck", "ProposedNote", "Rule", "Verdict", "VerdictItem"];
+const TYPES = ["Base", "Change", "CheckInput", "GradeInput", "IndexEntry", "LearnedNote", "NoteOrigin", "NoteStatus", "NoteText", "NoteType", "Problem", "ProposalCheck", "ProposedNote", "Reflection", "Rule", "Verdict", "VerdictItem"];
 
 test("the index exports every value of the learning modules, each the same binding as its module's, and nothing else", () => {
   assert.deepEqual(Object.keys(learn).sort(), Object.values(VALUES).flat().sort());

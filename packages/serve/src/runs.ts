@@ -155,8 +155,6 @@ export type Run = {
   revision: string;
   /** The harness its revision names (pi when it names none, or its revision is gone). */
   harness: string;
-  /** Its agentic revision names the `write` tool: its end-of-run turn can add a note. */
-  writes?: boolean;
   /** The newest store entry the run has shown. */
   lastEntry?: number;
   /** What the live path's rows keep served (keepCommitted), for a learning row shown between its snapshots. */
@@ -175,6 +173,9 @@ export type Run = {
   rows: TimelineEvent[];
   /** The whole text of the run's newest assistant message: a row's text is cut at 2000 characters, an answer is not. */
   answerText?: string;
+  /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
+   *  notes learning reads (learning-run.ts). */
+  turnText?: Map<number, string>;
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
   orphan?: number;
@@ -268,12 +269,19 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
 }
 
 /** Notes the whole text of the newest assistant message in `entries` (pi's stored entries), and the newest entry. The
- *  end-of-run turn's are never the run's answer. */
+ *  end-of-run turn's are never the run's answer: each is noted by its entry in `turnText`, whole. */
 function noteAnswer(run: Run, entries: readonly unknown[]): void {
   for (const value of entries) {
-    if (isObject(value) && typeof value.id === "number") {
-      run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
-      if (reflects(run.meta.reflect, value.id)) continue;
+    const entry = isObject(value) && typeof value.id === "number" ? value.id : undefined;
+    if (entry !== undefined) run.lastEntry = Math.max(run.lastEntry ?? 0, entry);
+    // The end-of-run turn's entries are never the run's answer, nor a message it waits on: each assistant message's
+    // whole text is noted in `turnText`, by entry.
+    if (entry !== undefined && reflects(run.meta.reflect, entry)) {
+      if (isObject(value) && value.kind === "pi.assistant" && Array.isArray(value.model) && isObject(value.model[0])) {
+        const content = value.model[0].content;
+        (run.turnText ??= new Map()).set(entry, typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => isObject(b) && b.type === "text").map((b) => String((b as Json).text ?? "")).join("\n").trim() : "");
+      }
+      continue;
     }
     if (!isObject(value) || typeof value.kind !== "string") continue;
     // A message a claude-agent or codex run accepted, and its end (harness-app.ts): one with no end still waits.
@@ -408,7 +416,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -652,7 +660,6 @@ export class Runs {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [], harness,
       working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
       ...(tooling ? { tooling } : {}),
-      ...(revision?.kind === "agentic" ? { writes: revision.body.tools.includes("write") } : {}),
     };
   }
 
