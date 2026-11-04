@@ -452,7 +452,9 @@ function createProjector(options: TimelineOptions) {
       if (row.summary !== null) row.summary = options.redact(row.summary);
       if (row.text !== null) row.text = options.redact(row.text);
     }
-    if (row.summary !== null) row.summary = clean(row.summary, caps.summary);
+    // A person's own message shows as they typed it, its held keys redacted (readMessage): a URL in it keeps its fragment
+    // and query values, which scrubUrls drops from the URLs a model saw. Every other row's summary is scrubbed.
+    if (row.summary !== null) row.summary = kind === "user_message" ? cut(row.summary, caps.summary) : clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
     if (row.text !== null) row.text = kind === "user_message" ? cut(row.text, caps.text) : clean(row.text, caps.text);
