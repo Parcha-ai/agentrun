@@ -12,7 +12,7 @@ import { openStoreReader } from "@parcha/pi-durable-agent";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, printed, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -79,14 +79,10 @@ test("a run its server's successor ends keeps the effort its process ran at, not
   const dir = await scratch(t);
   const data = join(dir, "agents");
   // The first server in a process of its own, at the host level high, so it can die as a crash kills it.
-  const first = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_THINKING: "high" } });
+  // A home of its own: a first start counts the sessions in its home for setup's offer, and this machine's are not the test's.
+  const first = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dir, AGENT_THINKING: "high" } });
   t.after(() => first.kill("SIGKILL"));
-  let out = "";
-  first.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
-    assert.ok(i < 200, `the server did not start: ${out}`);
-    await sleep(50);
-  }
+  const out = await printed(first, /^AGENTRUN_API_KEY=/m);
   const api = client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim());
   const go = join(dir, "go");
   const runId = await started(api, "later", {}, { input: { content: `Answer once ${go} exists.` } });

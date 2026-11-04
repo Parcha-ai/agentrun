@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { buildConsole, consoleDepsInstalled, consoleInputsHash, consoleIsCurrent, HASH_FILE, stampConsole } from './build-console.mjs';
 
@@ -73,4 +74,54 @@ test('dependencies npm installed by itself, as a source check does before going 
   assert.deepEqual(r.asked, ['run build']);
   r.put('apps/console/node_modules/.package-lock.json', JSON.stringify({ packages: { 'node_modules/vite': { version: '5.4.20' } } }));
   assert.equal(consoleDepsInstalled(r.root), false, 'a version the lockfile does not name');
+});
+
+/** buildConsole with its own npm (no `run` passed) in a child process, a fake npm first on PATH: each `npm ci` answers
+ *  with the next of `plan` (`ok`, or npm 11's error lines for a code), and `npm run build` builds and stamps. */
+function buildWithNpm(t, plan) {
+  const r = repo(t);
+  const bin = join(r.root, 'bin');
+  const log = join(bin, 'calls.log');
+  const errors = {
+    ECONNRESET: 'npm error code ECONNRESET\nnpm error network aborted\n',
+    EUSAGE: 'npm error code EUSAGE\nnpm error\nnpm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync.\n',
+    EBADENGINE: 'npm error code EBADENGINE\nnpm error engine Unsupported engine\n',
+  };
+  const module = new URL('./build-console.mjs', import.meta.url).href;
+  r.put('bin/calls.log', '');
+  r.put('bin/npm', `#!${process.execPath}
+const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
+if (process.argv[2] === 'run') { mkdirSync('dist', { recursive: true }); writeFileSync('dist/index.html', 'built\\n'); import(${JSON.stringify(module)}).then((m) => m.stampConsole(${JSON.stringify(r.root)})); }
+else {
+  const n = readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n').filter((line) => line.startsWith('ci')).length;
+  const step = ${JSON.stringify(plan)}[n - 1] ?? 'ok';
+  if (step !== 'ok') { process.stderr.write(${JSON.stringify(errors)}[step]); process.exit(1); }
+}
+`);
+  chmodSync(join(bin, 'npm'), 0o755);
+  const done = spawnSync(process.execPath, ['--input-type=module', '-e', `import { buildConsole } from ${JSON.stringify(module)}; console.log('result:', buildConsole(${JSON.stringify(r.root)}));`], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${bin}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH}`, NPM_CI_RETRY_WAIT_MS: '0' },
+  });
+  return { ...done, calls: readFileSync(log, 'utf8').split('\n').filter(Boolean), dist: existsSync(join(r.root, 'apps/console/dist/index.html')) };
+}
+
+const CI = 'ci --ignore-scripts --no-audit --no-fund';
+
+test("the console's npm ci is retried once after a network error, with a warning naming it, and the console builds", (t) => {
+  const done = buildWithNpm(t, ['ECONNRESET', 'ok']);
+  assert.equal(done.status, 0, done.stderr);
+  assert.deepEqual(done.calls, [CI, CI, 'run build']);
+  assert.match(done.stdout, /^::warning::npm ci failed on a network error \(ECONNRESET\), retrying once$/m);
+  assert.match(done.stdout, /^result: built$/m);
+});
+
+test("the console's npm ci is not retried after a lockfile or engine failure, and a second network error stops the build", (t) => {
+  for (const plan of [['EUSAGE'], ['EBADENGINE'], ['ECONNRESET', 'ECONNRESET']]) {
+    const done = buildWithNpm(t, [...plan, 'ok']);
+    assert.equal(done.status, 1, plan.join(' '));
+    assert.deepEqual(done.calls, plan.map(() => CI), `${plan.join(' ')}: npm ci ran ${plan.length} time(s), and no build`);
+    assert.match(done.stderr, /Error: npm ci --ignore-scripts --no-audit --no-fund in .*apps[\\/]console exited 1/, 'the same refusal as before');
+    assert.equal(done.dist, false);
+  }
 });

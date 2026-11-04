@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { skillProblems } from "@parcha/agentrun-harness-claude";
-import { promptOf as appPromptOf } from "../dist/app.js";
 import { promptOf, READS_AT_ONCE, skillsOf, splitSkills, systemOf } from "../dist/skills.js";
 import { workspaceTestHooks } from "../dist/workspace.js";
 
@@ -133,7 +132,6 @@ test("the system prompt: with the adapter's check, the skills it takes leave the
   const paths = Object.keys(files);
   const inlinedAll = await systemOf("Answer.", paths, work);
   assert.deepEqual(inlinedAll, { system: await promptOf("Answer.", paths, work), native: [] }, "no check: as every other harness has it");
-  assert.equal(appPromptOf, promptOf, "app.js still exports promptOf, the same function");
   assert.match(inlinedAll.system, /<skill name="cite">/);
   assert.match(inlinedAll.system, /<skill name="legacy">/);
 

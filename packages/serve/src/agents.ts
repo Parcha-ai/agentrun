@@ -100,9 +100,15 @@ export class Agents {
     const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
     // Unlike the harness, a place is kept when it is runner: the default is the host's, so naming runner says something.
     const place = isObject(definition.place) ? { place: definition.place as RevisionPlace } : {};
-    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...(note !== undefined ? { note } : {}) };
+    // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
+    const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
+    const set = kept.length ? { toolSettings: Object.fromEntries(kept) as Record<string, Record<string, string>> } : {};
+    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set, ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
-    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common };
+    // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
+    // none, and its revision id is the one it had before the switch.
+    const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
+    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning };
   }
 
   /** `definition.version`, when given, is the number of the revision the request leaves current. */
@@ -160,7 +166,8 @@ export class Agents {
     if (kept.length) throw invalid(kept);
     // Each try builds the revision on the current one, checks it and commits it on that one: a current revision another
     // writer moved since the build is sent back as stale, and the next try builds and checks again on the new one, so
-    // what an edit leaves out (skill files, harness, place) is never carried over from a revision it does not follow.
+    // what an edit leaves out (skill files, harness, place, learning) is never carried over from a revision it does not
+    // follow.
     for (let tries = 1; ; tries++) {
       if (tries > 1) entry = held((await this.get(agent.id)) ?? entry);
       let files = skills;
@@ -169,11 +176,12 @@ export class Agents {
         const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
         files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
       }
-      // An edit that names no harness or place keeps the agent's, as it keeps its skill files: absent here is unchanged,
-      // not the default.
+      // An edit that names no harness, place or learning switch keeps the agent's, as it keeps its skill files: absent
+      // here is unchanged, not the default.
       const harness = entry.revision?.body.harness;
       const place = entry.revision?.body.place;
-      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}) }, files, note);
+      const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}) }, files, note);
       await this.checked(revision);
       await check?.(revision);
       const base = entry.revision?.id ?? null;
@@ -265,9 +273,9 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as `POST /agents` takes one, numbered. */
 export function definitionOf(agent: Agent, revision: Revision, version: number): Json {
   const body = revision.kind === "agentic"
-    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}) }
+    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}) }
     : { workflow: revision.body.workflow };
-  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
+  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
 
 /** `Agent` as the contract shows it, with its current revision. */

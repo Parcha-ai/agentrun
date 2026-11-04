@@ -230,22 +230,26 @@ land (native and picked web search and tool settings, monid on every harness, th
   `node --test packages/serve/test/{fetch-page,web-fetch,host-tools,harness-run,monid,tool-keys,secret-custody}.test.mjs`
   runs the plane end to end that way.
 - **On a QA server.** `--faux MODULE` scripts the model's tool calls (see "The faux model" in `packages/serve/README.md`),
-  so a run calls `fetch_page`, `web_fetch`, `read`, `write` and `edit` with no model key. `fetch_page` and `web_fetch`
-  then read real public pages; nothing else leaves the box.
+  so a run calls `web_fetch` (or `fetch_page`, its legacy name), `read`, `write` and `edit` with no model key.
+  `web_fetch` then reads real public pages; nothing else leaves the box.
 
 **Checks when the tool plane changed.**
 1. Every name in `GET /v2/settings/tool-keys` `unlocks` is a tool `GET /v2/capabilities` binds, on the harnesses it lists,
    and `missing` names the key each tool still needs.
-2. `fetch_page` and `web_fetch` refuse loopback, private, link-local and metadata addresses and ports other than 80/443,
-   at the first hop and after a redirect; a refused URL is never sent to Parallel.
+2. `web_fetch`, under either name (`fetch_page` is its legacy one, no longer a tool of its own), refuses loopback,
+   private, link-local and metadata addresses and ports other than 80/443, at the first hop and after a redirect; a
+   refused URL is never sent to Parallel.
 3. A tool key reaches only a run that names a tool it unlocks, over the pipe, never in any process's environment; a saved
    key exists on disk only sealed (no plaintext under the data directory).
-4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `fetch_page`, `web_fetch`) run and are journaled
-   with their replay class; a `write` cut off by a crash comes back interrupted, never re-run.
+4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, also as `fetch_page`, and
+   `web_search` where it is not the harness's own) run and are journaled with their replay class; a `write` cut off by a
+   crash comes back interrupted, never re-run.
 5. A `monid.run` is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
-6. On pi, `web_search` searches Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server; a 429
-   is a tool error naming the rate limit, never a hang.
+6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
+   `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;
+   past Exa's free limit it is tried once more, then a tool error in our words (`Free web search is rate-limited right
+   now…`), never Exa's fix text and never a hang.
 
 ### Places (boxes, home, files)
 
@@ -262,6 +266,9 @@ the run's files go to. It gives back:
 - Internal to pi-transport: `bwrapArgs`, `bwrapFiles` and `probeBwrap` (`src/box/bwrap-args.ts`).
 - `@parcha/pi-transport/testing`: `registerBoxConformance`, and fake providers for each box (`fakeBoxes` and the
   provider-shaped fakes).
+- Serve, what a run is told of its files (`packages/serve/src/run-manifest.ts`): `firstMessage` adds one line to an
+  agentic run's first message, `Files for this run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from
+  the run's `work/inputs/` as `runs.ts` sends it to the door, on every harness.
 - Serve: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`, and the sweep before any run starts
   (`sweepBoxes`, `settleBox`, `Quarantine` in `packages/serve/src/box/sweep.ts`).
 - Serve, an agent's place (`packages/serve/src/place.ts`): `definition.place` is `{mode: "runner"}` or
@@ -269,10 +276,28 @@ the run's files go to. It gives back:
   place saves with a warning at `definition.place`, and its run is 409 `agent_not_runnable` with `details.box`.
 - Serve, the box registry (`packages/serve/src/boxes.ts`): `AGENTRUN_BOXES` lists the boxes to probe once at start
   (`boxRegistry`), and the start log's `event=boxes` line says which are available and why the others aren't. Box
-  keys (`BOX_KEYS`) stay with the server.
+  keys (`BOX_KEYS`) stay with the server. The registry feeds `places` (`boxAvailability`): `docker` and `daytona` are
+  available when they are, and every other box says runs in it are not available yet.
+- Serve, a run's place and its box: a run takes its revision's place or the default (`resolvePlace`), and the run keeps
+  its resolved `place` (its `serve.json`, `GET /v2/runs/{id}`). In the run's process, `codingSource(place, box?)`
+  (`packages/serve/src/coding-tools.ts`) is the boxed coding source: on the runner pi's `read`, `write` and `edit`; in a
+  box those and `bash`, each call on pi-transport's `boxEnv` over the run's box. pi's tool table and the other
+  harnesses' `hostTools` both take it, and the tool plane's permission gate wraps it. `agentWorkDir(runDir, place)`
+  (`place.ts`) is the run's `work/` as its tools see it: `<runDir>/work` on the runner, `/run/agentrun/run/work` in a
+  box. The box's lifecycle and mounts are `packages/serve/src/run-box.ts` (`runBox`, `boxMounts`, `mountSource`,
+  `destroyRunBoxes`, `sweepRunBoxes`), labelled `agentrun.run=<id>`; pi-transport's `endLeftCommands` kills what a
+  crashed run's process left running.
+- Serve, a Daytona place (`{mode: "sandbox", box: "daytona"}`): the server makes, seeds, pulls and destroys the run's
+  sandbox with its own key (`ensureRemoteBox`, `pullRemoteBox` in `run-box.ts`; `remotePlace` in `place.ts`), the network
+  blocked (`networkBlockAll`). The run's process reaches it only through the box relay (`packages/serve/src/box-relay.ts`,
+  its address in `<data>/.box-relay`), which takes a run's call only with that run's own door token, follows no redirect,
+  and sends on with the key only a read of the run's own
+  sandbox and its toolbox's programs and files. `work/` is copied in at the sandbox's making and back at each turn's end
+  (a read of the run's files waits for that copy) and before the run's end is recorded; the mark is `box-sync.json`
+  beside the run. Tests: `test/daytona-boxes.test.mjs` on `test/fixtures/fake-daytona.mjs`, a loopback Daytona.
 
-Not on main yet: the registry feeding `places` (capabilities and run refusals still say no box is set up), runs in a
-box, a files API for the agent's home, and uploads. Each one extends this section when it lands.
+Not on main yet: runs in a box other than Docker and Daytona, a files API for the agent's home, and uploads. Each one
+extends this section when it lands.
 
 **Alone.** Everything else is faked: boxes by fake providers, the model by the faux model. Put a `docker` that exits
 1 first on `PATH`, even where Docker is installed, so nothing reaches a daemon by accident:
@@ -290,11 +315,16 @@ npm test -w @parcha/pi-transport -- home-untrusted-store                       #
 # serve: node:test over dist, on the faux model
 npm run build
 (cd packages/serve && node --test test/place.test.mjs test/boxes.test.mjs test/files.test.mjs \
-  test/box-sweep.test.mjs test/box-record.test.mjs)
+  test/box-sweep.test.mjs test/box-record.test.mjs test/boxed-tools.test.mjs test/run-box.test.mjs \
+  test/coding-tools.test.mjs test/host-tools.test.mjs test/run-manifest.test.mjs)
 ```
 
+`boxed-tools.test.mjs` runs sandbox runs on a faux box (pi-transport's local box, `startServe({ fauxBox })`), and
+`run-box.test.mjs` puts its own fake `docker` first on `PATH`, which runs a box's commands on the host.
+
 The Docker variant runs only where Docker exists, as CI's `transport-docker` job does:
-`docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`. Each `.live` file the `box-`
+`docker pull debian:bookworm-slim && npm run test:live:docker -w @parcha/pi-transport`, then serve's
+`AGENTRUN_SERVE_LIVE_DOCKER=1 node --test test/boxed-tools.docker.test.mjs` (advisory there). Each `.live` file the `box-`
 filter picks up skips itself without its `PI_TRANSPORT_LIVE_*` variable, so the commands above start no real box.
 `boxes.test.mjs` puts its own fake `docker` first on `PATH` and answers Daytona from a loopback fake; never set a box key
 or a real `docker` on `PATH` for a server under test.
@@ -317,6 +347,17 @@ or a real `docker` on `PATH` for a server under test.
    a `..` segment, a target of `/` and a repeated target before `docker run`; `box-local` refuses any mount.
 6. **Run files and the sweep**: `files.test.mjs` never lists or serves a dotfile or a symlink, and refuses `..` with the
    contract's codes; `box-sweep.test.mjs` reaps a box whose writer is gone and quarantines one it cannot empty.
+7. **Boxed tools**: `boxed-tools.test.mjs` and `run-box.test.mjs` pass. A sandbox run's `bash` `printf hi > out.txt`
+   shows in `GET /v2/runs/{id}/files` on pi, claude-agent and codex; the box's environment is `LANG`, `HOME=/tmp` and
+   its `PATH`, with no key or token; every `docker run` has `--network none`, `--user` the server's uid:gid, one
+   `--mount` of `work/` at `/run/agentrun/run/work` and only `NAME=value` envs; a run request naming `place` is a 422 and
+   makes no run; a runner agent naming `bash` and a sandbox workflow are 422; a link at a run's `work/` is refused
+   and nothing is bound; the box is destroyed at completion, cancel and archive, adopted by its label after a crash
+   (the left command killed), and swept at start once its run has ended.
+8. **Run files told**: `run-manifest.test.mjs` passes. A run given `notes.txt` is sent "Summarize the attached file."
+   plus `Files for this run: "inputs/notes.txt" (<n> B).`, reads it and answers with its text; on claude-agent and codex
+   the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged; a name
+   with `", ` or an RTL override stays inside its quotes, escaped; a link at `work/inputs` lists nothing.
 
 ### Console, import and analytics
 
@@ -403,6 +444,7 @@ _Written by the lane that owns this subsystem._
 - Fixed by #1357, re-check with console check 2: the console's New agent with default tools was refused with 422,
   because `pdf_pages` and `llm` (call-only tools) were ticked by default.
 - Fixed by #1356, re-check with tool plane check 1: tool keys listed `web_search` and the `monid.*` tools as unlocked,
-  but no such tool was bound.
+  but no such tool was bound. Fixed for `web_search` by its binding as well: it is bound on every harness now, and the
+  Parallel key lists it again as a tool it unlocks.
 - Not in the server yet: effort packs and output types, native web search, places and boxes, the kernel learning loop,
   and `output`/`place` on the run request.

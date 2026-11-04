@@ -15,6 +15,8 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const WORST = 16_384 * 100 / 1e6;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
+// Under the faux harness claude-agent and codex run one path (the id is only a label), so codex stands for both.
+const harness = "codex";
 
 let server;
 const stops = [];
@@ -63,25 +65,25 @@ async function cutByCrash(t, harness, cap) {
   return { api, runId };
 }
 
-for (const harness of ["claude-agent", "codex"]) {
-  test(`${harness}: a capped run whose process dies mid-request goes on: the cut request counts at the worst case held for it`, { timeout: 120_000 }, async (t) => {
-    const { api, runId } = await cutByCrash(t, harness, 10);
-    await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
-    const run = (await api("GET", `/runs/${runId}`)).body;
-    assert.deepEqual([run.status, run.result?.final_answer], ["completed", "After the cut."], JSON.stringify(run.error));
-    assert.equal(run.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
-    const held = records(runId, "runner.request").map((r) => r.data.heldUsd);
-    assert.equal(held.length, 3, "the first, the cut one, and the one after it");
-    assert.ok(held.every((usd) => Math.abs(usd - WORST) < 1e-9), `each request's record holds its worst case: ${JSON.stringify(held)}`);
-  });
+test(`${harness}: a capped run whose process dies mid-request goes on: the cut request counts at the worst case held for it`, { timeout: 120_000 }, async (t) => {
+  const { api, runId } = await cutByCrash(t, harness, 10);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.result?.final_answer], ["completed", "After the cut."], JSON.stringify(run.error));
+  assert.equal(run.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
+  const held = records(runId, "runner.request").map((r) => r.data.heldUsd);
+  assert.equal(held.length, 3, "the first, the cut one, and the one after it");
+  assert.ok(held.every((usd) => Math.abs(usd - WORST) < 1e-9), `each request's record holds its worst case: ${JSON.stringify(held)}`);
+});
 
-  test(`${harness}: a capped run whose process dies mid-request, when the held worst case leaves no room: refused with the cap's message`, { timeout: 120_000 }, async (t) => {
-    // $3 holds the first two requests ($0.002 spent, then $1.6384 held), not a third $1.6384 beside them.
-    const { api, runId } = await cutByCrash(t, harness, 3);
-    await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
-    const run = (await api("GET", `/runs/${runId}`)).body;
-    assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-    assert.match(run.error.message, /could cost up to \$1\.638400, and with \$1\.640400 spent/);
-    assert.equal(records(runId, "runner.request").length, 2, "the third request is refused before its record");
-  });
-}
+test(`${harness}: a capped run whose process dies mid-request, when the held worst case leaves no room for another request's least: refused with the cap's message`, { timeout: 120_000 }, async (t) => {
+  // $1.7404 holds the first two requests ($0.002 spent, then $1.6384 held), and leaves $0.10 after them: not the third's
+  // least, 1,024 tokens at $0.0001.
+  const { api, runId } = await cutByCrash(t, harness, 1.7404);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+  // To run it the cap would have to be $1.6404 spent and the next request's least, $0.1024: $1.75 up to the cent.
+  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6404 of its \$1\.7404 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.75 to run it\.$/);
+  assert.equal(records(runId, "runner.request").length, 2, "the third request is refused before its record");
+});

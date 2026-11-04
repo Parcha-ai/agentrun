@@ -6,22 +6,31 @@
 //   node spec/lean/sweep/collect.mjs [--test-concurrency <n>] [out.json]
 // The suites run with a plain `node --test`, so at node's default concurrency (every core). `--test-concurrency <n>` or
 // TEST_CONCURRENCY=<n> passes it to each suite; the flag wins, and neither leaves node's default alone.
+// `--captures <dir>`, once or more, runs no suite: it reads what the capture hook wrote into each directory while
+// the suites ran elsewhere (CI's test shards), and needs a capture in every directory and from every suite.
 // `lake exe validator-sweep out.json` then asserts the Lean validator accepts every
 // workflow the TypeScript validator accepts.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const args = process.argv.slice(2);
 let concurrency = process.env.TEST_CONCURRENCY || undefined;
 const positional = [];
+const given = [];
 for (let i = 0; i < args.length; i += 1) {
   if (args[i] === "--test-concurrency") concurrency = args[(i += 1)] ?? "";
   else if (args[i].startsWith("--test-concurrency=")) concurrency = args[i].slice("--test-concurrency=".length);
+  else if (args[i] === "--captures") given.push(args[(i += 1)] ?? "");
+  else if (args[i].startsWith("--captures=")) given.push(args[i].slice("--captures=".length));
   else positional.push(args[i]);
+}
+if (given.some((dir) => !dir)) {
+  console.error("--captures needs a directory");
+  process.exit(2);
 }
 if (concurrency !== undefined && !/^[1-9]\d*$/.test(concurrency)) {
   console.error(`The test concurrency must be a positive whole number, not "${concurrency}" (--test-concurrency or TEST_CONCURRENCY)`);
@@ -29,7 +38,6 @@ if (concurrency !== undefined && !/^[1-9]\d*$/.test(concurrency)) {
 }
 const out = resolve(positional[0] ?? join(root, "spec/lean/.lake/validator-corpus.json"));
 const { validateWorkflow } = await import(join(root, "packages/dsl/dist/index.js"));
-const capture = mkdtempSync(join(tmpdir(), "lean-sweep-"));
 const register = join(root, "spec/lean/sweep/capture-register.mjs");
 
 const suites = [
@@ -37,10 +45,30 @@ const suites = [
   ["packages/pi/test", /\.test\.mjs$/],
   ["examples", /\.test\.mjs$/],
 ];
+/** The finished captures in a directory; a `.tmp` file is a write whose process died before its rename. */
+const finished = (dir) => readdirSync(dir).filter((file) => file.endsWith(".json")).map((file) => join(dir, file));
+const sourceOf = (entry) => (isAbsolute(entry.source) ? relative(root, entry.source) : entry.source);
 const problems = [];
-for (const [dir, pattern] of suites) {
+let captures;
+if (given.length) {
+  captures = [];
+  for (const dir of given) {
+    const files = existsSync(dir) ? finished(dir) : [];
+    if (!files.length) problems.push(`${dir}: no captures; the test shard that writes them did not finish, or the capture hook is not reaching it`);
+    captures.push(...files);
+  }
+  const sources = new Set(captures.map((file) => sourceOf(JSON.parse(readFileSync(file, "utf8")))));
+  for (const [dir] of suites) {
+    const count = [...sources].filter((source) => source.startsWith(`${dir}/`)).length;
+    if (!count) problems.push(`${dir}: no capture came from this suite; the capture hook is not reaching it`);
+    console.log(`${dir}: captures from ${count} files`);
+  }
+  console.log(`${captures.length} captures read from ${given.join(", ")}`);
+}
+const capture = given.length ? null : mkdtempSync(join(tmpdir(), "lean-sweep-"));
+for (const [dir, pattern] of given.length ? [] : suites) {
   const files = readdirSync(join(root, dir)).filter((f) => pattern.test(f)).map((f) => join(dir, f));
-  const before = readdirSync(capture).length;
+  const before = finished(capture).length;
   try {
     execFileSync(process.execPath, ["--test", ...(concurrency === undefined ? [] : [`--test-concurrency=${concurrency}`]), ...files], {
       cwd: root, stdio: ["ignore", "ignore", "pipe"], maxBuffer: 64 * 1024 * 1024,
@@ -49,7 +77,7 @@ for (const [dir, pattern] of suites) {
   } catch (error) {
     problems.push(`${dir}: the suite failed under the capture hook (exit ${error.status}); its corpus would be incomplete`);
   }
-  const captured = readdirSync(capture).length - before;
+  const captured = finished(capture).length - before;
   if (captured === 0) problems.push(`${dir}: the suite contributed no workflows; the capture hook is not reaching it`);
   console.log(`${dir}: ${files.length} test files, ${captured} new validations captured`);
 }
@@ -63,11 +91,11 @@ const add = (source, workflow, inputKeys) => {
   const text = JSON.stringify({ workflow, inputKeys });
   if (!entries.has(text)) entries.set(text, { source, workflow, inputKeys });
 };
-for (const file of readdirSync(capture)) {
-  const entry = JSON.parse(readFileSync(join(capture, file), "utf8"));
-  add(relative(root, entry.source), entry.workflow, entry.inputKeys);
+for (const file of captures ?? finished(capture)) {
+  const entry = JSON.parse(readFileSync(file, "utf8"));
+  add(sourceOf(entry), entry.workflow, entry.inputKeys);
 }
-rmSync(capture, { recursive: true, force: true });
+if (capture) rmSync(capture, { recursive: true, force: true });
 const skillExamples = "packages/dsl/skills/author/examples";
 for (const file of readdirSync(join(root, skillExamples)).filter((f) => f.endsWith(".json") && !f.endsWith(".input.json"))) {
   const workflow = JSON.parse(readFileSync(join(root, skillExamples, file), "utf8"));

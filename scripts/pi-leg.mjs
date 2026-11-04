@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One pi version for every package whose ranges accept it, while the workspace develops on the lockfile's version.
 //
-// `node scripts/pi-leg.mjs --pi <version> (--plan | --scratch) [--only <name,...>] [--require-all] [--tests | --tests-except <name,...>] [--npm "<command>"] [--out <file>]`
+// `node scripts/pi-leg.mjs --pi <version> (--plan | --scratch) [--only <name,...>] [--require-all] [--tests | --tests-except <name,...> | --shard <k>] [--npm "<command>"] [--out <file>]`
 //
 // A workspace is in the leg when each pi-family peer range it declares accepts the version. `--plan` prints the leg and
 // changes nothing. `--scratch` says the checkout is disposable: the script pins the family at the version in the root
@@ -12,11 +12,15 @@
 // one copy at that version, then builds the leg's workspaces and those they use and runs each leg workspace's type-check and tests with
 // PI_EXPECT_VERSION set. A leg workspace that depends on another pi workspace runs only with that one in the leg: their
 // tests load both in one process. `--tests` runs the type-check and tests of only the named leg workspaces, and
-// `--tests-except` of every other one: CI runs a leg as two jobs, one with each and the same names, so each suite runs once
-// and a new pi workspace runs in the second. Both install and check the whole leg.
+// `--tests-except` of every other one: CI splits a leg into jobs that each name some with `--tests` and one that names all
+// of those with `--tests-except`, so each suite runs once and a new pi workspace runs in that last job. `--shard <k>` runs
+// the k-th of scripts/ci-shards.json's `pi.shards` parts of every leg workspace's type-check and test files, planned by time
+// (scripts/ci-plan.mjs): each part's jobs plan every part and fail unless they cover each file once, so a new pi workspace
+// or test file runs in one of them. Each installs, checks and builds the whole leg.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { checkCover, commandsOf, plan as planShards, readConfig, readSuites, unitsOf } from './ci-plan.mjs';
 import { isMain } from './is-main.mjs';
 
 /** The pi family: the packages that are released together and break together in a minor. */
@@ -86,6 +90,18 @@ export function testedOf(leg, tests) {
   if (!tests) return leg;
   for (const name of tests.names) if (!leg.includes(name)) throw new Error(`${name} is not in the leg`);
   return leg.filter((name) => tests.names.includes(name) === !tests.except);
+}
+
+/** Part `k` of `n` of the type-checks and test files of the leg workspaces `tested`, planned by time over all n parts
+ *  (scripts/ci-plan.mjs), the cover checked: `{ suites, units, seconds }`. */
+export function legShard(root, workspaces, tested, k, n, { config, timings } = readConfig(root)) {
+  if (!Number.isInteger(n) || n < 1 || !Number.isInteger(k) || k < 1 || k > n) throw new Error(`--shard ${k} is not one of 1 to ${n}`);
+  const suites = readSuites(root, { config, only: tested });
+  const typecheck = workspaces.filter((w) => tested.includes(w.name) && w.manifest.scripts?.typecheck).map((w) => w.name);
+  const units = unitsOf(suites, timings, { typecheck });
+  const parts = planShards(units, n);
+  checkCover(units, parts);
+  return { suites, ...parts[k - 1] };
 }
 
 /** The workspaces a leg builds, in workspace order: the leg's and every workspace they use. A workspace outside the leg
@@ -172,7 +188,7 @@ export function extraCopies(rows) {
 }
 
 function argsOf(argv) {
-  const args = { only: undefined, tests: undefined, requireAll: false, plan: false, scratch: false, npm: 'npm', out: undefined, pi: undefined, root: process.cwd() };
+  const args = { only: undefined, tests: undefined, shard: undefined, requireAll: false, plan: false, scratch: false, npm: 'npm', out: undefined, pi: undefined, root: process.cwd() };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = () => { if (argv[i + 1] === undefined) throw new Error(`${flag} needs a value`); return argv[(i += 1)]; };
@@ -181,6 +197,9 @@ function argsOf(argv) {
     else if (flag === '--tests' || flag === '--tests-except') {
       if (args.tests) throw new Error('give --tests or --tests-except, once');
       args.tests = { names: value().split(',').filter(Boolean), except: flag === '--tests-except' };
+    } else if (flag === '--shard') {
+      if (!/^[1-9]\d*$/.test(argv[i + 1] ?? '')) throw new Error('--shard needs a part number from 1');
+      args.shard = Number(value());
     } else if (flag === '--require-all') args.requireAll = true;
     else if (flag === '--plan') args.plan = true;
     else if (flag === '--scratch') args.scratch = true;
@@ -190,6 +209,7 @@ function argsOf(argv) {
     else throw new Error(`unknown argument ${flag}`);
   }
   if (!args.pi) throw new Error('--pi <version> is required');
+  if (args.shard && args.tests) throw new Error('give --shard or --tests / --tests-except, not both');
   if (args.plan === args.scratch) throw new Error('give --plan (change nothing) or --scratch (this checkout is disposable: its manifests and lockfile are rewritten)');
   return args;
 }
@@ -211,7 +231,17 @@ function main() {
   const tested = testedOf(plan.leg, args.tests);
   report.tested = tested;
   if (args.tests) console.log(`pi ${args.pi}: tests here: ${tested.join(', ') || 'none'}; tests not here: ${plan.leg.filter((name) => !tested.includes(name)).join(', ') || 'none'}`);
+  let part;
+  if (args.shard) {
+    const n = readConfig(args.root).config.pi?.shards;
+    part = legShard(args.root, workspaces, tested, args.shard, n);
+    const counts = new Map();
+    for (const unit of part.units) counts.set(unit.suite, (counts.get(unit.suite) ?? 0) + 1);
+    console.log(`pi ${args.pi}: part ${args.shard} of ${n} (${part.seconds} s modelled): ${[...counts].map(([suite, count]) => `${suite} (${count})`).join(', ') || 'nothing'}`);
+    report.shard = { k: args.shard, n, units: part.units.map((unit) => unit.id) };
+  }
   let failed = false;
+  if (part && !part.units.length) { console.log(`pi ${args.pi}: FAILED: part ${args.shard} of ${report.shard.n} has nothing to run`); failed = true; }
   for (const { name, needs } of plan.refused) { console.log(`pi ${args.pi}: REFUSED: ${name} depends on ${needs.join(', ')}, which is not in the leg; one process would load two pi-durable versions`); failed = true; }
   if (args.requireAll && plan.out.length) { console.log(`pi ${args.pi}: FAILED: --require-all, and ${plan.out.length} pi workspace(s) are not in the leg`); failed = true; }
   if (failed || args.plan || plan.leg.length === 0) { write(); process.exit(failed ? 1 : 0); }
@@ -253,7 +283,15 @@ function main() {
   const build = run('npm', ['run', 'build', '--if-present', ...report.built.flatMap((name) => ['-w', name])], { cwd: args.root, env });
   report.steps.push({ step: 'build', rc: build });
   if (build !== 0) { write(); process.exit(1); }
-  for (const workspace of leg.filter((w) => tested.includes(w.name))) {
+  if (part) {
+    for (const { suite, command } of commandsOf(part.suites, part.units)) {
+      const rc = run(command[0], command.slice(1), { cwd: args.root, env });
+      const typecheck = suite.startsWith('typecheck:');
+      report.steps.push({ workspace: typecheck ? suite.slice('typecheck:'.length) : suite, step: typecheck ? 'typecheck' : `test (${part.units.filter((unit) => unit.suite === suite).length} of its files)`, rc });
+      if (rc !== 0) failed = true;
+    }
+  }
+  for (const workspace of part ? [] : leg.filter((w) => tested.includes(w.name))) {
     for (const step of ['typecheck', 'test']) {
       if (!workspace.manifest.scripts?.[step]) continue;
       const rc = run('npm', ['run', step, '-w', workspace.name], { cwd: args.root, env });

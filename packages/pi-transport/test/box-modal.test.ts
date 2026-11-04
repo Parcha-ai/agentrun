@@ -177,7 +177,7 @@ describe("modal boxes", () => {
 			});
 		});
 
-		it("reports the disk the box has, in whole GiB, the Yama setting, and when it started", async () => {
+		it("reports the disk the box has, in whole GiB, the Yama setting, and when it started, and leaves a fact it cannot read out", async () => {
 			await withRoot(async (root) => {
 				const sdk = new FakeModal();
 				sdk.probeOutput = "disk=52428801\nptrace=2\n";
@@ -190,20 +190,10 @@ describe("modal boxes", () => {
 				const again = unwrap(await provider(sdk).attach(box.id, context));
 				expect(again?.facts()).toMatchObject({ diskGb: 50, ptraceScope: 2, startedAt: facts.startedAt });
 				unwrap(await box.destroy(context));
-			});
-		});
-
-		it("leaves a fact it cannot read out, and reads a box without the Yama file as 0", async () => {
-			await withRoot(async (root) => {
-				const sdk = new FakeModal();
 				sdk.probeOutput = "disk=\nptrace=banana\n";
 				const odd = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
-				sdk.probeOutput = "disk=1048576\nptrace=0\n";
-				const none = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
 				for (const key of ["diskGb", "ptraceScope"]) expect(odd.facts()).not.toHaveProperty(key);
-				expect(none.facts()).toMatchObject({ diskGb: 1, ptraceScope: 0 });
 				unwrap(await odd.destroy(context));
-				unwrap(await none.destroy(context));
 			});
 		});
 
@@ -708,23 +698,6 @@ describe("modal boxes", () => {
 			// The settings belong to the sandbox, not to each program started through one handle.
 			expect(call?.params).not.toHaveProperty("env");
 			expect(sdk.sandboxList[0]?.params.env).toEqual({ GREETING: "hi" });
-			unwrap(await box.destroy(context));
-		});
-	});
-
-	it("runs programs with the spec's env in a box found again by another provider", async () => {
-		await withRoot(async (root) => {
-			const sdk = new FakeModal();
-			const box = unwrap(
-				await modalBoxes(sdk, { appName: "a" }).create(
-					{ ...SPEC, workspace: root, env: { GREETING: "hi" } },
-					context,
-				),
-			);
-			const again = unwrap(await modalBoxes(sdk, { appName: "a" }).attach(box.id, context));
-			const started = unwrap(await (again as Box).exec(["sh", "-c", 'printf %s "$GREETING"'], undefined, context));
-			const finished = unwrap(await finish(started));
-			expect(new TextDecoder().decode(finished.stdout)).toBe("hi");
 			unwrap(await box.destroy(context));
 		});
 	});

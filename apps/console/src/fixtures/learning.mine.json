@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/agents/refund-finder/learning/files/keep-it-to-three-lines.md",
+    "headers": {
+      "accept": "text/markdown, application/json"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"a94781bb8f0bbf09d1f1643372fd53b7e4eff75d\"",
+    "content-type": "text/markdown; charset=utf-8"
+  },
+  "body": "---\nname: Keep the summary to three lines\ndescription: The answer is the URL, the window and who pays shipping; nothing else\ntype: feedback\n---\nAnswer with the policy URL, the return window and who pays return shipping. No preamble.\n"
+}
