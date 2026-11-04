@@ -28,6 +28,7 @@ const SKILL_FILE = "skills/find-policies/SKILL.md";
 const DRAFT_FILE = "workflows/find-policies/workflow.json";
 const README_FILE = "workflows/find-policies/README.md";
 const json = { "content-type": "application/json" };
+const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const enc = encodeURIComponent;
 
 /** A server for learning, and agent `id` whose run answers a note, a skill and a draft, its grader told `more`. */
@@ -90,7 +91,7 @@ test("a skill or a draft that waits for its owner's OK is listed pending, and ap
   const { api, port, repo } = first;
   const second = await learned(t, "flower", ["Grade: pending workflows/find-policies/workflow.json."], { server: first });
   const origin = `http://127.0.0.1:${port}`;
-  const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: "the owner signs in with this phrase" } });
+  const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
   const listing = async (id) => (await api("GET", `/agents/${id}/learning`)).body;
