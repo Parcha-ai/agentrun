@@ -3,6 +3,8 @@
 // faux box cannot show is checked here: no key or token in the box's environment, in any process's under /proc or in
 // what Docker keeps of the container; no network, neither this host (on loopback, the bridge's gateway or its own
 // address) nor a public address, and no name resolves; and nothing of the host outside the run's work/ in the box.
+// With AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 too, the server also builds its default box image (python, git, curl, node,
+// rg) from its recipe, and a box from it runs each of them with no network.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -12,14 +14,21 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { follow, serve, withEnv } from "./support.mjs";
+import { DEFAULT_DOCKER_IMAGE, RECIPE_HASH, RECIPE_LABEL } from "../dist/box-image.js";
 
 const LIVE = process.env.AGENTRUN_SERVE_LIVE_DOCKER === "1";
+/** The build of the default box image on real Docker: a few minutes and the network, so a run asks for it by name. */
+const LIVE_BUILD = LIVE && process.env.AGENTRUN_SERVE_LIVE_DOCKER_BUILD === "1";
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
-// Values planted in the server's environment, each one no box may hold: an unnamed key, a model key and a tool key.
+/** The image CI pulls before this file runs; the default image, built here, has a test of its own (below). */
+const PULLED = "debian:bookworm-slim";
+// Values planted in the server's environment, each one no box may hold: an unnamed key, OpenAI's, and the four keys a
+// tester runs everything with: OpenRouter's (which a harness may be handed under another name), Monid's, Parallel's and
+// Browserbase's. A box is searched for each value, so a key handed on under any name is found.
 const planted = (name) => `planted-${name}-sentinel`;
-const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("model"), MONID_API_KEY: planted("tool") };
+const SENTINELS = { FOO_API_KEY: planted("foo"), OPENAI_API_KEY: planted("openai"), OPENROUTER_API_KEY: planted("openrouter"), MONID_API_KEY: planted("monid"), PARALLEL_API_KEY: planted("parallel"), BROWSERBASE_API_KEY: planted("browserbase") };
 const ENV_PROBE = "env; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'";
 const SHELL_OWN = ["OLDPWD", "PWD", "SHLVL", "_", "HOSTNAME"];
 
@@ -59,8 +68,8 @@ async function noSecretIn(text, server) {
   for (const [name, value] of Object.entries({ ...SENTINELS, token: server.token, door })) assert.ok(!text.includes(value), `${name} reached the box`);
 }
 
-test("live Docker (pi): bash, write, read and edit run in the box; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
-  withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker" });
+test("live Docker (pi): bash runs in the box, and write, read and edit on the work/ it binds; no key or token in its environment, /proc or Docker's record of it; no network; nothing of the host outside work/", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1 with a Docker daemon and debian:bookworm-slim", timeout: 300_000 }, async (t) => {
+  withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker", AGENTRUN_DOCKER_IMAGE: PULLED });
   const server = await serve(t, { faux: PROBE });
   const { api, data } = server;
   assert.equal((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker")?.available, true, "Docker is available to this server");
@@ -123,12 +132,12 @@ test("live Docker (pi): bash, write, read and edit run in the box; no key or tok
   assert.deepEqual([id, uid, gid, cwd], ["ID=debian", String(process.getuid()), String(process.getgid()), "/run/agentrun/run/work"]);
   assert.match(at(11), /\/run\/agentrun\/run\/work\/missing\.md/, "an error names the box's path");
   assert.ok(!at(11).includes(canonical), "never the data root");
-  assert.match(at(9), /: outside the workspace \/run\/agentrun\/run\/work/, "a host path is refused, never mapped");
+  assert.match(at(9), /: outside the workspace(\n<\/harness>)?$/, "a host path is refused as given, never mapped, and no other path is named");
   await until(() => docker("ps", "--all", "--quiet", "--filter", `label=agentrun.run=${runId}`).trim() === "", "the box's destroy at the run's end");
 });
 
 test("live Docker (claude-agent, codex on the faux harness): bash writes out.txt in the box through the host tools, with no key or token there", { skip: !LIVE && "set AGENTRUN_SERVE_LIVE_DOCKER=1", timeout: 300_000 }, async (t) => {
-  withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker" });
+  withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker", AGENTRUN_DOCKER_IMAGE: PULLED });
   const server = await serve(t, { faux: PROBE, fauxHarness: FAUX_HARNESS });
   const { api, data } = server;
   for (const harness of ["claude-agent", "codex"]) {
@@ -143,4 +152,30 @@ test("live Docker (claude-agent, codex on the faux harness): bash writes out.txt
     assert.ok(existsSync(join(data, "runs", run.body.run_id, "work", "out.txt")), harness);
     await noSecretIn(said[1].text, server);
   }
+});
+
+test("live Docker, the default image: the server builds it once from its recipe (its network is the build's alone), with python 3.12, git, curl, node and rg, labelled with the recipe's hash; a box from it still has no network", { skip: !LIVE_BUILD && "set AGENTRUN_SERVE_LIVE_DOCKER=1 and AGENTRUN_SERVE_LIVE_DOCKER_BUILD=1 with a Docker daemon that can reach Docker Hub and Debian's mirrors", timeout: 900_000 }, async (t) => {
+  withEnv(t, { ...SENTINELS, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE"]);
+  const { api, data } = await serve(t, { faux: PROBE });
+  const offer = async () => (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker");
+  // Built on this start, or already built by an earlier one with this recipe.
+  await until(async () => (await offer()).state !== "preparing", "the box image's build", 840_000);
+  assert.deepEqual(await offer(), { id: "docker", available: true, state: "ready" });
+  assert.equal(docker("image", "inspect", "--format", `{{ index .Config.Labels "${RECIPE_LABEL}" }}`, DEFAULT_DOCKER_IMAGE).trim(), RECIPE_HASH);
+  assert.equal((await api("POST", "/agents", { definition: { id: "built", name: "built", instructions: "Probe.", place: SANDBOX, tools: ["bash"] } })).status, 201);
+  const plan = [
+    { tool: "bash", args: { command: "python3 --version && git --version && curl --version | head -1 && node --version && rg --version | head -1" } },
+    { tool: "bash", args: { command: "if timeout 5 curl -sS https://deb.debian.org >/dev/null 2>&1; then echo OPEN; else echo CLOSED; fi" } },
+  ];
+  const run = await api("POST", "/agents/built/runs", { input: { content: JSON.stringify({ probe: plan }) } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 180_000 });
+  const said = answers(data, run.body.run_id);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["bash", false]], JSON.stringify(said));
+  assert.match(said[0].text, /Python 3\.12\.\d+/);
+  assert.match(said[0].text, /git version \d/);
+  assert.match(said[0].text, /curl \d/);
+  assert.match(said[0].text, /^v\d+\.\d+\.\d+$/m, "node");
+  assert.match(said[0].text, /ripgrep \d/);
+  assert.equal(said[1].text.trim(), "CLOSED", "the box has no network, whatever its image's build had");
 });

@@ -110,9 +110,8 @@ test("a harness is checked on the revision's own model, never refused for the se
   const env = { ...process.env };
   const revision = (model) => ({ kind: "agentic", instructions: "Answer.", harness: "claude-agent", ...(model ? { model } : {}) });
   assert.deepEqual(await blockersOf(env, revision("anthropic/claude-haiku-4-5")), [], "its own Anthropic model runs");
-  for (const [model, field] of [["openai/gpt-4o-mini", "definition.model"], [undefined, "definition.harness"]]) {
-    const blockers = await blockersOf(env, revision(model));
-    assert.deepEqual(blockers.map((b) => [b.field, b.host]), [[field, true]], `an OpenAI model (${model ?? "the default"}) does not`);
-    assert.match(blockers[0].message, /claude-agent runs Anthropic models; the run's model is openai\/gpt-4o-mini/);
-  }
+  const named = await blockersOf(env, revision("openai/gpt-4o-mini"));
+  assert.deepEqual(named.map((b) => [b.field, b.host]), [["definition.model", true]], "an OpenAI model it is given does not run");
+  assert.match(named[0].message, /claude-agent runs Anthropic models; the run's model is openai\/gpt-4o-mini/);
+  assert.deepEqual(await blockersOf(env, revision(undefined)), [], "a model-less revision runs on the Anthropic model its key gives, never the server's OpenAI default");
 });

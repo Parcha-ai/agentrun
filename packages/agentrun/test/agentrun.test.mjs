@@ -1,19 +1,43 @@
-// `npx @parcha/agentrun`: the bin starts AgentRun Server on a free loopback port with its data in ~/.agentrun, prints the
-// console's address on one line, and a subcommand goes to the server's own CLI. With no model key the server starts and
-// says it has no model, and the console asks for its first password. npm exec of the packed package runs this bin.
+// `npx @parcha/agentrun`: the bin runs AgentRun Server, its dependency at its exact version, with the arguments it was given,
+// its data in ~/.agentrun unless --data names another, and the browser opened unless --no-open; the server picks the port
+// and the model a key gives. The bin prints the console's address on one line, and a subcommand goes to the server's own
+// CLI. With no model key the server starts and says it has no model, and the console asks for its first password. npm
+// exec of the packed package runs this bin.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { DEFAULT_PORT, freePort, KEY_MODELS, modelEnv, openLineUrl, openUrl, server, shouldOpen } from "../lib/start.mjs";
+import * as start from "../lib/start.mjs";
+import { openLineUrl, openUrl } from "../lib/start.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
+const MANIFEST = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8"));
+const VERSION = MANIFEST.version;
+const SERVE_VERSION = JSON.parse(readFileSync(new URL("../../serve/package.json", import.meta.url), "utf8")).version;
+/** This command's store, under the fresh home `bare` makes: ~/.agentrun, handed to the server as --data. */
+const STORE = (home) => join(home, ".agentrun");
+/** The server's own default store (agentrun-serve with no --data), which this command never uses. */
+const SERVE_STORE = (home) => join(home, ".local", "share", "agentrun", "agents");
 const MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TOKEN"];
+
+/** `promise`, or undefined once `ms` pass: a cleanup never waits without a bound. */
+const within = (promise, ms) => {
+  let timer;
+  return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+};
+/** Stops a child this test spawned: SIGTERM, then SIGKILL if it has not exited within 10 s. A child not yet reaped keeps
+ *  its pid, so the signal reaches this child only. */
+async function stopChild(child, exited) {
+  const alive = () => child.exitCode === null && child.signalCode === null;
+  if (!alive()) return;
+  child.kill("SIGTERM");
+  if ((await within(exited.then(() => true), 10_000)) || !alive()) return;
+  child.kill("SIGKILL");
+  await within(exited, 5_000);
+}
 
 /** This environment with a fresh home, no model key, and no browser. */
 function bare(t) {
@@ -27,7 +51,7 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(async () => { child.kill("SIGTERM"); await exited; });
+  t.after(() => stopChild(child, exited));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -38,14 +62,15 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   }
   const match = /^AgentRun is running at (http:\/\/127\.0\.0\.1:(\d+))\/\S*\n$/.exec(out);
   assert.ok(match, `one line, the server's address to open, on loopback: ${JSON.stringify(out)}`);
-  assert.ok(Number(match[2]) >= DEFAULT_PORT);
+  assert.ok(Number(match[2]) >= 7340, "the server's first free port from its default");
   const base = match[1];
   const health = await fetch(`${base}/v2/health`);
   assert.deepEqual([health.status, (await health.json()).status], [200, "ok"]);
   assert.equal((await (await fetch(`${base}/v2/capabilities`)).json()).models.default, null, "no model: none was given");
   // Until a single-use sign-in link replaces the plain address, the console's first visit sets the owner's password.
   assert.deepEqual(await (await fetch(`${base}/v2/auth/session`)).json(), { password_set: false, signed_in: false });
-  assert.ok(existsSync(join(home, ".agentrun", ".token")), "the data directory is ~/.agentrun");
+  assert.ok(existsSync(join(STORE(home), ".token")), "the data directory is ~/.agentrun");
+  assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
@@ -59,7 +84,20 @@ test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { tim
   child.stderr.on("data", (chunk) => (out += chunk));
   assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 0, out);
   assert.match(out, /0 projects, 0 sessions; nothing was written \(dry run\)/);
-  assert.equal(existsSync(join(home, ".agentrun", ".token")), false, "a dry run writes nothing");
+  assert.equal(existsSync(join(STORE(home), ".token")), false, "a dry run writes nothing");
+  assert.equal(existsSync(SERVE_STORE(home)), false, "nor opens the server's own default store");
+  // reset-password says which store it cleared: ~/.agentrun, or the one --data names.
+  const reset = (...args) => spawnSync(process.execPath, [BIN, "reset-password", ...args], { env, encoding: "utf8", timeout: 30_000 });
+  mkdirSync(STORE(home), { mode: 0o700 });
+  const cleared = reset();
+  assert.equal(cleared.status, 0, cleared.stderr);
+  assert.ok(cleared.stdout.includes(`(${STORE(home)})`), cleared.stdout);
+  const other = join(home, "other");
+  mkdirSync(other, { mode: 0o700 });
+  const named = reset("--data", other);
+  assert.equal(named.status, 0, named.stderr);
+  assert.ok(named.stdout.includes(`(${other})`), named.stdout);
+  assert.equal(existsSync(SERVE_STORE(home)), false, "never the server's own default store");
 });
 
 test("npm exec of the packed package runs this package's own agentrun bin", { timeout: 120_000 }, (t) => {
@@ -69,35 +107,74 @@ test("npm exec of the packed package runs this package's own agentrun bin", { ti
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
   const npm = (args) => execFileSync("npm", args, { cwd: dir, encoding: "utf8", env: { ...clean, npm_config_cache: join(dir, "cache"), npm_config_update_notifier: "false" } });
   const tarball = npm(["pack", PACKAGE, "--pack-destination", dir, "--silent"]).trim().split("\n").at(-1);
-  const out = npm(["exec", "--offline", "--yes", `--package=file:${join(dir, tarball)}`, "--", "agentrun", "--help"]);
+  // The server it depends on, as a stand-in at the pinned version: offline, npm installs that and no registry copy.
+  mkdirSync(join(dir, "serve"));
+  writeFileSync(join(dir, "serve", "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
+  const serve = npm(["pack", join(dir, "serve"), "--pack-destination", dir, "--silent"]).trim().split("\n").at(-1);
+  const out = npm(["exec", "--offline", "--yes", `--package=file:${join(dir, serve)}`, `--package=file:${join(dir, tarball)}`, "--", "agentrun", "--help"]);
   assert.match(out, /^Usage: npx @parcha\/agentrun /);
 });
 
-test("an installed server runs its own launcher; with none, npm exec fetches the server's latest release and runs it by its own bin name, never this package's", () => {
-  const missing = () => { throw new Error("not installed"); };
-  assert.deepEqual(server(["--port", "7340"], missing), { command: "npm", args: ["exec", "--yes", "--package=@parcha/agentrun-serve@latest", "--", "agentrun-serve", "--port", "7340"], fetched: true });
-  const installed = () => join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "package.json");
-  assert.deepEqual(server(["import"], installed), { command: join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "launcher", "agentrun-serve"), args: ["import"], fetched: false });
+test("the server is this package's one dependency, at the exact version of the server in this repository: npx installs the two together", () => {
+  assert.deepEqual(MANIFEST.dependencies, { "@parcha/agentrun-serve": SERVE_VERSION });
   assert.ok(existsSync(new URL("../../serve/launcher/agentrun-serve", import.meta.url)), "the server ships the launcher this runs");
+  const installed = () => join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "package.json");
+  assert.equal(start.installedServer(installed), join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "launcher", "agentrun-serve"));
+  assert.equal(start.installedServer(() => { throw new Error("not installed"); }), undefined);
+  assert.equal(start.OWN_SPEC, `@parcha/agentrun@${VERSION}`, "what the server is told started it, so its hints name this command");
 });
 
-test("a provider key picks the server's model when none is set, the first of Anthropic, OpenAI and OpenRouter; a model or a gateway already set wins; each is in pi-ai's catalog", () => {
-  assert.deepEqual(modelEnv({ OPENAI_API_KEY: "k", ANTHROPIC_API_KEY: "k" }), { AGENT_MODEL: "anthropic/claude-sonnet-5-5" });
-  assert.deepEqual(modelEnv({ OPENAI_API_KEY: "k" }), { AGENT_MODEL: "openai/gpt-6.1-sol" });
-  assert.deepEqual(modelEnv({ OPENROUTER_API_KEY: "k" }), { AGENT_MODEL: "openrouter/anthropic/claude-sonnet-5.5" });
-  assert.deepEqual(modelEnv({ ANTHROPIC_API_KEY: "k", AGENT_MODEL: "openai/gpt-5" }), {});
-  assert.deepEqual(modelEnv({ OPENAI_API_KEY: "k", AGENT_MODEL_BASE_URL: "https://gateway.example/v1" }), {});
-  const models = builtinModels({});
-  for (const [, ref] of KEY_MODELS) assert.ok(models.getModel(ref.slice(0, ref.indexOf("/")), ref.slice(ref.indexOf("/") + 1)), ref);
+// The command passes its arguments through: the server's CLI picks the port and opens the browser.
+// A stand-in server installed beside a copy of this package records what it was started with.
+async function throughStub(t, args, env = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
+  const serve = join(dir, "pkg", "node_modules", "@parcha", "agentrun-serve");
+  mkdirSync(join(serve, "launcher"), { recursive: true });
+  writeFileSync(join(serve, "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
+  const served = join(dir, "served.json");
+  writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
+require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null }));
+if (process.argv[2] === "import") process.exit(0);
+console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
+console.log("Open http://127.0.0.1:7399/");
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+  chmodSync(join(serve, "launcher", "agentrun-serve"), 0o755);
+  const { home, env: base } = bare(t);
+  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => stopChild(child, exited));
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !out.includes("\n") && child.exitCode === null && i < 300; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  child.kill("SIGTERM");
+  return { home, out, err, code: await exited, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
+}
+
+test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
+  const plain = await throughStub(t, [], { ANTHROPIC_API_KEY: "sk-test" });
+  assert.deepEqual([plain.args, plain.model, plain.npx], [["--open", "--data", STORE(plain.home)], null, `@parcha/agentrun@${VERSION}`], plain.err);
+  assert.equal(plain.out, "AgentRun is running at http://127.0.0.1:7399/\n");
+  assert.equal(plain.code, 0, plain.err);
+  const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "/srv/agents"]);
+  assert.deepEqual(given.args, ["--data", "/srv/agents", "--port", "7400"], given.err);
+  const sub = await throughStub(t, ["--data", "/srv/agents", "import", "--dry-run"]);
+  assert.deepEqual(sub.args, ["import", "--data", "/srv/agents", "--dry-run"], "a subcommand first, on the same data directory");
+  const own = await throughStub(t, ["import", "--dry-run"]);
+  assert.deepEqual(own.args, ["import", "--data", STORE(own.home), "--dry-run"], "a subcommand on ~/.agentrun");
 });
 
-test("the first free loopback port from the default passes over one in use; the browser opens unless --no-open, CI or no display", async (t) => {
-  const first = await freePort();
-  const held = createServer();
-  await new Promise((resolve) => held.listen(first, "127.0.0.1", resolve));
-  t.after(() => held.close());
-  assert.ok((await freePort(first)) > first);
-  assert.deepEqual([shouldOpen([], {}, "darwin"), shouldOpen(["--no-open"], {}, "darwin"), shouldOpen([], { CI: "1" }, "darwin"), shouldOpen([], {}, "linux"), shouldOpen([], { DISPLAY: ":0" }, "linux")], [true, false, false, false, true]);
+test("with the server missing from beside it, the command says so in one line and exits 1", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-alone-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, part), { recursive: true });
+  const run = spawnSync(process.execPath, [join(dir, "bin", "agentrun.mjs"), "--no-open"], { encoding: "utf8", env: bare(t).env });
+  assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun's server (@parcha/agentrun-serve) is not installed beside this command; run it as npx @parcha/agentrun@${VERSION}.\n`]);
 });
 
 // A stub server: its output as the server prints it, a line at a time, then it waits. The command takes the URL of the first
@@ -139,59 +216,6 @@ test("on Node 20 the bin says, in one line, which Node it needs, and exits 1 bef
   }
 });
 
-// The headline path: `npx @parcha/agentrun` with no server installed beside it. The command fetches the server with
-// `npm exec`, naming the package with --package and running its bin after `--`: without --package, npm takes the bin from
-// the package spec and hands the server "agentrun-serve" as an argument, which it refuses. A fake npm first on PATH
-// records its argv and, as npm would, runs a stub server that prints its "Open " line.
-test("with no server beside it, the command runs npm exec --package=<server> -- agentrun-serve, and the server gets only its own arguments", { timeout: 60_000 }, async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-fetch-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  // This package alone, outside the workspace, so no installed server resolves from it.
-  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
-  mkdirSync(join(dir, "fake"));
-  const record = join(dir, "argv.json");
-  writeFileSync(join(dir, "fake", "npm"), `#!${process.execPath}
-const fs = require("node:fs");
-const argv = process.argv.slice(2);
-fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify(argv));
-fs.writeFileSync(${JSON.stringify(record)} + ".env", JSON.stringify(Object.keys(process.env).filter((name) => /^npm_config_(call|workspaces?|include_workspace_root)$/i.test(name))));
-const at = argv.indexOf("--");
-const [bin, ...args] = at < 0 ? [] : argv.slice(at + 1);
-const named = argv.slice(0, at < 0 ? argv.length : at).some((arg) => arg === "--package" || arg.startsWith("--package="));
-// npm runs the bin it names: refuse the old form, as the server refuses a stray argument.
-if (!named || bin !== "agentrun-serve" || args.includes("agentrun-serve")) { console.error("agentrun-serve: unexpected argument"); process.exit(2); }
-const port = args[args.indexOf("--port") + 1];
-console.log("agentrun-serve on http://127.0.0.1:" + port + "/v2 (stub)");
-console.log("Open http://127.0.0.1:" + port + "/");
-// Stopped, it ends as the server does, 0; npm exec passes the code on.
-process.on("SIGTERM", () => process.exit(0));
-setInterval(() => {}, 1000);
-`);
-  chmodSync(join(dir, "fake", "npm"), 0o755);
-  const { env } = bare(t);
-  // Started from inside another npm command (`npm exec -c …`, a workspace), whose settings npm hands down in its environment.
-  const outer = { npm_config_call: "node --test", npm_config_workspace: "@parcha/agentrun", npm_config_workspaces: "true" };
-  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), "--no-open"], { env: { ...env, ...outer, PATH: `${join(dir, "fake")}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
-  const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(async () => { child.kill("SIGTERM"); await exited; });
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !out.includes("\n") && i < 300; i++) {
-    if (child.exitCode !== null) break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const argv = existsSync(record) ? JSON.parse(readFileSync(record, "utf8")) : [];
-  assert.ok(argv.indexOf("--package=@parcha/agentrun-serve@latest") >= 0 && argv.indexOf("--package=@parcha/agentrun-serve@latest") < argv.indexOf("--"), `--package names the server before --: ${JSON.stringify(argv)}`);
-  assert.equal(argv[argv.indexOf("--") + 1], "agentrun-serve", "the server's own bin runs");
-  assert.ok(!argv.slice(argv.indexOf("--") + 2).includes("agentrun-serve"), "the server gets no stray argument");
-  assert.deepEqual(existsSync(`${record}.env`) ? JSON.parse(readFileSync(`${record}.env`, "utf8")) : null, [], "an outer npm's -c command and workspace do not reach this npm exec");
-  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, `${out}${err}`);
-  child.kill("SIGTERM");
-  assert.equal(await exited, 0, err);
-});
-
 // docs/SKILL.md's start step, as a coding agent runs it: when the command fails, the step ends and says why, never waits.
 test("the setup skill's start step ends with the command's error when it fails, and does not wait forever", { timeout: 30_000 }, () => {
   const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
@@ -207,5 +231,157 @@ test("the setup skill's start step ends with the command's error when it fails, 
     assert.match(`${run.stdout}${run.stderr}`, /npm error 404 Not Found/, "it shows the command's error");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// npx runs the command through `npm exec`, which runs it through `sh -c`. A signal to npm alone (a process manager's
+// SIGTERM or SIGKILL) ended npm and left the command, and the server, with nobody to stop them. Now, started by npm exec,
+// the command watches that npm and stops the server when npm goes. Started any other way it watches nothing: a shell that
+// backgrounds it and exits (`&`, nohup, a tool call's shell) leaves it running, as a shell's rules say. A SIGHUP to the
+// command alone asks the server to stop, as a SIGTERM does.
+const NPM_ENV = { npm_command: "exec", npm_lifecycle_event: "npx", npm_execpath: "/usr/lib/node_modules/npm/bin/npm-cli.js" };
+const strip = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^npm_/i.test(name)));
+async function healthUntil(base, wanted, tries) {
+  for (let i = 0; i < tries; i++) {
+    const up = await fetch(`${base}/v2/health`).then((r) => r.ok, () => false);
+    if (up === wanted) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+// PIDs wrap in minutes on a busy machine, so a number read from a file or kept from earlier may be another process's by
+// now. These tests signal a pid only after reading, in the same step, that it still runs what the test started there
+// (`marker` in its command line), and a process group only when the test made it with setsid and one of its processes
+// still runs the test's command.
+/** A process's command line, or undefined once it is gone: whole (`-ww`), as ps cuts it to 80 columns when its output is no
+ *  terminal, which would cut off the marker. */
+const commandLine = (pid) => {
+  try { return execFileSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined; } catch { return undefined; }
+};
+/** Signals `pid` only while it runs `marker`. */
+function killIf(pid, marker, signal = "SIGKILL") {
+  if (pid && commandLine(pid)?.includes(marker)) try { process.kill(pid, signal); } catch {}
+}
+/** Whether `pid` no longer runs `marker` (gone, or its number another's), within 10 s. */
+async function gone(pid, marker) {
+  for (let i = 0; i < 100; i++) {
+    if (!commandLine(pid)?.includes(marker)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+/** A process group this test made with setsid (spawn's `detached`), checked as one now (its pgid is its pid); the kill
+ *  takes it down only while one of its processes still runs `marker`. */
+function ownGroup(child, marker) {
+  const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(child.pid)], { encoding: "utf8" }).trim());
+  assert.equal(pgid, child.pid, "the test's process leads a group of its own");
+  return () => {
+    const members = execFileSync("ps", ["-ww", "-A", "-o", "pgid=,args="], { encoding: "utf8" }).split("\n").filter((line) => Number(line.trim().split(/\s+/)[0]) === pgid);
+    if (members.some((line) => line.includes(marker))) try { process.kill(-pgid, "SIGKILL"); } catch {}
+  };
+}
+/** npm as npx runs the command: it names itself `npm exec …` and runs the command through a waiting `sh -c`, in a group
+ *  of its own. */
+function asNpx(t, bin, env) {
+  const npm = spawn(process.execPath, ["-e", `process.title = "npm exec agentrun --no-open"; const c = require("node:child_process").spawn("sh", ["-c", ${JSON.stringify(`"${process.execPath}" "${bin}" --no-open; :`)}], { stdio: "inherit" }); c.on("exit", (code) => process.exit(code ?? 1)); setInterval(() => {}, 1000);`], { env: { ...env, ...NPM_ENV }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  t.after(ownGroup(npm, bin));
+  return npm;
+}
+
+test("started by npm exec, the command stops the server once that npm is gone, though the shell npm started it with waits on", { timeout: 90_000 }, async (t) => {
+  const { env } = bare(t);
+  const npm = asNpx(t, BIN, strip(env));
+  let out = "";
+  npm.stdout.on("data", (chunk) => (out += chunk));
+  for (let i = 0; !out.includes("\n") && i < 600; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(out)?.[1];
+  assert.ok(base, `the command started: ${out}`);
+  // Only npm goes, as with a SIGKILL to it; its shell and the command are left.
+  npm.kill("SIGKILL");
+  assert.ok(await healthUntil(base, false, 300), "the server stopped within 30 s of npm ending");
+});
+
+test("started directly by a shell that backgrounds it and exits, the command keeps the server running", { timeout: 90_000 }, async (t) => {
+  const { env, home } = bare(t);
+  const log = join(home, "agentrun.log");
+  const pidFile = join(home, "agentrun.pid");
+  // No npm here: the shell starts it in the background, writes its pid, and is gone a little later, once the command is up
+  // and has taken the shell for its parent (as a tool call's shell does).
+  const shell = spawnSync("sh", ["-c", `"${process.execPath}" "${BIN}" --no-open > "${log}" 2>&1 & echo $! > "${pidFile}"; sleep 2`], { env: strip(env) });
+  assert.equal(shell.status, 0);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  t.after(() => killIf(pid, BIN, "SIGTERM"));
+  let base;
+  for (let i = 0; !base && i < 600; i++) {
+    base = /^AgentRun is running at (http:\/\/127\.0\.0\.1:\d+)\//.exec(existsSync(log) ? readFileSync(log, "utf8") : "")?.[1];
+    if (!base) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(base, "the command started");
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.ok(await healthUntil(base, true, 10), "the server is still up 3 s after the shell that started it ended");
+  killIf(pid, BIN, "SIGTERM");
+  assert.ok(await healthUntil(base, false, 300), "and stops when its command is stopped");
+});
+
+/** This package with a stub server installed beside it, as its dependency is: the stub records its pid, prints the
+ *  server's lines, runs one agent child that counts the SIGTERMs it gets, and on a SIGTERM stops that agent once and
+ *  waits for it, as the server's own close drains its runs. */
+function stubbedSetup(t) {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-stubbed-"));
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
+  const serve = join(dir, "pkg", "node_modules", "@parcha", "agentrun-serve");
+  mkdirSync(join(serve, "launcher"), { recursive: true });
+  writeFileSync(join(serve, "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
+  const files = { server: join(dir, "server.json"), terms: join(dir, "agent.terms"), agentPid: join(dir, "agent.pid") };
+  const stub = join(serve, "launcher", "agentrun-serve");
+  writeFileSync(stub, `#!${process.execPath}
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+const argv = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(files.server)}, JSON.stringify({ argv, pid: process.pid, ppid: process.ppid }));
+const agent = spawn(process.execPath, ["-e", ${JSON.stringify(`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(files.agentPid)}, String(process.pid)); process.on("SIGTERM", () => { fs.appendFileSync(${JSON.stringify(files.terms)}, "TERM\\n"); setTimeout(() => process.exit(0), 500); }); setInterval(() => {}, 1000);`)}], { stdio: "ignore" });
+console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
+console.log("Open http://127.0.0.1:7399/");
+process.on("SIGTERM", () => { agent.kill("SIGTERM"); agent.on("exit", () => process.exit(0)); });
+setInterval(() => {}, 1000);
+`);
+  chmodSync(stub, 0o755);
+  const read = (file) => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
+  // One hook, in this order: what the stub started, each signalled only while it still runs the stub or the agent's
+  // script (their pids are in the files), then the files. A stub left running would hold the test's stderr open.
+  t.after(() => {
+    const server = read(files.server);
+    if (server) killIf(JSON.parse(server).pid, stub);
+    const agent = read(files.agentPid);
+    if (agent) killIf(Number(agent), files.agentPid);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, files, stub, bin: join(dir, "pkg", "bin", "agentrun.mjs") };
+}
+async function startStubbed(t, setup) {
+  const { env } = bare(t);
+  const child = spawn(process.execPath, [setup.bin, "--no-open"], { env: strip(env), stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !out.includes("\n") && i < 300 && child.exitCode === null; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const server = existsSync(setup.files.server) ? JSON.parse(readFileSync(setup.files.server, "utf8")) : null;
+  return { child, exited, out: () => out, err: () => err, server };
+}
+
+test("a SIGTERM or a SIGHUP to the command stops the server, which stops each running agent once", { timeout: 90_000 }, async (t) => {
+  for (const signal of ["SIGTERM", "SIGHUP"]) {
+    const setup = stubbedSetup(t);
+    const run = await startStubbed(t, setup);
+    assert.ok(run.server, `the server ran: ${run.out()}${run.err()}`);
+    for (let i = 0; !existsSync(setup.files.agentPid) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    run.child.kill(signal);
+    await Promise.race([run.exited, new Promise((resolve) => setTimeout(resolve, 10_000))]);
+    assert.ok(await gone(run.server.pid, setup.stub), `${signal}: the server stopped`);
+    assert.ok(await gone(Number(readFileSync(setup.files.agentPid, "utf8")), setup.files.agentPid), `${signal}: its agent stopped`);
+    assert.equal(readFileSync(setup.files.terms, "utf8"), "TERM\n", `${signal}: the agent got one SIGTERM, the server's, and drained`);
   }
 });

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AnalyticsTab } from "./AgentAnalytics";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import { agentFixture } from "@/fixtures";
-import { createClient } from "@/lib/client";
+import { ClientError, createClient } from "@/lib/client";
 import type { Analytics } from "@/lib/mission";
 
 // The agent page's Analytics tab: one agent's GET /v2/stats analytics over a range, drawn as Mission Control draws the
@@ -50,7 +50,7 @@ describe("AnalyticsTab", () => {
 
   it("shows tokens with the cached share, output, coverage and unmetered requests; run time; success; and the cost with the runs it leaves out", async () => {
     const tab = await open();
-    expect(tab.tile("Tokens")?.textContent).toBe("Tokens1.3M83% of input cached · 50K outputtokens from 5 of 8 runs2 requests unmetered: in no token sum");
+    expect(tab.tile("Tokens")?.textContent).toBe("Tokens1.3M83% of input cached · 50K outputtokens from 5 of 8 runs2 requests with no token count");
     expect(tab.tile("Run time")?.textContent).toBe("Run time2.5 hwall time of 7 ended runs1.5 h active, over 4 runs");
     expect(tab.tile("Success rate")?.textContent).toBe("Success rate71%5 completed · 2 failed");
     expect(tab.tile("Cost")?.textContent).toBe("Cost$0.75 est.3 runs unknown");
@@ -127,5 +127,15 @@ describe("the client's statsOver for one agent", () => {
     expect((await v2.statsOver({ from: "2026-10-09T00:00:00.000Z", agent: "invoice-checker" })).analytics?.totals.runs).toBe(8);
     await v2.statsOver({ agent: "invoice-checker" });
     expect(urls).toEqual(["/v2/stats?from=2026-10-09T00%3A00%3A00.000Z&agent=invoice-checker", "/v2/stats?agent=invoice-checker"]);
+  });
+});
+
+describe("AnalyticsTab, a failed read", () => {
+  it("says the server's refusal as code and message, and another failure by its message", async () => {
+    const refused = await open(() => { throw new ClientError(503, "store_busy", "the store is busy", true); });
+    expect(refused.host.querySelector('[role="alert"]')?.textContent).toBe("The analytics could not be read: store_busy: the store is busy");
+    act(() => root?.unmount());
+    const failed = await open(() => { throw new TypeError("Failed to fetch"); });
+    expect(failed.host.querySelector('[role="alert"]')?.textContent).toBe("The analytics could not be read: Failed to fetch");
   });
 });

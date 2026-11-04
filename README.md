@@ -26,6 +26,8 @@ npx @parcha/agentrun
 
 Either one starts AgentRun on this machine and opens its console: your coding agent follows [the skill](docs/SKILL.md),
 or [`npx @parcha/agentrun`](packages/agentrun/README.md) does it in one command (Node 22.19+).
+One model key covers every harness: `OPENROUTER_API_KEY` gives pi, Claude Code and Codex agents each a current model.
+Save it in the console (Settings → Tool keys → Model keys), which takes effect at once, or set it where AgentRun starts.
 
 ## Run it on a server
 
@@ -33,21 +35,22 @@ or [`npx @parcha/agentrun`](packages/agentrun/README.md) does it in one command 
 
    ```sh
    docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
-     -e AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 -e OPENROUTER_API_KEY \
+     -e OPENROUTER_API_KEY \
      ghcr.io/parcha-ai/agentrun-server:beta
    docker logs agentrun | grep Open
    ```
 
    With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
    limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
-   run. For a provider's own key, pass `-e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY` instead; any
-   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
+   run. For a provider's own key, pass `-e ANTHROPIC_API_KEY` or `-e OPENAI_API_KEY` instead; any
+   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`, with its model named in
+   `AGENT_MODEL`.
 
-2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. A Starter's 512 MB runs pi agents, about 3 at once. A Claude Code agent's run takes about 650 MB and a Codex run about 400 MB, so for those pick a 2 GB instance, which ran 3 of each at once in our test. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
+2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. A Starter's 512 MB runs 3 pi agents or 2 Codex runs at once; a start that doesn't fit is refused with a retry-after until a run ends. A 2 GB instance holds 10 Codex runs. The image leaves Claude Code out for now, so run Claude Code agents with `npx @parcha/agentrun`. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
 
    [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
-   then set `AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5` and `OPENROUTER_API_KEY` in the service's Environment (or
-   another provider's model and key, or a gateway's `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`). Render generates the token,
+   then set `OPENROUTER_API_KEY` in the service's Environment (or another provider's key, or a gateway's
+   `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY` with its model in `AGENT_MODEL`). Render generates the token,
    `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
 
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
@@ -131,7 +134,7 @@ on; [Archil](https://archil.com) is a network disk you mount on any Linux host.
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@latest`) |
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser, and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes | Pi; a provider (a local Chrome needs no key; Browserbase and Kernel need their keys); pi-durable and chord for its `./durable` entry | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | published (`@latest`) |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Lets a pi agent read documents, images, scans and video within the model's limits, and keeps a priced record of every look | nothing for a document's text; Photon or sharp for images; a pi-durable host (pi-durable, chord and pi-ai); a model that looks, for questions about a file | [`examples/vision-agent`](examples/vision-agent/README.md) (one agent that answers questions about files: `npm run demo:vision -- examples/document-check` runs on fakes, no key; it needs ffmpeg and poppler), then its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | published (`@latest`) |
-| [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step | pi-durable and chord; Docker for the Docker provider; a Daytona key or a Modal client for those; a TypeSafe key for Jev's placement | the "A box" example in its README (a local box, no key; a second one needs Docker) | published (`@latest`) |
+| [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step | pi-durable and chord; Docker for the Docker provider; a Daytona key or a Modal client for those; a TypeSafe key, or an OpenRouter key, for Jev's placement | the "A box" example in its README (a local box, no key; a second one needs Docker) | published (`@latest`) |
 | [`@parcha/pi-git-remote`](packages/pi-git-remote/README.md) | A git repository a host keeps for its agent: commits through git's plumbing, no hook or filter of either repository runs, no push is forced | git 2.40+; pi's coding agent only for its `./coding-agent` extension | its README's [quickstart](packages/pi-git-remote/README.md#quickstart-no-key-no-network) | published (`@latest`) |
 | [`@parcha/pi-agent-learn`](packages/pi-agent-learn/README.md) | An agent that learns in its own git repository: a `learn` tool, notes curated into commits, saved workflows promoted on receipts | pi-durable and chord; git 2.40+; a judge (Jev or a general model) for curation | its README's [quickstart](packages/pi-agent-learn/README.md#quickstart-no-key-no-network) | published (`@latest`) |
 | [`@parcha/agentrun-learn`](packages/learn/README.md) | Self-learning on any harness, as files: the layout of an agent's own learning repository, the memo and note formats, and a checker for a run's branch | the DSL; git | `agentrun-learn check --base main` on a run's branch | held, not published |

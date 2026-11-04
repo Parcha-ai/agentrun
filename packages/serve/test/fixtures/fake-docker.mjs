@@ -4,9 +4,17 @@
 // (with a TMPDIR of its own), so pi-transport's box environment works over it. Like Docker's, a killed `exec` client
 // leaves its command running. With `fail-run` in the state directory, `run` leaves a running container behind and fails,
 // as a client cut off while the daemon made the container would.
+//
+// Images, each a file under `images/` with its labels: Docker has every image it pulled or built there, and, until the
+// state directory holds `no-image`, any other image but the server's own (`agentrun-box:*`), with no labels. `image
+// inspect --format {{json .Config.Labels}}` prints an image's labels, or says there is no such image (in Podman's words
+// with `podman-words`). A `pull` holds while `pull-hold` is there, and with `pull-fail` it fails, its stderr the file's
+// text (Docker's own words); a `build` reads its context directory's Dockerfile, is noted in `builds.jsonl`, and holds
+// and fails the same way with `build-hold` and `build-fail`. Each `run` is noted in `made.jsonl`, `pulledInRun` when Docker had no image
+// then, as Docker would pull it there, inside the call.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import { join } from "node:path";
 
@@ -36,10 +44,54 @@ const fail = (text, code = 1) => {
   process.exit(code);
 };
 
+const images = join(state, "images");
+const imageFile = (name) => join(images, `${encodeURIComponent(name)}.json`);
+const hasImage = (name) => existsSync(imageFile(name)) || (!existsSync(join(state, "no-image")) && !name.startsWith("agentrun-box:"));
+const labelsOf = (name) => (existsSync(imageFile(name)) ? JSON.parse(readFileSync(imageFile(name), "utf8")).labels : null);
+const keepImage = (name, labels) => (mkdirSync(images, { recursive: true }), writeFileSync(imageFile(name), JSON.stringify({ labels })));
+/** Runs `then` once `mark` is gone from the state directory, or fails with `fail`'s text when that is there. */
+const held = (mark, failMark, then) => {
+  const go = () => {
+    if (existsSync(join(state, mark))) return void setTimeout(go, 25);
+    if (existsSync(join(state, failMark))) fail(readFileSync(join(state, failMark), "utf8").trim() || "Error response from daemon: the fake failed");
+    then();
+  };
+  go();
+};
+
 switch (args[0]) {
   case "version":
     done("27.0.0-fake\n");
     break;
+  case "image": {
+    if (args[1] !== "inspect") fail(`fake docker: no image ${args[1]}`);
+    const name = args.at(-1);
+    if (!hasImage(name)) fail(existsSync(join(state, "podman-words")) ? `Error: ${name}: image not known` : `Error response from daemon: No such image: ${name}`);
+    done(`${JSON.stringify(labelsOf(name))}\n`);
+    break;
+  }
+  case "pull":
+    held("pull-hold", "pull-fail", () => (keepImage(args.at(-1), null), done(`docker.io/library/${args.at(-1)}\n`)));
+    break;
+  case "build": {
+    const labels = {};
+    let tag;
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === "--label") {
+        const at = args[i + 1].indexOf("=");
+        labels[args[i + 1].slice(0, at)] = args[i + 1].slice(at + 1);
+        i++;
+      } else if (args[i] === "--tag") tag = args[++i];
+    }
+    // Its context is a directory whose Dockerfile can be read; a recipe on stdin (`-`) is refused, as the guard of a real
+    // walk refuses it.
+    const context = args.at(-1);
+    if (context === "-" || !existsSync(join(context, "Dockerfile"))) fail("fake docker: a build takes a context directory with a Dockerfile, never stdin");
+    const at = statSync(context);
+    appendFileSync(join(state, "builds.jsonl"), `${JSON.stringify({ tag, labels, context, mode: (at.mode & 0o777).toString(8), files: readdirSync(context).sort(), recipe: readFileSync(join(context, "Dockerfile"), "utf8") })}\n`);
+    held("build-hold", "build-fail", () => (keepImage(tag, labels), done(`sha256:${randomBytes(32).toString("hex")}\n`)));
+    break;
+  }
   case "run": {
     const container = { Id: randomBytes(32).toString("hex"), State: { Running: true, ExitCode: 0 }, Config: { Labels: {} }, HostConfig: { NetworkMode: "default" }, env: [], mounts: [], workdir: "/" };
     for (let i = 1; i < args.length; i++) {
@@ -55,9 +107,15 @@ switch (args[0]) {
         i++;
       } else if (args[i] === "--workdir") container.workdir = args[++i];
       else if (args[i] === "--network") container.HostConfig.NetworkMode = args[++i];
+      else if (args[i] === "--cap-drop") (container.HostConfig.CapDrop ??= []).push(args[++i]);
+      else if (args[i] === "--security-opt") (container.HostConfig.SecurityOpt ??= []).push(args[++i]);
       else if (args[i] === "--user") container.Config.User = args[++i];
     }
     container.Config.Env = container.env;
+    // Docker's `run` pulls an image it does not have, inside the call: the fake notes whether it would have, in
+    // `made.jsonl`, which outlives the container.
+    const image = args[args.indexOf("--entrypoint") + 2];
+    appendFileSync(join(state, "made.jsonl"), `${JSON.stringify({ id: container.Id, image, pulledInRun: !hasImage(image) })}\n`);
     container.Mounts = container.mounts.map((mount) => ({ Type: "bind", Source: mount.source, Destination: mount.target, RW: true }));
     save(container);
     if (existsSync(join(state, "fail-run"))) fail("docker: Error response from daemon: the fake's start failed.", 125);
