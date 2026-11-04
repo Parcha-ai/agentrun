@@ -195,12 +195,22 @@ export class ToolKeys {
   /** Each tool key the server is started with (a `tool` row whose key, its first field, the server sets), checked against
    *  its provider once, as a saved one is (key-check.ts), through the fetch `fetchFor` gives for the row (null: not
    *  checked, its check stays null); all at once, none holding up another or the start. `answered` is called as each
-   *  answers, unless `stop` (the server closing) came first. A model key is not checked here: a run on a refused one
-   *  fails at its first request, saying so. */
+   *  answers, unless `stop` (the server closing) came first. A fetch that cannot be made (a fake that does not load)
+   *  reads as not checked, saying so; this never rejects. A model key is not checked here: a run on a refused one fails
+   *  at its first request, saying so. */
   async checkServer(fetchFor: (id: string) => Promise<typeof fetch | null>, stop: AbortSignal, answered: () => void): Promise<void> {
     await Promise.all(TOOL_KEYS.filter((row) => row.kind === "tool" && this.env[row.fields[0]]).map(async (row) => {
       const name = row.fields[0];
-      const fetcher = await fetchFor(row.id);
+      let fetcher: typeof fetch | null;
+      try {
+        fetcher = await fetchFor(row.id);
+      } catch (error) {
+        if (stop.aborted) return;
+        const why = (error as NodeJS.ErrnoException)?.code ?? (error as Error)?.name ?? "an error";
+        this.started[row.id] = { state: "not_checked", reason: `${row.label}'s key could not be checked: its check did not start (${why})`, at: new Date().toISOString() };
+        answered();
+        return;
+      }
       if (!fetcher) return;
       const outcome = await checkKey(row, this.env[name] as string, this.env, fetcher, undefined, stop, name).catch(() => undefined);
       if (!outcome || stop.aborted) return;
