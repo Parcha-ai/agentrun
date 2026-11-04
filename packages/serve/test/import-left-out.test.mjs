@@ -3,7 +3,7 @@
 // its own agent, and nothing else the import leaves out.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
@@ -144,4 +144,34 @@ test("a key in a deleted folder's session, or in the folder's name, is in no byt
   assert.ok(kept.some(([, bytes]) => bytes.includes("[redacted]")), "its places are marked");
   assert.ok(dry.includes("4 secrets would be removed"), dry.filter((line) => /removed/.test(line)).join(" "));
   assert.ok(lines.includes("4 secrets removed"), lines.filter((line) => /removed/.test(line)).join(" "));
+});
+
+test("the dry run says which of a project's files the import leaves out, a link and one over its cap, as the import does", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const temp = join(root, "tmp");
+  mkdirSync(temp, { recursive: true });
+  const site = join(at, "code", "billing-api");
+  const skill = join(site, ".claude", "skills", "rotate");
+  mkdirSync(skill, { recursive: true });
+  // Its instructions a link to a file outside it, and a skill's second file over the cap a file has.
+  writeFileSync(join(root, "elsewhere.md"), "Not the project's.\n");
+  symlinkSync(join(root, "elsewhere.md"), join(site, "CLAUDE.md"));
+  writeFileSync(join(skill, "SKILL.md"), "---\nname: rotate\n---\nRotate the key.\n");
+  writeFileSync(join(skill, "reference.md"), "x".repeat(importing.MAX_FILE_BYTES + 1));
+  claudeSession(at, site, 41);
+  const run = async (...args) => {
+    const lines = [];
+    assert.equal(await importing.importCommand(["--data", join(root, "agents"), ...args], "usage", { home: at, temp, env: ENV, out: (line) => lines.push(line) }), 0);
+    return lines;
+  };
+  const leftOut = (lines) => lines.filter((line) => line.startsWith("left out: "));
+  const named = (lines) => lines.filter((line) => line.startsWith("skipped ")).sort();
+  const dry = await run("--dry-run");
+  const dryVerbose = await run("--dry-run", "--verbose");
+  const imported = await run("--verbose");
+  assert.deepEqual(leftOut(dry), ["left out: 2 project files not copied (a link, not text, over its size cap, or a folder with no SKILL.md)"], dry.join("\n"));
+  assert.deepEqual(named(dryVerbose), [`skipped ${join(site, ".claude", "skills", "rotate", "reference.md")}: over ${importing.MAX_FILE_BYTES} bytes`, `skipped ${join(site, "CLAUDE.md")}: a link: not followed`].sort());
+  assert.deepEqual(leftOut(imported), leftOut(dry), "the import leaves out what its dry run said");
+  assert.deepEqual(named(imported), named(dryVerbose), "each file named once, as the dry run named it");
 });
