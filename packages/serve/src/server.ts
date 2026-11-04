@@ -18,14 +18,15 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { DATA_ENV, HOME_HOST_OWNED, HOMES_DIR, homeOf, syncDir, writeDurable } from "./files.js";
+import { DATA_ENV, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
-import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
+import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
 import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { type LearningMode, learningOf } from "./learning.js";
+import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -39,7 +40,7 @@ import { type BoxOffer, boxesLog, boxRegistry, enabledBoxes } from "./boxes.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
-import { SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
+import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
@@ -48,7 +49,7 @@ import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, t
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
-import { type ServerLock, takeServerLock } from "./server-lock.js";
+import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -66,6 +67,20 @@ const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
+/** What a stopping server's record allows past its runs' kill bound, the cap a start waits under: the runs' carry backs,
+ *  retried while the agent store is held (about 15.5 s), their boxes' cleanup (up to a minute), and the deliveries', the
+ *  listener's and the stores' stop. A start stops waiting sooner once the stopping server's process is gone. */
+const STOP_MARGIN_MS = 120_000;
+/** A wait, as the stop's lines give it: whole seconds, rounded up, one at least. */
+const seconds = (ms: number) => `${Math.max(1, Math.ceil(ms / 1000))} s`;
+/** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
+const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void => {
+  try {
+    (options.notice ?? ((said: string) => void process.stderr.write(`agentrun-serve: ${said}\n`)))(line);
+  } catch {
+    // The line is told, not needed: the stop and the wait go on without it.
+  }
+};
 /** Why a home's PUT or DELETE is 501 where `capabilities.home.writes` is false (workspace.ts writesHeld). */
 const HOME_WRITES_OFF = "This server can't write a home's files safely here: a write needs /proc/self/fd, as on Linux, which this platform lacks. Reads and the list still work.";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
@@ -149,6 +164,10 @@ export type ServeOptions = {
   settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
+  /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
+   *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
+   *  standard error, after `agentrun-serve: `. */
+  notice?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
@@ -260,6 +279,14 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
 
 /** Where agent `agentId`'s host-owned path is read on this server: its route, when ROUTES has one (the learning API, for
@@ -296,29 +323,39 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  *  the offers probed again, never shown. */
 const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]);
 
+/** What a revision that names no model needs here (capabilities' `models.needs`): null when one runs, else chooseModel's
+ *  `needs`, a provider's key or another model. Made from `env` alone, so it is remade only when env is. */
+async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelNeeds | null> {
+  const chosen = await chooseModel(env, undefined);
+  return "why" in chosen ? chosen.needs : null;
+}
+
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
  *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
  *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
- *  box offers (`boxes`, what the box registry set up at the start, boxes.ts). The server makes it once at its start and
- *  then remakes only the parts a write changes (startHolding). */
+ *  box offers (`boxes`, what the box registry set up at the start, boxes.ts), with whether a revision that names no
+ *  model runs (needsOf). The server makes it once at its start and then remakes only the parts a write changes
+ *  (startHolding), so a key saved later can make a harness, a provider or the default model available with no restart. */
 export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
   const offers = await harnessOffers(offersEnvOf(env));
-  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), toolSettings, boxes) };
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), await needsOf(env), toolSettings, boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
- *  included (harnessOffers), so what this returns is what the route serves and what the document's schema holds.
+ *  included (harnessOffers), and whether a revision that names no model runs here (`models.ready`, and what it `needs`
+ *  when not), so what this returns is what the route serves and what the document's schema holds.
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
  *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show. */
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, toolSettings, boxes);
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes);
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
- *  offers: cheap, made again after each key or tool-settings write with the offers the server holds. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
-  const models = modelSource(env);
+ *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
+ *  needsOf says it for a revision that names no model (null when it runs). */
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, needs: ModelNeeds | null, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
+  const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
   return {
@@ -449,12 +486,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
-  // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile.
-  const lock = takeServerLock(data);
+  // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
+  // that is stopping (its runs' processes still drain) is waited for, up to the time its mark gives, not refused.
+  const lock = await takeServerLockAfterStop(data, {
+    waiting: ({ pid, until }) => noticeOf(options)(`the server on this data root (pid ${pid}) is stopping; waiting for it, up to ${seconds(until - Date.now())}`),
+  });
   // What a start that fails stops before the lock goes: the webhook deliveries it began, which would write the next
   // server's outbox.
   const stops: Array<() => Promise<void>> = [];
   try {
+    // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
+    markRunning(data);
     return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
@@ -473,6 +515,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
+  /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
+   *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
+  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken];
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
@@ -503,8 +548,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let env = withSecrets(base, "all", storedKeys);
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
+  // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
+  let needs: ModelNeeds | null = await needsOf(env);
   // The box offers are probed once, below, before the first reading is made.
-  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, settings.get(), boxOffers));
+  const recompose = () => void (caps = capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers));
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
@@ -518,9 +565,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     [offers, offersFrom] = [next, from];
     recompose();
   };
-  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. */
+  /** After a save or delete of a key, the one writer of its file: env again, then what reads it. Writes can overlap
+   *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
+   *  finishes after it is dropped. */
+  let needsAsked = 0;
   const keysChanged = async () => {
     env = withSecrets(base, "all", storedKeys);
+    const mine = ++needsAsked;
+    const next = await needsOf(env);
+    if (mine === needsAsked) needs = next;
     const inputs = offersInputs(env);
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
@@ -569,8 +622,26 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   await probe("start");
   // Decided once, by the probe the confinement walks by: capabilities.home.writes says what PUT and DELETE do.
   const homeWrites = caps.home.writes;
-  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
-  void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+  // Runs an earlier server left: supervised again, carried back when they already ended, or opened again. Then, however
+  // that went, the webhook's ledger against the agent store: waits of runs ended or gone dropped, and each end it lacks
+  // queued. Each is its own step: a recovery that gives up (a store busy past its wait) still lets the catch-up run, and a
+  // step that gives up is said, the next start trying it again.
+  void runs
+    .recover()
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`))
+    .then(async () => {
+      const rows = (await agents.request(() => agents.store.listRuns())).filter((row) => !row.importedFrom);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      // An end's notice from its row and its serve.json alone, as the run list reads an ended run (summaryOfRow): never
+      // its own store, whose read can fail, so a busy store loses no end. The same body a live end's notice has.
+      await webhooks.catchUp(rows, async (id) => {
+        const row = byId.get(id);
+        if (!row) return null;
+        const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
+        return { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
+      });
+    })
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -1408,6 +1479,37 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         recompose();
         return send(res, 200, withDefaults(settings.get()));
       }
+      // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
+      // they are now; a write as the definition's: an archived agent's too.
+      case "getAgentLearning": {
+        await needAgent(id);
+        const rows = await agents.request(() => agents.store.listRuns({ agent: id }));
+        // Counted as GET /stats counts (learning-run.ts counts): a held run from memory, any other's end from the ledger.
+        const { runs: _, ...counts } = await runs.learning.counts(rows, { agent: id });
+        return send(res, 200, await agentLearning(data, id, secretsShown(learningSecrets()), counts));
+      }
+      case "listLearningNotes":
+      case "listLearningLog":
+        await needAgent(id);
+        return send(res, 200, await (found.name === "listLearningNotes" ? learningNotes : learningLog)(data, id, url.searchParams, secretsShown(learningSecrets())));
+      case "readLearningFile":
+        await needAgent(id);
+        return sendNote(res, 200, await readNote(data, id, second!, secretsShown(learningSecrets())));
+      case "writeLearningFile":
+      case "retireLearningFile": {
+        await needAgent(id);
+        const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
+        const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
+        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse: learningSecrets() });
+        // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
+        const shown = secretsShown(learningSecrets());
+        const located = written.status === 201 && shown.name(written.file) === written.file;
+        return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
+      }
+      case "getRunLearning":
+        return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets()));
+      case "getRunLearningDiff":
+        return send(res, 200, await runDiff(data, await needRun(id), secretsShown(learningSecrets())));
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -1486,6 +1588,35 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
+  /** The server's stop: once (`close` keeps its promise). */
+  let stopped: Promise<void> | undefined;
+  async function stop(): Promise<void> {
+    // First, the record a start on this data root waits on while the runs' processes drain and exit (server-lock.ts),
+    // rewritten in place: this close's bound, with time for the deliveries and the listener after them. One not
+    // written leaves a start refused.
+    const { runs: busy, boundMs } = runs.stopping();
+    try {
+      markStopping(data, Date.now() + boundMs + STOP_MARGIN_MS);
+    } catch (error) {
+      const fields = { reason: (error as NodeJS.ErrnoException).code ?? (error as Error).message };
+      void (log ? log(logLine("stopping_mark_unwritten", fields)) : process.stderr.write(`agentrun-serve: ${logLine("stopping_mark_unwritten", fields)}\n`));
+    }
+    if (busy > 0) noticeOf(options)(`stopping: waiting up to ${seconds(boundMs)} for ${busy === 1 ? "1 run to finish its turn" : `${busy} runs to finish their turn`}`);
+    // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
+    // after close.
+    closing = true;
+    stopping.abort();
+    for (const worker of workers.keys()) worker.postMessage("stop");
+    await Promise.all([...workers.values()].map((w) => w.exit));
+    await importing;
+    // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
+    await runs.close();
+    await webhooks.close();
+    await new Promise((done) => (server.close(done), server.closeAllConnections()));
+    agents.close();
+    // The record stays: the next server rewrites it as it starts, and a stopped one whose time has passed is no stop.
+    lock.release();
+  }
   return {
     url,
     baseUrl: `${url}/v2`,
@@ -1495,20 +1626,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env)),
-    async close() {
-      // An import (or its count) under way stops between two session files and is waited for: nothing writes the store
-      // after close.
-      closing = true;
-      stopping.abort();
-      for (const worker of workers.keys()) worker.postMessage("stop");
-      await Promise.all([...workers.values()].map((w) => w.exit));
-      await importing;
-      // Runs that end while their processes stop still give their notices; then the deliveries stop, before the lock goes.
-      await runs.close();
-      await webhooks.close();
-      await new Promise((done) => (server.close(done), server.closeAllConnections()));
-      agents.close();
-      lock.release();
-    },
+    // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
+    // never writes this data root's record again (the next server's, by then).
+    close: () => (stopped ??= stop()),
   };
 }
