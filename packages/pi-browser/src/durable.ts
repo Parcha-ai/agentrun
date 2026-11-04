@@ -358,6 +358,14 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
       return made;
     },
     async (error) => {
+      // A 401 or 403 is the provider's own answer that nothing was made: the record ends at once, with no lookup by tag
+      // and no release delayed for a create that might still land.
+      const refused = failure(error, scope, c.redact);
+      if (refused.failure.code === "auth") {
+        await scope.commit((tx) => c.store.move(tx, row, { state: "released", reason: "create_failed", at: now() }));
+        await c.store.emitReleased(scope.cid, tag, scope.read, scope.context);
+        throw refused;
+      }
       const found = await provider.findByTag(tag, scope.signal).catch(() => []);
       // The session found by its tag is the one kept (bindByTag releases the others first), and it is owned before it is
       // recorded, as a create's own answer is: a store that cannot record it still lets close release it.
