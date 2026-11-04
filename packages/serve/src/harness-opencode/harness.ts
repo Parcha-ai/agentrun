@@ -392,9 +392,27 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         if (!current?.accepted || !sessionID) return;
         const status = await live.request("GET", "/session/status", undefined, signal).catch(() => undefined);
         const mine = isPlain(status?.body) ? status.body[sessionID] : undefined;
-        if (status?.status === 200 && !(isPlain(mine) && (mine.type === "busy" || mine.type === "retry"))) {
-          current.end(current.error ? { status: "failed", error: current.error } : { status: "completed" });
+        if (status?.status !== 200 || (isPlain(mine) && (mine.type === "busy" || mine.type === "retry"))) return;
+        // The turn ended while no one listened: its answer and its error are what OpenCode recorded of it, read back, and
+        // the text the session has not had yet is said before the turn ends.
+        const listed = await live.request("GET", `/session/${sessionID}/message`, undefined, signal).catch(() => undefined);
+        const messages = listed?.status === 200 && Array.isArray(listed.body) ? listed.body.filter(isPlain) : [];
+        const asked = messages.findIndex((m) => isPlain(m.info) && m.info.id === current.messageID);
+        for (const m of asked < 0 ? [] : messages.slice(asked + 1)) {
+          const info = isPlain(m.info) ? m.info : {};
+          if (info.role !== "assistant") continue;
+          for (const part of Array.isArray(m.parts) ? m.parts.filter(isPlain) : []) {
+            if (part.type === "tool") current.finalText = "";
+            if (part.type !== "text" || typeof part.id !== "string" || typeof part.text !== "string") continue;
+            const had = current.text.get(part.id) ?? "";
+            if (part.text.length > had.length && part.text.startsWith(had)) ctx.live({ type: "text", delta: part.text.slice(had.length) });
+            current.text.set(part.id, part.text);
+            current.finalText = part.text;
+          }
+          const error = isPlain(info.error) ? info.error : undefined;
+          if (error && error.name !== "MessageAbortedError") current.error = String((isPlain(error.data) ? error.data.message : undefined) ?? error.name ?? "OpenCode reported an error").slice(0, 500);
         }
+        current.end(current.error ? { status: "failed", error: current.error } : { status: "completed" });
       };
       let opened!: () => void;
       let refused!: (error: Error) => void;
@@ -425,7 +443,11 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
           } finally {
             clearTimeout(timer);
           }
-          if (signal.aborted) return;
+          // The drive is stopping: whatever waits for the stream to open stops waiting too.
+          if (signal.aborted) {
+            refused(signal.reason instanceof Error ? signal.reason : new Error("the drive was stopped before OpenCode's event stream opened"));
+            return;
+          }
           await Promise.race([live.exited, sleep(250)]);
           if (!live.alive()) {
             const error = `OpenCode stopped: ${live.stderrTail().trim().slice(-300) || "its process ended"}`;
@@ -474,7 +496,11 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         }, signal);
         if (answer.status >= 300) {
           turn = undefined;
-          return { status: "failed", error: `OpenCode refused the message (${answer.status}): ${answer.text.slice(0, 300)}` };
+          // The turn ends here, in the records, saying why: OpenCode's status and its reason.
+          const refusedTurn: Outcome = { status: "failed", error: `OpenCode refused the message (${answer.status}): ${answer.text.slice(0, 300)}` };
+          journal.message({ type: "turn", ...refusedTurn } satisfies TranscriptEntry);
+          await journal.flush();
+          return refusedTurn;
         }
         if (turn) turn.accepted = true;
         const stop = new Promise<Outcome>((resolve) => signal.addEventListener("abort", () => resolve({ status: "interrupted" }), { once: true }));

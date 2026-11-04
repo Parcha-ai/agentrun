@@ -6,8 +6,10 @@
 //    parent (./host's parentWatched), inside the host's confinement, so a host that is SIGKILLed leaves no OpenCode behind.
 //  - Its port is the one it says it listens on (its line `opencode server listening on <loopback URL>`): `--port 0` is
 //    not a free port of the system's choosing to OpenCode, which takes its default when that is free.
-//  - Every request carries the server's basic auth (user `opencode`, the drive's own password).
+//  - Every request carries the server's basic auth (user `opencode`, the drive's own password), on connections of the
+//    drive's own, which end with it: none is ever used for the next drive's OpenCode.
 import { spawn } from "node:child_process";
+import { Agent, request as httpRequest, type IncomingMessage } from "node:http";
 import { createInterface } from "node:readline";
 import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
 
@@ -130,29 +132,44 @@ export async function startOpenCodeServer(options: OpenCodeServerOptions): Promi
   });
 
   const auth = `Basic ${Buffer.from(`opencode:${options.password}`).toString("base64")}`;
-  const request: OpenCodeServer["request"] = async (method, path, body, signal) => {
-    const response = await fetch(`${url}${path}`, {
+  // The drive's own connections, ended with its OpenCode: a connection kept alive for a server that is gone is never used
+  // for the next one. A process-wide pool would hand the next drive's first request a socket to the killed process when
+  // the new OpenCode listens on the same port (it takes 4096 whenever that is free), and that request fails with a reset.
+  const agent = new Agent({ keepAlive: true });
+  const call = (method: string, path: string, body: unknown, accept: string, signal: AbortSignal) => new Promise<IncomingMessage>((resolve, reject) => {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    const sent = httpRequest(`${url}${path}`, {
       method,
-      headers: { authorization: auth, ...(body === undefined ? {} : { "content-type": "application/json" }), accept: "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal,
-    });
-    const text = await response.text();
+      agent,
+      signal,
+      headers: { authorization: auth, accept, ...(payload === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }) },
+    }, resolve);
+    sent.once("error", reject);
+    sent.end(payload);
+  });
+  const request: OpenCodeServer["request"] = async (method, path, body, signal) => {
+    const response = await call(method, path, body, "application/json", signal ? AbortSignal.any([signal, options.signal]) : options.signal);
+    let text = "";
+    response.setEncoding("utf8");
+    for await (const chunk of response) text += chunk;
     let parsed: unknown;
     try {
       parsed = text ? JSON.parse(text) : undefined;
     } catch {}
-    return { status: response.status, body: parsed, text };
+    return { status: response.statusCode ?? 0, body: parsed, text };
   };
 
   async function* events(signal: AbortSignal): AsyncIterable<{ type?: string; properties?: Record<string, unknown> }> {
-    const response = await fetch(`${url}/event`, { headers: { authorization: auth, accept: "text/event-stream" }, signal: AbortSignal.any([signal, options.signal]) });
-    if (response.status !== 200 || !response.body) throw new Error(`opencode: OpenCode's event stream answered ${response.status}`);
-    const decoder = new TextDecoder();
+    const response = await call("GET", "/event", undefined, "text/event-stream", AbortSignal.any([signal, options.signal]));
+    if (response.statusCode !== 200) {
+      response.resume();
+      throw new Error(`opencode: OpenCode's event stream answered ${response.statusCode}`);
+    }
+    response.setEncoding("utf8");
     let buffer = "";
     let data: string[] = [];
-    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-      buffer += decoder.decode(chunk, { stream: true });
+    for await (const chunk of response as AsyncIterable<string>) {
+      buffer += chunk;
       for (let at = buffer.search(/\r\n|\r|\n/); at >= 0; at = buffer.search(/\r\n|\r|\n/)) {
         const line = buffer.slice(0, at);
         buffer = buffer.slice(at + (buffer.startsWith("\r\n", at) ? 2 : 1));
@@ -170,5 +187,10 @@ export async function startOpenCodeServer(options: OpenCodeServerOptions): Promi
     }
   }
 
-  return { url, pid: child.pid, request, events, exited, alive: () => !done, stderrTail: () => stderr, kill };
+  // Its connections end with it.
+  const end = () => {
+    kill();
+    agent.destroy();
+  };
+  return { url, pid: child.pid, request, events, exited, alive: () => !done, stderrTail: () => stderr, kill: end };
 }
