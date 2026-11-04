@@ -41,6 +41,7 @@ import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
@@ -155,6 +156,10 @@ export type ServeOptions = {
   beforeAbort?: (runId: string) => Promise<void> | void;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** How long a run's end-of-run turn may take before it is aborted and the run finishes without it (default 5 min). */
+  reflectTimeoutMs?: number;
+  /** How long a run's grader may take before it is cut off and the run's learning dropped (default 3 min). */
+  gradeTimeoutMs?: number;
   /** Whether runs learn (`--learning`; default AGENTRUN_SERVE_LEARNING, else `on`). `on`: a run of an agent whose
    *  definition says `learning: true` starts from what its agent learned. `off`: no run this server starts does, whatever
    *  its agent's definition says, and its `learning` is null. */
@@ -355,7 +360,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: false, during_run: true },
       quotes: false,
-      usage: { basis: "estimate", meters: ["tokens", "tools"] },
+      usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       browser: "none",
@@ -538,7 +543,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
+  const runs = new Runs({ agents, token, storedKeys, doorTokenFile, doorToken, learning, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxMonid ? { fauxMonid: resolve(options.fauxMonid) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(fauxBox ? { fauxBox: resolve(options.fauxBox!) } : {}), ...(runBoxes ? { runBoxes } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker) });
   const expected = digest(`Bearer ${token}`);
   if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
@@ -996,6 +1001,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
     const total = { usd: 0, unpriced: 0 };
+    // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
+    // passes as $0.
+    const add = (key: string, usd: number | null) => {
+      const line = lines.get(key) ?? lines.set(key, { usd: 0, unpriced: 0 }).get(key)!;
+      for (const sum of [line, total]) {
+        if (usd === null) sum.unpriced++;
+        else sum.usd += usd;
+      }
+    };
+    // A line's key for the ledger's entries, as each run's is above: by agent, by day, by meter, or one line.
+    const lineKey = (agent: string, at: string, meter: string) => (group === "agent" ? agent : group === "day" ? at.slice(0, 10) : group === "meter" ? meter : "local");
     for (const row of await agents.request(() => agents.store.listRuns())) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
@@ -1017,6 +1033,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       }
       if (usd === null) total.unpriced++;
       else total.usd += usd;
+    }
+    // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
+    for (const entry of (await outcomes(data)).values()) {
+      const at = Date.parse(entry.at);
+      if (at >= from && at < to) add(lineKey(entry.agent, entry.at, "learning"), entry.cost);
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
@@ -1370,8 +1391,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter)] as const);
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter) });
+        const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
+        // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
+        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
         return send(res, 200, toolKeys.view(caps.harnesses));

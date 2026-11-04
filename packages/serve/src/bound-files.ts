@@ -17,6 +17,7 @@ import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type BinaryReader, err, ExecutionError, type ExecutionEnv, FileError, type FileErrorCode, ok, type Result } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { PathOutsideWorkError } from "@parcha/pi-durable-disk";
 import { BOX_WORK } from "./place.js";
 import { openWorkFile, type RefusedReason, WorkRefused, writeWorkFile } from "./workspace.js";
 
@@ -39,7 +40,9 @@ export function boundFiles(hostWork: string): ExecutionEnv {
   const node = new NodeExecutionEnv({ cwd: hostWork });
   /** `text` with this machine's work/ named as the box names it. */
   const boxed = (text: string) => text.split(`${hostWork}/`).join(`${BOX_WORK}/`).split(hostWork).join(BOX_WORK);
-  const outside = (path: string) => new FileError("permission_denied", `${path}: outside the workspace ${BOX_WORK}`, path);
+  // The confinement's typed refusal, its message naming no path: the tools name it by the path the call gave
+  // (workspace-paths.ts asGivenRefusals). It crosses from pi-durable-disk's pi-durable as a value, typed on this side.
+  const outside = (path: string) => new PathOutsideWorkError(path, "outside_work", "outside the workspace") as unknown as FileError;
   /** `path` as an absolute path of the box, or the refusal of one outside its work/. */
   const absolute = (path: string): Result<string, FileError> => {
     const abs = posix.resolve(BOX_WORK, path);

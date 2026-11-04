@@ -1,7 +1,8 @@
 // What an agent has learned, in Claude Code's auto-memory format: a folder of notes, one per file, and `MEMORY.md`, the
 // index a run reads, one line per active note. A note is `<slug>.md`: front matter with `name`, `description` and `type`
-// (Claude Code's four), and optionally `status: superseded | retired` with `superseded_by` (absent, it is active), then
-// its body. The host builds the index from the active notes' front matter; nothing else writes it.
+// (Claude Code's four), optionally `supersedes: [old.md]` (the notes it replaces), and `status: superseded | retired`
+// with `superseded_by`, which only the host sets (absent, it is active), then its body. The host builds the index from
+// the active notes' front matter; nothing else writes it.
 
 /** The index: what a run reads. */
 export const INDEX_FILE = "MEMORY.md";
@@ -15,10 +16,15 @@ export type NoteStatus = (typeof NOTE_STATUSES)[number];
 /** A note's file name: in the folder itself, never under a directory or hidden, and never the index. */
 export const NOTE_FILE = /^(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md$/;
 
-export type LearnedNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; body: string };
+/** `supersedes`: the notes it replaces, by file name; `keys`: every key its front matter sets. */
+export type LearnedNote = { file: string; name: string; description: string; type: NoteType; status: NoteStatus; superseded_by: string | null; supersedes: string[]; keys: string[]; body: string };
 
 /** A value as front matter writes it: bare, or in one pair of quotes. */
 const unquoted = (value: string) => (/^"[^"]*"$|^'[^']*'$/.test(value) ? value.slice(1, -1) : value);
+/** The front matter, between its two `---` lines, and what follows it. */
+const FRONT = /^---\n([\s\S]*?)\n?^---$\n?/m;
+/** A list as front matter writes it, `[a.md, b.md]`, or one bare value. */
+const listOf = (value: string) => (/^\[.*\]$/.test(value) ? value.slice(1, -1).split(",") : [value]).map((item) => unquoted(item.trim())).filter(Boolean);
 
 /** The note in `file`, or why it is out of shape. Keys it does not know are left alone: a note may carry more. */
 export function parseNoteFile(file: string, text: string): LearnedNote | string[] {
@@ -26,7 +32,7 @@ export function parseNoteFile(file: string, text: string): LearnedNote | string[
   if (!NOTE_FILE.test(file)) out.push(`${JSON.stringify(file)} is not a note's file name`);
   const lf = text.replace(/\r\n/g, "\n");
   if (!lf.startsWith("---\n")) return [...out, "it does not start with front matter"];
-  const head = /^---\n([\s\S]*?)\n?^---$\n?/m.exec(lf);
+  const head = FRONT.exec(lf);
   if (!head) return [...out, "its front matter is not closed"];
   const fields = new Map<string, string>();
   for (const line of head[1]!.split("\n")) {
@@ -46,8 +52,22 @@ export function parseNoteFile(file: string, text: string): LearnedNote | string[
   if (!(NOTE_STATUSES as readonly string[]).includes(status)) out.push(`status is not ${NOTE_STATUSES.slice(1).join(" or ")}`);
   const by = fields.get("superseded_by") || null;
   if (by !== null && !NOTE_FILE.test(by)) out.push("superseded_by is not a note's file name");
+  const supersedes = listOf(fields.get("supersedes") ?? "");
+  if (supersedes.some((old) => !NOTE_FILE.test(old))) out.push("supersedes is not a list of notes' file names");
+  else if (new Set(supersedes).size < supersedes.length) out.push("supersedes names a note twice");
   if (out.length) return out;
-  return { file, name: fields.get("name")!, description: fields.get("description")!, type: type as NoteType, status: status as NoteStatus, superseded_by: by, body: lf.slice(head[0].length) };
+  return { file, name: fields.get("name")!, description: fields.get("description")!, type: type as NoteType, status: status as NoteStatus, superseded_by: by, supersedes, keys: [...fields.keys()], body: lf.slice(head[0].length) };
+}
+
+/** `text`, a note's file, as the host leaves it when note `by` supersedes it: `status: superseded` and `superseded_by`
+ *  in its front matter, in place of any it had; the rest as it was, with LF line ends. */
+export function supersede(text: string, by: string): string {
+  if (!NOTE_FILE.test(by)) throw new Error("superseded_by must be a note's file name");
+  const lf = text.replace(/\r\n/g, "\n");
+  const head = FRONT.exec(lf);
+  if (!head || head.index !== 0) throw new Error("the note has no front matter");
+  const kept = head[1]!.split("\n").filter((line) => !/^(?:status|superseded_by):/.test(line));
+  return `---\n${[...kept, "status: superseded", `superseded_by: ${by}`].join("\n")}\n---\n${lf.slice(head[0].length)}`;
 }
 
 /** The active ones of `notes`, by file name. */
@@ -55,11 +75,16 @@ export function activeNotes(notes: Iterable<LearnedNote>): LearnedNote[] {
   return [...notes].filter((note) => note.status === "active").sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 }
 
-/** `MEMORY.md` as the host writes it: one line per active note, by file name, `- [name](file.md) — description`; empty
- *  when none is active. The one builder of the index. */
-export function buildIndex(notes: Iterable<LearnedNote>): string {
+/** A note's line in the index, `- [name](file.md) — description`, each run of whitespace one space. */
+export function indexLine(note: Pick<LearnedNote, "file" | "name" | "description">): string {
   const one = (text: string) => text.replace(/\s+/g, " ").trim();
-  return activeNotes(notes).map((note) => `- [${one(note.name)}](${note.file}) — ${one(note.description)}\n`).join("");
+  return `- [${one(note.name)}](${note.file}) — ${one(note.description)}`;
+}
+
+/** `MEMORY.md` as the host writes it: one line per active note, by file name (indexLine); empty when none is active.
+ *  The one builder of the index. */
+export function buildIndex(notes: Iterable<LearnedNote>): string {
+  return activeNotes(notes).map((note) => `${indexLine(note)}\n`).join("");
 }
 
 /** What a run reads of `index`: its first INDEX_LINES lines, cut to whole lines within INDEX_BYTES. */

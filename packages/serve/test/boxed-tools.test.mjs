@@ -113,13 +113,14 @@ test("demo (pi): in a Docker place bash runs in the run's box, and read, write a
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i >= 5 && i !== 6]));
   assert.equal(said[2].text, "written in the box");
   assert.equal(said[4].text, "edited in the box");
-  assert.match(said[5].text, new RegExp(`${outside}: outside the workspace /run/agentrun/run/work`));
+  // A refusal names the path as the call gave it, and no other: not the box's work dir, not the host's.
+  assert.equal(said[5].text, `<harness>\n[error] ${outside}: outside the workspace\n</harness>`);
   assert.equal(existsSync(outside), false);
   assert.match(said[7].text, /Command exited with code 3/);
   // Errors name the box's paths, never the data root, which only the server knows; a host path given is refused.
   assert.match(said[8].text, /\/run\/agentrun\/run\/work\/missing\.md/);
   assert.ok(!said[8].text.includes(realpathSync(data)), said[8].text);
-  assert.match(said[9].text, /: outside the workspace \/run\/agentrun\/run\/work/);
+  assert.equal(said[9].text, `<harness>\n[error] ${plan[9].args.path}: outside the workspace\n</harness>`);
   // The files: bash's out.txt and the edited note, in GET /runs/{id}/files.
   const files = (await api("GET", `/runs/${run.run_id}/files`)).body.files.map((f) => f.path);
   assert.ok(files.includes("out.txt") && files.includes("note.txt"), JSON.stringify(files));
@@ -171,9 +172,10 @@ test("demo (claude-agent, codex): the faux harness's bash, write and read run in
     await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
     const said = answers(data, run.body.run_id);
     assert.deepEqual(said.map((a) => [a.tool, a.error]), [["bash", false], ["write", false], ["read", false], ["bash", false], ["read", true], ["write", false], ["read", true]], `${harness}: ${JSON.stringify(said)}`);
-    assert.match(said[4].text, /: outside the workspace \/run\/agentrun\/run\/work$/);
+    assert.equal(said[4].text, `${calls[4].args.path}: outside the workspace`, harness);
     assert.equal(await readFile(join(data, "runs", run.body.run_id, "work", "abs.txt"), "utf8"), "absolute");
-    assert.match(said[6].text, /outside the workspace/);
+    // As the harness gave it, under its cwd, the run's work/: named relative to it.
+    assert.equal(said[6].text, "../serve.json: outside the workspace", harness);
     assert.ok(!said[6].text.includes(realpathSync(data)), said[6].text);
     assert.equal(said[2].text, "from the host tool");
     assert.equal(await readFile(join(data, "runs", run.body.run_id, "work", "out.txt"), "utf8"), "hi");
