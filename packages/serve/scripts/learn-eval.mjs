@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The learning eval, live (test/fixtures/learn-eval.json; its deterministic form is test/learn-eval.test.mjs). Two
 // modes, each on each model named:
-//   grade    each case's proposal checked (packages/learn checkProposal) and graded as the server grades it (judgeProposal,
+//   grade    each case's proposal checked (learn/check.ts checkProposal) and graded as the server grades it (judgeProposal,
 //            with what the user said in the run);
 //   reflect  each case's conversation replayed on the model, then the end-of-run turn asked (reflectPrompt); its answer
 //            parsed (parseReflection), checked and graded the same way.
@@ -34,7 +34,7 @@ const root = fileURLToPath(new URL("../../../", import.meta.url));
 const mod = (path) => import(pathToFileURL(join(root, path)).href);
 const [{ judgeProposal }, { runModels, thinkingOf }, adapters, { authContextOf }, learn, { builtinModels }] = await Promise.all([
   mod("packages/serve/dist/grade.js"), mod("packages/serve/dist/model.js"), mod("packages/serve/dist/adapters.js"), mod("packages/serve/dist/secrets.js"),
-  mod("packages/learn/dist/index.js"), mod("node_modules/@earendil-works/pi-ai/dist/providers/all.js"),
+  mod("packages/serve/dist/learn/index.js"), mod("node_modules/@earendil-works/pi-ai/dist/providers/all.js"),
 ]);
 const PROFILES = { default: { harness: "pi", model: undefined }, claude: { harness: "claude-agent", model: opts["claude-model"] } };
 

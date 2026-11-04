@@ -14,8 +14,9 @@
 // reports one, else unknown unless monid says it charged nothing; and under a cap a run is refused before it is sent
 // unless the run's spend plus what it is held at fits. discover and inspect cost nothing, and are never refused.
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
+import { writeInWork } from "./workspace.js";
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -164,8 +165,11 @@ export async function monidText(answer: MonidAnswer, work: string, label: string
   const name = `${runId ?? `${label}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`}.json`;
   const cut = `${text.slice(0, CLIP)}\n[cut at ${CLIP} of ${text.length} characters; `;
   try {
-    await mkdir(join(work, "evidence", "monid"), { recursive: true });
-    await writeFile(join(work, "evidence", "monid", name), text);
+    // Never through a link a box's command planted in work/ (workspace.ts). An answer filed already keeps its file;
+    // anything else in its place (a planted link) is no filing, and the answer says it could not be saved.
+    await writeInWork(work, ["evidence", "monid"], name, text).catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST" || !(await lstat(join(work, "evidence", "monid", name)).then((held) => held.isFile(), () => false))) throw error;
+    });
   } catch (error) {
     // The error's code only (ENOSPC, ENOTDIR): its message names the server's paths.
     return `${cut}the whole answer could not be saved (${(error as NodeJS.ErrnoException)?.code ?? "write failed"})]`;

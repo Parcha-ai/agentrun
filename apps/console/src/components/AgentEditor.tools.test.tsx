@@ -14,8 +14,7 @@ describe("AgentEditor's Tools step, on a server that sends tool objects", () => 
     expect(html).toContain('value="browser"');
     expect(html).toMatch(/value="browser"[^>]*disabled=""|disabled=""[^>]*value="browser"/);
   });
-  it("takes the server's tool objects, or an older server's names", () => {
-    expect(toolOffers(["read"])).toEqual([{ name: "read", available: true }]);
+  it("takes the server's tool objects", () => {
     expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
   });
 });

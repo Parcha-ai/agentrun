@@ -184,10 +184,29 @@ describe("the look-back on a run's timeline", () => {
     const one = out[2]!;
     expect(one).toMatchObject({ kind: "Learning", agent_label: null, tool_name: null, summary: "Looked back: kept 2 notes (Refund limit, Answer shape)", timestamp: LOOK.timestamp });
     expect(one.summary).not.toContain(".learning/");
-    expect(one.text!.split("\n")).toEqual(["Looking back on this run.", "Wrote .learning/refund-limit.md", "Wrote .learning/refund-limit.md: ok", "Saved .learning/refund-limit.md", "Reflected.", "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)"]);
+    expect(one.text!.split("\n")).toEqual(["Looking back on this run.", "Wrote .learning/refund-limit.md", "  .learning/refund-limit.md", "Wrote .learning/refund-limit.md: ok", "Saved .learning/refund-limit.md", "Reflected.", "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)"]);
     // Every other row is as it was.
     expect(out[0]).toBe(ASKED);
     expect(out[3]).toBe(USAGE);
+  });
+  it("keeps each folded row's own detail under its line: a whole answer, a call's input, and a failed result, marked failed", () => {
+    const said = row("t1", 4, { kind: "text_block", agent_label: "learning", summary: "Two things are worth keeping.", text: "Two things are worth keeping.\n1. A refund over the limit needs a manager.\n2. Answer with the page's URL alone." });
+    const call = row("c1", 5, { kind: "tool_use", tool_name: "write", agent_label: "learning", summary: "Wrote .learning/refund-limit.md", tool_input_preview: "{\"path\":\".learning/refund-limit.md\",\"content\":\"Ask first.\"}" });
+    const refused = row("c2", 6, { kind: "tool_result", tool_name: "write", agent_label: "learning", summary: "write: not written", tool_status: "failed", tool_result_preview: "EACCES: permission denied\nopen '.learning/refund-limit.md'" });
+    const text = learningSteps([ASKED, LOOK, said, call, refused, KEPT], MERGED)[1]!.text!;
+    expect(text.split("\n")).toEqual([
+      "Looking back on this run.",
+      "Two things are worth keeping.",
+      "  Two things are worth keeping.",
+      "  1. A refund over the limit needs a manager.",
+      "  2. Answer with the page's URL alone.",
+      "Wrote .learning/refund-limit.md",
+      "  {\"path\":\".learning/refund-limit.md\",\"content\":\"Ask first.\"}",
+      "write: not written (failed)",
+      "  EACCES: permission denied",
+      "  open '.learning/refund-limit.md'",
+      "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)",
+    ]);
   });
   it("is keyed on the learning label, not on writes: a look-back that answers with its notes in text folds the same", () => {
     const blocks = row("n1", 4, { kind: "text_block", agent_label: "learning", summary: "<note file=\"refund-limit.md\">…", text: "<note file=\"refund-limit.md\">\n---\nname: Refund limit\n---\nAsk first.\n</note>" });

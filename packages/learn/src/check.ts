@@ -1,35 +1,22 @@
-// The checker of what a run proposes for its agent's learning folder (SPEC.md): the files its end-of-run turn left in the
-// run's copy of the folder, against the commit the run started from. Structure only, never whether a note is any good,
-// which is the grader's. The host reads the copy itself (regular files only, never a link followed) and hands each change
-// here with its bytes; nothing the checker refuses is ever written to git. Every problem it reports is printable: its
-// path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
+import { draftProblems, parseIndex, parseMemo, parseNote, skillProblems, type Memo } from "./formats.js";
+import { CAPS, isGitFile, isHostOwned, isLocked, LAYOUT, placeOf, RUN_ID, type Kind } from "./layout.js";
 import { hiddenCharacter } from "./invisible.js";
-import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { redactSecrets, secretShapes, valueMatcher } from "./secrets.js";
-
-/** Byte caps (UTF-8) and counts. Over a cap is refused, never cut. */
-export const CAPS = Object.freeze({
-  /** One note's file. */
-  note: 4096,
-  /** New notes in one run. */
-  newNotes: 8,
-  /** Notes one run's new notes supersede, together. */
-  supersedes: 8,
-  /** Changed paths in one run; over it nothing else is read. */
-  changes: 64,
-});
+import { secretShapes, valueMatcher } from "./secrets.js";
 
 /** The rule a problem breaks. SPEC.md lists each. */
 export type Rule =
-  | "too_many_files" | "outside" | "file_name" | "file_mode" | "encoding" | "edited" | "deleted" | "exists" | "too_large"
-  | "too_many_notes" | "invisible_unicode" | "secret_shape" | "secret_value" | "note" | "status" | "supersedes" | "index_full";
+  | "branch" | "too_many_files" | "locked" | "git_file" | "file_mode" | "host_owned" | "uses" | "outside_layout" | "deleted" | "too_large"
+  | "too_many_notes" | "encoding" | "lfs_pointer" | "invisible_unicode" | "secret_shape" | "secret_value" | "memo_missing"
+  | "memo" | "memo_run" | "memo_base" | "memo_unlisted" | "other_memo" | "note" | "note_run" | "index" | "index_note" | "skill"
+  | "workflow" | "no_tool_list" | "executable_node";
 
-/** One problem with what a run proposed, printable as it is. */
+/** One problem with a run's branch. `detail` never repeats a value that was refused; `path` is the path as it is, so a
+ *  host redacts it before printing it, as the CLI does. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
 
-/** One file of the run's copy that differs from the commit it started from. `mode` is git's (`100644` a regular file,
- *  `120000` a link, `040000` a folder; anything else is not a regular file). A change that is not a deletion carries its
- *  bytes, or only its `size` when that is over the note cap. */
+/** One file a run's branch changed, against the commit it starts from. `mode` is git's (`100644` for a regular file).
+ *  `bytes` is the file at the branch's head; a change that is not a deletion carries it, unless `size` is over the
+ *  file's cap or the path is locked or outside the layout. */
 export type Change = {
   readonly path: string;
   readonly status: "added" | "modified" | "deleted";
@@ -38,129 +25,163 @@ export type Change = {
   readonly bytes?: Uint8Array;
 };
 
-/** The folder a proposal is checked against (the run's seed, or main at merge time): every path it holds, and its active
- *  notes. */
-export type Base = { readonly files: Iterable<string>; readonly active: readonly LearnedNote[] };
-/** A new note that passed, with its whole text. */
-export type ProposedNote = LearnedNote & { readonly text: string };
-
 export type CheckInput = {
-  readonly base: Base;
+  /** The branch the run pushes, `runs/<run id>`. */
+  readonly branch: string;
   readonly changes: readonly Change[];
-  /** Values the host holds as secrets: a file, or a file's name, that holds one is refused. */
+  /** The commit the branch starts from on main. */
+  readonly forkPoint?: string;
+  /** The commit the host started the run from, when it says so; the memo's `base` is it or a prefix of it. Else the fork
+   *  point. */
+  readonly runBase?: string;
+  /** Every path at the branch's head. Without it, index lines and workflow folders are not checked against the tree. */
+  readonly headFiles?: Iterable<string>;
+  /** The host's tool list, passed to the DSL's `validateWorkflow`. Without it, a draft that names a tool is refused. */
+  readonly tools?: readonly string[];
+  /** Values the host holds as secrets; a file, a changed path or the branch's name that holds one is refused. */
   readonly refuseValues?: readonly string[];
+  /** Paths the host locks beyond SPEC.md's, such as its hooks folder or its tool list's file. */
+  readonly lockedPaths?: readonly string[];
 };
-/** `ok` when `problems` is empty; then `notes` are the new notes, each in shape. */
-export type ProposalCheck = { readonly ok: boolean; readonly problems: Problem[]; readonly notes: ProposedNote[] };
 
-const MODES: Record<string, string> = { "120000": "a link: never followed", "040000": "a folder: nothing in it was read" };
+/** `ok` when `problems` is empty: the branch may go on to the injection screen and the review. */
+export type RunCheck = { readonly ok: boolean; readonly problems: Problem[] };
 
-/** `problem` as it may be printed: its path and detail cut of `values` and of secret shapes, whole when over PRINT_MAX. */
-export const printable = (problem: Problem, values: readonly string[]): Problem => ({
-  rule: problem.rule,
-  ...(problem.path === undefined ? {} : { path: redactSecrets(problem.path, values) }),
-  detail: redactSecrets(problem.detail, values),
-});
+const CAP: Record<Kind, number> = { note: CAPS.note, index: CAPS.index, memo: CAPS.memo, skill: CAPS.file, workflow: CAPS.file, readme: CAPS.file, uses: CAPS.file };
+const NEVER_DELETED: readonly Kind[] = ["note", "index", "memo", "uses"];
+const LFS_POINTER = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\n/;
+const MODES: Record<string, string> = { "120000": "a symlink", "160000": "a gitlink (submodule)", "100755": "an executable file" };
 
-type Add = (rule: Rule, detail: string, path?: string) => void;
+/** The run id of a `runs/<run id>` branch. */
+export const runOf = (branch: string): string | undefined => (branch.startsWith("runs/") && RUN_ID.test(branch.slice(5)) ? branch.slice(5) : undefined);
 
-/** A note's file name, whoever writes it: no secret's shape or the host's values in it, and a note's own (a `.md` file at
- *  the folder's top). False when it is not a note's name, and nothing else is read. */
-function nameChecked(path: string, refused: (text: string) => boolean, add: Add): boolean {
-  // A writer picks its files' names: they reach main, the index and the logs.
-  for (const kind of secretShapes(path)) add("secret_shape", `its name holds text shaped like a secret (${kind})`, path);
-  if (refused(path)) add("secret_value", "its name holds a value the host named as secret", path);
-  if (path.includes("/") || !path.endsWith(".md")) return add("outside", "only a .md file at the folder's top is a note", path), false;
-  if (!NOTE_FILE.test(path)) return add("file_name", "a note's name is letters, digits, dots, dashes and underscores, starting with a letter or digit, and ends .md", path), false;
-  return true;
-}
-
-/** A note's text by itself, whoever writes it: within the cap, UTF-8, no hidden character, no secret's shape or the host's
- *  values, its front matter in shape. The note when it is. */
-function textChecked(path: string, size: number, bytes: Uint8Array | undefined, refused: (text: string) => boolean, add: Add): ProposedNote | undefined {
-  if (size > CAPS.note) return void add("too_large", `${size} bytes; the cap is ${CAPS.note}`, path);
-  if (!bytes) throw new TypeError(`${path}: a change that is not a deletion carries its bytes`);
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return void add("encoding", "it is not UTF-8", path);
-  }
-  let found = false;
-  const hidden = hiddenCharacter(text);
-  if (hidden) found = (add("invisible_unicode", `it holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see, at character ${hidden.at}`, path), true);
-  for (const kind of secretShapes(text)) found = (add("secret_shape", `it holds text shaped like a secret (${kind})`, path), true);
-  if (refused(text)) found = (add("secret_value", "it holds a value the host named as secret", path), true);
-  if (found) return undefined;
-  const note = parseNoteFile(path, text);
-  if (Array.isArray(note)) return void note.forEach((reason) => add("note", reason, path));
-  return { ...note, text };
-}
-
-/** The checks one note's file passes by itself (SPEC.md), as a person writes it through the host: its name, the note cap,
- *  UTF-8, hidden characters, secret shapes and the host's values in its name and text, and its front matter. A person
- *  may set `status` and `superseded_by`; what a run may not do (edit, delete, set status) is checkProposal's. Every
- *  problem is printable. */
-export function checkNote(path: string, bytes: Uint8Array, refuseValues: readonly string[] = []): { problems: Problem[]; note?: ProposedNote } {
+/** Checks a run's branch against SPEC.md: structure only, never whether a note is any good. */
+export function checkRun(input: CheckInput): RunCheck {
   const problems: Problem[] = [];
-  const add: Add = (rule, detail, at) => void problems.push(printable(at === undefined ? { rule, detail } : { rule, path: at, detail }, refuseValues));
-  const refused = valueMatcher(refuseValues);
-  const note = nameChecked(path, refused, add) ? textChecked(path, bytes.length, bytes, refused, add) : undefined;
-  return problems.length || !note ? { problems } : { problems, note };
-}
-
-/** Checks what a run proposes against SPEC.md. `MEMORY.md` is the host's: a change to it is ignored, never refused. */
-export function checkProposal(input: CheckInput): ProposalCheck {
-  const values = input.refuseValues ?? [];
-  const problems: Problem[] = [];
-  const add: Add = (rule, detail, path) => void problems.push(printable(path === undefined ? { rule, detail } : { rule, path, detail }, values));
-  const changes = input.changes.filter((change) => change.path !== INDEX_FILE);
-  if (changes.length > CAPS.changes) {
-    add("too_many_files", `${changes.length} changed paths; the cap is ${CAPS.changes} a run, and nothing else was read`);
-    return { ok: false, problems, notes: [] };
+  const add = (rule: Rule, detail: string, path?: string): void => {
+    problems.push(path === undefined ? { rule, detail } : { rule, path, detail });
+  };
+  const refused = valueMatcher(input.refuseValues ?? []);
+  // A run picks its branch's name and its folders' names: they reach main and the logs as paths.
+  const scanName = (name: string, whose: string, path?: string): void => {
+    for (const kind of secretShapes(name)) add("secret_shape", `${whose} holds text shaped like a secret (${kind})`, path);
+    if (refused(name)) add("secret_value", `${whose} holds a value the host named as secret`, path);
+  };
+  const run = runOf(input.branch);
+  if (!run) add("branch", input.branch === "" ? "no branch was named: give the branch the run pushes to" : `${JSON.stringify(input.branch)} is not runs/<run id>`);
+  scanName(input.branch, "the branch's name");
+  if (input.changes.length > CAPS.changes) {
+    add("too_many_files", `${input.changes.length} changed paths; the cap is ${CAPS.changes} a run, and nothing else was read`);
+    return { ok: problems.length === 0, problems };
   }
-  const refused = valueMatcher(values);
-  const base = new Set(input.base.files);
-  const notes: ProposedNote[] = [];
+  const head = input.headFiles === undefined ? undefined : new Set(input.headFiles);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const flagged = new Set<string>();
+  const workflowDirs = new Set<string>();
+  let memoChanged = false;
+  let memo: Memo | undefined;
+  let newNotes = 0;
+
   const one = (change: Change): void => {
     const { path } = change;
-    if (!nameChecked(path, refused, add)) return;
-    if (change.status === "deleted") return add("deleted", "a run never deletes a note", path);
-    if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
-    if (change.status === "modified") return add("edited", "a run never edits a note: to replace one, it adds a new note that supersedes it", path);
-    if (base.has(path)) return add("exists", "the folder has a note by this name", path);
-    const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add);
-    if (!note) return;
-    if (note.keys.includes("status") || note.keys.includes("superseded_by") || note.keys.includes("origin")) return add("status", "a run never sets status, superseded_by or origin: the host does, when it merges the note or a later one supersedes it", path);
-    notes.push(note);
+    if (change.status !== "deleted") scanName(path, "its path", path);
+    if (isLocked(path, input.lockedPaths)) return add("locked", "a run never touches this path", path);
+    if (isGitFile(path)) return add("git_file", "git attributes and submodules are never part of a run", path);
+    if (change.status !== "deleted" && change.mode !== undefined && change.mode !== "100644") return add("file_mode", `${MODES[change.mode] ?? `git mode ${change.mode}`}: only a regular, non-executable file`, path);
+    if (isHostOwned(path)) return add("host_owned", "a workflow's records, latest and trial.json are the host's, on main", path);
+    const place = placeOf(path);
+    if (!place) return add("outside_layout", "the layout does not hold this path", path);
+    if (place.kind === "uses" && run !== undefined && place.id !== run) return add("uses", "a run carries only its own uses file", path);
+    const ownMemo = place.kind === "memo" && (run === undefined || place.id === run);
+    if (place.kind === "memo" && !ownMemo) add("other_memo", "a run changes only its own memo", path);
+    if (place.kind === "workflow" || place.kind === "readme") workflowDirs.add(place.name!);
+    if (change.status === "deleted") {
+      if (NEVER_DELETED.includes(place.kind)) add("deleted", `a run never deletes a ${place.kind}`, path);
+      return;
+    }
+    if (place.kind === "memo" && !ownMemo) return;
+    if (ownMemo) memoChanged = true;
+    if (place.kind === "note" && change.status === "added") newNotes += 1;
+    const size = change.size ?? change.bytes?.length;
+    if (size !== undefined && size > CAP[place.kind]) return add("too_large", `${size} bytes; the cap is ${CAP[place.kind]}`, path);
+    if (!change.bytes) throw new TypeError(`${path}: a change that is not a deletion carries its bytes`);
+    let text: string;
+    try {
+      text = decoder.decode(change.bytes);
+    } catch {
+      return add("encoding", "it is not UTF-8", path);
+    }
+    if (LFS_POINTER.test(text)) return add("lfs_pointer", "a Git LFS pointer, not the file", path);
+    const hidden = hiddenCharacter(text);
+    if (hidden) add("invisible_unicode", `it holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see, at character ${hidden.at}`, path);
+    const shapes = secretShapes(text);
+    for (const kind of shapes) add("secret_shape", `it holds text shaped like a secret (${kind})`, path);
+    const valued = refused(text);
+    if (valued) add("secret_value", "it holds a value the host named as secret", path);
+    if (hidden || shapes.length || valued) return;
+    switch (place.kind) {
+      case "note": {
+        const note = parseNote(text);
+        if (Array.isArray(note)) return note.forEach((reason) => add("note", reason, path));
+        if (note.id !== place.id) return add("note", `its id ${note.id} is not its file name`, path);
+        if (change.status === "added" && run !== undefined && !note.runs.includes(run)) add("note_run", `a new note names this run, ${run}, in its runs`, path);
+        return;
+      }
+      case "index": {
+        const ids = parseIndex(text);
+        if (!Array.isArray(ids)) return ids.problems.forEach((reason) => add("index", reason, path));
+        if (head) for (const id of ids) if (!head.has(`${LAYOUT.learnings}/${id}.md`)) add("index_note", `it names ${id}, which is not a note on the branch`, path);
+        return;
+      }
+      case "skill":
+        return skillProblems(text, place.name!).forEach((reason) => add("skill", reason, path));
+      case "workflow":
+        return draftProblems(text, input.tools).forEach(({ rule, detail }) => add(rule, detail, path));
+      case "readme":
+        if (text.trim() === "") add("workflow", "the README is empty", path);
+        return;
+      case "uses":
+        try {
+          JSON.parse(text);
+        } catch {
+          add("uses", "it does not parse as JSON", path);
+        }
+        return;
+      case "memo": {
+        const parsed = parseMemo(text);
+        if (Array.isArray(parsed)) return parsed.forEach((reason) => add("memo", reason, path));
+        memo = parsed;
+        return;
+      }
+    }
   };
-  for (const change of changes) one(change);
-  const added = changes.filter((change) => change.status === "added").length;
-  if (added > CAPS.newNotes) add("too_many_notes", `${added} new notes; the cap is ${CAPS.newNotes} a run`);
-  if (!problems.length) problems.push(...mergeProblems(input.base, notes, values));
-  return { ok: problems.length === 0, problems, notes: problems.length ? [] : notes };
-}
 
-/** What stops `notes` from joining `base` as they are: a name `base` holds (`exists`), a `supersedes` that names no
- *  active note of `base` or one another new note supersedes too, or more than CAPS.supersedes notes superseded, and an
- *  index past INDEX_LINES. The checker asks it of the run's seed; the host asks it again of main at merge time, since
- *  other runs may have merged meanwhile. */
-export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseValues: readonly string[] = []): Problem[] {
-  const files = new Set(base.files);
-  const active = new Set(base.active.map((note) => note.file));
-  const out: Problem[] = [];
-  const replaced = new Set<string>();
-  for (const note of notes) {
-    if (files.has(note.file)) out.push({ rule: "exists", path: note.file, detail: "the folder has a note by this name" });
-    for (const old of note.supersedes) {
-      if (!active.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `it supersedes ${old}, which is not an active note` });
-      else if (replaced.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `${old} is superseded by another new note too` });
-      replaced.add(old);
+  for (const change of input.changes) {
+    const before = problems.length;
+    one(change);
+    if (problems.length > before) flagged.add(change.path);
+  }
+
+  if (newNotes > CAPS.newNotes) add("too_many_notes", `${newNotes} new notes; the cap is ${CAPS.newNotes} a run`);
+  if (head) {
+    for (const name of workflowDirs) {
+      const files = ["workflow.json", "README.md"].map((file) => `${LAYOUT.workflows}/${name}/${file}`);
+      const present = files.filter((file) => head.has(file));
+      if (present.length === 1) add("workflow", `the folder holds ${present[0]!.split("/").pop()} without the other file`, files.find((file) => !head.has(file))!);
     }
   }
-  // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is.
-  if (replaced.size > CAPS.supersedes) out.push({ rule: "supersedes", detail: `the new notes supersede ${replaced.size} notes; the cap is ${CAPS.supersedes} a run` });
-  const lines = active.size - [...replaced].filter((file) => active.has(file)).length + notes.length;
-  if (lines > INDEX_LINES) out.push({ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
-  return out.map((problem) => printable(problem, refuseValues));
+  if (run !== undefined) {
+    const memoPath = `${LAYOUT.memos}/${run}.md`;
+    if (!memoChanged) add("memo_missing", "the branch carries no memo of its own", memoPath);
+    if (memo) {
+      if (memo.run !== run) add("memo_run", `its run is not the branch's, ${run}`, memoPath);
+      const base = input.runBase ?? input.forkPoint;
+      if (base !== undefined && !base.startsWith(memo.base)) add("memo_base", `its base is not the commit the run started from, ${base}`, memoPath);
+      for (const { path } of input.changes) {
+        if (path === memoPath || path === LAYOUT.index || path === `${LAYOUT.uses}/${run}.json` || flagged.has(path)) continue;
+        if (!memo.proposed.some((named) => named === path || (named.endsWith("/") && path.startsWith(named)))) add("memo_unlisted", "the memo's Proposed changes does not name it", path);
+      }
+    }
+  }
+  return { ok: problems.length === 0, problems };
 }

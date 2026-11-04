@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { mergedNote } from "@parcha/agentrun-learn";
+import { mergedNote } from "../dist/learn/notes.js";
 import { homeOf } from "../dist/files.js";
 import { agent, follow } from "./support.mjs";
 

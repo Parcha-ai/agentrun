@@ -1,6 +1,8 @@
-import { Bot, History, LayoutDashboard, LogOut, Menu, Settings, Terminal } from "lucide-react";
+import { Bot, History, LayoutDashboard, LogOut, Menu, Monitor, Moon, Settings, Sun, Terminal } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { ConnectionBanner } from "@/components/Connection";
 import { cn } from "@/lib/utils";
+import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
 export type Section = "mission" | "playground" | "agents" | "runs" | "settings";
 
@@ -13,13 +15,36 @@ const NAV: { id: Section; label: string; Icon: typeof Bot }[] = [
   { id: "settings", label: "Settings", Icon: Settings },
 ];
 
+const THEME_LABEL: Record<Theme, [string, typeof Bot]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
+
+/** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
+function ThemeSwitch() {
+  // The pick in force: kept in this browser, or held on this page when the storage refused it.
+  const [theme, setTheme] = useState<Theme>(() => currentTheme());
+  const pick = (t: Theme) => { saveTheme(t); applyTheme(t); setTheme(t); };
+  return (
+    <div role="group" aria-label="Theme" className="flex border">
+      {THEMES.map((t) => {
+        const [label, Icon] = THEME_LABEL[t];
+        return (
+          <button key={t} type="button" aria-label={label} title={label} aria-pressed={theme === t} onClick={() => pick(t)}
+            className={cn("flex flex-1 items-center justify-center py-2 hover:bg-accent", theme === t && "bg-primary/[0.06] text-primary")}>
+            <Icon className="size-4" aria-hidden />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function Wordmark() {
   return <span className="whitespace-nowrap font-mono text-[22px] font-semibold" aria-label="AgentRun">agent<span className="text-primary">.run()</span></span>;
 }
 
 /** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
  *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. Settings shows only when `settings`
- *  (the server has a settings page to open). */
+ *  (the server has a settings page to open). Above every page, the one banner on the link to the server, while it is
+ *  away and as it comes back. */
 export function Shell({ active, settings = false, onNavigate, onSignOut, children }: { active: Section; settings?: boolean; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
@@ -38,11 +63,15 @@ export function Shell({ active, settings = false, onNavigate, onSignOut, childre
             </button>
           ))}
         </nav>
-        <button type="button" onClick={onSignOut} className="caps mt-4 flex items-center gap-2.5 border px-3 py-2.5 text-[12px] hover:bg-accent md:mt-auto">
+        <div className="mt-4 md:mt-auto"><ThemeSwitch /></div>
+        <button type="button" onClick={onSignOut} className="caps mt-2 flex items-center gap-2.5 border px-3 py-2.5 text-[12px] hover:bg-accent">
           <LogOut className="size-4" aria-hidden /> Sign out
         </button>
       </aside>
-      <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <ConnectionBanner />
+        <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+      </div>
     </div>
   );
 }

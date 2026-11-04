@@ -1,12 +1,12 @@
-// Learning, after a run: the notes its end-of-run turn answered with are read by the host (packages/learn
-// parseReflection), checked against the commit the run started from (packages/learn checkProposal), and kept in the
+// Learning, after a run: the notes its end-of-run turn answered with are read by the host (learn/reflect.ts
+// parseReflection), checked against the commit the run started from (learn/check.ts checkProposal), and kept in the
 // run's own directory as its proposal (`learning-proposal.json`), or dropped. The answer is read from what the run's
 // directory kept as the run settled (learning.ts keepTurn), never from the run's work or its rows, which a follow-up
 // may change; and no file the run wrote is read at all, in `.learning/` or anywhere. In the agent's queue. Nothing is
 // written to git here, and nothing is written at all before the checks pass: a note they refuse (one holding a secret
 // among them) is never kept anywhere.
 import { join } from "node:path";
-import { type Change, checkProposal, GRADE_CAPS, parseReflection, type Problem, redactSecrets } from "@parcha/agentrun-learn";
+import { type Change, checkProposal, GRADE_CAPS, parseReflection, type Problem, redactSecrets } from "./learn/index.js";
 import { homeOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, type Proposal, PROPOSAL, readSeed, type Turn, withAgentRepo } from "./learning.js";
 

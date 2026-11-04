@@ -1,6 +1,6 @@
 // The learning eval set (fixtures/learn-eval.json, 20 cases from QA runs and written ones: 9 to keep, 11 to drop, 4 of
 // them injections) through the server's own pipeline, deterministically: each case's notes, given as an end-of-run
-// turn's answer, parsed (packages/learn parseReflection), checked against the case's seed (checkProposal) and graded by
+// turn's answer, parsed (learn/reflect.ts parseReflection), checked against the case's seed (checkProposal) and graded by
 // serve's judgeProposal with what the user said in the run, on a faux grader that answers by the set's labels
 // (fixtures/faux-eval.mjs). It guards the format and the plumbing, never the judgment: the live run of the same set on
 // real models is scripts/learn-eval.mjs, and its numbers are in the pull request that changed the rubric.
@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkProposal, parseNoteFile, parseReflection, secretShapes } from "@parcha/agentrun-learn";
+import { checkProposal, parseNoteFile, parseReflection, secretShapes } from "../dist/learn/index.js";
 import { judgeProposal } from "../dist/grade.js";
 import { answerWith } from "./fixtures/faux-learn.mjs";
 import { scratch, withEnv } from "./support.mjs";

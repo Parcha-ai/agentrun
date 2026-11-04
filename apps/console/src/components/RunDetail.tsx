@@ -84,7 +84,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
-          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} />}
+          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={view.needsYou ? waiting?.id : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
         </div>
       </div>}

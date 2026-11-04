@@ -7,7 +7,7 @@
 // secret later is found only whole, so a part of it kept would show for good. A run's learning keeps the parts its
 // words are made of (`learned`, `verdict`), and each read says them again (wordsOf): every part cut of the host's
 // secrets as they are then, and only then the words cut short (DETAIL_MAX for a run, LIST_DETAIL for a list's row).
-import { CAPS, parseVerdict, type Problem, type Verdict } from "@parcha/agentrun-learn";
+import { CAPS, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
 import type { Learning } from "./learning.js";
 
 /** `n` of `one`, said as a person says it: "1 note", "2 notes". */
@@ -33,7 +33,7 @@ export function firstSentence(text: string): string {
   return (SENTENCES.segment(text.replace(/\s+/g, " ").trim())[Symbol.iterator]().next().value?.segment ?? "").trim();
 }
 
-/** A checker's rule, in words. Every rule packages/learn's checker has; one it adds later reads as its code. */
+/** A checker's rule, in words. Every rule learn/check.ts' checker has; one it adds later reads as its code. */
 const RULE_WORDS: Record<string, string> = {
   secret_value: "one of this server's secrets",
   secret_shape: "text that looks like a key or a password",
@@ -114,7 +114,7 @@ export const said = {
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
 };
 
-/** The reasons packages/learn's parseVerdict gives of its own, never the grader's: an answer it could not read, and one
+/** The reasons learn/grade.ts' parseVerdict gives of its own, never the grader's: an answer it could not read, and one
  *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
  *  did not keep every note). Found by asking it, so they follow it. */
 const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
