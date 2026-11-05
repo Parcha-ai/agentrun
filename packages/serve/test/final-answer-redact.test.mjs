@@ -144,6 +144,9 @@ test("an sk- run, a key after a dash inside it, and a held value inside one are 
   assert.equal(redactedAnswer(`a xoxb-xoxb-${"1".repeat(12)} b`, []), "a [redacted] b");
 });
 
+// A held value with no digits at all.
+const KEYLESS = ["not-a-secret", "no-digits-here"].join("-");
+
 // A held value can be all digits (a gateway's key), and a workflow's output can quote it as a number.
 const DIGITS = ["1234", "5678", "9012"].join("");
 
@@ -176,4 +179,16 @@ test("a number that is a held value, or whose digits hold one, nested or not, is
   assert.deepEqual(redactedOutput({ list: [1, held], deep: { x: { y: held } } }, [DIGITS]), { list: [1, "[redacted]"], deep: { x: { y: "[redacted]" } } }, "nested");
   assert.deepEqual(redactedOutput({ big: BigInt(`7${DIGITS}`) }, [DIGITS]), { big: "[redacted]" }, "a bigint");
   assert.deepEqual(redactedOutput({ n: 42, f: 3.5, near: Number(DIGITS.slice(0, 11)), flag: true, none: null }, [DIGITS]), { n: 42, f: 3.5, near: Number(DIGITS.slice(0, 11)), flag: true, none: null }, "no held value: kept as it is");
+});
+
+test("a number whose VALUE is a held all-digit key is withheld even where its text differs (a leading zero, 1e21, a 20-digit key read lossy)", () => {
+  const lead = ["0", "1234", "5678", "9012"].join("");
+  assert.deepEqual(redactedOutput({ n: 123456789012 }, [lead]), { n: "[redacted]" }, "a held key with a leading zero");
+  const big = ["1", "0".repeat(21)].join("");
+  assert.deepEqual(redactedOutput({ n: 1e21 }, [big]), { n: "[redacted]" }, "1e21");
+  const lossy = ["1234567890", "1234567891"].join("");
+  assert.deepEqual(redactedOutput({ n: Number(lossy) }, [lossy]), { n: "[redacted]" }, "a 20-digit key, read as a number");
+  // No numeric held value: nothing is withheld; a NaN and a 0 stay; an empty or whitespace value matches nothing.
+  assert.deepEqual(redactedOutput({ zero: 0, nan: Number.NaN, n: 5 }, [KEYLESS]), { zero: 0, nan: Number.NaN, n: 5 });
+  assert.deepEqual(redactedOutput({ zero: 0, n: 5 }, ["", "   "]), { zero: 0, n: 5 });
 });
