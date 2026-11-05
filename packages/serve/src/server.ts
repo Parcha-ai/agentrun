@@ -1,7 +1,7 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
@@ -58,7 +58,7 @@ import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
+import { agentTools, browserKeyRow, LOCAL_CHROME_ENV, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
 import { markRunning, markStopping, type ServerLock, takeServerLockAfterStop } from "./server-lock.js";
@@ -127,6 +127,10 @@ export type ServeOptions = {
   /** A read-only directory of documents a workflow's `pdf_pages` calls read by file name (`--documents`); default
    *  AGENTRUN_SERVE_DOCUMENTS. */
   documents?: string;
+  /** A Chrome or Chromium on this machine the `browser` tool may run on where `chrome` is picked (`--browser-chrome`;
+   *  default AGENTRUN_SERVE_BROWSER_CHROME): headless, sandboxed, each request held to public addresses by the egress
+   *  proxy (local-chrome.ts). Absent, `chrome` is refused by name. */
+  browserChrome?: string;
   /** Run workflows' `code` nodes (`--allow-code-nodes`; default AGENTRUN_SERVE_CODE_NODES=1). Off, a workflow with one saves
    *  with a warning and its run is 409: a code node runs in the run's process through `new Function`, which is no sandbox. */
   allowCodeNodes?: boolean;
@@ -456,10 +460,11 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
   const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
-  // The browser's key is its vendor's row: Kernel's where Kernel is picked or resolved (tool-plane.ts browserKeyRow).
-  const keyFor = (tool: { name: string; provider?: string; resolves?: Record<string, string> }) => (tool.name === "browser" ? browserKeyRow(tool.provider, tool.resolves?.[DEFAULT_HARNESS]) : keyOf(tool.name));
+  // The browser's key is its vendor's row: Kernel's where Kernel is picked or resolved (tool-plane.ts browserKeyRow). A
+  // local Chrome takes none: picked, it names no row, since no key makes it run (the operator's --browser-chrome does).
+  const keyFor = (tool: { name: string; provider?: string; resolves?: Record<string, string> }) => (tool.name !== "browser" ? keyOf(tool.name) : tool.provider === "chrome" ? undefined : browserKeyRow(tool.provider, tool.resolves?.[DEFAULT_HARNESS]));
   const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyFor(tool) ? { ...tool, key: keyFor(tool) } : tool));
-  const browser = tools.find((tool) => tool.name === "browser");
+  const browser = browserFeature(tools);
   return {
     backend: "local",
     contract: CONTRACT,
@@ -508,15 +513,15 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
-      /** The browser a run's `browser` tool drives: the vendor it resolves to under the server's settings when the tool is
-       *  available here (tools[]), Browserbase's or Kernel's, else none. */
-      browser: browser?.available ? ((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS] === "kernel" ? "kernel" : "browserbase") : "none",
+      /** The browser a run's `browser` tool drives under the server's settings (browserFeature). */
+      browser,
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
       /** An agent's browser stays signed in between its runs (sign-ins.ts): with a seal key to keep each pointer under, and a
-       *  browser vendor here (Browserbase's or Kernel's; local Chrome keeps none). */
-      sign_ins: sealKeyOf(env[SEAL_KEY_ENV]) !== undefined && tools.some((tool) => tool.name === "browser" && tool.available),
+       *  browser vendor here (Browserbase's or Kernel's; a local Chrome keeps none, so a server whose browser is one says
+       *  false). */
+      sign_ins: sealKeyOf(env[SEAL_KEY_ENV]) !== undefined && (browser === "browserbase" || browser === "kernel"),
       vault: false,
       query: false,
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
@@ -583,6 +588,24 @@ async function oldHomes(data: string): Promise<string[]> {
   return found.sort();
 }
 
+/** Capabilities' `features.browser`: what the browser tool resolves to under the server's settings where it is available
+ *  here (tools[]), `browserbase`, `kernel` or `chrome`, else `none`. */
+function browserFeature(tools: readonly { name: string; available: boolean; resolves?: Record<string, string> }[]): "browserbase" | "kernel" | "chrome" | "none" {
+  const browser = tools.find((tool) => tool.name === "browser");
+  const resolved = browser?.resolves?.[DEFAULT_HARNESS];
+  return !browser?.available ? "none" : resolved === "kernel" || resolved === "chrome" ? resolved : "browserbase";
+}
+
+/** The Chrome the operator gives the browser (`--browser-chrome`), resolved: refused, before anything starts, unless it
+ *  is an executable file. */
+async function chromeOf(path: string | undefined): Promise<string | undefined> {
+  if (path === undefined || path === "") return undefined;
+  const at = resolve(path);
+  const runs = await stat(at).then((info) => info.isFile(), () => false) && await access(at, constants.X_OK).then(() => true, () => false);
+  if (!runs) throw new Error(`the browser's Chrome ${at} is not an executable file: name a Chrome or Chromium binary with --browser-chrome (or ${LOCAL_CHROME_ENV}), or leave it out`);
+  return at;
+}
+
 export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
@@ -604,6 +627,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  const browserChrome = await chromeOf(options.browserChrome ?? process.env[LOCAL_CHROME_ENV]);
   // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
   // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
@@ -617,7 +641,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   try {
     // The server's record, which its stop rewrites in place (server-lock.ts): made now, so the stop makes nothing.
     markRunning(data);
-    return await startHolding(options, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow }, stops);
+    return await startHolding({ ...options, browserChrome }, data, lock, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     lock.release();
@@ -640,7 +664,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? [])];
   // Each webhook trigger's secret, made below once the environment is read; shown nowhere, as the server's own are not.
   let triggerSecrets: TriggerSecrets | undefined;
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}), ...(options.browserChrome ? { [LOCAL_CHROME_ENV]: options.browserChrome } : {}) };
+  // The local Chrome is the one the start resolved (chromeOf), or none: never a variable it did not check.
+  if (!options.browserChrome) delete (base as NodeJS.ProcessEnv)[LOCAL_CHROME_ENV];
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
@@ -718,7 +744,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
   const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : boxes.provider("docker") ? await boxNetworkOf(env) : { allow: "none", reason: "no Docker box on this server" };
   // The proxy directories runs that are gone left in /tmp (box-egress.ts): a live run's, any server's, stays.
-  if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs().catch(() => 0);
+  // A local Chrome's proxy directory (local-chrome.ts) is one of these too.
+  if (!fauxBox && (boxes.provider("docker") || options.browserChrome)) await sweepEgressDirs().catch(() => 0);
   const dockerNetwork = (offer: BoxOffer): BoxOffer =>
     !offer.available ? offer : boxNetwork.allow === "none" ? { ...offer, network: "none", network_reason: boxNetwork.reason } : { ...offer, network: "allowlist" };
   // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
@@ -773,7 +800,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), ...(options.browserChrome ? { browserChrome: options.browserChrome } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
   const relay = remoteBoxes && daytona ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...daytona, serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());

@@ -26,7 +26,7 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, capabilityOf, explainsView, isUnavailable, LOCAL_CHROME_ENV, NO_CHROME, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { defaultPermission, permissionOf } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { handedSignIn } from "./secrets.js";
@@ -201,16 +201,20 @@ export const asHanded = <P extends { create(spec: { profile?: { name: string; sa
 export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null } }, change: string): boolean =>
   change === "released" && row.session.resourceId !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
 
-/** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
- *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
- *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
+/** The local Chrome's proxy's decisions, one JSON line each in the run's process log (box-egress.ts browserEgress). */
+const browserEgressLog = (line: string): void => void process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "browser_egress", line })}\n`);
+
+/** A browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), or a local
+ *  Chrome where the operator gave the server one and it is picked (local-chrome.ts), the one the run's plane names
+ *  (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept for the run's life; a
+ *  plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
  *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
  *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
  *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). A run handed its agent's
  *  saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the profile `default`,
  *  saving only where it holds the agent's save lease; one that saved says so in its run directory. */
 const browserTool: ToolEntry = {
-  summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
+  summary: "Drive a browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds), or a Chrome on this server held to public addresses where its operator set one up and it is picked: open pages, read and screenshot them, and act on them.",
   // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
   needs: [],
   nodes: true,
@@ -223,16 +227,35 @@ const browserTool: ToolEntry = {
       import("@parcha/pi-browser"),
     ]);
     const vendor = planeOf(host.env).browser ?? "browserbase";
-    const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
-    const handed = handedSignIn();
-    const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
+    // A local Chrome (local-chrome.ts) runs only on the Chrome the server hands this process (LOCAL_CHROME_ENV), and comes
+    // with its egress proxy, stopped once the run lets its sessions go. One that cannot start leaves the browser refused,
+    // in words that name neither the proxy nor its port.
+    const chrome = vendor === "chrome" ? host.env[LOCAL_CHROME_ENV] : undefined;
+    const unavailable = isUnavailable(vendor) ? whyUnavailable(vendor) : vendor === "chrome" && !chrome ? whyUnavailable(NO_CHROME) : undefined;
+    let local: Awaited<ReturnType<typeof import("./local-chrome.js").localChrome>> | undefined;
+    let localFailed: string | undefined;
+    if (!faux && !unavailable && chrome) {
+      try {
+        local = await (await import("./local-chrome.js")).localChrome({ executablePath: chrome, root: host.where.root, runId: host.where.ref.id, env: host.env, log: browserEgressLog });
+      } catch (error) {
+        browserEgressLog(`egress failed ${(error as Error).message}`);
+        localFailed = "this server's local Chrome could not start its network fence";
+      }
+    }
+    const why = unavailable ?? localFailed;
+    const refused = why ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${why}.`)) : undefined;
+    // A local Chrome keeps no saved sign-in (sign-ins.ts): a handed one is never opened on it.
+    const handed = vendor === "chrome" ? undefined : handedSignIn();
+    const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const parts = faux
       ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string, signIn?: typeof kept) => { provider: unknown; driver: unknown } }).default(host.env, vendor, kept)
       : {
           provider: refused
             ? undefined
-            : vendor === "kernel"
+            : local
+              ? local.provider
+              : vendor === "kernel"
               ? ((kernel) => (kept ? keptProfile(kernel, kept.ref) : kernel))((await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }))
               : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env, profiles: keptContexts(kept?.ref) }),
           driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
@@ -278,12 +301,17 @@ const browserTool: ToolEntry = {
     });
     host.beforeRelease(async (harness) => {
       if (refused) return;
-      const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
-      for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
-        const conversation = await harness.conversation(id as never, context);
-        if (conversation) await browser.release(conversation as never, "close", context);
+      try {
+        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+        for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
+          const conversation = await harness.conversation(id as never, context);
+          if (conversation) await browser.release(conversation as never, "close", context);
+        }
+        await browser.drain(harness as never, context);
+      } finally {
+        // The local Chrome's proxy outlives its sessions, and goes with the run.
+        await local?.close();
       }
-      await browser.drain(harness as never, context);
     });
     return { tools, extensions: [extension] };
   },
