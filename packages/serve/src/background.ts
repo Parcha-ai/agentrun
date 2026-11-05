@@ -80,11 +80,12 @@ const RUNNER = [
   'sleep 2147483647 > "$C/in" & h=$!; echo "$h" > "$C/hold"',
   // The command's group goes in C, beside the fifo (pgid), the only copy any call trusts; one byte past the cap marks
   // the log capped.
-  `{ setsid -w sh -c 'echo $$ > "$1/.pgid" && mv -f "$1/.pgid" "$1/pgid"; cd "$2" || exit 126; b=$(command -v bash 2>/dev/null) || b=; if [ "$4" = 1 ]; then SHELL=\${b:-/bin/sh}; export SHELL; exec script -qfec "$3" /dev/null; fi; [ -n "$b" ] && exec bash -c "$3"; exec sh -c "$3"' agentrun-background "$C" "$4" "$5" "$6" < "$C/in" 2>&1; echo $? > "$C/code"; } | { keep; [ -n "$(head -c 1 | od -An -c)" ] && { : > "$C/capped"; put capped ""; }; cat > /dev/null; }`,
+  `{ setsid -w sh -c 'echo $$ > "$1/.pgid" && mv -f "$1/.pgid" "$1/pgid"; cd "$2" || exit 126; b=$(command -v bash 2>/dev/null) || b=; if [ "$4" = 1 ]; then SHELL=\${b:-/bin/sh}; AGENTRUN_BG_CMD=$3; AGENTRUN_BG_SID=$1/tsid; export SHELL AGENTRUN_BG_CMD AGENTRUN_BG_SID; exec script -qfec "echo \\$\\$ > \\"\\$AGENTRUN_BG_SID\\"; c=\\$AGENTRUN_BG_CMD; unset AGENTRUN_BG_CMD AGENTRUN_BG_SID; exec \\"\\$SHELL\\" -c \\"\\$c\\"" /dev/null; fi; [ -n "$b" ] && exec bash -c "$3"; exec sh -c "$3"' agentrun-background "$C" "$4" "$5" "$6" < "$C/in" 2>&1; echo $? > "$C/code"; } | { keep; [ -n "$(head -c 1 | od -An -c)" ] && { : > "$C/capped"; put capped ""; }; cat > /dev/null; }`,
   // A child the command left running (a server started with &, its output sent elsewhere) keeps the process going: the
-  // group is waited for, so it stays running, signalled, counted and ended at the run's end until no live process of
-  // the group is left.
-  `g=$(cat "$C/pgid" 2>/dev/null); live() { [ -n "$g" ] || return 1; if [ -r /proc/self/stat ]; then cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$g" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && $3 == g) n++ } END { exit n > 0 ? 0 : 1 }'; else kill -0 "-$g" 2>/dev/null; fi; }; while live; do sleep 0.5; done`,
+  // group is waited for, and on a terminal the terminal's session (tsid, script's command's own pid), whose processes
+  // outlive script; so it stays running, signalled, counted and ended at the run's end until no live process of either
+  // is left.
+  `g=$(cat "$C/pgid" 2>/dev/null); live() { [ -n "$g" ] || return 1; s=$(cat "$C/tsid" 2>/dev/null); if [ -r /proc/self/stat ]; then cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$g" -v s="$s" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && ($3 == g || (s != "" && $4 == s))) n++ } END { exit n > 0 ? 0 : 1 }'; else kill -0 "-$g" 2>/dev/null; fi; }; while live; do sleep 0.5; done`,
   'kill "$h" 2>/dev/null; code=$(cat "$C/code" 2>/dev/null); [ -n "$code" ] || code=255',
   'printf \'%s\\n\' "$code" > "$C/.exit" && mv -f "$C/.exit" "$C/exit"; put exit "$code"; rm -f "$C/in"',
 ].join("\n");
@@ -113,17 +114,18 @@ const SCRIPT = [
   // by its real path, an exclusive new file there renamed over its name on the same filesystem; a failed check skips it.
   `put() { [ -n "$rw" ] || return 0; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] || exit 0; t=$(mktemp ./.put.XXXXXX) || exit 0; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t" && { mv -fT "$t" "./$2" 2>/dev/null || { [ -L "./$2" ] && rm -f "./$2"; mv -f "$t" "./$2"; }; } || rm -f "$t" ) 2>/dev/null; return 0; }`,
   'known() { [ -d "$c/$1" ] || { [ ! -L "$d" ] && [ -d "$d/$1" ]; }; }',
-  // A tty process's command runs in the pty's own session, below script: its group is its own pid, script's child.
-  `kids() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ p = $1; sub(/^[0-9]+ \\(.*\\) /, ""); if ($2 == g) print p }'; }`,
-  // And the terminal's foreground group, as the command's process reads it (its tpgid): an interactive shell's running
-  // job is a group of its own, which Ctrl-C reaches and the shell's own group does not.
-  `fgs() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($2 == g && $6 > 0) print $6 }'; }`,
-  // Signal $2 to process $1's group (its box-only copy, never work/'s); on a tty process (its box-only mark), to its terminal's processes instead, as a terminal delivers it:
-  // INT to the foreground group alone (Ctrl-C), TERM and KILL to the command's group and the foreground group (script
-  // would turn INT into TERM, and a script signalled itself exits 0): script then exits with the code its command ended
-  // with. Before script has its command, script itself. Each group is signalled once (the command's and the foreground
-  // group are often one), and a send that finds its group already gone is no failure: only a missing group is.
-  'hit() { g=$(cat "$c/$1/pgid" 2>/dev/null); [ -n "$g" ] || return 1; k=; f=; if [ -f "$c/$1/tty" ]; then k=$(kids "$g"); f=$(fgs "$g"); fi; if [ -z "$k" ]; then kill -"$2" -"$g" 2>/dev/null; return 0; fi; if [ "$2" = INT ] && [ -n "$f" ]; then t=$f; else t="$k $f"; fi; for p in $(printf \'%s\\n\' $t | sort -u); do kill -"$2" -"$p" 2>/dev/null; done; return 0; }',
+  // A tty process's command runs in the pty's own session (tsid: script's command, its leader), whose processes may
+  // outlive script: the groups of that session (sgs), and its terminal's foreground group (fgs, the tpgid its processes
+  // read): an interactive shell's running job is a group of its own, which Ctrl-C reaches and the shell's own does not.
+  `sgs() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v s="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && $4 == s) print $3 }' | sort -u; }`,
+  `fgs() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v s="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && $4 == s && $6 > 0) print $6 }' | sort -u; }`,
+  // Signal $2 to process $1's group (its box-only copy, never work/'s); on a tty process (its box-only mark), to its
+  // terminal's processes instead, as a terminal delivers it: INT to the foreground group alone (Ctrl-C), TERM and KILL to
+  // every group of the terminal's session (script would turn INT into TERM, and a script signalled itself exits 0):
+  // script exits with the code its command ended with, and what its command left on the terminal is reached after
+  // script is gone. Before script has its command, script itself. Each group is signalled once, and a send that finds
+  // its group already gone is no failure: only a missing group is.
+  'hit() { g=$(cat "$c/$1/pgid" 2>/dev/null); [ -n "$g" ] || return 1; t=; if [ -f "$c/$1/tty" ]; then s=$(cat "$c/$1/tsid" 2>/dev/null); if [ -n "$s" ]; then if [ "$2" = INT ]; then t=$(fgs "$s"); fi; [ -n "$t" ] || t=$(sgs "$s"); fi; fi; if [ -z "$t" ]; then kill -"$2" -"$g" 2>/dev/null; return 0; fi; for p in $t; do kill -"$2" -"$p" 2>/dev/null; done; return 0; }',
   'case $op in',
   'start)',
   '  if [ "$5" = 1 ] && ! command -v script >/dev/null 2>&1; then echo noscript; exit 0; fi',

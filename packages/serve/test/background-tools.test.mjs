@@ -281,3 +281,22 @@ test("tty: INT is Ctrl-C to the terminal's foreground job, so an interactive she
   assert.match(said[7].text, /back 130/);
   assert.ok(Date.now() - started < 50_000, "sleep 60 did not run out");
 });
+
+test("tty: a child the terminal command leaves running keeps the process running, and a signal reaches it after its shell is gone", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "trap '' HUP; sleep 60 </dev/null >/dev/null 2>&1 & echo $! > child.pid; echo done", tty: true } },
+    wait(1.5),
+    { tool: "bash_output", args: { id: "1" } },
+    { tool: "bash_list", args: {} },
+    { tool: "bash_signal", args: { id: "1", signal: "TERM" } },
+  ];
+  const { said, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  const child = Number(readFileSync(join(work, "child.pid"), "utf8"));
+  assert.match(said[2].text, /^Background process 1 is running\./);
+  assert.match(said[3].text, /^1 of at most 8 running\.\n1: is running;/);
+  assert.equal(said[4].text, "Sent TERM to background process 1: it exited with code 0.");
+  let alive = true;
+  try { process.kill(child, 0); } catch { alive = false; }
+  assert.equal(alive, false, "the child left on the terminal is gone");
+});

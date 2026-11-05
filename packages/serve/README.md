@@ -424,8 +424,11 @@ input as it goes. Each call is one short command in the run's box, on the same p
   gives it a pty, so a program that needs one works (a prompt, a REPL, a progress display). Paging, input and signals are
   the same calls: the log holds what the terminal shows (input echoed, lines ending in `\r\n`), `bash_input` types into
   the terminal, and `bash_signal` reaches the terminal's processes: `INT` goes to its foreground job, as Ctrl-C does, so an
-  interactive shell's running command stops and the shell runs on. A box with no `script` refuses
-  `tty: true`, saying so, and starts nothing. `bash_list` marks such a process `(tty)`.
+  interactive shell's running command stops and the shell runs on; `TERM` and `KILL` go to every process group of the
+  terminal's session. That session is tracked as the process: a child its command leaves running on the terminal keeps
+  the process running, counted against the cap, reached by `bash_signal` and ended at the run's end, after `script`
+  itself is gone. A box with no `script` refuses `tty: true`, saying so, and starts nothing. `bash_list` marks such a
+  process `(tty)`.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
   default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
   and the offset to read from next. Once it says the process ended, the log is whole.
