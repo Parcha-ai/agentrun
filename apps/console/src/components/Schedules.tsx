@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capWords, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
+import { atLeast, bodyOf, capWords, disabledWords, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
@@ -30,6 +30,12 @@ export function SchedulesPage({ v2, view, go, agentName, minEvery }: PageProps &
   if (view.schedule === null) return <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
   if (view.edit) return <ScheduleEdit key={view.schedule} v2={v2} go={go} id={view.schedule} minEvery={minEvery} />;
   return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} />;
+}
+
+/** A schedule that is off: "Turned off" when the server turned it off itself (a failure streak, a source it can't read),
+ *  "Paused" when a person did. */
+function OffChip({ trigger }: { trigger: Trigger }) {
+  return trigger.disabled ? <Chip tone="warning">Turned off</Chip> : <Chip tone="muted">Paused</Chip>;
 }
 
 /** How a schedule's last firing went, or that it has not fired. */
@@ -60,9 +66,10 @@ function ScheduleList({ v2, go, agentName }: PageProps) {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={hashOf(t.id)} className="min-w-0 break-words text-[15px] font-semibold hover:underline">{t.name}</a>
-                    {!t.enabled && <Chip tone="muted">Paused</Chip>}
+                    {!t.enabled && <OffChip trigger={t} />}
                   </div>
                   <p className="mt-1 break-words font-mono text-[12px] text-muted-foreground">{whenWords(t.source)} · {agentName(t.target.agent_id) || t.target.agent_id}</p>
+                  {disabledWords(t) && <p className="mt-1 break-words text-[12px] text-warning-text">{disabledWords(t)}</p>}
                 </div>
                 <div className="min-w-0 font-mono text-[12px] text-muted-foreground md:text-right">
                   <p>{t.next_at ? `Next ${at(t.next_at)}` : "No next time"}</p>
@@ -116,7 +123,7 @@ function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
       <a href="#/schedules" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Schedules</a>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
-          <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && <Chip tone="muted">Paused</Chip>}</h1>
+          <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && <OffChip trigger={trigger} />}</h1>
           <p className="mt-2 break-words font-mono text-[12px] text-muted-foreground">{whenWords(trigger.source)} · {trigger.next_at ? `next ${at(trigger.next_at)}` : "no next time"}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -132,6 +139,11 @@ function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
           )}
         </div>
       </div>
+      {disabledWords(trigger) && (
+        <p role="status" data-disabled className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-[13px] text-warning-text">
+          {disabledWords(trigger)} {trigger.disabled?.reason === "source_unreadable" ? "Edit its when, then Resume." : "Resume turns it on again."}
+        </p>
+      )}
       {said && <ProblemCard problem={said} className="mt-4" />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-[13px] sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-[11px] text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(trigger.target.agent_id)}`} className="hover:underline">{agentName(trigger.target.agent_id) || trigger.target.agent_id}</a></dd>
@@ -146,7 +158,7 @@ function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
             {firings.map((f) => (
               <li key={f.key} data-firing={f.key} className="flex flex-col gap-1 border-b px-4 py-2.5 text-[13px] last:border-b-0 sm:flex-row sm:items-start sm:gap-4">
                 <span className="flex shrink-0 items-center gap-2"><Chip tone={TONE[f.status]}>{FIRING_LABEL[f.status]}</Chip><span className="font-mono text-[12px] text-muted-foreground">{at(f.nominal_at)}</span></span>
-                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? (f.by === "manual" ? "Run now" : "On schedule") : `${firingWords(f)}${f.by === "manual" ? " · Run now" : ""}`}</span>
+                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? (f.by === "manual" ? "Run now" : `On schedule${f.catch_up ? ", caught up late" : ""}`) : `${firingWords(f)}${f.by === "manual" ? " · Run now" : ""}`}</span>
                 {f.run_id && <a href={`#/runs/${encodeURIComponent(f.run_id)}`} className="shrink-0 font-mono text-[12px] underline-offset-2 hover:underline">Run {runLabel(f.run_id)}</a>}
               </li>
             ))}
