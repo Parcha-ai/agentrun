@@ -89,6 +89,22 @@ describe("text in angle brackets", () => {
     expect(d.textContent).toContain("alert(2)");
   });
 
+  it("a raw HTML table keeps its rows and cells, beside a literal <name> and <script>", () => {
+    const d = dom(markdown("<table><thead><tr><th>Item</th><th>Total</th></tr></thead><tbody><tr><td>Refund</td><td>$120</td></tr></tbody></table>\n\nFor <name>: no <script>."));
+    expect([...d.querySelectorAll("table th")].map((x) => x.textContent)).toEqual(["Item", "Total"]);
+    expect([...d.querySelectorAll("table td")].map((x) => x.textContent)).toEqual(["Refund", "$120"]);
+    expect(d.textContent).not.toMatch(/<\/?(table|tr|td|th|thead|tbody)>/);
+    expect(d.textContent).toContain("For <name>: no <script>.");
+    expect(d.querySelector("script")).toBeNull();
+  });
+
+  it("a template that starts with <name> and runs on with no blank line keeps its lines", () => {
+    for (const text of ["<name>\nAmount: $<amount>\nDecision: approve", "Customer: <name>\nAmount: $<amount>\nDecision: approve"]) {
+      const first = text.split("\n")[0];
+      expect(lines(markdown(text)), text).toEqual([first, "Amount: $<amount>", "Decision: approve"]);
+    }
+  });
+
   it("in What it changed (the learning diff), a note's <name> reads literally", () => {
     // Closed at first: its text is in the page once opened.
     const host = document.body.appendChild(document.createElement("div"));
