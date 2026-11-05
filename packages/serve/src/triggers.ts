@@ -422,7 +422,7 @@ export class Triggers {
         return;
       }
     }
-    const drive = this.triggers.flatMap((t) => t.firings.filter((f) => f.status === "due" && (!f.retry_at || this.dueAt(f) <= now)).map((f) => [t.id, f.key] as const));
+    const drive = this.triggers.flatMap((t) => t.firings.filter((f) => f.status === "due" && ((!f.retry_at && !this.rewrite.has(f.key)) || this.dueAt(f) <= now)).map((f) => [t.id, f.key] as const));
     for (const [, key] of drive) this.rewrite.delete(key);
     const tell = this.triggers.flatMap((t) => t.firings.filter((f) => unmarked(f) && this.dueAt(f) <= now).map((f) => [t.id, f.key] as const));
     for (const [id, key] of tell) {
@@ -532,6 +532,9 @@ export class Triggers {
       if (this.closed) return;
       this.started(triggerId, key, started.run_id);
     } catch (error) {
+      // A throw none of the answers above handles: whatever it left (still due, most likely) is driven again after the
+      // write retry's wait, never at once (its retry time may have passed).
+      this.rewrite.set(key, this.clock.now() + WRITE_RETRY_MS);
       this.deps.say({ condition: "trigger_firing_failed", trigger: triggerId, firing: key, error: (error as Error).message });
     }
   }
@@ -638,10 +641,10 @@ export class Triggers {
     if (soonest !== Infinity) this.timer = this.clock.arm(() => this.tick(), Math.max(0, soonest - this.clock.now()));
   }
 
-  /** When a due firing is driven next: at its retry, or soon after a write of it failed; one with neither is driven by
-   *  whatever recorded it. */
+  /** When a due firing is driven next: after the write retry's wait when its write or its drive failed (that wait wins
+   *  over a retry time that may have passed), else at its retry; one with neither is driven by whatever recorded it. */
   private dueAt(firing: Firing): number {
-    return Math.min(firing.retry_at ? Date.parse(firing.retry_at) : Infinity, this.rewrite.get(firing.key) ?? Infinity);
+    return this.rewrite.get(firing.key) ?? (firing.retry_at ? Date.parse(firing.retry_at) : Infinity);
   }
 
   /** `change` applied and written whole, or, when the write fails, undone and thrown. */
