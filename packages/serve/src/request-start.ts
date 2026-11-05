@@ -179,6 +179,9 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // The stream's error event, passed on once the request's end is marked (below): the outer stream's result, which
       // pi writes as the entry and the cap counts, settles on that event.
       let failure: Parameters<typeof outer.push>[0] | undefined;
+      // Its done event, held the same way: the stream's result settles on it too, so pi has an answer only once its mark
+      // that carries a hold (a lost or unpriced request's) is in the store, and its entry always comes after that mark.
+      let done: Parameters<typeof outer.push>[0] | undefined;
       // Marked lost before pi-ai tries again (watchingLost): its end mark is in the store before its answer can be.
       let lostMarked = false;
       // Its write refused: the request's end is not recorded, and the request fails saying so (END_NOT_WRITTEN).
@@ -195,6 +198,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
             continue;
           }
           began = true;
+          if (event.type === "done") {
+            done = event;
+            continue;
+          }
           outer.push(event);
         }
         result = await inner.result();
@@ -247,7 +254,9 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
         result = failed(model, `${END_NOT_WRITTEN} (${reason(unrecorded)})`);
         failure = { type: "error", reason: "error", error: result };
       }
+      // A request whose end could not be recorded fails loudly (failure, above) in place of its answer.
       if (failure) outer.push(failure);
+      else if (done) outer.push(done);
       outer.end(result);
     })();
     return outer;
