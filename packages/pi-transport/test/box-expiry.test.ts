@@ -116,7 +116,7 @@ describe("a box's watchdog at the end of its lifetime", () => {
 			`import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { localBoxes } from ${JSON.stringify(join(import.meta.dirname, "../src/box/local.ts"))};
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT } from ${JSON.stringify(import.meta.resolve("@earendil-works/chord/context"))};
 const created = await localBoxes({ root: ${JSON.stringify(boxes)} }).create({ maxLifetimeMs: 2_000 }, BACKGROUND_CONTEXT);
 if (!created.ok) throw created.error;
 const workspace = ${JSON.stringify(boxes)} + "/" + created.value.id + "/workspace";
