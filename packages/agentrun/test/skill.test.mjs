@@ -298,7 +298,7 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
   assert.equal(existsSync(config), false);
 
   // Every command takes its base URL whole: no query, fragment, user or password, from a flag, the environment or the config file.
-  for (const bad of [`${echo.base}#x`, `${echo.base}?x=1`, "http://user:pw@127.0.0.1:9/v2", "ftp://127.0.0.1/v2", "not a url"]) {
+  for (const bad of [`${echo.base}#x`, `${echo.base}?x=1`, Object.assign(new URL(echo.base), { username: "user", password: "pw" }).href, "ftp://127.0.0.1/v2", "not a url"]) {
     const flagged = await cli(["agents", "list", "--base-url", bad], key);
     assert.equal(flagged.code, 2, bad);
     assert.ok(!flagged.err.includes("pw@"), "a URL's password is not echoed");
