@@ -4,19 +4,24 @@
 // collaborator (an issue's comment, a pull request's, a review comment), or an issue assigned to the configured login,
 // starting one run for that issue or pull request. A delivery sent again, and the same comment under another delivery,
 // are one firing; a bot, an outsider, the handle's own comment, an edit, a comment that mentions no one and a repo no
-// trigger lists start nothing.
+// trigger lists start nothing. A later mention there is a message to that run (it answers the run's question, and opens
+// a completed run again), and a comment is posted on the issue or pull request when the run needs its person and when it
+// ends, through a fake GitHub API on loopback, tried again until GitHub takes it.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { call, follow, serve, withEnv } from "./support.mjs";
 import { firings, made } from "./trigger-support.mjs";
+import { fakeGitHub } from "./fixtures/fake-github.mjs";
 
 const SECRET = "not-a-secret-webhook";
 const TOKEN = "not-a-secret-token";
 const HANDLE = "agentrun-dev";
+const PUBLIC = "https://agentrun.example";
 const REPO = { id: 1001, name: "widgets", full_name: "example-org/widgets", owner: { login: "example-org", id: 2001, type: "Organization" } };
 const OTHER_REPO = { id: 1002, name: "gadgets", full_name: "example-org/gadgets", owner: REPO.owner };
 const user = (login, id, type = "User") => ({ login, id, type });
@@ -44,16 +49,17 @@ function signed({ event, body }, { secret = SECRET, delivery = randomBytes(16).t
   return { raw, delivery, headers: { "content-type": "application/json", "user-agent": "GitHub-Hookshot/0000000", "x-github-event": event, "x-github-delivery": delivery, "x-github-hook-id": "4242", "x-hub-signature-256": signature, ...headers } };
 }
 
-async function gitHubServer(t, extra = {}) {
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
-  const server = await serve(t, { publicUrl: "https://agentrun.example", ...extra });
+async function gitHubServer(t, extra = {}, github) {
+  if (!github) withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
+  github ??= await fakeGitHub(t);
+  const server = await serve(t, { githubApiUrl: github.url, publicUrl: PUBLIC, webhookRetryMs: [50, 50, 50], ...extra });
   /** A POST to /v2/hooks/github, with no token: its status, headers and body. */
   const hook = async (delivery, options) => {
     const { raw, headers } = signed(delivery, options);
     const res = await fetch(`${server.baseUrl}/hooks/github`, { method: "POST", headers: Object.fromEntries(Object.entries(headers).filter(([, v]) => v !== undefined)), body: raw });
     return { status: res.status, headers: res.headers, body: await res.json() };
   };
-  return { ...server, hook };
+  return { ...server, github, hook };
 }
 
 const settings = { webhook_secret: SECRET, token: TOKEN, handle: HANDLE, assignee_login: HANDLE };
@@ -190,4 +196,120 @@ test("a mention of the handle by an owner, a member or a collaborator, on an iss
   assert.ok(inputs[1].includes("number=\"10\"") && inputs[1].includes("src/widget.ts:12") && inputs[1].includes("is this line right?"), inputs[1]);
   assert.ok(inputs[2].includes("user=\"octo-member\"") && inputs[2].includes("number=\"9\"") && inputs[2].includes("review this"), inputs[2]);
   for (const f of all) await follow(api, f.run_id, ["completed"]);
+});
+
+const runLink = (runId) => `[open the run](${PUBLIC}/#/runs/${runId})`;
+
+test("a run that asks posts a waiting comment on its issue, and a collaborator's mention there answers it; a comment that mentions no one reaches nothing; with post_answer the end carries the answer, defused; a mention after the end opens the run again; a comment GitHub refuses at first (a 500, then its rate limit) is posted once", { timeout: 240_000 }, async (t) => {
+  const { api, hook, github } = await gitHubServer(t);
+  assert.equal((await api("PUT", "/settings/github", settings)).status, 200);
+  await made(api, "asker", { tools: ["ask_person"] });
+  const { body } = await api("POST", "/triggers", { name: "regions", source: { kind: "github", repos: [REPO.full_name], post_answer: true }, target: { kind: "start_run", agent_id: "asker", input: { content: "Pick a region." }, max_cost_usd: 0.5 } });
+  assert.equal(body.source.post_answer, true);
+  // GitHub is slow at first: the waiting comment's first try is a 500, its second its rate limit, and the third is taken.
+  github.answers.push({ status: 500, body: { message: "Server Error" } }, { status: 403, body: { message: "API rate limit exceeded" }, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000)) } });
+  assert.deepEqual((await hook(commented(21, `@${HANDLE} which region?`))).body, { ok: "received" });
+  const [started] = await firings(api, body.id, 1);
+  await follow(api, started.run_id, ["input_required"]);
+  const waiting = await until(() => github.comments.find((c, i) => i >= 2 && c.body.startsWith("Waiting")), "the waiting comment taken");
+  assert.deepEqual([waiting.repo, waiting.number, waiting.authorized, waiting.body], [REPO.full_name, 21, true, `Waiting for your answer: reply here mentioning \`@${HANDLE}\`, or ${runLink(started.run_id)}.`]);
+  assert.deepEqual(waiting.headers, { accept: "application/vnd.github+json", version: "2022-11-28", agent: "agentrun-serve" });
+  assert.equal(github.comments.filter((c) => c.body.startsWith("Waiting")).length, 3, "tried until taken, then no more");
+  // People talking on the issue, the handle not mentioned: nothing reaches the run.
+  assert.deepEqual((await hook(commented(21, "I think it should be EMEA", { who: COLLAB, association: "COLLABORATOR", id: 7211 }))).body, { ok: "ignored" });
+  // A collaborator's mention is the person's answer.
+  assert.deepEqual((await hook(commented(21, `@${HANDLE} EMEA`, { who: COLLAB, association: "COLLABORATOR", id: 7212 }))).body, { ok: "received" });
+  const [answered] = await firings(api, body.id, 2);
+  assert.deepEqual([answered.status, answered.run_id], ["sent", started.run_id]);
+  await follow(api, started.run_id, ["completed"]);
+  const done = await until(() => github.comments.find((c) => c.body.startsWith("Done")), "the end posted");
+  const { gitHubText } = await import("../dist/github.js");
+  const answer = (await api("GET", `/runs/${started.run_id}`)).body.result.final_answer;
+  assert.equal(done.body, `Done: ${runLink(started.run_id)}.\n\n<details><summary>Answer</summary>\n\n${gitHubText(answer)}\n\n</details>`);
+  // A mention after the end opens the same run again, as a follow-up, and its end is posted too.
+  assert.deepEqual((await hook(commented(21, `@${HANDLE} and APAC?`, { id: 7213 }))).body, { ok: "received" });
+  const [again] = await firings(api, body.id, 3);
+  assert.deepEqual([again.status, again.run_id], ["sent", started.run_id], "the issue's run, opened again");
+  await until(() => github.comments.filter((c) => c.body.startsWith("Done")).length === 2, "the second end posted");
+});
+
+test("a restart keeps each issue's run and each comment still to post: a mention after it reaches the same run, and a comment GitHub had refused is posted once", { timeout: 180_000 }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "github-restart-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const first = await gitHubServer(t, { data, webhookRetryMs: [3_000, 50] });
+  assert.equal((await first.api("PUT", "/settings/github", settings)).status, 200);
+  await made(first.api, "helper");
+  const { body } = await first.api("POST", "/triggers", { name: "widgets", source: { kind: "github", repos: [REPO.full_name] }, target: { kind: "start_run", agent_id: "helper", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
+  // The end's comment is refused once, and its next try is 3 s away when the server goes.
+  first.github.answers.push({ status: 502, body: { message: "Bad Gateway" } });
+  assert.deepEqual((await first.hook(commented(22, `@${HANDLE} say hello`))).body, { ok: "received" });
+  const [started] = await firings(first.api, body.id, 1);
+  await follow(first.api, started.run_id, ["completed"]);
+  await until(() => first.github.comments.length === 1, "the first try");
+  await first.close();
+  const second = await gitHubServer(t, { data, webhookRetryMs: [50] }, first.github);
+  await until(() => first.github.comments.length >= 2, "the comment tried again after the restart");
+  await sleep(300);
+  assert.deepEqual(first.github.comments.map((c) => c.body), [`Done: ${runLink(started.run_id)}.`, `Done: ${runLink(started.run_id)}.`], "posted once, after one refusal");
+  assert.deepEqual((await second.hook(commented(22, `@${HANDLE} once more`, { id: 7221 }))).body, { ok: "received" });
+  const [sent] = await firings(second.api, body.id, 2);
+  assert.deepEqual([sent.status, sent.run_id], ["sent", started.run_id], "the issue's run, after the restart");
+  await follow(second.api, started.run_id, ["completed"]);
+  await until(() => first.github.comments.length === 3, "the follow-up's end posted");
+});
+
+test("a token GitHub refuses (401) turns posting off: that comment is not tried again, the settings say why, and nothing is posted while it is off; saving the settings again turns it back on", { timeout: 180_000 }, async (t) => {
+  const { api, hook, github } = await gitHubServer(t);
+  assert.equal((await api("PUT", "/settings/github", settings)).status, 200);
+  await made(api, "helper");
+  const { body } = await api("POST", "/triggers", { name: "widgets", source: { kind: "github", repos: [REPO.full_name] }, target: { kind: "start_run", agent_id: "helper", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
+  const ran = async (number, n) => {
+    assert.deepEqual((await hook(commented(number, `@${HANDLE} say hello`))).body, { ok: "received" });
+    const [started] = await firings(api, body.id, n);
+    await follow(api, started.run_id, ["completed"]);
+    return started.run_id;
+  };
+  github.answers.push({ status: 401, body: { message: "Bad credentials" } });
+  const first = await ran(31, 1);
+  const off = await until(async () => (await api("GET", "/settings/github")).body.disabled, "posting turned off");
+  assert.match(off.reason, /401/);
+  const second = await ran(32, 2);
+  await sleep(500);
+  assert.deepEqual(github.comments.map((c) => c.body), [`Done: ${runLink(first)}.`], "the refused comment, once");
+  const again = await api("PUT", "/settings/github", settings);
+  assert.deepEqual([again.status, again.body.disabled], [200, null]);
+  const third = await ran(33, 3);
+  await until(() => github.comments.length === 2, "the end posted once it is on");
+  assert.equal(github.comments[1].body, `Done: ${runLink(third)}.`);
+  assert.ok(!github.comments.some((c) => c.body.includes(second)), "the run that ended while it was off is not posted");
+});
+
+test("each comment says how to go on by what the run waits on: a question by a mention, an approval only in the console (naming the tool), its cap by a raise, a stop by a mention; an answer posted is defused, so it mentions no one and references no issue", async () => {
+  const { ANSWER_POSTED_CHARS, gitHubLine, gitHubText } = await import("../dist/github.js");
+  const run = (pending, status = "input_required") => ({ run_id: "run 1", agent_id: "helper", status, title: "t", ...(pending ? { pending } : {}) });
+  const link = `[open the run](${PUBLIC}/#/runs/run%201)`;
+  const waiting = (pending, base = PUBLIC) => gitHubLine("run.needs_input", run(pending), { base, handle: HANDLE });
+  assert.equal(waiting({ kind: "question" }), `Waiting for your answer: reply here mentioning \`@${HANDLE}\`, or ${link}.`);
+  assert.equal(waiting({ kind: "question" }, null), `Waiting for your answer: reply here mentioning \`@${HANDLE}\`.`);
+  assert.equal(gitHubLine("run.needs_input", run({ kind: "question" }), { base: PUBLIC, handle: `${HANDLE}[bot]` }), `Waiting for your answer: reply here mentioning \`@${HANDLE}\`, or ${link}.`, "an app is mentioned by its slug");
+  assert.equal(waiting({ kind: "stopped" }), `Stopped: mention \`@${HANDLE}\` here to go on, or ${link}.`);
+  assert.equal(waiting({ kind: "budget" }), `Paused at its spend cap: ${link}.`);
+  assert.equal(waiting({ kind: "approval", tool: "send_email" }), `Waiting for your approval of \`send_email\`: approve in the console: ${link}.`);
+  assert.equal(waiting({ kind: "approval", tool: "a`b" }), `Waiting for your approval of \`a'b\`: approve in the console: ${link}.`);
+  assert.equal(waiting({ kind: "approval" }), `Waiting for your approval: approve in the console: ${link}.`);
+  assert.equal(waiting({ kind: "approval", tool: "send_email" }, null), "Waiting for your approval of `send_email`: approve in the console.");
+  assert.equal(waiting({ kind: "later" }), `Waiting: ${link}.`);
+  assert.equal(waiting(undefined, null), "Waiting: open the run in the console.");
+  const ended = (status, answer, base = PUBLIC) => gitHubLine("run.ended", run(undefined, status), { base, handle: HANDLE, answer });
+  assert.equal(ended("completed", null), `Done: ${link}.`);
+  assert.equal(ended("completed", null, null), "Done.");
+  assert.equal(ended("failed", "an answer"), `Failed: ${link}.`);
+  assert.equal(ended("cancelled", null), `Cancelled: ${link}.`);
+  assert.equal(ended("completed", "Done."), `Done: ${link}.\n\n<details><summary>Answer</summary>\n\nDone.\n\n</details>`);
+  // Defused: no mention of a person or a team, no reference to an issue, and the answer's block cannot be closed early.
+  const J = "\u2060";
+  assert.equal(gitHubText("Thanks @octo-owner and @example-org/core: see #12, example-org/widgets#3 and GH-4. Mail a@b.example. </details><b>x</b>"), `Thanks @${J}octo-owner and @${J}example-org/core: see #${J}12, example-org/widgets#${J}3 and GH${J}-4. Mail a@${J}b.example. &lt;/details><b>x</b>`);
+  assert.equal(gitHubText("# A heading\n\nnot #a ref, @ alone"), "# A heading\n\nnot #a ref, @ alone");
+  assert.equal(gitHubText("x".repeat(ANSWER_POSTED_CHARS + 5)), `${"x".repeat(ANSWER_POSTED_CHARS)}…`);
 });
