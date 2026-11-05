@@ -18,6 +18,15 @@
       "since": "2026-11-05T09:57Z",
       "expires": "2026-11-06T09:57Z",
       "why": "Timed out waiting for local webhook deliveries on two PRs that don't touch webhooks, 11-05: serve/runs-list-trigger (pi-1-2 1.2.0, 6, 04:57Z, 'waited for the new end sent') and #1601 (test 24.21.0, any-6, 20 s on hook.got.length === 3); 316 ms locally. Both after the day's webhook changes (#1640, #1611): the owner rules out a regression first, then fixes."
+    },
+    {
+      "id": "F35",
+      "file": "packages/serve/test/box-image.test.mjs",
+      "name": "the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build",
+      "owner": "tl-places",
+      "since": "2026-11-05T10:06Z",
+      "expires": "2026-11-06T10:06Z",
+      "why": "'Unexpected end of JSON input' on PRs that don't touch box images, 11-05: #1607 on two legs (~00:58Z, before #1675 merged) and #1673 (run 42005614516, test 22.19.0 any-5). Reads like a JSON read of a file still being written (F31's class). tl-places diagnoses, then fixes."
     }
   ]
 }
