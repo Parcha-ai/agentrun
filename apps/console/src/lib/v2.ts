@@ -133,4 +133,6 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 export type RaiseAnswer = { run_id: string; max_cost_usd: number; resumed: boolean; message_id?: string; status: RunStatus; state: RunState; note?: string };
 
 /** A run paused at its spend cap: what is left of its cap cannot buy its next request's least, which was not sent. */
-export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string };
+export type BudgetPending = { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string;
+  /** The server's suggested new cap, always strictly above `cap_usd` (a newer server's; absent from an older one). */
+  suggested_cap_usd?: number };

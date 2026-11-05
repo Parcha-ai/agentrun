@@ -28,15 +28,10 @@ export function BudgetPaused({ pending }: { pending: BudgetPending }) {
   );
 }
 
-/** The cap a run paused at its cap would go on under: what it spent and ten times the refused request's least, rounded
- *  up to the cent, from the served figures alone; null when the server sends either without the other (no figure made
- *  up). Rounded to the millionth first, so a sum like 0.45 + 0.3 is never a cent too many. */
-export function suggestedCap(pending: Pick<BudgetPending, "cap_usd" | "spent_usd" | "needs_usd">): number | null {
-  const { spent_usd: spent, needs_usd: needs } = pending;
-  if (typeof spent !== "number" || typeof needs !== "number" || !Number.isFinite(spent) || !Number.isFinite(needs)) return null;
-  const cap = Math.ceil(Math.round((spent + 10 * needs) * 1e6) / 1e4) / 100;
-  return cap > pending.cap_usd ? cap : null;
-}
+/** The server's suggested new cap for a run paused at its cap (`pending.suggested_cap_usd`), shown as served: the
+ *  console computes none, and with none served (an older server) the raise starts empty. */
+export const suggestedCap = (pending: Pick<BudgetPending, "suggested_cap_usd"> | null | undefined): number | null =>
+  typeof pending?.suggested_cap_usd === "number" && Number.isFinite(pending.suggested_cap_usd) ? pending.suggested_cap_usd : null;
 
 /** Why a raise was not taken, in words: the server's own for a 422 (what it wants of the cap), an ended run and a run
  *  it no longer has in the console's, anything else by its message. */
@@ -50,12 +45,14 @@ function raiseRefusal(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Beside the cap's own banner (BudgetPaused): a new cap, prefilled with suggestedCap, and Raise the cap and continue,
- *  sent once (PATCH /v2/runs/{id}; a click while it posts sends nothing more). A refusal is said under the input and the
- *  cap stays to change; a working run's `note` is said. `onRaise` reads the run again once raised, which ends the pause. */
-export function RaiseCap({ pending, onRaise }: { pending: BudgetPending; onRaise: (usd: number) => Promise<RaiseAnswer> }) {
-  const suggested = suggestedCap(pending);
-  const [value, setValue] = useState(suggested === null ? "" : suggested.toFixed(2));
+/** A new spend cap for a run, and its raise: beside a budget pause's banner (BudgetPaused) and in the run header.
+ *  `suggested`: the server's suggestion, prefilled and editable before it is sent; none, an empty input that says what
+ *  the cap must be above. `paused`: a run paused at its cap, whose raise continues it ("Raise the cap and continue");
+ *  else a working run's ("Raise the cap"). Sent once (PATCH /v2/runs/{id}; a click while it posts sends nothing more).
+ *  A refusal is said under the input and the cap stays to change; a working run's `note` is said. `onRaise` reads the
+ *  run again once raised, which ends a pause. */
+export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; suggested: number | null; paused: boolean; onRaise: (usd: number) => Promise<RaiseAnswer> }) {
+  const [value, setValue] = useState(suggested === null ? "" : String(suggested));
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -84,11 +81,11 @@ export function RaiseCap({ pending, onRaise }: { pending: BudgetPending; onRaise
         <label className="flex items-center gap-2 font-mono text-[13px]">
           <span className="text-muted-foreground">$</span>
           <input aria-label="New cap in dollars" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} disabled={busy}
-            placeholder={`more than ${capWords(pending.cap_usd)}`} className="h-9 w-32 border bg-background px-3 font-mono text-[13px] outline-none focus:border-border-strong" />
+            placeholder={`more than ${capWords(cap)}`} className="h-9 w-32 border bg-background px-3 font-mono text-[13px] outline-none focus:border-border-strong" />
         </label>
-        <Button type="submit" size="sm" variant="solid" disabled={busy || !named}>{busy ? "Raising" : "Raise the cap and continue"}</Button>
+        <Button type="submit" size="sm" variant="solid" disabled={busy || !named}>{busy ? "Raising" : paused ? "Raise the cap and continue" : "Raise the cap"}</Button>
       </div>
-      {suggested !== null && <p className="mt-2 text-[12px] text-muted-foreground">Suggested: what it spent and ten times its next request's least.</p>}
+      {suggested !== null && <p className="mt-2 text-[12px] text-muted-foreground">The server's suggestion; change it before you raise, if you like.</p>}
       {refused && <p className="mt-2 text-[13px] text-destructive-text" role="alert">{refused}</p>}
       {note && <p className="mt-2 text-[13px] text-muted-foreground" role="status">{note}</p>}
     </form>

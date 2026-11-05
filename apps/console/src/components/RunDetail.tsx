@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/Composer";
-import { BudgetPaused, capWords, NeedsYou, RaiseCap } from "@/components/NeedsYou";
+import { BudgetPaused, capWords, NeedsYou, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
@@ -11,7 +11,7 @@ import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
-import type { RaiseAnswer, Run, RunFile, TimelineRow } from "@/lib/v2";
+import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -36,8 +36,6 @@ export type RunDetailProps = {
   /** Reads what the run's learning changed (GET /v2/runs/{id}/learning/diff): "What it changed", read only for a run
    *  that kept a note. */
   readLearningDiff?: () => Promise<LearningDiff>;
-  /** Raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again: offered beside a budget pause's banner. */
-  onRaiseCap?: (usd: number) => Promise<RaiseAnswer>;
 };
 type Tab = "graph" | "report" | "timeline" | "files";
 
@@ -62,7 +60,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff, onRaiseCap }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
@@ -110,7 +108,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
           {view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
-          {view.needsYou && budget && onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} pending={budget} onRaise={onRaiseCap} />}
+          {view.needsYou && budget && actions?.onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} cap={budget.cap_usd} suggested={suggestedCap(budget)} paused onRaise={actions.onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
