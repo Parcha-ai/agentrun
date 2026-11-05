@@ -260,6 +260,8 @@ async function send(client, req) {
   const { io } = client;
   if (response.status === 204 || bytes.length === 0) return 0;
   const json = !req.raw && JSON_TYPE.test(response.headers.get("content-type") ?? "") ? jsonOf(bytes) : undefined;
+  // A request that carried a secret (login.mjs): its copies cut from a JSON answer's values, or else from the text.
+  if (client.scrub) return json ? client.print(client.scrub.value(json.value)) : io.stdout.write(client.scrub.text(bytes.toString("utf8"))), 0;
   if (json && io.stdout.isTTY) io.stdout.write(`${JSON.stringify(json.value, null, 2)}\n`);
   else if (json) io.stdout.write(bytes.at(-1) === 10 ? bytes : Buffer.concat([bytes, Buffer.from("\n")]));
   else io.stdout.write(bytes);

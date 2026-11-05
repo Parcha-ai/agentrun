@@ -23,13 +23,29 @@ async function readSecret(io, fail, what, how) {
 /** The forms a server could quote a secret in: as it is, JSON-escaped and URL-encoded. */
 const formsOf = (secret) => [...new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])].sort((a, b) => b.length - a.length);
 
-/** `io` with every copy of each secret, in any of its forms and at any length, cut from every write. */
-const scrubbed = (io, secrets) => {
+/** What cuts every copy of each secret, in any of its forms and at any length: `text(string)` from a text, and
+ *  `value(json)` from a JSON value's strings and keys only, so the value printed again is still JSON, its structure and
+ *  every other value as they were. Two keys the cut makes one are kept apart. */
+function scrubberOf(secrets) {
   const forms = [...new Set(secrets.filter(Boolean).flatMap(formsOf))].sort((a, b) => b.length - a.length);
-  const cut = (text) => forms.reduce((at, form) => at.split(form).join("[hidden]"), text);
-  const scrub = (stream) => ({ isTTY: stream.isTTY, on: stream.on?.bind(stream), write: (chunk) => stream.write(forms.length ? cut(String(chunk)) : chunk) });
-  return { ...io, stdout: scrub(io.stdout), stderr: scrub(io.stderr) };
-};
+  const text = (string) => forms.reduce((at, form) => at.split(form).join("[hidden]"), string);
+  const value = (node) => {
+    if (typeof node === "string") return text(node);
+    if (Array.isArray(node)) return node.map(value);
+    if (node === null || typeof node !== "object") return node;
+    const out = {};
+    for (const [key, child] of Object.entries(node)) {
+      let name = text(key);
+      for (let n = 2; Object.hasOwn(out, name); n++) name = `${text(key)} (${n})`;
+      out[name] = value(child);
+    }
+    return out;
+  };
+  return { text, value };
+}
+
+/** `io` with the secrets cut from what goes to stderr, which carries only this CLI's own lines. */
+const quietStderr = (io, scrub) => ({ ...io, stderr: { isTTY: io.stderr.isTTY, write: (chunk) => io.stderr.write(scrub.text(String(chunk))) } });
 
 /** The string values of a secret route's JSON body, but for its public fields (`publicFields`, full paths such as
  *  `auth.type`, from the table), or the whole body when it is not JSON: the secrets to cut from what is printed. A value
@@ -53,12 +69,15 @@ function secretsOf(body, publicFields = []) {
 }
 
 /** A client for a request that carries a secret: a refusal prints the status, the error's code when it is one, and a
- *  message of this CLI's own, never the server's answer, which could quote the secret; what it does print has every
- *  copy of `secrets` cut. */
+ *  message of this CLI's own, never the server's answer, which could quote the secret. What it does print has every
+ *  copy of `secrets` cut: `scrub`, which cli.mjs's send applies to a JSON answer's value before it prints it, and to a
+ *  text answer's text. */
 function secretClient(clientOf, target, io, secrets) {
-  const client = clientOf(target, scrubbed(io, secrets));
+  const scrub = scrubberOf(secrets);
+  const client = clientOf(target, quietStderr(io, scrub));
   return {
     ...client,
+    scrub,
     refused(response, bytes) {
       let code;
       try {
