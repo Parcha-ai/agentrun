@@ -267,6 +267,9 @@ const PICK_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
 /** A tool's name in `toolSettings`: a plain name (PICK_NAME), a catalog's tool (`monid.discover`), an MCP server's tool
  *  (`mcp:<server>/<tool>`) or its wildcard (`mcp:<server>/*`). */
 const TOOL_KEY = /^(?:[a-z][a-z0-9_-]{0,63}(?:\.[A-Za-z0-9_-]{1,64})?|mcp:[A-Za-z0-9_.-]{1,64}\/(?:\*|[A-Za-z0-9_.-]{1,128}))$/;
+/** Whether `name` is a tool's name the store keeps in `toolSettings` (TOOL_KEY): the one check, which a server runs before
+ *  it makes an agent, so a key the store refuses never takes an agent's id. */
+export const isToolSettingsKey = (name: string): boolean => TOOL_KEY.test(name);
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {

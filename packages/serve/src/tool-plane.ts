@@ -20,6 +20,7 @@
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { readFileSync } from "node:fs";
+import { isToolSettingsKey } from "@parcha/pi-durable-agent";
 import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import type { InputIssue } from "./errors.js";
@@ -64,7 +65,7 @@ export const ASKABLE: readonly string[] = ["read", "write", "edit", "bash", "fet
 export const permissionsOf = (name: string): readonly Permission[] => (ASKABLE.includes(name) || isCatalogTool(name) ? PERMISSIONS : ["allow", "deny"]);
 /** A settings key: a tool of the table, a catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's
  *  wildcard (`mcp:<server>/*`), which sets each of its tools. */
-const isSettingsKey = (name: string): boolean => (TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name);
+const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && ((TABLE_TOOLS.includes(name) && !Object.hasOwn(LEGACY_NAMES, name)) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice) and its permission. */
 export type ToolSetting = { provider?: string; permission?: Permission };
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
@@ -265,11 +266,35 @@ export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh
   })) as Plane;
 }
 
-/** The Plane of a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
- *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor;
- *  unavailable where Browserbase's keys are gone. */
-export const keptFromBefore = (plane: Plane, env: NodeJS.ProcessEnv): Plane =>
-  plane.browser === undefined ? plane : { ...plane, browser: browserKeysOf(env).browserbase ? "browserbase" : noBrowserKey("browserbase") };
+/** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
+ *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor. It
+ *  keeps the vendor, never a refusal: the plane each launch hands over is checked again (recheckPlane), so Browserbase's
+ *  keys missing make it unavailable for that launch alone, and restored keys make the next one run. */
+export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: "browserbase" });
+
+/** A run's saved Plane as a launch reads it: a vendor's missing-key refusal an earlier server saved (noBrowserKey's exact
+ *  words, Browserbase's or Kernel's) is that vendor again, which the launch checks again as usual (recheckPlane), so
+ *  restored keys make it run. Every other saved value stays as it is: `auto` with no key at a run's first launch
+ *  (NO_BROWSER_KEY) and `chrome` stay frozen. The same Plane where nothing changes. */
+export function keptVendor(plane: Plane): Plane {
+  const vendor = (Object.keys(BROWSER_KEYS) as BrowserVendor[]).find((name) => plane.browser === noBrowserKey(name));
+  return vendor ? { ...plane, browser: vendor } : plane;
+}
+
+/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: Kernel's where
+ *  Kernel is picked or resolved, else Browserbase's, so a page links a missing key to the row it is saved on. */
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): "kernel" | "browserbase" => (picked === "kernel" || resolution === "kernel" ? "kernel" : "browserbase");
+
+/** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
+ *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept
+ *  (keptFromBefore). At a launch after its first (a relaunch, a follow-up's, one after a restart) a capability set
+ *  to deny is handed denied (planeFor without `run`), the tool's own refusal backing the gate's; at its `first`, as
+ *  under ask, so a deny lifted while that process lives is lifted at the next call. */
+export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
+  const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
+  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}) });
+  return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
+}
 
 /** The Plane the server handed this run's process; empty when it handed none. */
 export function planeOf(env: NodeJS.ProcessEnv): Plane {
