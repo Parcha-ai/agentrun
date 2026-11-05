@@ -525,3 +525,36 @@ test("a post Slack took, whose removal from the outbox failed to write, is never
   await sleep(1_500);
   assert.equal(first.slack.posts.length, posted, "nothing posted again");
 });
+
+test("a Slack trigger a server before conversations kept (its threads, and each firing's thread and user) keeps them: a reply waiting then reaches the thread's run, a reply after it too, and a mention there starts no second run", async (t) => {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "slack-upgrade-"));
+  t.after(() => rm(data, { recursive: true, force: true }));
+  const thread = `${SLACK_TEAM}:${LISTED}:1780272000.000100`;
+  const firing = (key, extra) => ({ key, by: "slack", nominal_at: "2026-06-01T00:00:00Z", at: "2026-06-01T00:00:00.000Z", thread, user: PERSON, ...extra });
+  // As #1694's server wrote it: the thread map under `threads`, a firing's thread and user on it.
+  await writeFile(join(data, "triggers.json"), `${JSON.stringify({ v: 1, triggers: [{
+    id: "trg_000000000000000000000001", name: "help desk", enabled: true, source: { kind: "slack", channels: [LISTED], post_answer: false },
+    target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 }, catchup_window_s: 3600, failures_in_a_row: 0, disabled: null,
+    created_at: "2026-06-01T00:00:00.000Z", updated_at: "2026-06-01T00:00:00.000Z", next_at: null,
+    firings: [firing("fir_00000000000000000000000000000001", { status: "started", run_id: "run-1" }), firing("fir_00000000000000000000000000000002", { status: "due", payload: "a reply that waited", reply: true })],
+    threads: { [thread]: { firing_key: "fir_00000000000000000000000000000001", channel: LISTED, thread_ts: "1780272000.000100", run_id: "run-1", at: "2026-06-01T00:00:00.000Z", last_at: "2026-06-01T00:00:00.000Z" } },
+  }] })}\n`);
+  const sent = [];
+  let started = 0;
+  const triggers = new Triggers(data, { targetIssues: async () => [], start: async () => ({ run_id: `run-new-${++started}` }), message: async (target, input, key) => void sent.push({ run_id: target.run_id, key, content: input.content }), statusOf: async () => "completed", runOf: async () => null, say: () => {}, clock: fakeClock("2026-06-01T00:01:00Z") });
+  t.after(() => triggers.close());
+  triggers.start();
+  const id = "trg_000000000000000000000001";
+  for (const end = Date.now() + 10_000; triggers.firings(id).firings.some((f) => f.status === "due"); await sleep(10)) assert.ok(Date.now() < end, "the waiting reply driven");
+  assert.deepEqual(sent.map((s) => [s.run_id, s.key]), [["run-1", "fir_00000000000000000000000000000002"]], "the reply that waited reaches the thread's run");
+  assert.match(sent[0].content, new RegExp(`<trigger-payload source="slack" user="${PERSON}" channel="${LISTED}" untrusted>`));
+  assert.equal(triggers.slackThreadOf("run-1")?.thread_ts, "1780272000.000100");
+  assert.equal(triggers.receiveSlack(slackMessage("1780272100.000100", "1780272000.000100", false))?.created, true, "a reply after the upgrade");
+  assert.equal(triggers.receiveSlack(slackMessage("1780272200.000100", "1780272000.000100", true))?.created, true, "a mention in the thread");
+  for (const end = Date.now() + 10_000; triggers.firings(id).firings.some((f) => f.status === "due"); await sleep(10)) assert.ok(Date.now() < end, "both driven");
+  assert.deepEqual(sent.map((s) => s.run_id), ["run-1", "run-1", "run-1"], "each reaches the thread's run");
+  assert.equal(started, 0, "no second run");
+  const kept = JSON.parse(await readFile(join(data, "triggers.json"), "utf8")).triggers[0];
+  assert.equal(kept.threads, undefined, "written back as conversations");
+  assert.ok(kept.conversations[`slack:${thread}`]);
+});
