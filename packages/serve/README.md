@@ -1796,14 +1796,18 @@ grader's verdict), cut of the server's secrets as they are then before the words
 list), so a value that became a secret after the run is never shown in part. Once it is proposed, merged or dropped (`seed_failed` included), the run's
 timeline has one row of kind `learning` whose summary is that detail.
 
-Three more fields say what the run used, learned and holds for the owner's OK (`learning/2`), on its read and in run
-lists alike, each absent when it holds no note: `used`, `[{file, name}]`, the notes its job read from `.learning/`,
+Four more fields say what the run was given, read, learned and holds for the owner's OK (`learning/2`), on its read and
+in run lists alike, each absent when it holds no note: `given`, `[{file, name}]`, the notes it started with (each its
+`# Learned` section names, whole or as an index line naming its file, as it was seeded; absent when it started with
+nothing learned); `read`, `[{file, name}]`, the notes its job read from `.learning/` (absent when it opened no note file),
 found once as the run settles from its timeline (each `read` call on any harness whose result was a success, of a note
 the run started from: never `MEMORY.md`, nor a read its end-of-run turn made, nor a note read through a command such as
 `bash`'s `cat`) and kept in `serve.json`, so a list never reads a timeline; `learned`, `[{file, name, supersedes}]`, the
 notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes its merge holds for the owner's OK, once
 `merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
-`[redacted]`.
+`[redacted]`. Whether a run applied a note is not measured: `given` and `read` say what it had and what it opened. Each
+note on the agent's learning view and notes page counts its runs of each, `runs: {given, read}`, over the runs the server
+knows (held ones from memory, ended ones from the learning ledger).
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
 state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
@@ -1856,7 +1860,7 @@ with the token, an archived agent's too:
   `learning: <edited, created or retired> by a person: <file>` with a `Changed-By: user` trailer, with `MEMORY.md`
   rebuilt, `main` moved only from the commit it was made on, and the folder's files brought in line; it answers the
   note as it now is, with its new `ETag`. `MEMORY.md` itself is never written (400).
-- `GET /runs/{run_id}/learning`: the run's learning whole (its `used` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
+- `GET /runs/{run_id}/learning`: the run's learning whole (its `given`, `read` and `learned` as on its read, its seed, its merge, the grader's verdict with its item for
   each new note, `{file, keep, question, why}`, `question` the rubric's question a dropped note failed, the checker's
   problems, what the grade cost), `null` for a run that does not learn; `verdict` is `null` until a grade ran.
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, else its proposal against its

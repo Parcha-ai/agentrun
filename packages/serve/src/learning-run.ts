@@ -21,7 +21,7 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { learnedWorkflowsOff } from "./adapters.js";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
-import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, type NoteRuns, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -158,6 +158,25 @@ function turnOf(run: Run): Turn {
  *  grade), over the runs that learn whose learning cost is known. */
 export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number; median_learning_usd: number | null };
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
+/** Each note's count of runs that were given it and that read it, by its file, over runs' learnings: a held run's
+ *  (`given` and `read` as {file, name}) or an ended run's ledger line (as files). A run counts a note once each way. */
+export function noteRuns(learnings: readonly ({ given?: readonly unknown[]; read?: readonly unknown[] } | null | undefined)[]): NoteRuns {
+  const out: NoteRuns = new Map();
+  const fileOf = (entry: unknown): string | undefined => (typeof entry === "string" ? entry : entry && typeof entry === "object" && typeof (entry as { file?: unknown }).file === "string" ? (entry as { file: string }).file : undefined);
+  for (const learning of learnings) {
+    if (!learning) continue;
+    for (const key of ["given", "read"] as const) {
+      const files = new Set((Array.isArray(learning[key]) ? learning[key] : []).flatMap((entry) => fileOf(entry) ?? []));
+      for (const file of files) {
+        const counts = out.get(file) ?? { given: 0, read: 0 };
+        counts[key] += 1;
+        out.set(file, counts);
+      }
+    }
+  }
+  return out;
+}
+
 /** What a run's learning tells its impact (learning-run.ts ofAgent), from memory or from its ledger line: how it
  *  ended and when, how many notes it started from, when its answer was final and its costs; `grade_usd` once it ended
  *  (0 when nothing was graded), and `look_back_usd` 0 for a run that never looked back. */
@@ -294,12 +313,15 @@ export class LearningRuns {
     const seeded = await this.seedFor(agentId);
     return async (started, at) => {
       let failed = "failed" in seeded ? seeded.failed : undefined;
+      // The notes its # Learned section names (learning.ts givenOf, as its pin keeps them): what it started with.
+      let given: NonNullable<Learning["given"]> = [];
       if ("seed" in seeded) {
         try {
           const own = revision.kind === "agentic" ? Object.keys(revision.body.skills) : [];
           // Its harness's requests going where a learned workflow's could not follow: it is offered none (fail closed).
           const workflowsOff = revision.kind === "agentic" ? await learnedWorkflowsOff(revision.body.harness, this.hostEnv(), revision.body.model) : undefined;
           const pin = await pinSeed(started.dir, started.workspace, seeded.seed, { budget: this.options.learningBudget ?? LEARNING_BUDGET, read, shown: this.shown(), own, ...(workflowsOff ? { workflowsOff } : {}) });
+          given = pin.given ?? [];
           for (const path of seeded.seed.skipped) warn(started.runId, `its learning folder's ${path} was not read`);
           for (const name of pin.skills_left_out ?? []) warn(started.runId, `starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
           if (pin.workflows_off) warn(started.runId, `starts without the workflows its agent learned (${(pin.workflows_left_out ?? []).join(", ")}): ${pin.workflows_off}`);
@@ -310,7 +332,7 @@ export class LearningRuns {
         }
       }
       const notes = "seed" in seeded ? Object.keys(seeded.seed.notes).length : 0;
-      return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes } : { state: "dropped", reason: "seed_failed", detail: failed, at };
+      return failed === undefined ? { state: "seeded", reason: null, detail: said.seeded(notes), at, seed_notes: notes, ...(given.length ? { given } : {}) } : { state: "dropped", reason: "seed_failed", detail: failed, at };
     };
   }
 
@@ -383,7 +405,7 @@ export class LearningRuns {
         this.setLearning(run, "dropped", "propose_failed", said.stopped(STOPPED.notSetAside));
       });
     }
-    await this.noteUsed(run);
+    await this.noteRead(run);
   }
 
   /** The run's end written, as it would be without learning: what its end-of-run turn wrote checked, then graded and
@@ -501,7 +523,7 @@ export class LearningRuns {
   /** Agent `agentId`'s runs (`rows`, its own) as its learning view counts them, the ledger read once: how they fared
    *  (counts, less `runs`), and what learning changed (learningImpact), each run's learning from memory when the kernel
    *  holds it, else its end from its ledger line; never a run's files. */
-  async ofAgent(rows: readonly RunRow[], agentId: string): Promise<{ counts: Omit<ReturnType<typeof learningStats>, "runs">; impact: Impact }> {
+  async ofAgent(rows: readonly RunRow[], agentId: string): Promise<{ counts: Omit<ReturnType<typeof learningStats>, "runs">; impact: Impact; notes: NoteRuns }> {
     const ledger = await outcomes(this.options.agents.dir);
     const learningOf = (row: RunRow): ImpactLearning | null => {
       const held = this.kernel.held(row.id);
@@ -517,7 +539,9 @@ export class LearningRuns {
       return { ...rest, ...(over ? { grade_usd: learning.cost_usd ? learning.cost_usd.grade : 0 } : {}), ...(learning.answered_at !== undefined ? { look_back_usd } : over ? { look_back_usd: 0 } : {}) };
     };
     const { runs: _, ...counts } = learningStats(rows, { agent: agentId }, learningOf);
-    return { counts, impact: learningImpact(rows, learningOf) };
+    // Each note's runs: given it and read it, a held run's from memory, an ended one's from its ledger line.
+    const notes = noteRuns(rows.map((row) => learningOf(row) as { given?: readonly unknown[]; read?: readonly unknown[] } | null));
+    return { counts, impact: learningImpact(rows, learningOf), notes };
   }
 
   // ---- the run's learning ---------------------------------------------------------------------------------------------
@@ -550,19 +574,19 @@ export class LearningRuns {
   }
 
   /** As the run settles, before its end is written: the notes its job read from its copy of the folder (notesRead), by
-   *  their names in its seed, kept with its learning (`used`), so a view or a list reads them from serve.json and never
+   *  their names in its seed, kept with its learning (`read`), so a view or a list reads them from serve.json and never
    *  from its rows again. Only a note the run started from counts: MEMORY.md, a file the run wrote there, and a note
-   *  not in its seed are not notes it used. Read again at each settle, a follow-up's reads with the rest. A seed that
+   *  not in its seed are not notes it read. Read again at each settle, a follow-up's reads with the rest. A seed that
    *  cannot be read leaves what was there, and says why. */
-  private async noteUsed(run: Run): Promise<void> {
+  private async noteRead(run: Run): Promise<void> {
     if (!run.meta.learning) return;
     const files = notesRead(run.meta.reflect, run.rows);
-    let used: NonNullable<Learning["used"]> = [];
+    let read: NonNullable<Learning["read"]> = [];
     if (files.length) {
       try {
         const pin = await readPin(run.dir);
         const names = new Map(pin ? activeOf(await seedAt(this.options.agents.dir, run.agentId, pin.seed)).map((note) => [note.file, note.name]) : []);
-        used = files.flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
+        read = files.flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
       } catch (error) {
         return warn(run.id, `which notes it read is not known: ${(error as Error).message}`);
       }
@@ -570,8 +594,8 @@ export class LearningRuns {
     // As the learning is now: nothing else changed it meanwhile, but its object may be a new one.
     const learning = run.meta.learning;
     if (!learning) return;
-    const { used: _, ...rest } = learning;
-    run.meta.learning = used.length ? { ...rest, used } : rest;
+    const { read: _, ...rest } = learning;
+    run.meta.learning = read.length ? { ...rest, read } : rest;
   }
 
   private dropLearning(run: Run, reason: LearningReason, detail: string): void {

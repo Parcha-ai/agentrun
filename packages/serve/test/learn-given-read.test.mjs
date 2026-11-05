@@ -19,7 +19,7 @@ test("given: a run whose notes all fit its budget is given each one whole, and t
 
 test("given: past the budget, the notes given whole and those its index names are given; a note in neither is not", () => {
   const big = note({ name: "Big", body: `${"x".repeat(3000)}\n` });
-  const seed = seedOf({ "units.md": note({ name: "Check units" }), "big.md": big, "other.md": note({ name: "Other" }) }, "- [Check units](units.md) — units\n- [Big](big.md) — big\n");
+  const seed = seedOf({ "units.md": note({ name: "Check units" }), "big.md": big, "other.md": note({ name: "Other", body: `${"y".repeat(3000)}\n` }) }, "- [Check units](units.md) — units\n- [Big](big.md) — big\n");
   const given = learning.givenOf(seed, { budget: 900, read: true, shown }).map(({ file }) => file).sort();
   assert.deepEqual(given, ["big.md", "units.md"], JSON.stringify(given));
 });

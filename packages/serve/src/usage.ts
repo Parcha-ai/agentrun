@@ -16,7 +16,7 @@ import { isObject } from "./validate.js";
 /** On a line written since they were kept (learning.ts Learning): `seed_notes`, how many notes the run started from;
  *  `answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then, once it looked back;
  *  `look_back_usd`, what looking back cost (0 when it did not; null when unknown). */
-export type Outcome = { run: string; agent: string; state: "merged" | "dropped"; reason: LearningReason | null; at: string; cost: number | null; tokens: Tokens | null; seed_notes?: number; answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null };
+export type Outcome = { run: string; agent: string; state: "merged" | "dropped"; reason: LearningReason | null; at: string; cost: number | null; tokens: Tokens | null; seed_notes?: number; given?: string[]; read?: string[]; answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null };
 type Ended = Learning & { state: "merged" | "dropped" };
 
 const ledger = (data: string) => join(data, "learning-usage.jsonl");
@@ -29,6 +29,9 @@ export const outcomeOf = (run: string, agent: string, learning: Ended): Outcome 
   run, agent, state: learning.state, reason: learning.reason, at: learning.at,
   ...(learning.cost_usd ? { cost: learning.cost_usd.grade, tokens: learning.tokens?.grade ?? null } : { cost: 0, tokens: { ...NO_TOKENS } }),
   ...(isCount(learning.seed_notes) ? { seed_notes: learning.seed_notes } : {}),
+  // The files of the notes it was given and read (learning.ts Learning), so an agent's notes count their runs after it ends.
+  ...(Array.isArray(learning.given) && learning.given.length ? { given: learning.given.map(({ file }) => file) } : {}),
+  ...(Array.isArray(learning.read) && learning.read.length ? { read: learning.read.map(({ file }) => file) } : {}),
   ...(learning.answered_at === undefined ? { look_back_usd: 0 } : { answered_at: learning.answered_at, job_cost_usd: learning.job_cost_usd ?? null, look_back_usd: learning.look_back_usd ?? null }),
 });
 const isUsd = (value: unknown): value is number | null => value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0);
@@ -49,6 +52,7 @@ export async function outcomes(data: string): Promise<Map<string, Outcome>> {
     if ((entry.state !== "merged" && entry.state !== "dropped") || !(entry.reason === null || (LEARNING_REASONS as readonly unknown[]).includes(entry.reason))) continue;
     if (!(entry.cost === null || typeof entry.cost === "number")) continue;
     if (entry.seed_notes !== undefined && !isCount(entry.seed_notes)) delete entry.seed_notes;
+    for (const key of ["given", "read"] as const) if (entry[key] !== undefined && !(Array.isArray(entry[key]) && (entry[key] as unknown[]).every((file) => typeof file === "string"))) delete entry[key];
     if (entry.answered_at !== undefined && (typeof entry.answered_at !== "string" || !Date.parse(entry.answered_at))) delete entry.answered_at;
     for (const key of ["job_cost_usd", "look_back_usd"] as const) if (entry[key] !== undefined && !isUsd(entry[key])) delete entry[key];
     if (!out.has(entry.run)) out.set(entry.run, entry as Outcome);
