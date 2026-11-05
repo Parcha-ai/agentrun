@@ -46,7 +46,8 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
   const providers = rows.some((r) => r.choice);
   const permissions = rows.some((r) => r.gate || r.follows);
   const askOff = rows.some((r) => r.gate?.ask_needs === "password");
-  const heads = ["Tool", ...(providers ? ["Provider"] : []), ...(permissions ? ["Permission"] : []), ...(providers ? ["Resolves to"] : [])];
+  // The permission right after the tool's name: the column a person looks for first (whether it runs, asks or is refused).
+  const heads = ["Tool", ...(permissions ? ["Permission"] : []), ...(providers ? ["Provider", "Resolves to"] : [])];
   const none = <span className="font-mono text-[12px] text-muted-foreground">—</span>;
   // Wider than a phone (375 px): the table scrolls in its own box, as MissionAnalytics' tables do, never the page. The box
   // is positioned so the header's sr-only "Reset" (absolute) is placed in it, not past it on the page.
@@ -71,16 +72,6 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                 <Fragment key={name}>
                   <tr data-tool={name} data-set={set || permissionSet ? "" : undefined} className="border-b align-top last:border-b-0">
                     <td className="px-3 py-2.5 font-mono text-[13px]">{name}</td>
-                    {providers && <td className="px-3 py-2">
-                      {t ? <>
-                        <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
-                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
-                          {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, name)}{p === fallback ? " (default)" : ""}</option>)}
-                        </select>
-                        {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider, name)}</span>}
-                        {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback, name)}</span>}
-                      </> : none}
-                    </td>}
                     {permissions && <td className="px-3 py-2">
                       {gate ? <>
                         <select aria-label={`${name} permission`} value={permission} disabled={busy} onChange={(e) => { const chosen = e.target.value as Permission; onEdit((current) => withPermission(current, name, chosen, gateFallback)); }}
@@ -90,6 +81,16 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                         {permissionSet && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {gateFallback}</span>}
                         {permission === "ask" && gate.ask_needs === "password" && <span className="mt-1 block max-w-[220px] text-[11px] text-warning-text">Each call is refused: no one can approve it here.</span>}
                       </> : follows ? <span className="font-mono text-[12px] text-muted-foreground">follows {follows}</span> : none}
+                    </td>}
+                    {providers && <td className="px-3 py-2">
+                      {t ? <>
+                        <select aria-label={`${name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
+                          className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
+                          {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, name)}{p === fallback ? " (default)" : ""}</option>)}
+                        </select>
+                        {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider, name)}</span>}
+                        {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback, name)}</span>}
+                      </> : none}
                     </td>}
                     {providers && <td className="px-3 py-2.5">{t ? resolvesOf(t, provider) : none}</td>}
                     <td className="px-2 py-2 text-right">

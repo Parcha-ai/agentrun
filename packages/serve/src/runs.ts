@@ -1406,7 +1406,7 @@ export class Runs {
           },
         );
       if (vmBoxes) {
-        await sweepRunBoxes(vmBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst(vmBoxes, false)).catch((error: Error) => warn("-", `its start's sweep of VM run boxes failed (${error.message}); the next start sweeps again`));
+        await sweepRunBoxes(vmBoxes, (id) => ended.has(id), boxContext(REMOTE_SYNC_MS), pulledFirst(vmBoxes, false)).catch((error: Error) => warn("-", `its start's sweep of Modal sandboxes failed (${error.message}); the next start sweeps again`));
       }
       if (remoteBoxes) {
         // A box kept at a run's end that Daytona stopped once idle is woken first, so this sweep pulls it like the rest.
