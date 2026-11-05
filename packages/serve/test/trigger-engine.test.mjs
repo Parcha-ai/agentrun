@@ -161,3 +161,41 @@ test("an interval with no start_at, made part way through a second, first fires 
     assert.deepEqual([trigger.source.start_at, trigger.next_at], [made.replace(/\.\d{3}Z$/, "Z"), next], made);
   }
 });
+
+test("a target changed to message_run while a start_run firing waits on its overlap check is sent to the new run, never left due with no time to drive it", async (t) => {
+  const sent = [];
+  let release;
+  const { triggers } = await engine(t, {
+    start: async () => ({ run_id: "run-1" }),
+    statusOf: () => new Promise((resolve) => (release = resolve)),
+    message: async (target, input, key) => void sent.push({ run_id: target.run_id, key }),
+    secrets: { mint: () => "unused", remove: () => {} },
+  });
+  const { id } = await triggers.create({ ...body({ cron: "0 9 * * *" }), enabled: false });
+  assert.equal((await triggers.fire(id, "first")).firing.status, "started");
+  const second = triggers.fire(id, "second");
+  await until(() => release, "the overlap check holds");
+  await triggers.update(id, { target: { kind: "message_run", run_id: "run-9", input: { content: "Hello." } } });
+  release("completed");
+  const { firing } = await second;
+  assert.deepEqual([firing.status, firing.run_id], ["sent", "run-9"], JSON.stringify(firing));
+  assert.deepEqual(sent, [{ run_id: "run-9", key: firing.key }]);
+});
+
+test("a firing whose drive throws unexpectedly is driven again soon, not left due until a restart", async (t) => {
+  let calls = 0;
+  const { clock, triggers } = await engine(t, {
+    // A dependency that throws as it is called, before it returns a promise: nothing in drive() expects it.
+    runOf: () => {
+      if (++calls === 1) throw new Error("unexpected");
+      return Promise.resolve(null);
+    },
+  });
+  const { id } = await triggers.create({ ...body({ cron: "0 9 * * *" }), enabled: false });
+  await triggers.fire(id, "once");
+  const [due] = triggers.firings(id).firings;
+  assert.equal(due.status, "due");
+  assert.notEqual(clock.timer, null, "a timer holds it");
+  clock.to("2026-06-01T00:00:05Z");
+  await until(() => triggers.firings(id).firings[0].status === "started", "driven again");
+});
