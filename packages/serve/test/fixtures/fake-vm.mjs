@@ -23,6 +23,8 @@ export const vm = {
   /** How long each program's start takes, as a provider's round trip does (0: at once); or, given the command, how long
    *  that program's start takes. */
   execDelayMs: 0,
+  /** How long a sandbox's lookup by id takes, as a provider's round trip does (0: at once). */
+  lookupDelayMs: 0,
   /** Makes each program's stdout fail after its first chunk, as a broken stream from the provider does. */
   failStdout: false,
   /** Makes each program's exit fail to be read, as a provider that lost the program does. */
@@ -39,6 +41,7 @@ export const vm = {
     vm.failWait = false;
     vm.failExec = undefined;
     vm.hostileTar = undefined;
+    vm.lookupDelayMs = 0;
     for (const sandbox of vm.sandboxes) sandbox.terminate({ wait: true });
     vm.clients.length = 0;
     vm.sandboxes.length = 0;
@@ -166,6 +169,7 @@ class FakeClient {
         return sandbox;
       },
       fromId: async (id) => {
+        if (vm.lookupDelayMs) await new Promise((resolve) => setTimeout(resolve, vm.lookupDelayMs));
         const found = vm.sandboxes.find((sandbox) => sandbox.sandboxId === id);
         if (!found) throw new NotFoundError(`no sandbox ${id}`);
         return found;
