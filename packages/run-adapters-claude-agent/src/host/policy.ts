@@ -349,6 +349,36 @@ export function anthropicUsage(text: string): AnthropicUsage | undefined {
   return bookedUsage({ ...startUsage, ...(isPlain(lastDelta) ? lastDelta : {}) });
 }
 
+/** Whether a Messages answer ended on the provider's refusal (`stop_reason: "refusal"`, its content filter): a whole body's
+ *  `stop_reason`, or a stream's last `message_delta` stop. Read by parsing, never by matching text, each SSE `data:` line
+ *  on its own, as anthropicUsage reads them. */
+export function anthropicFiltered(text: string): boolean {
+  const lines = text.split(/\r?\n/);
+  if (!lines.some((line) => line.startsWith("data:") || line.startsWith("event:"))) {
+    let body: unknown;
+    try { body = JSON.parse(text); } catch { return false; }
+    return isPlain(body) && body.stop_reason === "refusal";
+  }
+  let stop: unknown;
+  for (const line of lines) {
+    if (!line.startsWith("data:")) continue;
+    try {
+      const event: unknown = JSON.parse(line.slice(5));
+      if (isPlain(event) && event.type === "message_delta" && isPlain(event.delta) && "stop_reason" in event.delta) stop = event.delta.stop_reason;
+    } catch { /* cut at the kept window's edge, or not JSON: skipped */ }
+  }
+  return stop === "refusal";
+}
+
+/** Whether a Messages body (as `apply` kept it) is the turn's answer request: it offers the model one of the session's
+ *  tools. The CLI's side calls (a title, a summary, a web search's own request) offer none of them; in a session with no
+ *  tools no request can be told from one, so each is the turn's. */
+export function anthropicAnswers(body: Record<string, unknown>, options: Pick<AnthropicPolicyOptions, "tools" | "builtins">): boolean {
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
+  if (allowed.size === 0) return true;
+  return Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && typeof tool.name === "string" && allowed.has(tool.name));
+}
+
 /** The Claude Agent CLI's provider policy for one session. */
 /** The image blocks in `value`, at any depth (a tool's result holds them). */
 function imagesIn(value: unknown): number {
@@ -399,5 +429,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     contentBytesOf: anthropicContentBytes,
     limitOutput: limitAnthropicOutput,
     usageOf: anthropicUsage,
+    filtered: anthropicFiltered,
+    answers: (body) => anthropicAnswers(body, options),
   };
 }
