@@ -21,9 +21,10 @@ export type RevisionKind = "agentic" | "workflow";
  *  agentic revision's runs learn, kept when a definition says so either way (absent: the host's default).
  *  `toolSettings`: the revision's own settings of a tool its host lets a user set (the tool, or a catalog's tool or an
  *  MCP server's wildcard, to its settings, such as its provider or its permission: names and values its host checks;
- *  absent: the host's own). */
+ *  absent: the host's own). `maxCostUsd`: an agentic revision's default spend cap for each run, in US dollars, that a
+ *  run started with none of its own takes (absent: none). */
 export type RevisionPlace = { mode: string; box?: string };
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>> };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number };
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>> };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
@@ -95,7 +96,7 @@ export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
 const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; note?: string }
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; maxCostUsd?: number; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; note?: string };
 /** What starts a run: `key`, the caller's name for it (1 to 256 characters), which starts one run only, and `fingerprint`
  *  (at most 256 characters), what was asked, kept to tell a retry from another request under the same key. */
@@ -299,7 +300,8 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
     if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined && typeof input.learning !== "boolean") throw invalid("learning is not true or false");
-    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...host, ...(input.learning !== undefined ? { learning: input.learning } : {}) }, texts };
+    if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) throw invalid("the maxCostUsd is not a number above 0");
+    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...host, ...(input.learning !== undefined ? { learning: input.learning } : {}), ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}) }, texts };
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
