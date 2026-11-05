@@ -175,7 +175,7 @@ test("a follow-up continues the same OpenCode session, given back to a new proce
   assert.ok(p.seen[1].body.input.some((item) => item.role === "assistant" && item.content[0].text === "First."));
 });
 
-test("a stop ends the turn interrupted, OpenCode aborting it; the next message is a plain turn", async () => {
+test("a stop ends the turn interrupted, OpenCode aborting it; the host settles the open turn, and the next message is a plain turn", async () => {
   const started = Promise.withResolvers();
   const slow = { name: "slow", description: "Waits.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: (_args, { signal }) => new Promise((resolve) => { started.resolve(); signal.addEventListener("abort", () => resolve({ text: "stopped", isError: true }), { once: true }); }) };
   const { adapter: a, provider: p } = adapter([{ call: "hands_slow" }, { text: "Again." }]);
@@ -185,11 +185,14 @@ test("a stop ends the turn interrupted, OpenCode aborting it; the next message i
   await started.promise;
   await s.session.interrupt();
   assert.deepEqual(await s.session.turnEnd(), { status: "interrupted" });
+  // The stopped turn is open (no end is written for it): the host settles it, as serve does after a person's stop.
+  assert.equal(s.session.state, "open_turn");
+  await s.session.settleOpenTurn();
   await s.session.send("go on");
   assert.deepEqual(await s.session.turnEnd(), { status: "completed" });
   await s.session.close();
   const last = p.seen.at(-1).body.input;
-  assert.ok(!JSON.stringify(last).includes("[Recovery]"), "no recovery note: the stopped turn's end is in the log");
+  assert.ok(!JSON.stringify(last).includes("[Recovery]"), "no recovery note: the settled turn's end is in the log");
 });
 
 test("an interrupt mid-turn leaves the turn open in the session (no end is written for it): the host settles it, or the next open resumes it, as codex's does", async () => {
