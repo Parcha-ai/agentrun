@@ -818,7 +818,9 @@ picks which one a run gets, never the model.
   cancelled) or lets go cleanly to wait for its person. A run whose process went, or a server restart, keeps it with
   the run for its relaunch, since a session it opened before may still write back at the vendor, but for no longer than
   such a session can live (pi-browser's session timeout, 30 minutes) while its process stays gone: a run that waits on
-  its person after its process died, or is never opened again, lets the others save after that. One that names a run
+  its person after its process died, or is never opened again, lets the others save after that. A run whose process
+  went without letting its sessions go keeps the lease that way even once it ends. Each launch decides again whether
+  its run saves: a follow-up of a run that saved, opened while another run holds the lease, saves nothing. One that names a run
   that ended while the server was down counts as let go. Browserbase writes a saved context back a few seconds after
   its session ends, so a Browserbase saver's lease stays named for it 10 seconds past its end (a bound this server
   chose; Browserbase publishes none): a run started in that time starts from the context as it was, and saves nothing
