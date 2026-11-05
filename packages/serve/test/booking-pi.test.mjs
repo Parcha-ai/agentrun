@@ -318,3 +318,23 @@ test("a later process reads an answer with no readable cost at its hold when pi 
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.equal(spentIn(storeOf(t, store)), 0.001, `read again at its hold: ${JSON.stringify(store.map((e) => [e.kind, e.data]))}`);
 });
+
+test("a summary request the run stops while pi-ai waits to retry a lost attempt saves its mark at the hold, so a later process reads what this one booked, never the stop's smaller figure", async (t) => {
+  // Held at $0.01 under a $0.015 cap; its stop figure, with nothing streamed, is about $0.001.
+  const big = { ...MODEL, id: "claude-big", maxTokens: 10_000 };
+  const marks = [];
+  const run = await capped(marks, undefined, undefined, 0.015);
+  const stop = new AbortController();
+  let fetches = 0;
+  // A reset once the request left; the run stops it 100 ms later, inside pi-ai's wait before its retry (about 0.4 s).
+  const resetThenStop = async () => {
+    fetches += 1;
+    setTimeout(() => stop.abort(), 100);
+    throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }) });
+  };
+  const summary = await run.completeSimple(big, context, { ...options(scripted([resetThenStop, STEPS.ok])), signal: stop.signal });
+  await settle();
+  assert.deepEqual([summary.stopReason, fetches], ["aborted", 1], "stopped before its retry was sent");
+  assert.deepEqual(marks.filter((m) => m.kind === REQUEST_ENDED).map((m) => m.data), [{ request: "compaction", heldUsd: 0.01 }], "its end mark keeps the hold");
+  assert.equal(spentIn(storeOf(t, marks)), 0.01, "a later process reads the hold");
+});
