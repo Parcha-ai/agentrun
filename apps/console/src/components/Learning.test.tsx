@@ -476,6 +476,15 @@ describe("notes that wait for the owner's OK", () => {
     return v;
   };
   const APPROVES = { learning: { pending: true, approve: true } };
+  // The host's bash runs as you only off the sandbox: an agent whose definition places it in a box is told nothing of it.
+  it("say a run's bash on the host runs as you only for an agent that runs on the host, not one in the sandbox", async () => {
+    const HOST = "Runs that use bash on the host run as you.";
+    const boxed = await open(agent(true, { place: { mode: "sandbox", box: "docker" } } as never), { learning: async () => waitingView(), caps: APPROVES });
+    expect(boxed.host.querySelector('section[aria-label="Waiting for your OK"]')!.textContent).not.toContain(HOST);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const runner = await open(agent(true, { place: { mode: "runner" } } as never), { learning: async () => waitingView(), caps: APPROVES });
+    expect(runner.host.querySelector('section[aria-label="Waiting for your OK"]')!.textContent).toContain(HOST);
+  });
   it("sit at the top of the tab, under why they wait, and out of the notes in use", async () => {
     const t = await open(agent(true), { learning: async () => waitingView(), caps: APPROVES });
     const box = t.host.querySelector('section[aria-label="Waiting for your OK"]')!;
