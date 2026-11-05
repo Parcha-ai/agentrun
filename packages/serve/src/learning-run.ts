@@ -26,7 +26,7 @@ import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
 import { notKept, said, STOPPED } from "./learning-words.js";
-import { ended, outcomeOf, outcomes, record } from "./usage.js";
+import { ended, lineNotesOf, type NoteFiles, notesLineOf, notesOf, type Outcome, outcomeOf, outcomes, record } from "./usage.js";
 import { isObject, type Json } from "./validate.js";
 import { REFLECT_REQUEST } from "./turns.js";
 
@@ -158,16 +158,15 @@ function turnOf(run: Run): Turn {
  *  grade), over the runs that learn whose learning cost is known. */
 export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number; median_learning_usd: number | null };
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
-/** Each note's count of runs that were given it and that read it, by its file, over runs' learnings: a held run's
- *  (`given` and `read` as {file, name}) or an ended run's ledger line (as files). A run counts a note once each way. */
-export function noteRuns(learnings: readonly ({ given?: readonly unknown[]; read?: readonly unknown[] } | null | undefined)[]): NoteRuns {
+/** Each note's count of runs that were given it and that read it, by its file, over runs' note files (usage.ts
+ *  notesOf, lineNotesOf): a held run's from its learning, an ended one's from its ledger line. A run counts a note
+ *  once each way. */
+export function noteRuns(runs: readonly (NoteFiles | null | undefined)[]): NoteRuns {
   const out: NoteRuns = new Map();
-  const fileOf = (entry: unknown): string | undefined => (typeof entry === "string" ? entry : entry && typeof entry === "object" && typeof (entry as { file?: unknown }).file === "string" ? (entry as { file: string }).file : undefined);
-  for (const learning of learnings) {
-    if (!learning) continue;
+  for (const files of runs) {
+    if (!files) continue;
     for (const key of ["given", "read"] as const) {
-      const files = new Set((Array.isArray(learning[key]) ? learning[key] : []).flatMap((entry) => fileOf(entry) ?? []));
-      for (const file of files) {
+      for (const file of new Set(files[key])) {
         const counts = out.get(file) ?? { given: 0, read: 0 };
         counts[key] += 1;
         out.set(file, counts);
@@ -236,6 +235,8 @@ export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The files a run was given and read (usage.ts notesOf, lineNotesOf), as one key. */
+const filesKey = (files: NoteFiles) => JSON.stringify(files);
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 /** A row of the run's that a person sees. Its rows never hold the reducer's quiet ones (runs.ts take). */
 const shows = (row: TimelineEvent) => row.kind !== "usage" && row.kind !== "phase";
@@ -283,8 +284,9 @@ export class LearningRuns {
   private readonly handed = new Map<string, Set<string>>();
   /** Aborted as the server closes: a grade's screen and grader stop, and leave the run's learning `proposed`. */
   private readonly stopping = new AbortController();
-  /** The runs whose learning's end is in the learning ledger (usage.ts): read at the start, and each one written since. */
-  private readonly recorded = new Set<string>();
+  /** The runs whose learning's end is in the learning ledger (usage.ts), each with the files its lines say it was given
+   *  and read (filesKey): read at the start, and each one written since. */
+  private readonly recorded = new Map<string, string>();
   /** By run: what its end-of-run turn wrote, being checked (proposeOnce), and its proposal, being graded (gradeOnce). */
   private readonly proposing = new Map<string, Promise<void>>();
   private readonly grading = new Map<string, Promise<void>>();
@@ -337,14 +339,20 @@ export class LearningRuns {
   }
 
   /** The run's serve.json holds `learning` now: the learning ledger's line for the run (usage.ts), once, when that
-   *  learning has ended. Never rejects: a line not written is written by the next save, or by the next start's pass. */
+   *  learning has ended; after it, a `notes` line each time the notes it was given or read are no longer what the
+   *  ledger says (a follow-up read another note), which counts neither the run nor its costs again. Never rejects: a
+   *  line not written is written by the next save, or by the next start's pass. */
   onSaved(run: Pick<Run, "id" | "agentId">, learning: Learning | null | undefined): Promise<void> {
     if (ended(learning)) this.handed.delete(run.id);
-    if (!ended(learning) || this.recorded.has(run.id)) return Promise.resolve();
-    this.recorded.add(run.id);
-    return record(this.options.agents.dir, outcomeOf(run.id, run.agentId, learning)).catch((error: Error) => {
-      this.recorded.delete(run.id);
-      warn(run.id, `its learning's end is not in the ledger yet: ${error.message}`);
+    if (!ended(learning)) return Promise.resolve();
+    const was = this.recorded.get(run.id);
+    const files = filesKey(notesOf(learning));
+    if (was === files) return Promise.resolve();
+    this.recorded.set(run.id, files);
+    return record(this.options.agents.dir, was === undefined ? outcomeOf(run.id, run.agentId, learning) : notesLineOf(run.id, run.agentId, learning)).catch((error: Error) => {
+      if (was === undefined) this.recorded.delete(run.id);
+      else this.recorded.set(run.id, was);
+      warn(run.id, `${was === undefined ? "its learning's end is" : "the notes it was given and read are"} not in the ledger yet: ${error.message}`);
     });
   }
 
@@ -447,9 +455,9 @@ export class LearningRuns {
    *  merged, is checked or graded now, once; a learning end saved and not in the ledger (a server that went between the
    *  two) is written there. */
   recover(): (rows: readonly RunRow[]) => Promise<void> {
-    const inLedger = outcomes(this.options.agents.dir).catch(() => new Map<string, unknown>());
+    const inLedger = outcomes(this.options.agents.dir).catch(() => new Map<string, Outcome>());
     return async (rows) => {
-      for (const run of (await inLedger).keys()) this.recorded.add(run);
+      for (const [run, line] of await inLedger) this.recorded.set(run, filesKey(lineNotesOf(line)));
       for (const row of rows) {
         if (this.closing) return;
         if (row.state === "running" || row.importedFrom || row.kind !== "agentic") continue;
@@ -540,7 +548,12 @@ export class LearningRuns {
     };
     const { runs: _, ...counts } = learningStats(rows, { agent: agentId }, learningOf);
     // Each note's runs: given it and read it, a held run's from memory, an ended one's from its ledger line.
-    const notes = noteRuns(rows.map((row) => learningOf(row) as { given?: readonly unknown[]; read?: readonly unknown[] } | null));
+    const notes = noteRuns(rows.map((row) => {
+      const held = this.kernel.held(row.id);
+      if (held) return held.meta.learning ? notesOf(held.meta.learning) : null;
+      const line = ledger.get(row.id);
+      return line ? lineNotesOf(line) : null;
+    }));
     return { counts, impact: learningImpact(rows, learningOf), notes };
   }
 

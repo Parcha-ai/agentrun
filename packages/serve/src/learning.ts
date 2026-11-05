@@ -799,8 +799,9 @@ function learnedParts(seed: Seed, options: LearnedOptions): { section: string | 
   let left = budget - (shownIndex ? size(shownIndex) : 0);
   const kept = notes.map((note, i) => ({ note, block: blocks[i]! })).filter(({ block }) => size(block) <= left && ((left -= size(block)), true));
   const whole = kept.map(({ block }) => block);
-  // Given: each note whole here, and each the index names by its file (its first link: linkedFiles, as servedIndex reads it).
-  const indexed = new Set(lines.flatMap((entry) => { const file = linkedFiles(entry)[0]; return file && active.has(file) ? [file] : []; }));
+  // Given: each note whole here, and each the index names by its file, by any of a line's links (a hand-edited line may
+  // name more than one; linkedFiles, as servedIndex reads them).
+  const indexed = new Set(lines.flatMap((entry) => linkedFiles(entry).filter((file) => active.has(file))));
   const given = notes.filter((note) => indexed.has(note.file) || kept.some((k) => k.note === note));
   return { section: [whole.length ? SOME_INTRO : INDEX_INTRO, shownIndex, ...(read && whole.length < notes.length ? [READ_LINE] : []), ...whole].filter(Boolean).join("\n\n"), given };
 }

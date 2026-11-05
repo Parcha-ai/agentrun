@@ -1810,11 +1810,14 @@ note on the agent's learning view and notes page counts its runs of each, `runs:
 knows (held ones from memory, ended ones from the learning ledger).
 
 Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
-state, reason, at, cost, tokens, seed_notes, answered_at, job_cost_usd, look_back_usd}` (`cost` and `tokens` the
-grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from; once it looked
-back, `answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
+state, reason, at, cost, tokens, seed_notes, given, read, answered_at, job_cost_usd, look_back_usd}` (`cost` and
+`tokens` the grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from;
+`given` and `read` the files of the notes it was given and read, each absent when there are none; once it looked back,
+`answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
 looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
-its next start. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+its next start. A run's notes are the one part that moves after its end (a follow-up reads another note): a line
+`{run, agent, notes: true, given, read}` then says them anew, the latest one winning, and counts neither the run nor its
+costs again. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from that ledger and from the runs the server holds (`in_progress`), never opening a run's files; the
 `learning` meter on `GET /usage` reads the same lines.
 
