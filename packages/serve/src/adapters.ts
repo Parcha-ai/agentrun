@@ -333,7 +333,8 @@ export function claudePriceModel(env: NodeJS.ProcessEnv, model: ModelRef): Model
  *  the harness's own requests take (claudeProvider, codexProvider). Through OpenRouter, OpenRouter's name for the run's
  *  model, whose key the run holds and whose entry prices it; the vendor's provider would need the vendor's key, which a
  *  run on OpenRouter alone does not have. Otherwise the run's model as it is (Anthropic's own id for claude-agent); under
- *  a faux harness, or where the harness refuses the run (before any request), `model` itself. */
+ *  a faux harness, through codex's gateway (AGENT_MODEL_BASE_URL), or where the harness refuses the run (before any
+ *  request), `model` itself. */
 export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: ModelRef): ModelRef {
   if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return model;
   try {
@@ -342,6 +343,9 @@ export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: Mod
       return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId: priceModel.id } : { ...model, modelId: claudeModelId(model) };
     }
     if (harness === "codex") {
+      // Through a gateway (AGENT_MODEL_BASE_URL), even one at OpenRouter's URL, the run's models hold the gateway's
+      // provider (runModels), not OpenRouter's: its model is the one prepared.
+      if (env.AGENT_MODEL_BASE_URL) return model;
       const { origin, modelId } = codexProvider(env, model);
       return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId } : model;
     }
