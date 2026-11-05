@@ -94,10 +94,10 @@ export const TOOL_COST = "agentrun.tool_cost";
  *  A charge booked after the row was shown (a release after the answer) changes that row, by its id. */
 export const BROWSER_CHARGE = "browser";
 /** The tool whose charge a row carries, for a host that sums a run's paid tools from its rows: a charge row's tool (a
- *  `phase` with `usage`), `browser` for a browser call's row with its folded charges; undefined for any other row, the
- *  usage row included. */
+ *  `phase` with `usage`), `browser` for a browser step's call row (`tool_name` in BROWSER_STEPS) with its folded charges;
+ *  undefined for any other row: another tool's call row, whatever it carries, and the usage row. */
 export const chargedTool = (row: TimelineEvent): string | undefined =>
-  !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" ? BROWSER_CHARGE : undefined;
+  !row.usage ? undefined : row.kind === "phase" ? (row.tool_name ?? undefined) : row.kind === "tool_use" && row.tool_name !== null && BROWSER_STEPS.has(row.tool_name) ? BROWSER_CHARGE : undefined;
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
  *  (`not_metered`); it is no charge and never makes the cost unknown. */
@@ -573,11 +573,13 @@ function createProjector(options: TimelineOptions) {
   };
 
   /** The call a browser charge belongs to (BROWSER_CHARGE): the one it names, else its session's last charged call, else
-   *  its conversation's latest browser call. Undefined when none is in these rows. */
+   *  its conversation's latest browser call. Only a browser step's call (BROWSER_STEPS), so every row a charge folds into
+   *  is one chargedTool names the browser's. Undefined when none is in these rows. */
   function browserCallOf(data: Obj | undefined): OpenCall | undefined {
     const [id, tag] = [str(data?.call), str(data?.tag)];
     const conv = typeof data?.conversation === "number" ? data.conversation : undefined;
-    const named = id ? ((conv === undefined ? undefined : calls.get(`${conv}:${id}`)) ?? [...calls.values()].find((call) => call.use.tool_use_id === id)) : undefined;
+    const found = id ? ((conv === undefined ? undefined : calls.get(`${conv}:${id}`)) ?? [...calls.values()].find((call) => call.use.tool_use_id === id)) : undefined;
+    const named = found && BROWSER_STEPS.has(found.name) ? found : undefined;
     const call = named ?? (tag ? sessionCalls.get(tag) : undefined) ?? (conv === undefined ? undefined : browserCalls.get(conv));
     if (call && tag) sessionCalls.set(tag, call);
     return call;
