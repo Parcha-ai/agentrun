@@ -25,6 +25,9 @@ const fromServer = (row: TimelineRow) => row.origin === "server";
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
  *  "AgentRun: "). */
 const title = (row: TimelineRow) => {
+  // A browser ask's row ("Waiting for you: <instruction>", pi-durable-agent's timeline): the agent's words, said to be
+  // its request, as text.
+  if (row.kind === "waiting" && (row.summary ?? "").startsWith("Waiting for you: ")) return `The agent asks you to: ${(row.summary ?? "").slice("Waiting for you: ".length)}`;
   const text = (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {

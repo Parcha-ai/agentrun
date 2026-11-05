@@ -2,6 +2,7 @@ import { Globe } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { when } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { PendingBrowser } from "@/lib/v2";
 
 /** The agent's ask for the person in its browser (`pending.kind` "browser"), read from the run alone (it outlives a
@@ -27,8 +28,14 @@ export function BrowserAskCard({ pending, heading, open, onHandBack, compact = f
     <section aria-label="Waiting for you in the browser" className={compact ? "px-4 py-3" : "border border-warning/50 bg-warning/5 p-4"}>
       {heading}
       <p className="caps mt-1 flex items-center gap-2 text-[11px] text-warning-text"><Globe className="size-3.5" aria-hidden /> Waiting for you in the browser</p>
-      <p className={compact ? "mt-1 text-[15px] leading-snug" : "mt-2 text-[15px] leading-relaxed"}>{pending.instruction}</p>
-      <p className="mt-1 text-[13px] text-muted-foreground">Done when: {pending.completion_condition}</p>
+      {/* The agent's own words, which an agent can shape like a phishing page's: said to be its request, and plain text
+          (React text: no Markdown, no link, no HTML), never rendered. */}
+      <div data-agent-request className={cn("border-l-2 border-warning/60 pl-3", compact ? "mt-1" : "mt-2")}>
+        <p className={compact ? "text-[15px] leading-snug" : "text-[15px] leading-relaxed"}>The agent asks you to: {pending.instruction}</p>
+        <p className="mt-1 text-[13px] text-muted-foreground">Done when: {pending.completion_condition}</p>
+      </div>
+      {/* The console's own line, never the server's or the agent's. */}
+      <p className="mt-2 text-[12px] font-semibold">You never need to type your AgentRun password for this.</p>
       <p className="mt-1 font-mono text-[11px] text-muted-foreground">Expires {when(pending.expires_at)} unanswered</p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {open}
