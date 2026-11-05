@@ -216,6 +216,12 @@ const refuseInline = (what, value) => {
   if (value !== undefined && value !== "-" && !value.startsWith("@")) throw usageError(`${what} carries a secret: pass the body on stdin (--body -) or in a file (--body @FILE), never on the command line.`);
 };
 
+/** A body refused inline for a request whose path ends like a secret route once resolved (`landed`, secretAt's): it may
+ *  be any command's (a home file at settings/tool-keys/x), but the guard fails closed, and says so. */
+const refuseLanded = (landed, value) => {
+  if (value !== undefined && value !== "-" && !value.startsWith("@")) throw usageError(`This request's path, with the base URL's, ends like the secret route ${landed.method} ${landed.path}, so its body is held as a secret: pass it on stdin (--body -) or from a file (--body @FILE), not on the command line.`);
+};
+
 /** The operation whose body carries a secret that `method` on `url` reaches, once its path is normalized as fetch
  *  normalizes it (`..`, `.`, their encoded forms, repeated slashes): the operation's route at the end of the path,
  *  whatever part of it the base URL holds. */
@@ -327,7 +333,7 @@ async function api(argv, env, io) {
   const target = targetOf(values, env);
   // The base URL's own path counts too: --base-url .../v2/settings with PUT /tool-keys/exa reaches the secret route.
   const landed = secretAt(verb, `${target.base}${path}`);
-  if (landed) refuseInline(`${verb} ${landed.path}`, values.body);
+  if (landed) refuseLanded(landed, values.body);
   // A body bound for a secret route: an error's answer is never printed, and the body's values are cut from the rest.
   const route = secret || landed;
   const client = route ? guarded(clientOf, target, io, body, route.publicFields) : clientOf(target, io);
@@ -385,7 +391,7 @@ async function command(entry, argv, env, io) {
   const search = query.size ? `?${query}` : "";
   const target = targetOf(values, env);
   const landed = !entry.secretBody && secretAt(entry.method, `${target.base}${path}`);
-  if (landed) refuseInline(`${entry.command.join(" ")} (${landed.path} under the base URL)`, values.body);
+  if (landed) refuseLanded(landed, values.body);
   const client = entry.secretBody || landed ? guarded(clientOf, target, io, body, (entry.secretBody ? entry : landed).publicFields) : clientOf(target, io);
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
