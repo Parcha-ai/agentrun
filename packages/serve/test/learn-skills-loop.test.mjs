@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
+import { CAPS } from "../dist/learn/check.js";
 import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, savedOf, sleep, started } from "./learn-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
@@ -201,4 +202,17 @@ test("a skill is laid into a run with its name and description alone in its fron
   const given = readFileSync(join(data, "runs", runId, "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
   assert.ok(!given.includes("hooks:") && !given.includes("touch /tmp/never"), given);
   assert.match(given, /^---\nname: find-policies\ndescription: [^\n]+\n---\n/);
+});
+
+test("a skill left out unread for its size that hides a secret's shape refuses the whole answer: the note and the draft beside it are not kept", { timeout: 120_000 }, async (t) => {
+  const { api, data, grades } = await server(t);
+  const shaped = ["s", "k-", "Zx9".repeat(10)].join("");
+  const huge = `${SKILL}\nSign in with ${shaped}.\n${"x".repeat(CAPS.file)}\n`;
+  await made(api, answering("hider", answer({ skill: huge })));
+  const { view } = await ended(api, await started(api, "hider"));
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "checker"], JSON.stringify(view.learning));
+  const saved = await savedOf(data, view.run_id);
+  assert.ok(saved.learning.problems.some((problem) => problem.rule === "secret_shape"), JSON.stringify(saved.learning.problems));
+  assert.equal(grades(), 0, "nothing graded");
+  assert.deepEqual(mergesOf(repoOf(data, "hider"), view.run_id), []);
 });

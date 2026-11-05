@@ -191,3 +191,30 @@ test("a run's note with no `type:` is read as a project note and passes, as Clau
   assert.deepEqual(result.problems, [], JSON.stringify(result.problems));
   assert.deepEqual(parseNoteFile("memo.md", claudes.replace("---\nWe ship", "type: memo\n---\nWe ship")), ["type is not user, feedback, project, reference"]);
 });
+
+test("what must never be stored is found in every item's name and text, whatever the checks refuse it for first: an over-cap, misnamed, existing or edited note, and a misnamed, linked, over-cap or held skill each hide a secret's shape the item checks never read", () => {
+  const shaped = ["s", "k-", "Zx9".repeat(10)].join("");
+  const body = `---\nname: N\ndescription: d\ntype: project\n---\nSign in with ${shaped}.\n`;
+  const skillText = `---\nname: find-policies\ndescription: Find a store's policies\n---\nSign in with ${shaped}.\n`;
+  const modified = (path, text) => ({ ...added(path, text), status: "modified" });
+  const holding = (file) => ({ ...baseOf(), files: [...baseOf().files, file] });
+  const cases = [
+    ["note too_large", { base: baseOf(), changes: [added("big.md", `${body}${"x".repeat(checks.CAPS.runNote)}\n`)] }, "too_large"],
+    ["note file_name", { base: baseOf(), changes: [added("bad name.md", body)] }, "file_name"],
+    ["note exists", { base: holding("dup.md"), changes: [added("dup.md", body)] }, "exists"],
+    ["note edited", { base: holding("old.md"), changes: [modified("old.md", body)] }, "edited"],
+    ["skill file_name", { base: baseOf(), changes: [added("skills/Bad_Name/SKILL.md", skillText)] }, "file_name"],
+    ["skill file_mode", { base: baseOf(), changes: [{ ...added("skills/find-policies/SKILL.md", skillText), mode: "120000" }] }, "file_mode"],
+    ["skill too_large", { base: baseOf(), changes: [added("skills/find-policies/SKILL.md", `${skillText}${"x".repeat(checks.CAPS.file)}\n`)] }, "too_large"],
+    ["skill skill_status", { base: holding("skills/find-policies/SKILL.md"), changes: [modified("skills/find-policies/SKILL.md", skillText)], kept: ["skills/find-policies/SKILL.md"] }, "skill_status"],
+  ];
+  for (const [what, input, rule] of cases) {
+    const rules = checks.checkProposal({ outcome: "completed", ...input }).problems.map((problem) => problem.rule);
+    assert.ok(rules.includes(rule) && !rules.includes("secret_shape"), `${what}: the item check refuses it unread: ${rules}`);
+    const never = checks.unstorable(input.changes);
+    assert.deepEqual(never.map((problem) => problem.rule), ["secret_shape"], what);
+    assert.ok(!JSON.stringify(never).includes(shaped), `${what}: never printed`);
+  }
+  // A text that is not UTF-8 cannot be read for any of it: refused as unread.
+  assert.deepEqual(checks.unstorable([{ path: "raw.md", status: "added", mode: "100644", bytes: Uint8Array.from([0xff, 0xfe, 0x00]) }]).map((p) => p.rule), ["encoding"]);
+});
