@@ -326,3 +326,27 @@ test("a seed of files is in its private directory at acquire and again after eve
     assert.throws(() => localMachine({ dir: scratch(), proxy: { hooks, tools: [] }, seed: { dir: where, files: { 'a.md': 'x' } } }), /agentrun-harness-codex: a seed goes in one of the machine's private directories/, where);
   }
 });
+
+// No turn starts after a stop: a session's turn/start is dropped once its drive is stopped (whether the prompt reached
+// Codex is its rollout's to say, at the settle). Every other line goes to the app-server unchanged, in order, at once.
+test("a session's lines reach the app-server unchanged, in order and at once; once the drive is stopped a turn/start is not sent, and its other lines still go", async () => {
+  const machine = await import('../dist/host/machine.js');
+  assert.equal(typeof machine.withoutTurnsAfterStop, 'function', 'the machine drops a turn/start after a stop');
+  const got = [];
+  const proc = { send: (line) => { got.push(JSON.stringify(line)); return true; }, alive: () => true };
+  const stop = new AbortController();
+  const guarded = machine.withoutTurnsAfterStop(proc, stop.signal);
+  const lines = [
+    { method: 'initialized', params: {} },
+    { id: 1, method: 'turn/start', params: { threadId: 't', clientUserMessageId: 's1', input: [{ type: 'text', text: 'go ✓\n{"method":"turn/start"}', text_elements: [] }] } },
+    { id: 2, method: 'thread/read', params: { threadId: 't' } },
+  ];
+  assert.deepEqual(lines.map((line) => guarded.send(line)), [true, true, true]);
+  assert.deepEqual(got, lines.map((line) => JSON.stringify(line)), 'all of them, unchanged and in order, at once');
+  stop.abort(new Error('stopped'));
+  const late = { id: 4, method: 'turn/start', params: { threadId: 't', clientUserMessageId: 's2', input: [] } };
+  const interrupt = { id: 5, method: 'turn/interrupt', params: { threadId: 't' } };
+  guarded.send(late);
+  guarded.send(interrupt);
+  assert.deepEqual(got.slice(lines.length), [JSON.stringify(interrupt)], 'a stopped drive starts no turn; its other lines still go');
+});

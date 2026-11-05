@@ -178,13 +178,14 @@ async function graderModel(env: NodeJS.ProcessEnv, agent: Agent, cost: GradeCost
     const catalog = builtinModels({ authContext: graderAuth(sent) }) as unknown as PiModels;
     const at = (found: unknown) => (found && typeof found === "object" ? { ...found, baseUrl: sent.origin } : found);
     chosen = { models: { getModel: (provider: string, id: string) => at(catalog.getModel(provider, id)), completeSimple: (...call: unknown[]) => catalog.completeSimple(...call) }, model: { provider: "anthropic", modelId: sent.modelId } };
-  } else if (agent.harness === "codex" && !env[FAUX_HARNESS_ENV] && openRouterOnly("codex", env)) {
-    // codex on OpenRouter alone: the grade goes where the run's requests go, OpenRouter with its key, on the model the run
-    // runs (codexModel, then the id codexProvider sends), through pi-ai's openrouter provider. The revision's own name
-    // (openai/<model>) would ask for an OpenAI key, which this route never needs.
-    const choice = await codexModel(env, agent.model);
+  } else if ((agent.harness === "codex" || agent.harness === "opencode") && !env[FAUX_HARNESS_ENV] && openRouterOnly(agent.harness, env)) {
+    // codex on OpenRouter alone, and opencode, which takes codex's route: the grade goes where the run's requests go,
+    // OpenRouter with its key, on the model the run runs (codexModel, then the id codexProvider sends), through pi-ai's
+    // openrouter provider. The revision's own name (openai/<model>) would ask for an OpenAI key, which this route never
+    // needs.
+    const choice = await codexModel(env, agent.model, agent.harness);
     if ("why" in choice) throw new Error(choice.why);
-    chosen = await runModels(env, `openrouter/${codexProvider(env, choice.model as ModelRef).modelId}`);
+    chosen = await runModels(env, `openrouter/${codexProvider(env, choice.model as ModelRef, agent.harness).modelId}`);
   } else chosen = await runModels(env, agent.model);
   const models = chosen.models as unknown as PiModels;
   const { model } = chosen;
@@ -229,6 +230,24 @@ export async function judgeProposal(input: { runId: string; agent: Agent; main: 
 /** Each skill and draft file as main keeps it: as the run gave it, or, for one the grader held for its owner's OK, with
  *  `status: pending` in its SKILL.md or its README.md (learn/skills.ts held). A held workflow.json is as given: its
  *  README holds it. */
+/** The graded item a proposal's file is judged as: a draft's README.md with its workflow.json, every other file as
+ *  itself (a note, a skill's SKILL.md, a draft's workflow.json). */
+const itemOf = (file: string): string => {
+  const place = learnedPlace(file);
+  return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
+};
+
+/** `proposal` with only what `verdict` keeps (a verdict per item): each note, skill and draft (both its files) its item
+ *  keeps or holds; the ones it drops are left out. A proposal with no verdict (a merge resumed on one kept before the
+ *  grade read items) is as it is. */
+export function keptProposal(proposal: Proposal, verdict?: Verdict): Proposal {
+  if (!verdict?.items.length) return proposal;
+  const kept = new Set(verdict.items.filter((item) => item.keep).map((item) => item.file));
+  const files = (proposal.files ?? []).filter(({ file }) => kept.has(itemOf(file)));
+  const { files: _, ...rest } = proposal;
+  return { ...rest, notes: proposal.notes.filter(({ file }) => kept.has(file)), ...(files.length ? { files } : {}) };
+}
+
 export function heldFiles(files: readonly NoteText[], verdict?: Verdict): NoteText[] {
   const waiting = new Set((verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
   return files.map(({ file, text }) => {

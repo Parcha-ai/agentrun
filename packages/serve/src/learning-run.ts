@@ -33,7 +33,7 @@ import { REFLECT_REQUEST } from "./turns.js";
  *  after it (its rows are those between), its deadline, and how it ended. */
 export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
 /** Who sent the end-of-run turn: the server, never a person, and no request field sets it. The one value it is sent
- *  with, at its one call (reflectTurn); the per-tool gate, once this server has one, takes it there. */
+ *  with, at its one call (reflectTurn); the tool gate reads it there and refuses that turn's writes under work/.learning/ (tool-gate.ts NOTE_ONLY_TEXT). */
 const REFLECT_ORIGIN = "reflect";
 export type TurnOrigin = typeof REFLECT_ORIGIN;
 /** The run asked its end-of-run turn and has not ended since. */
@@ -227,7 +227,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "ownSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -464,7 +464,7 @@ export class LearningRuns {
    *  once and kept until a person saves or deletes one (keysChanged). */
   shown(): Shown {
     const saved = (this.saved ??= new Map(SECRET_NAMES.map((name) => [name, this.options.storedKeys?.(name)])));
-    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken];
+    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
     const key = values.join("\0");
     if (this.cut?.key !== key) this.cut = { key, shown: secretsShown(values) };
     return this.cut.shown;
@@ -613,7 +613,11 @@ export class LearningRuns {
       await this.kernel.save(run);
       const { reflectPrompt } = await import("./learn/index.js");
       const tools = await this.draftTools(run);
-      // The one call that sends the end-of-run turn, with its origin.
+      // The one call that sends the end-of-run turn, with its origin. Only while the run is finishing with no outcome yet,
+      // read in the same tick the origin's write starts in (toLiveDoor writes it before its first await): a message
+      // waits while the run is finishing (runs.ts message), so a write starts only before that wait ends. One whose
+      // process went while this turn was made ready has its outcome already: it is asked nothing.
+      if (!run.finishing || run.outcome) return;
       await this.kernel.toLiveDoor(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir: LEARNED_DIR, active: Object.keys(seed.notes).length, tools }), whenBusy: "followUp" }, REFLECT_ORIGIN);
       end = await this.reflectEnd(run, Date.parse(reflect.deadline));
     } catch (error) {
@@ -696,7 +700,8 @@ export class LearningRuns {
       // The secrets this server holds, wherever its launcher put them, the keys saved on it, what each launch handed the
       // run, and its own tokens. How the job ended, before its end-of-run turn: only a completed run keeps a skill.
       const proposed = await proposeRun({ data: this.options.agents.dir, agentId: run.agentId, runDir: run.dir, seed: pin.seed, turn: await readTurn(run.dir), refuse: this.refused(run), ...(run.meta.reflect ? { outcome: run.meta.reflect.outcome } : {}), tools: await this.draftTools(run) });
-      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows));
+      // What the checks left out goes on with it (`problems`), to be said with what it learned.
+      if (proposed.state === "proposed") this.setLearning(run, "proposed", null, said.proposed(proposed.notes, proposed.skills, proposed.workflows), proposed.left ? { problems: proposed.left } : {});
       else if (proposed.reason === "empty") this.setLearning(run, "dropped", "empty", said.empty);
       else if (proposed.reason === "unparsed") {
         warn(run.id, `its end-of-run turn's answer was not read: ${proposed.detail}`);
@@ -723,7 +728,9 @@ export class LearningRuns {
     const before = run.meta.learning;
     if (before?.state !== "proposed" || this.closing) return;
     const data = this.options.agents.dir;
-    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { verdict: before.verdict, graded: before.graded, cost_usd: before.cost_usd, tokens: before.tokens } : {};
+    // What the checks left out of the proposal (a verdict per item) stays with it to its end.
+    const checkedOut = before.problems?.length ? { problems: before.problems } : {};
+    let kept: Omit<Partial<Learning>, "state" | "reason" | "detail" | "at"> = before.verdict ? { ...checkedOut, verdict: before.verdict, graded: before.graded, cost_usd: before.cost_usd, tokens: before.tokens } : { ...checkedOut };
     // Its end saved, and with it its line in the ledger, which carries what the grade spent (onSaved).
     const end = (state: LearningState, reason: LearningReason | null, detail: string, more: typeof kept = {}) => {
       this.setLearning(run, state, reason, detail, { ...kept, ...more });
@@ -733,7 +740,7 @@ export class LearningRuns {
       const proposal = JSON.parse(await readFile(join(run.dir, PROPOSAL), "utf8")) as Proposal;
       const known = await this.options.agents.revision(run.agentId, run.revision);
       if (known?.revision.kind !== "agentic") throw new Error("the run's revision is not agentic");
-      const { judgeProposal, mergeProposal, readForGrade } = await import("./grade.js");
+      const { judgeProposal, keptProposal, mergeProposal, readForGrade } = await import("./grade.js");
       const main = kept.verdict ? undefined : await readForGrade(data, run.agentId, run.id, proposal);
       // Main took a note of the same name, or superseded one it supersedes, since the run started: refused before the
       // grader is asked.
@@ -743,7 +750,7 @@ export class LearningRuns {
         const env = this.hostEnv();
         const gradeModel = gradeModelOf(env, this.options.gradeModel);
         const judged = await judgeProposal({ runId: run.id, agent: { instructions, harness, model, thinking }, main, proposed: proposal.notes, ...(proposal.files ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(gradeModel ? { gradeModel } : {}), env, signal: this.stopping.signal, ...(this.options.gradeTimeoutMs ? { gradeTimeoutMs: this.options.gradeTimeoutMs } : {}) });
-        kept = { cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
+        kept = { ...checkedOut, cost_usd: { grade: judged.cost.usd }, tokens: { grade: judged.cost.tokens } };
         if ("error" in judged) {
           warn(run.id, `its grader gave no verdict: ${judged.error.message}`);
           return await end("dropped", "grade_failed", said.stopped(STOPPED.noReview));
@@ -760,19 +767,22 @@ export class LearningRuns {
       }
       // A verdict kept with no `graded`: a note the proposal supersedes is refused, never marked on a text nobody knows
       // was read.
-      const merge = await mergeProposal(data, run.agentId, run.id, proposal, kept.verdict?.reason || "The grader kept every new note.", kept.graded ?? {}, kept.verdict);
+      // A verdict per item: what it keeps merges, what it drops is left out (keptProposal), and said.
+      const merging = keptProposal(proposal, kept.verdict);
+      const left = (kept.verdict?.items ?? []).filter((item) => !item.keep);
+      const merge = await mergeProposal(data, run.agentId, run.id, merging, kept.verdict?.reason || "The grader kept every new note.", kept.graded ?? {}, kept.verdict);
       if ("problems" in merge) return await end("dropped", "checker", said.stale(merge.problems), { problems: merge.problems });
       if (merge.checkout) warn(run.id, `its merge is on main, but the folder's files were not brought in line: ${merge.checkout.message}`);
       // A note the user asked for whose rule is risky waits on main for their OK: named here, and no run reads it yet.
       const waiting = new Set((kept.verdict?.items ?? []).filter((item) => item.pending).map((item) => item.file));
-      const pending = proposal.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
+      const pending = merging.notes.filter(({ file }) => waiting.has(file)).map(({ file, text }) => ({ file, name: nameOf(file, text) }));
       // What it learned: the notes it added that runs read, a note that waits for its OK not among them; and its skill
       // and workflow draft, each pending when it waits.
-      const learned = learnedOf(proposal).filter(({ file }) => !waiting.has(file));
-      const made = (suffix: string): LearnedFile[] => (proposal.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
+      const learned = learnedOf(merging).filter(({ file }) => !waiting.has(file));
+      const made = (suffix: string): LearnedFile[] => (merging.files ?? []).filter(({ file }) => file.endsWith(suffix)).map(({ file }) => ({ file, name: file.split("/")[1]!, ...(waiting.has(file) ? { pending: true as const } : {}) }));
       const skills = made("/SKILL.md");
       const workflows = made("/workflow.json");
-      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows]), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
+      await end("merged", null, redactSecrets(said.merged(learned, pending, [...skills, ...workflows], left, before.problems ?? []), this.refused(run)), { merged: merge.merged, learned, ...(pending.length ? { pending } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) });
     } catch (error) {
       // A server closing: nothing was decided, and the next start grades the run.
       if (this.closing) return;
@@ -786,7 +796,7 @@ export class LearningRuns {
   private refused(run: Run): string[] {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(own ? [own] : [])];
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? []), ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

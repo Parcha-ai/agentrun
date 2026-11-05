@@ -16,11 +16,11 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
  *  web_search's providers end with `off`, which makes it unavailable, with the server's reason. */
 const OFF = "web_search is turned off in settings";
 const searchUnder = (pick = "auto") => pick === "off"
-  ? { available: false, reason: OFF, resolves: { pi: `unavailable: ${OFF}`, "claude-agent": `unavailable: ${OFF}`, codex: `unavailable: ${OFF}` } }
-  : { available: true, resolves: { pi: pick === "parallel" ? "unavailable: PARALLEL_API_KEY is not set" : "exa-keyless", "claude-agent": "native", codex: "native" } };
+  ? { available: false, reason: OFF, resolves: { pi: `unavailable: ${OFF}`, "claude-agent": `unavailable: ${OFF}`, codex: `unavailable: ${OFF}`, opencode: `unavailable: ${OFF}` } }
+  : { available: true, resolves: { pi: pick === "parallel" ? "unavailable: PARALLEL_API_KEY is not set" : "exa-keyless", "claude-agent": "native", codex: "native", opencode: pick === "parallel" ? "unavailable: PARALLEL_API_KEY is not set" : "exa-keyless" } };
 const choicesUnder = (settings: ToolSettings): ToolChoice[] => toolChoices([
   { name: "web_search", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: settings.web_search?.provider ?? "auto", default_provider: "auto", ...searchUnder(settings.web_search?.provider) },
-  { name: "web_fetch", providers: ["kernel", "parallel"], provider: settings.web_fetch?.provider ?? "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
+  { name: "web_fetch", providers: ["kernel", "parallel"], provider: settings.web_fetch?.provider ?? "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native", opencode: "kernel" } },
 ]);
 
 async function open(start: ToolSettings = {}, refuse?: () => ClientError) {
@@ -60,6 +60,8 @@ describe("Settings → Tools", () => {
     // What each resolves to, per harness.
     expect(page.row("web_search").textContent).toContain("pi: Exa keyless");
     expect(page.row("web_search").textContent).toContain("claude-agent: native");
+    expect(page.row("web_search").textContent).toContain("opencode: Exa keyless");
+    expect(page.row("web_fetch").textContent).toContain("opencode: kernel fetch");
   });
 
   it("marks a pick unlike the default, with the default named and a reset; a default pick has neither", async () => {
@@ -198,10 +200,11 @@ describe("Settings → Tools, a settings read that fails once the page shows the
   const stale = () => toolChoices([{ name: "web_search", providers: ["auto", "exa-keyless", "parallel", "off"], provider: "exa-keyless", default_provider: "auto", available: true, resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } }]);
   async function shown() {
     let reads = 0;
+    const puts: ToolSettings[] = [];
     const state = { fail: false };
     const v2 = {
       toolSettings: async () => { reads++; if (state.fail) throw new Error("connection reset"); return { web_search: { provider: "off" } }; },
-      saveToolSettings: async (b: ToolSettings) => b,
+      saveToolSettings: async (b: ToolSettings) => { puts.push(b); return b; },
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
@@ -215,7 +218,7 @@ describe("Settings → Tools, a settings read that fails once the page shows the
     // The row's Retry, with the settings read failing.
     state.fail = true;
     await click(row(), /Retry/);
-    return { host, row, alert, click, settle, state, reads: () => reads };
+    return { host, row, alert, click, settle, state, puts, reads: () => reads };
   }
   it("says so beside the table it keeps, with Try again, which reads again; once a read lands, the words go", async () => {
     const page = await shown();
@@ -227,12 +230,21 @@ describe("Settings → Tools, a settings read that fails once the page shows the
     expect(page.reads()).toBe(3);
     expect(page.alert()).toBeUndefined();
   });
-  it("a save after that failed read is the newest settings: the words go", async () => {
+  it("a save while the settings can't be read saves nothing and says so, keeping the change; Try again saves it once a read lands, and the words go", async () => {
     const page = await shown();
     expect(page.alert()).toBeDefined();
     await act(async () => { const s = page.row().querySelector("select")!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "parallel"); s.dispatchEvent(new Event("change", { bubbles: true })); });
     await page.settle();
+    // A save is a read-modify-write of the whole map: with no map read now, an older one would drop a key set meanwhile.
+    expect(page.puts).toEqual([]);
+    const refused = [...page.host.querySelectorAll('[role="alert"]')].find((a) => /nothing was saved/.test(a.textContent ?? ""));
+    expect(refused?.textContent).toContain("Couldn't read the current settings, so nothing was saved. Try again.");
+    expect(page.row().querySelector("select")!.value).toBe("parallel");
+    page.state.fail = false;
+    await page.click(refused!, /^Try again$/);
+    expect(page.puts).toEqual([{ web_search: { provider: "parallel" } }]);
     expect(page.row().querySelector("select")!.value).toBe("parallel");
     expect(page.alert()).toBeUndefined();
+    expect([...page.host.querySelectorAll('[role="alert"]')].some((a) => /nothing was saved/.test(a.textContent ?? ""))).toBe(false);
   });
 });

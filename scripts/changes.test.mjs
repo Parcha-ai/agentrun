@@ -561,17 +561,33 @@ test('the command line fails a release commit that carries a fragment, and passe
   const pass = local();
   assert.equal(pass.status, 0, pass.stderr);
 }));
-test('the command line fails a change to the files a package on its own version line publishes that keeps its version', () => repo(async (root, git) => {
+test('a pull request that changes the files the command publishes keeps its version: the release sets it, and a pull request that moves it is refused', () => repo(async (root, git) => {
   await withVersion(root, git);
   const base = await ownPackage(root, git, '0.3.0');
   await mkdir(join(root, 'scripts'));
   await copyScript(root);
   const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base], { cwd: root, encoding: 'utf8' });
-  await writeFile(join(root, 'changes/start.md'), fragment('repo', 'fix', 'Start.'));
+  await writeFile(join(root, 'changes/start.md'), fragment('@parcha/agentrun', 'fix', 'Start.'));
+  await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
+  const pass = local();
+  assert.equal(pass.status, 0, pass.stderr);
+  await setVersion(root, '0.3.1');
+  const fail = local();
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /packages\/agentrun moved its version from 0\.3\.0 to 0\.3\.1; the release sets it \(docs\/releasing\.md\), so a pull request leaves it at 0\.3\.0/);
+}));
+test('a release commit that changes the files the command publishes and keeps its version is refused; with its next version it passes', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const base = await ownPackage(root, git, '0.3.0');
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base], { cwd: root, encoding: 'utf8' });
+  // The release: every workspace package bumped, and the command's pin on the server moved with them.
+  await bump(root, '0.1.0-beta.14');
   await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
   const fail = local();
   assert.equal(fail.status, 1);
-  assert.match(fail.stderr, /packages\/agentrun changed the files it publishes and kept its version; bump the version in its package\.json/);
+  assert.match(fail.stderr, /packages\/agentrun changed the files it publishes and kept its version; the release sets its next version in its package\.json/);
   await setVersion(root, '0.3.1');
   const pass = local();
   assert.equal(pass.status, 0, pass.stderr);

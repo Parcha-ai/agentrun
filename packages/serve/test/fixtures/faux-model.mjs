@@ -142,16 +142,46 @@ export default function reply(context, faux) {
     process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
     return faux.message("Recorded.");
   }
+  // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
+  const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
+  if (linked) {
+    const key = process.getBuiltinModule("node:fs").readFileSync(linked[1], "utf8").trim();
+    return faux.message(`Open http://127.0.0.1:7340/#/runs/01a1a961-3257-7131-a652-c6fb78880244?x=1 and see https://api.example/v1?k=${key}&y=2 for it.`); // key-gate: loopback-rule a console link an agent's answer gives, as text
+  }
   const quote = /^Quote the key in (\S+)$/.exec(first);
   if (quote) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
     if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
     return faux.message(`Done with ${key}.`);
   }
+  // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
+  if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
+    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
+  }
+  // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
+  // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
+  if (first.includes("Run monid's /person/enrich, called again after a raise")) {
+    const calls = first.includes("twice") ? 2 * users.length - 1 : users.length;
+    return results < calls ? faux.message(faux.toolCall("monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
   // Finds, reads and runs a monid endpoint, a call per turn, under the tools' wire names; then answers with the run's result.
   if (first.includes("Enrich with monid")) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
     return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
+  }
+  // Uses the skill that fits, as a run told of its skills on demand does: reads the SKILL.md whose path its system prompt
+  // names, then answers with the skill's FORMAT-LINE as the file has it. A prompt that already holds the skill's text says
+  // BODY-INLINED; one that names no skill's file says so.
+  if (first.startsWith("Use the skill that fits:")) {
+    const sectionText = (part) => (typeof part === "string" ? part : Array.isArray(part) ? part.map((p) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+    const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {}).map(sectionText)])].join("\n");
+    if (/^FORMAT-LINE:/m.test(system)) return faux.message("BODY-INLINED");
+    if (!answered) {
+      const path = /\((\.agents\/skills\/[^)\s]+\/SKILL\.md)\)/.exec(system)?.[1];
+      return path ? faux.message(faux.toolCall("read", { path }), { stopReason: "toolUse" }) : faux.message("NO SKILL LISTED");
+    }
+    return faux.message(/^FORMAT-LINE:.*$/m.exec(textOf(context.messages.at(-1)))?.[0] ?? "NO FORMAT IN THE FILE");
   }
   // Reads each path its first message lists with read, one per turn, then says so; "once <file> exists" holds the first
   // read until the test has made that file (and planted what the reads need).
@@ -180,6 +210,11 @@ export default function reply(context, faux) {
   // Searches the web once for what its first message says, with web_search, then says so.
   const query = /^Search the web for (.+)$/s.exec(first)?.[1];
   if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
+  // A follow-up that browses once more: a snapshot, then what it saw.
+  if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+  // "Browse the example page once <file> exists." answers, its browser still open, only once the test has made that file.
+  const browseGate = /^Browse the example page once (\S+) exists\.$/.exec(first)?.[1];
+  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(() => faux.message(`Seen: ${textOf(context.messages.at(-1))}`));
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
@@ -244,6 +279,11 @@ export default function reply(context, faux) {
   if (first.includes("Answer quoting the held key.")) return faux.message(`Here it is: ${CUT_KEY} and ${Buffer.from(CUT_KEY).toString("base64")}. The rest stays.`);
   // A long answer (about 50 KB) that quotes the held key near its end.
   if (first.includes("Answer at length quoting the held key.")) return faux.message(`${"word ".repeat(10_000)}near the end ${CUT_KEY} done.`);
+  // A workflow's llm call that answers with the held key, and one whose provider echoes it in its error (graph-redact.test.mjs).
+  if (first.includes("Answer the graph with the held key.")) return faux.message(`Graph: ${CUT_KEY} here, and ${["later", "held", "zyxwvutsrq"].join("-")} too.`);
+  if (first.includes("Fail the graph call echoing the held key.")) return faux.message("", { stopReason: "error", errorMessage: `500 {"message":"Key ${CUT_KEY} is not valid"}` });
+  // A provider error of about 4 KB that quotes the held key again and again, so one copy sits across any cut at 2000.
+  if (first.includes("Fail the graph call at length.")) return faux.message("", { stopReason: "error", errorMessage: `500 ${`${CUT_KEY} `.repeat(110)}` });
   // About 1 MB of "sk-" runs, a space every 8 K: each run is one long sk- shape that every third character starts again.
   if (first.includes("Answer with a megabyte of sk- runs.")) return faux.message(`${"sk-".repeat(2730)} `.repeat(128));
   // An answer quoting a value no key holds yet (final-answer-redact.test.mjs saves it as one after the run).

@@ -37,6 +37,8 @@ export function runDoorToken(dir: string): string | undefined {
 }
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
+/** Why a run fails that the store has running with no serve.json: its server went down before it set the run up. */
+export const SETUP_LOST = "server_lost_at_setup";
 
 /** The server's data directory when none is given (`--data`): `agentrun/agents` under XDG_DATA_HOME, or ~/.local/share.
  *  The server, its import and reset-password default to it. `npx @parcha/agentrun` keeps its own, ~/.agentrun, and
@@ -47,8 +49,11 @@ export const defaultData = (env: NodeJS.ProcessEnv = process.env): string => joi
 export const DATA_ENV = "AGENTRUN_SERVE_DATA";
 
 export const HOMES_DIR = "homes";
-/** Paths in an agent's home that only the host writes (another component owns them): read through the API, never written through it. */
-export const HOME_HOST_OWNED = ["learning"];
+/** Paths in an agent's home that only the host reads and writes (another component owns them): the home API reads and
+ *  writes neither, and lists each by its name alone. `learning` (learning.ts, read through its own API) and `sign-ins`
+ *  (sign-ins.ts: the agent's saved sign-ins, sealed pointers to its browser vendor's objects, shown without them on
+ *  GET /agents/{id}). */
+export const HOME_HOST_OWNED = ["learning", "sign-ins"];
 /** An agent's home directory's name: its id in lower case, then 16 hex digits of the id's SHA-256. Ids that differ only
  *  in case get names that differ in any case, so on a disk that folds case (macOS's, by default) they never share one. */
 export const homeKey = (agentId: string): string => `${agentId.toLowerCase()}-${createHash("sha256").update(agentId, "utf8").digest("hex").slice(0, 16)}`;

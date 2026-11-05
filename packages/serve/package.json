@@ -60,16 +60,21 @@
     "@secretlint/core": "13.1.0",
     "@secretlint/profiler": "13.1.0",
     "@secretlint/secretlint-rule-preset-recommend": "13.1.0",
+    "croner": "11.0.0",
     "undici": "^8.12.2"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.4.0",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-durable": ">=1.1.0 <1.4.0",
-    "@parcha/pi-transport": "0.1.0-beta.29"
+    "@parcha/pi-transport": "0.1.0-beta.29",
+    "opencode-ai": "1.19.5"
   },
   "peerDependenciesMeta": {
     "@parcha/pi-transport": {
+      "optional": true
+    },
+    "opencode-ai": {
       "optional": true
     }
   },
@@ -78,7 +83,8 @@
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
     "@modelcontextprotocol/server": "2.4.0",
-    "@parcha/pi-transport": "0.1.0-beta.29"
+    "@parcha/pi-transport": "0.1.0-beta.29",
+    "opencode-ai": "1.19.5"
   },
   "repository": {
     "type": "git",

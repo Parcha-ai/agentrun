@@ -16,8 +16,9 @@ const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const kinds = ['breaking', 'feature', 'fix', 'ci', 'docs'];
 // The packages on a version line of their own, published at their manifest's version and not the workspace's: @parcha/agentrun (the
 // `npx @parcha/agentrun` command) starts at 0.3.0, above the hosted-API SDK's 0.2.x that the same npm name published from another
-// repository. Its version moves when the files it ships do (`--check` fails a change that forgets), not with a release: a release
-// that finds the version published with other bytes stops. Bumping it is not a release commit.
+// repository. The release sets its version, and every release moves it: its manifest pins the server at the release's version.
+// `--check` refuses a pull request that moves it, and a release commit that changes a file it ships and keeps it (a release that
+// finds the version published with other bytes stops). Bumping it alone is not a release commit.
 export const ownVersionPackages = ['agentrun'];
 const fragmentName = /^[a-z0-9][a-z0-9-]*\.md$/;
 
@@ -379,6 +380,21 @@ export async function comparedBase(root, base, ref = process.env.GITHUB_REF ?? '
   return parents[0];
 }
 
+/** The packages on their own version line whose version differs from the merge base's, `[{ directory, was, now }]`. Only the release
+ *  sets it; a package the base does not have is new. */
+export async function movedOwnVersions(root, base) {
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const moved = [];
+  for (const directory of ownVersionPackages) {
+    const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
+    const now = await readOptional(join(root, 'packages', directory, 'package.json'));
+    if (was === null || now === null) continue;
+    const [before, after] = [JSON.parse(was).version, JSON.parse(now).version];
+    if (before !== after) moved.push({ directory, was: before, now: after });
+  }
+  return moved;
+}
+
 /** Whether a changelog's text has the section for `version`. */
 export const hasVersionSection = (text, version) => text.split('\n').some(line => isVersionHeading(line, version));
 
@@ -394,10 +410,14 @@ async function main() {
     if (base !== given) console.log(`Changes: comparing with ${base.slice(0, 9)}, the base branch this merge was made on (the given base ${given.slice(0, 9)} is older).`);
     const { fold: isFold, edited } = await unreleasedEdits(root, base);
     assert.deepEqual(edited, [], `An Unreleased section is edited in ${edited.join(', ')}. Add a fragment in changes/ instead (see CONTRIBUTING.md); only the release fold edits it.`);
-    const { unfolded } = await releaseRace(root, base);
+    const { release, unfolded } = await releaseRace(root, base);
     if (unfolded.length) throw new Error(`release commit carries unfolded fragments: ${unfolded.join(', ')}; refold on current main`);
-    const stale = await staleOwnVersions(root, base);
-    if (stale.length) throw new Error(`${stale.map(directory => `packages/${directory}`).join(', ')} changed the files it publishes and kept its version; bump the version in its package.json (it is published at its own version, and a release stops on a version already published with other bytes)`);
+    if (!release) {
+      const moved = await movedOwnVersions(root, base);
+      if (moved.length) throw new Error(moved.map(({ directory, was, now }) => `packages/${directory} moved its version from ${was} to ${now}; the release sets it (docs/releasing.md), so a pull request leaves it at ${was}`).join('\n'));
+    }
+    const stale = release ? await staleOwnVersions(root, base) : [];
+    if (stale.length) throw new Error(`${stale.map(directory => `packages/${directory}`).join(', ')} changed the files it publishes and kept its version; the release sets its next version in its package.json (it is published at its own version, and a release stops on a version already published with other bytes)`);
     console.log(`Changes: ${fragments.length} fragment(s) valid; no Unreleased section edited${isFold ? ' (the fold)' : ''}.`);
   } else if (args[0] === '--fold') {
     const version = args[1];

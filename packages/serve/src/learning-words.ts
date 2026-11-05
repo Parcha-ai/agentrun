@@ -108,19 +108,22 @@ export const said = {
   asked: "Looking back on this run.",
   proposed: (notes: number, skills = 0, workflows = 0) => `Checking ${listed([...(notes || !(skills || workflows) ? [count(notes, "new note")] : []), ...(skills ? [count(skills, "skill")] : []), ...(workflows ? [count(workflows, "workflow")] : [])])}…`,
   /** What it learned, by name, and how many older notes they replace, and its skill and workflow by name; then what
-   *  waits for the owner's OK, by name. A merge that only holds things for the OK says that alone. */
-  merged: (learned: readonly { name: string; supersedes: readonly string[] }[], pending: readonly { name: string }[] = [], files: readonly Pick<LearnedFile, "file" | "name" | "pending">[] = []) => {
+   *  waits for the owner's OK, by name; then, when the grader dropped an item and kept others (a verdict per item), its
+   *  word on the first it dropped. A merge that only holds things for the OK says that alone. */
+  merged: (learned: readonly { name: string; supersedes: readonly string[] }[], pending: readonly { name: string }[] = [], files: readonly Pick<LearnedFile, "file" | "name" | "pending">[] = [], left: readonly { why: string }[] = [], checked: readonly Pick<Problem, "rule" | "path">[] = []) => {
     const flat = (name: string) => name.replace(/\s+/g, " ").trim();
     const kind = (file: Pick<LearnedFile, "file" | "name">) => `${file.file.startsWith("skills/") ? "skill" : "workflow"} ${flat(file.name)}`;
     const held = [...pending.map((note) => flat(note.name)), ...files.filter((file) => file.pending).map(kind)];
     const waiting = held.length ? `Waiting for your OK: ${held.join("; ")}.` : "";
     const made = files.filter((file) => !file.pending).map(kind);
-    if (!learned.length && !made.length) return waiting;
+    const dropped = [left.length ? said.grader(left[0]!.why) : "", checked.length ? said.checker(checked) : ""].filter(Boolean).join(" ");
+    if (!learned.length && !made.length) return [waiting, dropped].filter(Boolean).join(" ");
     const names = learned.map((note) => flat(note.name));
     const replaced = learned.reduce((n, note) => n + note.supersedes.length, 0);
     const notes = names.length ? `${names.length === 1 ? `Learned: ${names[0]}` : `Learned ${names.length} notes: ${names.join("; ")}`}${replaced ? ` (replaces ${count(replaced, "older note")})` : ""}` : "";
     const kept = [notes, made.length ? `${notes ? "Also learned" : "Learned"} ${listed(made.map((made) => `the ${made}`))}` : ""].filter(Boolean).join(". ");
-    return waiting ? `${kept}. ${waiting}` : kept;
+    const base = waiting ? `${kept}. ${waiting}` : kept;
+    return dropped ? `${base}${base.endsWith(".") ? "" : "."} ${dropped}` : base;
   },
   empty: "Nothing new to remember from this run.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
@@ -162,13 +165,13 @@ export function notKept(verdict: Pick<Verdict, "reason" | "items">): string {
  *  grader kept nothing, said again from its parts (`learned`, `pending`, `verdict`) each cut by `cut` first (the host's
  *  secrets as they are now); any other detail, the server's own sentence, cut as well. The caller cuts the words short
  *  after. */
-export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict" | "skills" | "workflows">, cut: (text: string) => string): string | null {
+export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict" | "skills" | "workflows" | "problems">, cut: (text: string) => string): string | null {
   const { learned, pending, verdict } = learning;
   if (learning.state === "merged") {
     const kept = Array.isArray(learned) ? learned : [];
     const waiting = Array.isArray(pending) ? pending.filter((note) => typeof note?.name === "string") : [];
     const files = [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].filter((file) => typeof file?.file === "string" && typeof file.name === "string");
-    if (kept.length || waiting.length || files.length) return said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })));
+    if (kept.length || waiting.length || files.length) return said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), (verdict?.items ?? []).filter((item) => !item.keep && typeof item.why === "string").map((item) => ({ why: cut(item.why) })), Array.isArray(learning.problems) ? learning.problems : []);
   }
   if (learning.state === "dropped" && learning.reason === "grader" && verdict) return notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) });
   return learning.detail === null ? null : cut(learning.detail);

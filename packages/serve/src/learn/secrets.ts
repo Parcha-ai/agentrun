@@ -2,6 +2,8 @@ const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
 const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/;
 const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
 const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+/** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
 
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 const SHAPES: readonly (readonly [string, RegExp])[] = [
@@ -12,6 +14,7 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["sk- key", SK_KEY],
   ["Slack token", SLACK_TOKEN],
   ["JWT", JWT],
+  ["webhook signing secret", WEBHOOK_SECRET],
   ["URL with a password", /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/],
 ];
 
@@ -43,7 +46,9 @@ const toEnd = (m: RegExpExecArray) => m.index + m[0].length;
  *  - GitHub: the same for github_pat_. A ghp_ run's class has no "_", and a github_pat_ can start in its last characters
  *    and run past it, so it reads on from the next character.
  *  - JWT: a match that starts in the first part reads on through the same second and third parts, so it ends where this
- *    one does; one that starts in the second part can run past it, into a fourth. It reads on from the second part. */
+ *    one does; one that starts in the second part can run past it, into a fourth. It reads on from the second part.
+ *  - whsec_: not here. Its run's class has no "_", so a run takes the next secret's "whsec" and stops at its "_": that
+ *    secret starts inside this match and runs past it, and is found only by reading on from the next character. */
 const RESUME = new Map<RegExp, (m: RegExpExecArray) => number>([
   [SK_KEY, toEnd],
   [SLACK_TOKEN, toEnd],

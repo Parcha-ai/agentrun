@@ -17,7 +17,7 @@ import { randomBytes } from "node:crypto";
 import { constants, existsSync } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
-import { decodePath, encodePath, WorkspaceError } from "../home/workspace.ts";
+import { decodePath, encodePath, WorkspaceError } from "./transfer.ts";
 
 /** The most bytes one pull's archive may carry (headers, names, member data), when the caller names no limit: 1 GiB. */
 export const MAX_PULL_BYTES = 1024 * 1024 * 1024;

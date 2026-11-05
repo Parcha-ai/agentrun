@@ -747,7 +747,7 @@ test("#1098: a process restart while a person watches the live view: the new pro
   const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
   const storage = new MemoryStorage();
   const tags = [];
-  const config = { label: "node-a", run: "run-restart", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.1, batchTimeoutMs: 60_000, actions: "allow" } };
+  const config = { label: "node-a", run: "run-restart", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.3, batchTimeoutMs: 60_000, actions: "allow" } };
   const incarnation = async (name, gates) => {
     const browser = createBrowserExtension({ provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null }, gates, onSession: (row) => { if (row.session?.tag && !tags.includes(row.session.tag)) tags.push(row.session.tag); } });
     const model = fauxProvider({ models: [{ id: "faux-1" }] });
@@ -765,21 +765,25 @@ test("#1098: a process restart while a person watches the live view: the new pro
   const a = await incarnation("a", gatesA);
   await a.call();
   gatesA(tags[0]).setViewing(true);
-  await new Promise((r) => setTimeout(r, 300));
-  assert.equal(backend.tally().releases, 0, "kept while the person watches, in the first process");
+  await new Promise((r) => setTimeout(r, 1000));
+  assert.equal(backend.tally().releases, 0, "kept while the person watches, in the first process, past three idle windows");
   // The first process dies: its gates, timers and viewer go with it; the browser stays. (A dead process never closes its
   // store, and closing this harness would close the storage the next process opens.)
   await a.browser.close();
   const b = await incarnation("b", createDrivingGates());
   t.after(() => b.harness.close(ctx));
-  await new Promise((r) => setTimeout(r, 300));
-  assert.equal(backend.tally().releases, 0, "the new process releases nothing at once: it has no idle window running");
+  // The reopen arms the kept session's idle window (an unused one is released a window after it, never at the
+  // provider's session timeout); a call within that window re-arms the same timer.
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(backend.tally().releases, 0, "the new process releases nothing at once: its idle window has not passed");
   await b.call();
   const called = Date.now();
   assert.equal(backend.tally().creates, 1, "its next call attaches the same session");
   for (const end = called + 3000; Date.now() < end && backend.tally().releases === 0; ) await new Promise((r) => setTimeout(r, 10));
   assert.equal(backend.tally().releases, 1, "released one idle window after that call: nobody is on the new process's gate");
-  assert.ok(Date.now() - called >= 80, "not at once");
+  assert.ok(Date.now() - called >= 250, "not at once: the call re-armed the reopen's timer, never a second one beside it");
+  await new Promise((r) => setTimeout(r, 400));
+  assert.deepEqual([backend.tally().creates, backend.tally().releases], [1, 1], "one session, released once");
 });
 
 test("#1098: a person who leaves mid-window: the session is released one idle window after they leave, not at once and not never", async (t) => {

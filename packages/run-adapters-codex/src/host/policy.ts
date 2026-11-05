@@ -252,8 +252,11 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
  * The terminal event carries the whole response (its output, encrypted reasoning included), so its line can be longer
  * than the proxy keeps of an answer; then the proxy's start of that line is read. The response's fields come in a fixed
  * order, `id`, `object`, `created_at`, `status`, `background`, `error`, `incomplete_details`, then `instructions`, the
- * tools and the output, so `incomplete_details` is near the line's start; it is read only on a line the SSE
- * `event: response.incomplete` names, as the first `"incomplete_details":{` after `"response":{` (one JSON object).
+ * tools and the output (OpenAI's; a LiteLLM gateway's, `id`, `created_at`, `incomplete_details`, ..., `output`, keeps it
+ * ahead of the output too), so `incomplete_details` is near the line's start. It is read only on a line that is the event's
+ * own: one the SSE `event: response.incomplete` names (OpenAI's API), or whose data says `"type":"response.incomplete"`
+ * before its `"response":{` (a gateway that sends each event as its data alone: LiteLLM), as the first
+ * `"incomplete_details":{` after `"response":{` (one JSON object), whatever the JSON's spacing.
  */
 export function filtered(text: string, lineStarts: readonly string[] = []): boolean {
   let end = terminalResponse(text.split("\n"), false);
@@ -271,7 +274,8 @@ export function filtered(text: string, lineStarts: readonly string[] = []): bool
 }
 
 /** The response of the last terminal event in `lines` (`filtered`), each `data:` line parsed on its own; with `starts`,
- *  the lines are kept starts, and one the SSE `event: response.incomplete` names is read from its start. */
+ *  the lines are kept starts, and one that is a `response.incomplete` event's (by its name, or its data's type ahead of
+ *  its response) is read from its start. */
 function terminalResponse(lines: readonly string[], starts: boolean): unknown {
   let end: unknown;
   let named = false;
@@ -282,7 +286,7 @@ function terminalResponse(lines: readonly string[], starts: boolean): unknown {
     }
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
-    const incomplete = named;
+    const incomplete = named || ownIncomplete(data);
     named = false;
     if (!data.startsWith("{")) continue;
     try {
@@ -296,15 +300,26 @@ function terminalResponse(lines: readonly string[], starts: boolean): unknown {
   return end;
 }
 
+const RESPONSE_KEY = /"response"\s*:\s*\{/;
+const INCOMPLETE_TYPE = /"type"\s*:\s*"response\.incomplete"/;
+const DETAILS_KEY = /"incomplete_details"\s*:\s*\{/;
+
+/** Whether a kept start's data is a `response.incomplete` event's own: its `type` says so ahead of its `response` (a
+ *  quote of it in an answer's text is escaped, so it never reads as one). */
+function ownIncomplete(data: string): boolean {
+  const type = data.search(INCOMPLETE_TYPE);
+  const response = data.search(RESPONSE_KEY);
+  return type >= 0 && (response < 0 || type < response);
+}
+
 /** The status and `incomplete_details` of the response a `response.incomplete` event's line starts with (`filtered`), or
  *  undefined when the line's kept start does not hold them. */
 function startOfResponse(data: string): Record<string, unknown> | undefined {
-  const response = data.indexOf('"response":{');
+  const response = data.search(RESPONSE_KEY);
   if (response < 0) return undefined;
-  const mark = '"incomplete_details":{';
-  const at = data.indexOf(mark, response);
-  if (at < 0) return undefined;
-  const json = objectAt(data, at + mark.length - 1);
+  const found = DETAILS_KEY.exec(data.slice(response));
+  if (!found) return undefined;
+  const json = objectAt(data, response + found.index + found[0].length - 1);
   if (json === undefined) return undefined;
   try {
     return { status: "incomplete", incomplete_details: JSON.parse(json) as unknown };
@@ -481,6 +496,45 @@ export function responsesOutputLeast(body: Record<string, unknown>): number {
   return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
 }
 
+/** The reasoning tokens a Responses request may bill that its stream never shows (only a summary of its reasoning
+ *  streams): its effort's budget; none at effort `none`; and with no effort the body says (the model then reasons at its
+ *  own default, or not at all), its output limit, `fallback` when the body names none: the conservative side. An
+ *  estimate, as the efforts' budgets are not limits the provider keeps: a stopped request counts the part of it that
+ *  did not stream (less `responsesReasoningBytes` of what it sent), never past its hold. */
+export function responsesReasoningHidden(body: Record<string, unknown>, fallback: number): number {
+  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  if (effort === "none") return 0;
+  const budget = effort === undefined ? undefined : REASONING_TOKENS_ALLOWED[effort];
+  return budget ?? responsesOutputAsked(body) ?? fallback;
+}
+
+/** The Responses stream's events whose deltas are reasoning: its summary, and its reasoning text where a model sends it. */
+const REASONING_DELTAS: ReadonlySet<string> = new Set(["response.reasoning_summary_text.delta", "response.reasoning_text.delta"]);
+
+/** The bytes of reasoning one Responses stream event carries: a reasoning delta's text, UTF-8; 0 for answer text, a
+ *  function call's arguments and every other event. */
+export function responsesReasoningBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: unknown };
+  return typeof parsed.type === "string" && REASONING_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
+}
+
+/** The Responses stream's events whose deltas are content: answer text, reasoning, and a tool call's input. */
+const CONTENT_DELTAS: ReadonlySet<string> = new Set([
+  "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+  "response.function_call_arguments.delta", "response.custom_tool_call_input.delta",
+]);
+
+/** The bytes of content one Responses stream event carries: a content delta's text, UTF-8, never the framing around it
+ *  (its sequence number, item id, indexes, logprobs, obfuscation); 0 for every other event. */
+export function responsesContentBytes(event: string): number {
+  const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data.startsWith("{")) return 0;
+  const parsed = JSON.parse(data) as { type?: unknown; delta?: unknown };
+  return typeof parsed.type === "string" && CONTENT_DELTAS.has(parsed.type) && typeof parsed.delta === "string" ? Buffer.byteLength(parsed.delta, "utf8") : 0;
+}
+
 /** A Responses body with its output limited to `max` tokens, reasoning included: never raised, and never longer. */
 export function limitResponsesOutput(body: Record<string, unknown>, max: number): Record<string, unknown> {
   const asked = responsesOutputAsked(body);
@@ -540,6 +594,9 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured.
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
+    reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
+    reasoningBytesOf: responsesReasoningBytes,
+    contentBytesOf: responsesContentBytes,
     limitOutput: limitResponsesOutput,
     serverInputOverhead: search ? (body) => {
       if (Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search")) return undefined;

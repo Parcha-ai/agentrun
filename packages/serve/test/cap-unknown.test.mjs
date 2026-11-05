@@ -16,10 +16,13 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetri
 import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, metersIn, spentIn, streamedBytes } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { startServe } from "../dist/index.js";
+import { agent, client, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
+/** monid's run allowed: a catalog tool asks by default (tool-gate.ts), and these runs are about their cost, not the gate. */
+const ALLOWED = { "monid.run": { permission: "allow" } };
 
 /** A run store holding `entries`, in order, as pi-durable keeps them; removed after the test. */
 function storeOf(t, entries) {
@@ -65,7 +68,7 @@ test("a Parallel request whose settle record could not be written: the cap, and 
   assert.equal(round(spentIn(storeOf(t, open))), 0.003, "a restarted process reads the held $0.001 as spent");
   assert.equal(capToolSpend(open), 0.001, "and so does another harness's, read at its open");
   assert.equal(timelineOf(open, { settled: true }).at(-1).usage.usd, null, "the run's shown cost: unknown, never the hold or $0");
-  assert.deepEqual(metersIn(storeOf(t, open)), { tools: null, tokens: 0.002 }, "the tools meter: unknown");
+  assert.deepEqual(metersIn(storeOf(t, open)), { tools: null, tokens: 0.002, browser: { usd: 0, seconds: 0 }, others: null }, "the tools meter: unknown");
 });
 
 test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
@@ -77,13 +80,14 @@ test("a paid tool call a crash cut (marked, never settled) counts at its held fi
   assert.equal(round(spentIn(storeOf(t, cut))), 1.002, "the cap counts the held figure");
   assert.equal(capToolSpend(cut), 1, "and so does another harness's, read at its open");
   assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");
-  assert.deepEqual(metersIn(storeOf(t, cut)), { tools: null, tokens: 0.002 }, "a cut call: the tools meter unknown, the tokens known, never the held $1");
+  assert.deepEqual(metersIn(storeOf(t, cut)), { tools: null, tokens: 0.002, browser: { usd: 0, seconds: 0 }, others: null }, "a cut call: the tools meter unknown, the tokens known, never the held $1");
   const settled = [...cut, charged(0.003)];
   assert.equal(round(spentIn(storeOf(t, settled))), 0.005, "its charge, not both");
   assert.equal(capToolSpend(settled), 0.003);
   assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.005);
-  assert.deepEqual(metersIn(storeOf(t, settled)), { tools: 0.003, tokens: 0.002 });
+  assert.deepEqual(metersIn(storeOf(t, settled)), { tools: 0.003, tokens: 0.002, browser: { usd: 0, seconds: 0 }, others: 0.003 });
   assert.equal(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }])).tools, null, "an unknown charge is unknown");
+  assert.deepEqual(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: "c3", usd: 0.002, seconds: 60 } }])).browser, { usd: 0.002, seconds: 60 }, "the browser's session time apart, with its seconds");
   // A live run's tools, from the same rows as its cost: the charge's line, never a mark.
   const { toolCostOf } = await import("../dist/runs.js");
   assert.equal(toolCostOf(timelineOf(cut)), 0);
@@ -95,7 +99,7 @@ test("/usage by meter for a run whose monid call a crash cut: its cost is unknow
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"] }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"], tool_settings: { "monid.run": { permission: "allow" } } }))).status, 201);
   const { body } = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
   for (let i = 0; !(existsSync(log) && readFileSync(log, "utf8").includes('"path":"/v1/run"')); i++) {
     assert.ok(i < 400, "the monid call is sent");
@@ -361,28 +365,31 @@ test("pi under a cap, with a spend the store cannot say: every request is refuse
   assert.match((await completed).errorMessage, UNKNOWN);
 });
 
-test("pi under a cap: an answer whose cost is unknown makes what the run has spent unknown, and the next request is refused", async () => {
-  for (const [why, ending] of [["no cost total", {}]]) {
-    const { models, sent } = fakeModels();
-    const capped = await capModels(models, 1, 0);
-    const first = capped.streamSimple(priced, context);
-    sent[0].end(ending);
-    await first.result();
-    await settle();
-    const next = capped.streamSimple(priced, context);
-    assert.equal(sent.length, 1, `${why}: the next request is not sent`);
-    assert.match((await next.result()).errorMessage, UNKNOWN, why);
-  }
+test("pi under a cap: an answer whose cost is unknown counts at its hold (the booking rule), never $0 and never more: the next request is judged with that held figure spent", async () => {
+  // Each request is held at about $0.0011 here: one held figure spent leaves no room for another under $0.0015.
   const { models, sent } = fakeModels();
-  const capped = await capModels(models, 1, 0);
+  const capped = await capModels(models, 0.0015, 0);
   const first = capped.streamSimple(priced, context);
-  sent[0].end({ total: 0.0001 });
+  sent[0].end({});
   await first.result();
   await settle();
   const next = capped.streamSimple(priced, context);
-  assert.equal(sent.length, 2, "after an answer of known cost the next request goes");
-  sent[1].end({ total: 0 });
-  await next.result();
+  assert.equal(sent.length, 1, "no cost total: counted at its hold, so the next request is not sent");
+  const refused = (await next.result()).errorMessage;
+  assert.match(refused, /^spend_cap_reached/, refused);
+  assert.doesNotMatch(refused, UNKNOWN, "what the run has spent is known: the hold, not unknown");
+  {
+    const { models, sent } = fakeModels();
+    const capped = await capModels(models, 0.0015, 0);
+    const first = capped.streamSimple(priced, context);
+    sent[0].end({ total: 0.0001 });
+    await first.result();
+    await settle();
+    const next = capped.streamSimple(priced, context);
+    assert.equal(sent.length, 2, "after an answer of known cost the next request goes");
+    sent[1].end({ total: 0 });
+    await next.result();
+  }
 });
 
 // $1 a million output tokens and nothing for input, a ceiling of 1,000: each request's worst case is $0.001 exactly.
@@ -526,6 +533,174 @@ test("a stopped request counts every byte it streamed, whatever its blocks hold:
   assert.equal(await spentSaid(capped), eight(0.004 + (bytes + STOP_ALLOWANCE) * 100 / 1e6));
 });
 
+/** A gpt-5-class model on the Responses API: $1.25 a million input tokens, $10 a million output, reasoning that streams
+ *  only its summary. */
+const responsesReasoner = { ...model({ input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 }, { maxTokens: 128_000, contextWindow: 400_000 }), id: "gpt-5", api: "openai-responses", provider: "openai", reasoning: true };
+/** A Claude-class model on the Messages API, whose thinking takes a budget: $3 a million input, $15 output. */
+const budgetReasoner = { ...model({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, { maxTokens: 64_000, contextWindow: 200_000 }), id: "claude", api: "anthropic-messages", provider: "anthropic", reasoning: true };
+/** A 20 KB context: one message of 20,000 bytes. */
+const twentyKb = { messages: [{ role: "user", content: "x".repeat(20_000), timestamp: 0 }] };
+/** About 300 bytes of reasoning summary: all a Responses stream shows of thousands of reasoning tokens. */
+const SUMMARY = "**Weighing the options**\n\nI compared the two layouts, checked the totals against the ledger, and settled on the second, since it keeps the running balance in one column and the notes beside each entry, which the reader asked for; the first would split them across pages.";
+/** The thinking budget of each level, as pi-ai's defaults set it. */
+const LEVEL_BUDGET = { minimal: 1_024, low: 2_048, medium: 8_192, high: 16_384 };
+
+test("pi under a cap: a request whose reasoning is hidden, stopped after its summary streamed, counts the part of its reasoning budget that never streamed (the reader's case: a gpt-5-class model, a 20 KB context, a stop after ~10k hidden reasoning tokens, past medium's 8,192, costs about $0.106): the effort budget's figure, at least that, and never past its hold", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(responsesReasoner, twentyKb, { reasoning: "medium" });
+  const [held, most] = [sent[0].options[HELD_USD], sent[0].options.maxTokens];
+  // Its input as the cap prices it: the hold less the output it was sent with.
+  const input = held - most * 10 / 1e6;
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  const spent = await spentSaid(capped);
+  const summary = Buffer.byteLength(SUMMARY);
+  // Its input, the summary's bytes, the 1,024-token allowance, and what of medium effort's 8,192-token reasoning budget
+  // did not stream: max(0, 8,192 - the summary's bytes). So the summary and the budget together count 8,192 tokens.
+  assert.equal(spent, eight(input + (summary + STOP_ALLOWANCE + Math.max(0, LEVEL_BUDGET.medium - summary)) * 10 / 1e6), "the stop counts the unstreamed part of its reasoning budget");
+  assert.ok(spent >= 0.106, `at least what the reader's stop cost: $${spent}`);
+  assert.ok(spent <= eight(held), `never past its hold, $${held}: $${spent}`);
+});
+
+test("pi under a cap: a request whose hidden reasoning came before 8,000 bytes of answer text, then stopped, counts all it streamed and the whole unstreamed part of its reasoning budget: the text does not stand in for reasoning it never showed", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(responsesReasoner, twentyKb, { reasoning: "medium" });
+  const [held, most] = [sent[0].options[HELD_USD], sent[0].options.maxTokens];
+  const input = held - most * 10 / 1e6;
+  const text = "The ledger balances once the March entries move to April. ".repeat(140).slice(0, 8_000);
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }, { type: "text", text }], 0);
+  await request.result();
+  await settle();
+  const spent = await spentSaid(capped);
+  const summary = Buffer.byteLength(SUMMARY);
+  // The summary, the text, the allowance, and the 8,192-token budget less the summary: about 17,500 tokens of output.
+  assert.equal(spent, eight(input + (summary + Buffer.byteLength(text) + STOP_ALLOWANCE + Math.max(0, LEVEL_BUDGET.medium - summary)) * 10 / 1e6), "the text and the unstreamed reasoning both count");
+  assert.ok(spent <= eight(held), `never past its hold: $${spent}`);
+});
+
+test("pi under a cap: a reasoning model sent with no thinking level, stopped, counts its whole output limit, its hold: its reasoning is hidden and its effort unknown", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(responsesReasoner, twentyKb);
+  const held = sent[0].options[HELD_USD];
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  assert.equal(await spentSaid(capped), eight(held), "at its hold");
+});
+
+test("pi under a cap: a Messages request that thinks, stopped after a short thinking summary streamed, counts the unstreamed part of its thinking budget; stopped after about a budget's worth of thinking streamed, nothing on top; with thinking off, what streamed and the allowance only", async () => {
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(budgetReasoner, twentyKb, { reasoning: "medium" });
+  const opts = sent[0].options;
+  // On a budget API the budget is part of the output it was sent with: maxTokens beside the budget, or the budget pi-ai adds.
+  const budget = opts.thinkingBudgets?.medium ?? LEVEL_BUDGET.medium;
+  const limit = opts.maxTokens + (opts.thinkingBudgets ? budget : 0);
+  const input = opts[HELD_USD] - limit * 15 / 1e6;
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  const spent = await spentSaid(capped);
+  const short = Buffer.byteLength(SUMMARY);
+  assert.equal(spent, eight(input + (short + STOP_ALLOWANCE + Math.max(0, budget - short)) * 15 / 1e6), "the stop counts the unstreamed part of its thinking budget");
+  assert.ok(spent <= eight(opts[HELD_USD]), `never past its hold: $${spent}`);
+  // The lead's case: about a budget's worth of thinking streamed (8,300 bytes against the 8,192-token budget), then a stop.
+  // The thinking is all there to count: nothing of the budget goes on top, so the stop counts its input, what streamed
+  // and the 1,024-token allowance (exactly: max(0, budget - streamed) is 0 here).
+  const visible = streamingModels();
+  const thinker = await capModels(visible.models, 1, 0);
+  const shown = thinker.streamSimple(budgetReasoner, twentyKb, { reasoning: "medium" });
+  const vo = visible.sent[0].options;
+  const vBudget = vo.thinkingBudgets?.medium ?? LEVEL_BUDGET.medium;
+  const vInput = vo[HELD_USD] - (vo.maxTokens + (vo.thinkingBudgets ? vBudget : 0)) * 15 / 1e6;
+  const thought = "Let me work through the ledger. ".repeat(260).slice(0, 8_300);
+  assert.ok(Buffer.byteLength(thought) >= vBudget, "setup: a budget's worth of thinking streamed");
+  visible.sent[0].end("aborted", [{ type: "thinking", thinking: thought }], 0);
+  await shown.result();
+  await settle();
+  assert.equal(await spentSaid(thinker), eight(vInput + (Buffer.byteLength(thought) + STOP_ALLOWANCE) * 15 / 1e6), "thinking that streamed: nothing of the budget on top");
+  // Thinking off: no hidden reasoning, as before.
+  const off = streamingModels();
+  const plain = await capModels(off.models, 1, 0);
+  const asked = plain.streamSimple(budgetReasoner, twentyKb);
+  const [held, most] = [off.sent[0].options[HELD_USD], off.sent[0].options.maxTokens];
+  off.sent[0].end("aborted", "abc", 0);
+  await asked.result();
+  await settle();
+  assert.equal(await spentSaid(plain), eight(held - most * 15 / 1e6 + (3 + STOP_ALLOWANCE) * 15 / 1e6), "thinking off: its input, 3 bytes and the allowance");
+});
+
+/** A Claude entry of pi-ai's own catalog, on Anthropic's API. */
+const catalogClaude = async (id) => {
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const found = builtinModels({}).getModel("anthropic", id);
+  assert.ok(found, `pi-ai's catalog lists ${id}`);
+  return found;
+};
+/** What a request on `on` with `context` holds for its input under a $1 cap: the hold of one asking 2,000 tokens, less
+ *  their price. */
+const inputHeld = async (on, context) => {
+  const { models, sent } = streamingModels();
+  void (await capModels(models, 1, 0)).streamSimple(on, context, { maxTokens: 2_000 });
+  return sent[0].options[HELD_USD] - 2_000 * on.cost.output / 1e6;
+};
+/** Adaptive thinking takes no budget: pi-ai sends the model's maxTokens as is and it thinks within them as it sees fit.
+ *  Sonnet 5.5 thinks adaptively at every level, a level or none (supportsMidConvoEffort); Opus 4.7 when given a level. */
+const ADAPTIVE = [["claude-sonnet-5-5", { reasoning: "medium" }], ["claude-sonnet-5-5", { reasoning: "high" }], ["claude-opus-4-7", { reasoning: "medium" }], ["claude-sonnet-5-5", {}]];
+
+for (const [id, options] of ADAPTIVE) {
+  test(`pi under a cap: a request to ${id}${options.reasoning ? ` at ${options.reasoning}` : " with no level"}, whose thinking is adaptive (no budget, bounded only by its output limit), stopped after a 300-byte thinking summary, counts the whole limit's unstreamed thinking: at its hold (the reader's case on Sonnet 5.5: a 20 KB context under a $1 cap, where ~40,000 adaptive thinking tokens cost about $0.45, counted $0.142 at medium and $0.224 at high: its level's budget, never sent; claude-agent's reader gives the hold for the same body)`, async () => {
+    const claude = await catalogClaude(id);
+    assert.ok(claude.compat?.forceAdaptiveThinking === true || claude.compat?.supportsMidConvoEffort === true, "setup: pi-ai thinks adaptively on it");
+    const per = claude.cost.output / 1e6;
+    const input = await inputHeld(claude, twentyKb);
+    const { models, sent } = streamingModels();
+    const capped = await capModels(models, 1, 0);
+    const request = capped.streamSimple(claude, twentyKb, options);
+    const held = sent[0].options[HELD_USD];
+    sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+    await request.result();
+    await settle();
+    const spent = await spentSaid(capped);
+    // ~40,000 thinking tokens, or what the $1 cap buys when that is less (Opus 4.7's $25 a million).
+    const thought = Math.min(40_000, Math.floor((1 - input) / per));
+    assert.ok(spent >= eight(input + thought * per), `at least what ${thought} adaptive thinking tokens cost, $${eight(input + thought * per)}: $${spent}`);
+    assert.equal(spent, eight(held), "at its hold: what streamed, the allowance and the limit's unstreamed thinking fill its output limit");
+  });
+
+  test(`pi under a cap: a request to ${id}${options.reasoning ? ` at ${options.reasoning}` : " with no level"}, whose thinking is adaptive, is sent with the output limit it is held at, no budget taken out of it: pi-ai sends an adaptive model's maxTokens as is`, async () => {
+    const claude = await catalogClaude(id);
+    const per = claude.cost.output / 1e6;
+    const input = await inputHeld(claude, twentyKb);
+    const { models, sent } = streamingModels();
+    void (await capModels(models, 1, 0)).streamSimple(claude, twentyKb, options);
+    const { maxTokens, [HELD_USD]: held, thinkingBudgets } = sent[0].options;
+    assert.equal(eight(input + maxTokens * per), eight(held), `sent with ${maxTokens} tokens, held at $${held}`);
+    assert.equal(thinkingBudgets, undefined, "no budget: pi-ai sends none to an adaptive model");
+  });
+}
+
+test("pi under a cap: a request to a Claude model whose thinking takes a budget (pi-ai's Sonnet 4.5), stopped after a 300-byte thinking summary, still counts its level's budget, the budget it was sent with, not its whole limit", async () => {
+  const claude = await catalogClaude("claude-sonnet-4-5");
+  assert.ok(claude.compat?.forceAdaptiveThinking !== true && claude.compat?.supportsMidConvoEffort !== true, "setup: pi-ai sends it a thinking budget");
+  const per = claude.cost.output / 1e6;
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(claude, twentyKb, { reasoning: "medium" });
+  const opts = sent[0].options;
+  const budget = opts.thinkingBudgets?.medium ?? LEVEL_BUDGET.medium;
+  const input = opts[HELD_USD] - (opts.maxTokens + (opts.thinkingBudgets ? budget : 0)) * per;
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  const summary = Buffer.byteLength(SUMMARY);
+  assert.equal(await spentSaid(capped), eight(input + (summary + STOP_ALLOWANCE + Math.max(0, budget - summary)) * per), "its level's budget, less what streamed");
+});
+
 test("pi under a cap: a summary that fails with no answer counts at the worst case the cap held for it", async () => {
   const { models, sent } = fakeModels();
   const capped = await capModels({ ...models, completeSimple: () => Promise.reject(new Error("the connection reset")) }, 0.0015, 0);
@@ -617,6 +792,10 @@ test("a capped pi run steered mid-answer: the answer in flight finishes, never a
 const storeFileOf = (data, runId) => join(data, "runs", runId, "store", "run.sqlite");
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const finished = async (api, runId) => (await follow(api, runId, ["completed", "failed", "cancelled"]), view(api, runId));
+/** The same, or the run paused at its cap (input_required, pending budget). */
+const pausedOrEnded = async (api, runId) => (await follow(api, runId, ["input_required", "completed", "failed", "cancelled"]), view(api, runId));
+const PAUSED = ["input_required", "waiting", null, "budget"];
+const pausedState = (run) => [run.status, run.state, run.error, run.pending?.kind];
 /** A run under a cap of `cap` whose turn is stopped while its first request is in flight, once it reads stopped. */
 async function stopped(api, id, cap) {
   const runId = await inFlight(api, id, "Take your time.", cap);
@@ -647,15 +826,15 @@ test("a capped pi run stopped mid-answer goes on while its cap allows: in its pr
   assert.equal(run.cost.usd, null);
 });
 
-test("a capped pi run stopped mid-answer, when what the stopped request counts leaves no room for another request's least: the next request is refused with the cap's message, and the run's cost shows unknown, never $0", async (t) => {
+test("a capped pi run stopped mid-answer, when what the stopped request counts leaves no room for another request's least: the next request is refused with the cap's message, the run pauses at its cap, and its cost shows unknown, never $0", async (t) => {
   // $0.15: the request is clamped to what $0.15 buys; stopped before it streamed anything, it counts its 1,024-token
   // allowance, $0.1024, and leaves $0.0476: not another's least, 1,024 tokens at $0.0001.
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
   const runId = await stopped(api, "tight", 0.15);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "go on" })).body.mode, "follow_up");
-  const run = await finished(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /^Not sent: the run has spent \$0\.1024 of its \$0\.15 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.2\d to run it\.$/);
+  const run = await pausedOrEnded(api, runId);
+  assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
+  assert.match(run.pending.said, /^Not sent: the run has spent \$0\.1024 of its \$0\.15 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$0\.2\d to run it\.$/);
   assert.equal(run.cost.usd, null, "the refusal never balances the stopped request: unknown, not $0");
 });
 
@@ -680,7 +859,7 @@ test("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is out,
   assert.ok(Math.abs(spent - (0.1024 + run.cost.so_far_usd)) < 1e-6, `the store says the stop's $0.1024 and the follow-up's cost: $${spent}, so far $${run.cost.so_far_usd}`);
 });
 
-test("a capped pi run refused for room with no stop: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
+test("a capped pi run refused for room with no stop pauses at its cap: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   // A probe: one paid request (asking the person), to learn what one costs.
   assert.equal((await api("POST", "/agents", agent("probe", { tools: ["ask_person"] }))).status, 201);
@@ -694,9 +873,12 @@ test("a capped pi run refused for room with no stop: its cost stays the known to
   const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: (1_024 * 100) / 1e6 + first / 2 })).body.run_id;
   await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
-  const run = await finished(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
+  const run = await pausedOrEnded(api, runId);
+  assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
   assert.equal(run.cost.usd, first, "the known total, never null");
+  // Paused, its process is let go: its store is read once that process has exited (it marks itself released before
+  // it closes the store).
+  await letGo(data, runId);
   const db = new DatabaseSync(storeFileOf(data, runId), { readOnly: true });
   const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
   db.close();
@@ -760,11 +942,122 @@ test("a capped pi run whose process is killed mid-request is opened again and go
   assert.ok(spent >= FAUX_WORST && spent < FAUX_WORST * 1.5, `the cap counts the cut request at its held worst case: $${spent}`);
 });
 
-test("a capped pi run whose process is killed mid-request, when the held worst case leaves no room for another request's least: the next process refuses the request with the cap's message", { timeout: 120_000 }, async (t) => {
+test("a capped pi run whose process is killed mid-request, when the held worst case leaves no room for another request's least: the next process refuses the request with the cap's message, and the run pauses at its cap", { timeout: 120_000 }, async (t) => {
   // $1.70 holds one request's $1.64, and leaves $0.06: not another's least.
   const { api, runId, signal } = await killedMidRequest(t, 1.7);
-  const run = await finished(api, runId);
-  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run.error));
-  assert.match(run.error.message, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
+  const run = await pausedOrEnded(api, runId);
+  assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
+  assert.match(run.pending.said, /^Not sent: the run has spent \$1\.6\d* of its \$1\.70 cap, and its next \S+ request needs at least \$0\.11\. Raise the cap to at least \$1\.7\d to run it\.$/);
   assert.equal(existsSync(signal), false, "the request is not sent again");
+});
+
+test("/usage's total counts every priced dollar of a run whose cost is unknown: never below its own lines; the run says what it cost so far", { timeout: 120_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname, fauxMonid: new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("slow", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
+  const { body } = await api("POST", "/agents/slow/runs", { input: { content: "Run monid's /slow." } });
+  await monidRunsSent(api, body.run_id, log, 1);
+  // The run's process dies mid-call: what the call charged no one knows, so the run's cost is unknown; its model
+  // requests are priced.
+  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
+  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  assert.ok(tokens > 0, `the model requests are priced: ${tokens}`);
+  // As the API shows dollars: to a millionth.
+  const known = Math.round(tokens * 1e6) / 1e6;
+  const cost = (await api("GET", `/runs/${body.run_id}`)).body.cost;
+  assert.deepEqual([cost.usd, cost.so_far_usd, cost.unpriced], [null, known, 1], JSON.stringify(cost));
+  for (const group of ["meter", "agent", "day"]) {
+    const usage = (await api("GET", `/usage?group_by=${group}`)).body;
+    // Every dollar known, the unknown call counted unpriced: a lower bound, which unpriced_runs says, and never below a line.
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [known, 1], `${group}: ${JSON.stringify(usage)}`);
+    for (const line of usage.lines) assert.ok(usage.total_usd >= line.usd, `${group}: the total ${usage.total_usd} is below its line ${JSON.stringify(line)}`);
+  }
+});
+
+test("/usage puts a run's known tool dollars on tools when another tool charge is unknown, never on tokens nor nowhere, its lines summing to its total; and reads an ended run's figures from its store, never loading its timeline", { timeout: 150_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const data = join(await scratch(t), "agents");
+  const fauxMonid = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
+  const faux = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  let server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s" });
+  t.after(() => server?.close());
+  let api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("two-calls", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
+  const { body } = await api("POST", "/agents/two-calls/runs", { input: { content: "Run monid's /person/enrich, then its slow endpoint." } });
+  // The second monid run call, the slow one, is sent: faux monid files one line per call.
+  await monidRunsSent(api, body.run_id, log, 2);
+  // A crash cuts the slow call: its charge is unknown; the first call's ($0.003) and the model requests' are known.
+  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
+  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const check = async (api, where) => {
+    const usage = (await api("GET", "/usage?group_by=meter")).body;
+    const lines = Object.fromEntries(usage.lines.map((line) => [line.meter, [line.usd, line.unpriced_runs]]));
+    assert.deepEqual(lines, { tokens: [round(tokens), 0], tools: [0.003, 1] }, `${where}: ${JSON.stringify(usage)}`);
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [round(tokens + 0.003), 1], `${where}: ${JSON.stringify(usage)}`);
+    assert.equal(round(usage.lines.reduce((sum, line) => sum + line.usd, 0)), usage.total_usd, `${where}: its lines sum to its total`);
+  };
+  await check(api, "live server");
+  await server.close();
+  // A server started again reads the ended run's figures from its store: the run itself is never loaded for /usage.
+  const loaded = [];
+  server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s", onRunLoad: (id) => loaded.push(id) });
+  api = client(server.baseUrl, server.token);
+  await check(api, "after a restart");
+  for (const group of ["agent", "day"]) assert.equal((await api("GET", `/usage?group_by=${group}`)).body.total_usd, round(tokens + 0.003), group);
+  assert.deepEqual(loaded.filter((id) => id === body.run_id), [], "the run's timeline is not loaded for /usage");
+});
+
+/** Waits until faux monid has filed `count` run calls in `log` (one line per call), up to a loaded runner's minute; past it,
+ *  fails saying where the run stood and what monid saw, never on a fixed count of polls. */
+async function monidRunsSent(api, runId, log, count) {
+  const sent = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes('"path":"/v1/run"')).length : 0);
+  for (const deadline = Date.now() + 60_000; sent() < count; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    if (Date.now() > deadline) {
+      const run = (await api("GET", `/runs/${runId}`)).body;
+      assert.fail(`monid's run call ${count} was not sent in 60 s: the run is ${run.status}/${run.state} (${JSON.stringify(run.error)}), and monid saw ${existsSync(log) ? readFileSync(log, "utf8").trim() : "nothing"}`);
+    }
+  }
+}
+
+test("/usage counts an ended run of unknown cost at what it saved it spent so far, its other conversations and receipts included, never its root conversation's alone", { timeout: 150_000 }, async (t) => {
+  const log = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
+  const data = join(await scratch(t), "agents");
+  const faux = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const fauxMonid = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
+  let server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s" });
+  t.after(() => server?.close());
+  let api = client(server.baseUrl, server.token);
+  assert.equal((await api("POST", "/agents", agent("saved", { tools: ["monid.run"], tool_settings: ALLOWED }))).status, 201);
+  const { body } = await api("POST", "/agents/saved/runs", { input: { content: "Run monid's /person/enrich, then its slow endpoint." } });
+  await monidRunsSent(api, body.run_id, log, 2);
+  process.kill(JSON.parse(readFileSync(join(data, "runs", body.run_id, "run.json"), "utf8")).holder.pid, "SIGKILL");
+  await follow(api, body.run_id, ["completed"], { deadlineMs: 90_000 });
+  await server.close();
+  server = undefined;
+  // What a workflow's run keeps at its end: its spend so far across every conversation and its decisions' receipts. Its
+  // root conversation's store holds the model requests' and the paid calls' alone; the run's own figure is $0.004 more,
+  // as a decision's priced receipt and a node's priced request in another conversation would make it.
+  const { tokens } = metersIn(join(data, "runs", body.run_id, "store", "run.sqlite"));
+  const round = (usd) => Math.round(usd * 1e6) / 1e6;
+  const file = join(data, "runs", body.run_id, "serve.json");
+  const meta = JSON.parse(readFileSync(file, "utf8"));
+  assert.ok(meta.cost_so_far?.unpriced >= 1, `the run saved its spend so far: ${JSON.stringify(meta.cost_so_far)}`);
+  const saved = round(tokens + 0.003 + 0.004);
+  writeFileSync(file, `${JSON.stringify({ ...meta, cost_so_far: { ...meta.cost_so_far, so_far_usd: saved } })}\n`);
+  server = await startServe({ data, port: 0, faux, fauxMonid, drainTimeout: "5s" });
+  api = client(server.baseUrl, server.token);
+  for (const group of ["meter", "agent", "day"]) {
+    const usage = (await api("GET", `/usage?group_by=${group}`)).body;
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [saved, 1], `${group}: ${JSON.stringify(usage)}`);
+    assert.equal(round(usage.lines.reduce((sum, line) => sum + line.usd, 0)), saved, `${group}: its lines sum to its total`);
+    // The $0.004 beyond its store is model and decision spend: on tokens, the rest's meter, never on tools, which holds
+    // its own known $0.003 (the /person/enrich call) and no more.
+    if (group === "meter") assert.deepEqual(Object.fromEntries(usage.lines.map((line) => [line.meter, line.usd])), { tokens: round(tokens + 0.004), tools: 0.003 }, JSON.stringify(usage.lines));
+  }
 });

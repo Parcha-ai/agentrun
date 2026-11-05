@@ -21,20 +21,27 @@
 // A message the door accepts is on the root before the door says so, and its end (sent to the session, or dropped by a
 // stop) after: one that waited for a turn's end when the process died is sent at the next open. Its end is written once
 // the session has it, so a process that dies between the two sends it again rather than never.
+//
+// A host tool call the tool gate parks for a person's approval (tool-gate.ts) ends its turn: no model request leaves
+// after it, and the turn is interrupted once its result is in, then settled as a stopped one is, its end interrupted.
+// The answer's resume is a message of its own, sent as a person's is; a turn the park ended is not resumed at the next
+// open while the call still waits.
+import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
+import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec, type TurnStatus } from "@parcha/agentrun-kernel";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
-import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
+import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
+import { CAP_REFUSAL_CODE, CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, type RunSpend, takePaidRefusal, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END, type TurnEndData } from "./turn-end.js";
-import { REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { originOf, REQUEST_CONTINUED, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
@@ -54,7 +61,8 @@ export { TURN_END } from "./turn-end.js";
 type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 type Pending = { request: number; usage: ModelUsage };
 /** An accepted message: `recorded` once its record is on the root. */
-type Message = { id: string; content: string; recorded: Promise<unknown> };
+/** A message the session takes: the person's, or the server's (`origin`, written on its user entry for the Timeline). */
+type Message = { id: string; content: string; origin?: JsonObject; recorded: Promise<unknown> };
 /** The run's stop record as serve keeps it (serve.json, runs.ts stopTurn, saved before the stop's abort): the person's
  *  newest message when they stopped the turn, by its row id (`<conversation>:<entry>`), or, from an older server, how many
  *  messages they had sent then. */
@@ -115,7 +123,8 @@ export interface AdapterRun {
  *  `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled (request-start.ts `cancelledIn`): once it
  *  says so, no model request leaves, as on pi. `cwd`: the run's workspace, the directory its file tools confine to, where
  *  the harness works too (the adapter's io.cwd), so a path the model builds from its working directory is one the tools
- *  take (in a box, coding-tools.ts names it at the box's work dir). */
+ *  take (in a box, coding-tools.ts names it at the box's work dir). `gate`: the run's tool gate, which each host tool
+ *  call passes. */
 export function adapterRun(
   make: (confine?: ConfineChild) => Promise<AgentAdapter>,
   harness: string,
@@ -129,6 +138,7 @@ export function adapterRun(
   cwd?: string,
   coding?: readonly ToolRegistration[],
   stopRecord?: StopRecord,
+  gate?: RunGate,
 ): AdapterRun {
   const plane = planeOf(process.env);
   // The web tools' Parallel key, when one resolves to Parallel, read as the run's app loads, before its process starts
@@ -142,18 +152,27 @@ export function adapterRun(
   // That `refused` is the cap's, not the cancel's: its error entry gets a start mark of its own first, as pi's does, so the
   // run's usage counts no request for it.
   let capRefused = false;
+  // A refusal for room's figures, for its start mark (cap.ts RefusalFigures).
+  let refusedFigures: RefusalFigures | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
   // Each admitted request's worst case until its cost is booked: the booking's spend counts it only then.
   const inFlight = holdsInFlight();
+  // The run's spend as a paid tool's check reads it (useSpend, set at the open): a paid call refused under it pauses the
+  // run at this run's next request (guard).
+  let spend: RunSpend | undefined;
   const plus = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
   const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const byCancel = cancelled();
-    const answer = byCancel ? { refuse: CANCELLED } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
+    // A paid call the cap just refused for room (cap.ts takePaidRefusal): this request is refused in its words, so the
+    // turn ends there and the run waits on a raise, as at a model request's refusal. A refusal no cap fixes comes first.
+    const paid = byCancel || !cap || request.spentUsd === null ? undefined : takePaidRefusal(spend);
+    const answer = byCancel ? { refuse: CANCELLED } : paid ? { refuse: `${CAP_REFUSAL_CODE}${paid.words}`, spentUsd: paid.figures.spentUsd, needsUsd: paid.figures.needsUsd } : cap?.beforeRequest({ ...request, spentUsd: plus(request.spentUsd, charged) });
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
+      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd } : undefined;
       return answer;
     }
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
@@ -177,6 +196,12 @@ export function adapterRun(
   };
   // A paid request whose cost could not be written: the booking admits no request after it, and the turn stops on it.
   let halted: Error | undefined;
+  // The call the gate parked, until the next message starts a turn: no request leaves meanwhile, and the turn is
+  // interrupted once the call's result is in. Not a failure: the turn ends as the person's answer will resume it.
+  let parked: ParkedCall | undefined;
+  const PARKED = new Error("the turn ended: a tool call waits for a person's approval");
+  // Each call's arguments, by its id, for a park named by tool and arguments (endsTurn).
+  const argsOf = new Map<string, unknown>();
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
@@ -322,6 +347,7 @@ export function adapterRun(
     if (event.type === "text") text += event.delta;
     else if (event.type === "tool_start") {
       const call: ToolCall = { type: "toolCall", id: event.callId, name: event.name, arguments: (event.args ?? {}) as Record<string, unknown> };
+      argsOf.set(event.callId, event.args ?? {});
       // A call of the current request's answer after that answer's entry was written (at its first call's end): written
       // now as the answer's continuation, so its result never comes before it and the next answer never holds it.
       const request = current;
@@ -345,6 +371,8 @@ export function adapterRun(
           });
         }).then(() => undefined),
       );
+      // The parked call's result is in: its turn ends here, settled once the interrupt is done (runTurns).
+      if (endsTurn(parked, { callId: event.callId, tool: event.name, args: argsOf.get(event.callId) }) && !stopping) stopping = session?.interrupt();
     }
   };
 
@@ -371,12 +399,14 @@ export function adapterRun(
 
   /** The person's message: the session's new turn, then its entry and its end on the root. */
   const sendOf = (message: Message) => async () => {
+    parked = undefined;
+    argsOf.clear();
     await message.recorded;
     taking = message.id;
     await session!.send(message.content);
     await later(() =>
       commit(async (tx) => {
-        await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, { model: [{ role: "user", content: [{ type: "text", text: message.content }], timestamp: now() } as never] });
+        await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, { model: [{ role: "user", content: [{ type: "text", text: message.content }], timestamp: now() } as never], ...(message.origin ? { data: { origin: message.origin } } : {}) } as never);
         await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE_END, data: { key: spec.key, id: message.id, sent: true } });
       }).then(() => undefined),
     );
@@ -394,6 +424,9 @@ export function adapterRun(
         let failed: string | undefined;
         let status: TurnStatus = "failed";
         answer = carry;
+        // A turn of its own: a paid call's refusal a stop left pending (its turn stopped before its next request) is
+        // let go, so this turn's first request is judged as any other, never paused for a call the person moved on from.
+        if (spend) takePaidRefusal(spend);
         try {
           await start();
           const end = await session!.turnEnd();
@@ -417,8 +450,20 @@ export function adapterRun(
           // its error and ends failed. The run's status is its last turn's end (turns.ts): with no message waiting, the run
           // fails on this error, as a pi run does; a message waiting behind it is still sent, and when that turn completes,
           // the run completes with its answer, this failure kept in the timeline.
-          const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
+          // A turn the gate parked ends interrupted, never failed on the request its park refused.
+          const why = refused ?? halted?.message ?? (failed === undefined || parked !== undefined ? undefined : `${harness}: ${failed}`);
+          if (parked !== undefined && why === undefined) status = "interrupted";
+          // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER, a file that marks it once): a parked
+          // turn holds its end until the answer's message is recorded, then the process goes by a signal, as a crash
+          // between the two would leave the run.
+          if (CRASH_SEAM && parked !== undefined && !existsSync(CRASH_SEAM)) {
+            await answerIn;
+            writeFileSync(CRASH_SEAM, "");
+            process.kill(process.pid, "SIGKILL");
+          }
           const unsent = refused !== undefined && capRefused;
+          const figures = unsent ? refusedFigures : undefined;
+          refusedFigures = undefined;
           refused = undefined;
           capRefused = false;
           const pending = open.size > 0;
@@ -429,7 +474,7 @@ export function adapterRun(
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
               // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
-              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true } });
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) } });
               await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
             }
             const data: TurnEndData = {
@@ -456,6 +501,23 @@ export function adapterRun(
     })();
   };
 
+  /** The gate's resume (tool-gate.ts): the answer as a message of its own, recorded with the gate's mark in one commit,
+   *  then sent as a person's is. */
+  const CRASH_SEAM = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER;
+  let answerRecorded: (() => void) | undefined;
+  const answerIn = new Promise<void>((resolve) => (answerRecorded = resolve));
+  const resume: Resume = async (id, content, mark) => {
+    await opened;
+    const message: Message = { id: `approval-${id}`, content, recorded: commit(async (tx) => {
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id: `approval-${id}`, content } });
+      await mark(tx);
+    }) };
+    await message.recorded;
+    answerRecorded?.();
+    if (turn) queue.push(message);
+    else runTurns(sendOf(message));
+  };
+
   const door: DoorHook = {
     attach(given) {
       emit = given;
@@ -467,7 +529,8 @@ export function adapterRun(
       if (turn && input.whenBusy === "reject") return { accepted: false, reason: "busy" };
       const id = randomUUID();
       const content = textOf(input.content);
-      const message: Message = { id, content, recorded: commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id, content } }))) };
+      const origin = input.origin;
+      const message: Message = { id, content, ...(origin ? { origin } : {}), recorded: commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id, content, ...(origin ? { origin } : {}) } }))) };
       if (turn) queue.push(message);
       else runTurns(sendOf(message));
       await message.recorded;
@@ -517,7 +580,7 @@ export function adapterRun(
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
-          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown; sent?: unknown } | undefined;
+          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown; sent?: unknown; origin?: unknown } | undefined;
           if (entry.kind === TOOL_COST || entry.kind === TOOL_STARTED) paid.push(entry);
           const message = (entry as { model?: { api?: unknown; stopReason?: unknown; role?: unknown }[] }).model?.[0];
           if (unended && message?.api === ADAPTER_API && message.stopReason === "error") unended.failed = true;
@@ -531,7 +594,7 @@ export function adapterRun(
             written.add(data.request);
             (data.unpriced === true ? unpriced : priced).add(data.request);
           } else if (entry.kind === PRICED_LATE && typeof data.request === "number") priced.add(data.request);
-          else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
+          else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), ...(originOf(data.origin) ? { origin: data.origin as JsonObject } : {}), recorded: Promise.resolve() });
           else if (entry.kind === MESSAGE_END && typeof data.id === "string") {
             accepted.delete(data.id);
             if (data.sent === true) unended = { message: data.id, failed: false, answer: null };
@@ -556,7 +619,7 @@ export function adapterRun(
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
         onEvent: onModel,
-        stopped: () => halted ?? cancelStop(),
+        stopped: () => halted ?? cancelStop() ?? (parked === undefined ? undefined : PARKED),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {
@@ -572,24 +635,34 @@ export function adapterRun(
       // for, as at a turn's end), one still in flight at the worst case the cap held for it (as pi's spend counts it),
       // with the run's charges; its charge joins them.
       if (budgetUsd !== undefined) {
-        useSpend({
+        spend = {
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), inFlight.total())),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(booking.spentUsd(), charged)),
+          held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
-        });
+        };
+        useSpend(spend);
       }
       // Each request the session booked and the root has no entry for: its cost, with no content.
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of inSession(await writer.read()).booked) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
+      // The calls that wait for a person's approval, read before any turn goes on.
+      await gate?.load(durable, context, coding);
+      // The park every gated call of the run's takes, built once: the host tools' here, and the MCP gateway's, which takes
+      // the same object beside them (`{ gate, park }`). A call parked by its id or by its tool and arguments ends its turn.
+      const park: Park = { commit: (change) => commit(change as never) as never, parked: (callId) => void (parked = { callId }), parkedBy: (match) => void (parked = match), turn: () => taking };
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results, coding, gate ? { gate, park } : undefined) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}), ...(cwd ? { cwd } : {}) });
       // A turn the person stopped is still open in the session (an interrupt writes no end there), and it is not resumed.
       // The run's stop record names the person's newest message when they stopped: with no message on the root newer than
       // it, the open turn is the stopped one. The session settles it, ended interrupted, and the next message is a turn of
       // its own. A turn a crash or a drain cut has no stop record newer than the newest message, and is resumed as before.
-      const stopped = stopRecord?.stopped_at !== undefined
+      // A turn the gate parked is settled as a stopped one: its call waits for its answer, which resumes the run. So is
+      // one whose parked call was answered before a process went: its request names the turn (gate.parkedIn), so the
+      // answer's message, queued, follows it, and the turn is never run again.
+      const stopped = (stopRecord?.stopped_at !== undefined
         ? lastUser !== undefined && lastUser <= placeOf(stopRecord.stopped_at)
-        : stopRecord?.stopped_after !== undefined && stopRecord.stopped_after === users;
+        : stopRecord?.stopped_after !== undefined && stopRecord.stopped_after === users) || gate?.waiting() === true || gate?.parkedIn(unended?.message) === true;
       // An adapter written before settleOpenTurn has none: its stopped turn is recovered, as before.
       if (session.state === "open_turn" && stopped && typeof session.settleOpenTurn === "function") await session.settleOpenTurn();
       // That turn is over in the session, and an earlier process died before it wrote the turn's end: written now, after
@@ -610,11 +683,13 @@ export function adapterRun(
       if (restored && !queue.length) await restore(restored);
       openedDone();
       // Its answer so far is the root's, which a recovery that streams no new text keeps as the turn's.
-      if (session.state === "open_turn") runTurns(() => session!.recover(), unended?.answer ?? undefined);
+      if (session.state === "open_turn" && !gate?.waiting()) runTurns(() => session!.recover(), unended?.answer ?? undefined);
       else if (queue.length) {
         const next = sendOf(queue.shift()!);
         runTurns(restored ? async () => (await restore(restored), await next()) : next);
       }
+      // The answers from now on: each resumes the session with one message of its own.
+      gate?.start(resume);
     },
   };
 }

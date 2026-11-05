@@ -8,7 +8,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { claudeModel } from "../dist/adapters.js";
+import { claudeModel, harnessModelKeys } from "../dist/adapters.js";
 import { chooseModel, harnessRuns, hostModel, MODEL_KEYS } from "../dist/model.js";
 import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
@@ -68,6 +68,26 @@ test("behind a gateway, codex takes AGENT_MODEL as the gateway's own string, wha
   assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model" }, "default", "codex"), "team/model");
   assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model", ...keyed("openai") }, "default", "codex"), "team/model", "never the OpenAI key's default instead");
   assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model" }, "default", "claude-agent"), undefined, "claude-agent never takes the gateway");
+});
+
+test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway's: an OpenAI key gives it its default, and another provider's model is skipped for it", () => {
+  // OpenCode's model requests go where codex's do (adapters.ts' codexProvider): OpenAI with its key, OpenRouter with its
+  // key, or the gateway.
+  assert.equal(hostModel(keyed("anthropic", "openai"), "default", "opencode"), "openai/gpt-6.1-sol", "an OpenAI key's default");
+  assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), "openai/gpt-6-sol", "OpenRouter's key alone: codex's route");
+  assert.equal(hostModel(keyed("anthropic"), "default", "opencode"), undefined, "no OpenAI or OpenRouter key: none");
+  assert.equal(hostModel({ AGENT_MODEL: "gpt-6-luna", AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", ...keyed("anthropic") }, "default", "opencode"), "gpt-6-luna", "the gateway's own id");
+  assert.equal(hostModel({ AGENT_MODEL: "openai/gpt-6-luna" }, "default", "opencode"), "openai/gpt-6-luna");
+  assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5", ...keyed("openai") }, "default", "opencode"), "openai/gpt-6.1-sol", "an Anthropic AGENT_MODEL is skipped for the OpenAI key's default");
+  assert.equal(hostModel({ AGENT_MODEL: "anthropic/claude-opus-5-5" }, "default", "opencode"), undefined, "an Anthropic AGENT_MODEL alone: none");
+  assert.deepEqual(MODEL_KEYS.find((row) => row.id === "openai").harnesses, ["pi", "codex", "opencode"], "the OpenAI key runs pi, codex and opencode");
+  // Guard (#1571): behind a gateway, opencode runs the gateway's model id as given, as codex does, a namespaced one and one
+  // that looks like another vendor's alike; without a gateway, neither.
+  const gw = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
+  assert.equal(harnessRuns(gw, "team/model", "opencode"), true, "behind a gateway: team/model");
+  assert.equal(harnessRuns(gw, "anthropic/x", "opencode"), true, "behind a gateway: anthropic/x, the gateway's own string");
+  assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model", ...keyed("openai") }, "default", "opencode"), "team/model", "never the OpenAI key's default instead");
+  assert.equal(harnessRuns({}, "team/model", "opencode"), false, "no gateway: team/model");
 });
 
 // A key-less first run (npx, no key yet) is told what a person does: add a key in the console or where AgentRun starts.
@@ -192,7 +212,7 @@ test("a model key saved with no restart: a server with none says no model runs a
   assert.deepEqual(await models(), { source: "gateway", route_prefix: "agent-model", fast: `agent-model/${model}`, default: `agent-model/${model}`, strong: `agent-model/${model}`, ready: true, needs: null }, "no restart");
   const offered = (await api("GET", "/capabilities")).body.harnesses.filter((harness) => harness.available).map((harness) => harness.id);
   const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === "openai");
-  assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "codex"].filter((id) => offered.includes(id)), [{ name: "OPENAI_API_KEY", set: true, source: "stored" }]]);
+  assert.deepEqual([row.kind, row.unlocks, row.harnesses, row.fields], ["model", [], ["pi", "codex", "opencode"].filter((id) => offered.includes(id)), [{ name: "OPENAI_API_KEY", set: true, source: "stored" }]]);
   const started = await api("POST", "/agents/plain/runs", { input: { content: "What is six times seven?" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
@@ -234,3 +254,13 @@ for (const [harness, model] of [["codex", "anthropic/claude-sonnet-5-5"], ["pi",
     assert.ok(!JSON.stringify(sent).includes(openai), "OpenAI's key is in no request");
   });
 }
+
+test("an opencode run is handed the model key its route sends, as a codex run is: the gateway's, OpenAI's, or OpenRouter's", () => {
+  const k = fakeKey("any");
+  for (const env of [{ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: k }, { OPENAI_API_KEY: k }, { OPENROUTER_API_KEY: k }, { OPENAI_API_KEY: k, OPENROUTER_API_KEY: k }]) {
+    const codex = harnessModelKeys("codex", env);
+    assert.equal(codex.length, 1, `setup: codex holds one key with ${Object.keys(env)}`);
+    assert.deepEqual(harnessModelKeys("opencode", env), codex, `opencode, with ${Object.keys(env)}`);
+  }
+  assert.deepEqual(harnessModelKeys("opencode", { OPENROUTER_API_KEY: k }, "openrouter/openai/gpt-6-sol"), ["OPENROUTER_API_KEY"], "a model named on OpenRouter");
+});
