@@ -177,7 +177,7 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
   const { max_cost_usd: _, ...uncapped } = schedule("capped", { every_s: 600 }).target;
   assert.match(await refused({ ...schedule("capped", { every_s: 600 }), target: uncapped }, "target.max_cost_usd", "missing"), /required/);
   assert.match(await refused(schedule("flow", { every_s: 600 }), "target.agent_id", "not_allowed"), /workflow/);
-  await refused({ ...schedule("capped", { every_s: 600 }), source: { kind: "github" } }, "source.kind", "not_an_option");
+  await refused({ ...schedule("capped", { every_s: 600 }), source: { kind: "linear" } }, "source.kind", "not_an_option");
   await refused(schedule("capped", { every_s: 30 }), "source.every_s", "invalid");
   await refused(schedule("capped", { cron: "* * * * * *" }), "source.cron", "invalid");
   await refused(schedule("capped", { cron: "0 9 * * *", timezone: "Mars/Olympus" }), "source.timezone", "invalid");
@@ -185,7 +185,7 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "slack"], targets: ["start_run", "message_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" }, slack: { signing: "slack-v0", tolerance_s: 300, events: ["app_mention", "message"], at_rest: "unavailable" } });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook", "slack", "github"], targets: ["start_run", "message_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" }, slack: { signing: "slack-v0", tolerance_s: 300, events: ["app_mention", "message"], at_rest: "unavailable" }, github: { signing: "x-hub-signature-256", events: ["issue_comment", "pull_request_review_comment", "issues"], max_body_bytes: 1048576, at_rest: "unavailable" } });
 });
 
 test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000 }, async (t) => {

@@ -1186,6 +1186,48 @@ wait in `DIR/slack-outbox.json` and are tried again on the webhook's schedule un
 never came is tried again, so it can show twice. A bot token Slack refuses turns posting off until the app is set again.
 An import cuts the Slack secrets out of what it keeps, and no learning text shows them.
 
+### GitHub triggers
+
+Mention the server's handle on a GitHub issue or pull request, or assign an issue to it, to start a run there. One set
+of settings a server: `PUT /v2/settings/github` with `{webhook_secret, token, handle, assignee_login?}` keeps the
+webhook secret and the token sealed in `DIR/github.json` under `AGENTRUN_SEAL_KEY` (`409 no_sealing_key` with none);
+`GET` never shows them, and `DELETE` removes them. `handle` is the login a mention names (a GitHub App's slug, or
+`name[bot]`), and `assignee_login` the login an issue is assigned to, to start a run. The webhook secret is at least 16
+characters. The token is any one that can comment on the repos' issues and pull requests; it is not tried when it is
+saved. A GitHub App installation's token lasts an hour, so for now the operator puts a fresh one before it ends; this
+server does not mint its own from the App's key. In the repo's or the App's webhook settings, set the payload URL to
+`https://<the server's public address>/v2/hooks/github`, the content type to `application/json`, the secret, and the
+events Issue comments, Pull request review comments and Issues.
+
+Each request to `/v2/hooks/github` is checked by `X-Hub-Signature-256` on its raw body before anything else: `sha256=`
+and the hex HMAC-SHA256 of the body under the webhook secret, with `X-GitHub-Event` and `X-GitHub-Delivery` each sent
+once. Headers that can never pass are refused before the body is read; one that fails, or a server with no GitHub set,
+is `401`. GitHub signs no time, so a delivery is not checked for age: one sent again is the same firing. A `ping` is
+answered `pong`.
+
+A trigger with `source: {kind: "github", repos: ["owner/name", ...], post_answer?}` and a `start_run` target owns its
+repos: a repo another GitHub trigger lists (any case) is `409 repo_taken`. These start a run for their issue or pull
+request:
+- a comment that mentions the handle as a word (`@handle`, any case, `[bot]` after it or not; not `@handle2`, not an
+  address), on an issue or on a pull request's conversation;
+- a review comment on a pull request's diff that mentions it;
+- an issue assigned to `assignee_login`.
+
+Only the repo's owner, a member of its organisation, or a collaborator (`author_association` `OWNER`, `MEMBER` or
+`COLLABORATOR`) starts a run, and only when the comment's author is the delivery's sender. A `MEMBER` is any member of the
+organisation, one who can only read the repo too; a check of write access is a later option. An assignment needs
+triage access or more, which GitHub checks. A bot's event (by its type, or a login ending in `[bot]`), the handle's own
+comments, an edit, a comment that mentions no one, anyone else, and a repo no trigger lists are answered `200` and
+ignored. A firing's key is the comment itself (its id; an assignment's delivery), so a redelivery and the same comment
+through a repo's webhook and an org's are one firing, kept for the key's day after it leaves the history.
+
+The request is answered at once, inside GitHub's 10 seconds, once its firing is recorded; the run starts after. GitHub
+does not deliver again on its own: a delivery answered `503` (a write that failed) or `429` (a trigger holding 20 firings
+due) is lost until it is redelivered from the webhook's Recent Deliveries. The agent gets the trigger's input, then the
+issue's or pull request's title and the comment (a review comment's file and line; an assignment's issue body), cut at
+16 KiB, inside `<trigger-payload source="github" user="..." repo="owner/name" number="12" untrusted>...</trigger-payload>`.
+An import cuts the GitHub secrets out of what it keeps, and no learning text shows them.
+
 ## What it serves
 
 | Route | Here |
