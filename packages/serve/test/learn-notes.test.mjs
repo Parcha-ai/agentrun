@@ -93,3 +93,11 @@ test("a pending note waits for its owner: it parses, holds its origin, and is in
   assert.equal(format.mergedNote(note("name: T\ndescription: d\ntype: user\norigin: you"), { origin: "run" }), note("name: T\ndescription: d\ntype: user"));
   assert.throws(() => format.mergedNote(REFUND, { origin: "page" }), /origin/);
 });
+
+test("a run's note merged with no `type:` is written with `type: project`, so a note on main always names its type", () => {
+  const text = "---\nname: Ships from Reno\ndescription: Where orders ship from\n---\nWe ship from Reno.\n";
+  const merged = format.mergedNote(text, { origin: "run" });
+  assert.equal(merged, "---\nname: Ships from Reno\ndescription: Where orders ship from\ntype: project\n---\nWe ship from Reno.\n");
+  assert.equal(format.mergedNote(merged, { origin: "run" }), merged, "a note that names its type keeps it");
+  assert.match(format.mergedNote("---\nname: A\ndescription: B\ntype: user\n---\nC\n", { origin: "you" }), /\ntype: user\norigin: you\n---\n/);
+});

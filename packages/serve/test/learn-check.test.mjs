@@ -181,3 +181,13 @@ test("the checker reports and never changes what it was given", () => {
   checkProposal({ base: baseOf(), changes });
   assert.deepEqual(changes[0].bytes, before);
 });
+
+test("a run's note with no `type:` is read as a project note and passes, as Claude Code's own memory reads one; a type it does not know is still refused", () => {
+  // claude-agent's note, as its end-of-run turn wrote it: name and description, no type.
+  const claudes = "---\nname: Shipping origin and cutoff\ndescription: Use when staff ask when an order ships or where we ship from\n---\nWe ship from Reno. Orders placed after 2 pm go out the next business day. Orders placed before 2 pm are not covered by this note, so don't assume a same-day ship time unless told.\n";
+  const parsed = parseNoteFile("shipping-cutoff-reno.md", claudes);
+  assert.equal(Array.isArray(parsed) ? parsed.join("; ") : parsed.type, "project");
+  const result = checks.checkProposal({ base: baseOf(), changes: [added("shipping-cutoff-reno.md", claudes)], outcome: "completed" });
+  assert.deepEqual(result.problems, [], JSON.stringify(result.problems));
+  assert.deepEqual(parseNoteFile("memo.md", claudes.replace("---\nWe ship", "type: memo\n---\nWe ship")), ["type is not user, feedback, project, reference"]);
+});
