@@ -431,7 +431,7 @@ test("each call node of a learned workflow asks the run's gate as it runs, a com
       const policy = (tool) => (tool === "web_fetch" && asked++ === 0 ? "allow" : tool === "web_fetch" ? later : "allow");
       const flow = { name: "answer", description: "Fetches a page", workflow: JSON.stringify(callFlow("web_fetch", nested)) };
       const run = { workflows: [flow], granted: ["web_fetch"], env: {}, work: "/nonexistent", models: { getModel: () => undefined, getModels: () => [] }, modelOf: () => undefined, policy };
-      const out = await runLearned(run, flow, { url: "http://192.0.2.1/" });
+      const out = await runLearned(run, flow, { url: "http://127.0.0.1:9/" });
       assert.equal(out.isError, true, JSON.stringify(out));
       assert.ok(out.text.includes(words), `${nested ? "nested" : "flat"} ${later}: ${out.text}`);
       assert.ok(asked >= 2, `${nested ? "nested" : "flat"} ${later}: the gate was asked at the call too (${asked})`);
