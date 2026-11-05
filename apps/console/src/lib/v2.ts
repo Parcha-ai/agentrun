@@ -84,9 +84,9 @@ export type Firing = { key: string; by: "schedule" | "manual"; nominal_at: strin
 /** Why the server turned a schedule off itself: a failure streak (`auto_paused`), or a source it can no longer read. */
 export type TriggerDisabled = { at: string; reason: "auto_paused" } | { at: string; reason: "source_unreadable"; detail: string };
 /** A schedule (GET /v2/triggers): `next_at` null when it is paused or has no time left; `last_firing` null until it fires.
- *  `failures_in_a_row` and `disabled` (null while it is on, or a person paused it) from a server that turns a schedule off
- *  itself; absent from an older one. */
-export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; overlap: "skip"; last_firing: Firing | null; failures_in_a_row?: number; disabled?: TriggerDisabled | null };
+ *  `failures_in_a_row`: its failed firings since the last start; `disabled`: why the server turned it off itself, null
+ *  while it is on or a person paused it. */
+export type Trigger = { id: string; name: string; enabled: boolean; source: TriggerSource; target: TriggerTarget; created_at: string; updated_at: string; next_at: string | null; overlap: "skip"; last_firing: Firing | null; failures_in_a_row: number; disabled: TriggerDisabled | null };
 /** A create's or an edit's body: the parts the form holds. */
 export type TriggerInput = { name?: string; enabled?: boolean; source?: TriggerSource | { kind: "schedule"; every_s: number; start_at?: string }; target?: TriggerTarget };
 /** A question the run asked a person (ask_person): a message answers it. */

@@ -43,7 +43,7 @@ export function disabledWords(t: Pick<Trigger, "disabled" | "failures_in_a_row">
   const off = t.disabled;
   if (!off) return null;
   if (off.reason === "source_unreadable") return `Turned off: its source can't be read (${off.detail}).`;
-  const n = t.failures_in_a_row ?? 0;
+  const n = t.failures_in_a_row;
   return n > 0 ? `Turned off after ${n} failures in a row.` : "Turned off after failures in a row.";
 }
 
