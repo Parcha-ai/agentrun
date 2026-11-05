@@ -252,7 +252,8 @@ function endValue(text: string, key: "usage" | "tool_usage"): unknown {
  * The terminal event carries the whole response (its output, encrypted reasoning included), so its line can be longer
  * than the proxy keeps of an answer; then the proxy's start of that line is read. The response's fields come in a fixed
  * order, `id`, `object`, `created_at`, `status`, `background`, `error`, `incomplete_details`, then `instructions`, the
- * tools and the output, so `incomplete_details` is near the line's start. It is read only on a line that is the event's
+ * tools and the output (OpenAI's; a LiteLLM gateway's, `id`, `created_at`, `incomplete_details`, ..., `output`, keeps it
+ * ahead of the output too), so `incomplete_details` is near the line's start. It is read only on a line that is the event's
  * own: one the SSE `event: response.incomplete` names (OpenAI's API), or whose data says `"type":"response.incomplete"`
  * before its `"response":{` (a gateway that sends each event as its data alone: LiteLLM), as the first
  * `"incomplete_details":{` after `"response":{` (one JSON object), whatever the JSON's spacing.
