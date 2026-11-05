@@ -73,11 +73,12 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
   const { id, secret } = (await api("POST", "/triggers", hooked("triage"))).body;
   const off = (await api("POST", "/triggers", hooked("triage", { enabled: false }))).body;
   const timed = (await api("POST", "/triggers", { ...hooked("triage"), source: { kind: "schedule", every_s: 600 } })).body;
-  const now = Math.floor(Date.now() / 1000);
+  // 400 s either side of the clock as each request goes: well past the 300 s window, however slow the requests before it.
+  const now = () => Math.floor(Date.now() / 1000);
   const refused = [
     await post(baseUrl, id, "{}", { secret: `whsec_${randomBytes(32).toString("base64")}` }),
-    await post(baseUrl, id, "{}", { secret, at: now - 301 }),
-    await post(baseUrl, id, "{}", { secret, at: now + 301 }),
+    await post(baseUrl, id, "{}", { secret, at: now() - 400 }),
+    await post(baseUrl, id, "{}", { secret, at: now() + 400 }),
     await post(baseUrl, id, "{}", { headers: {} }),
     await post(baseUrl, "trg_nothing", "{}", { secret }),
     await post(baseUrl, off.id, "{}", { secret: off.secret }),
@@ -93,7 +94,7 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
   const big = await post(baseUrl, id, "x".repeat((256 << 10) + 1), { secret });
   assert.equal(big.status, 413);
   assert.deepEqual((await api("GET", `/triggers/${id}/firings`)).body.firings, [], "nothing fired");
-  const signedJustInside = await post(baseUrl, id, "{}", { secret, at: now - 290 });
+  const signedJustInside = await post(baseUrl, id, "{}", { secret, at: now() - 290 });
   assert.equal(signedJustInside.status, 202, "within the window");
   // Its run ends before the server closes, so nothing is still writing when the data directory goes.
   const [fired] = await firings(api, id, 1);
