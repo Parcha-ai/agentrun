@@ -59,6 +59,9 @@ export type ToolHost = {
   install(extension: Extension): void;
   /** Runs in the commit that creates each of the run's conversations. */
   onConversation(write: (tx: Tx, conversationId: number) => void | Promise<void>): void;
+  /** The tools an agentic run's model holds (its revision's `tools`), none for a workflow's run, whose nodes each hold
+   *  their own: what a tool's words may point a model to. */
+  tools: readonly string[];
   /** Runs once the run's Harness is open, before anything in it resumes. */
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
   /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
@@ -161,6 +164,9 @@ export const evidenceIn = (work: string) => {
   };
 };
 
+/** What a run's browser call says when Browserbase refuses the key it was handed. */
+export const BROWSERBASE_REFUSED = "Browserbase refused BROWSERBASE_API_KEY (401): set it where AgentRun starts, or save it in Settings → Tool keys.";
+
 /** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
  *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go. */
 const browserTool: ToolEntry = {
@@ -179,7 +185,12 @@ const browserTool: ToolEntry = {
     const parts = faux
       ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv) => { provider: unknown; driver: unknown } }).default(host.env)
       : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
-    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
+    // A refused key reads as a model key's refusal does (key-refusal.ts), naming where a person sets it. The run's page
+    // reader is named only to a run that has one, by the name its tool is bound under (fetch_page, the legacy name, is
+    // bound as itself).
+    const reader = host.tools.find((name) => capabilityOf(name) === WEB_FETCH_TOOL);
+    const words = { refusedCredential: BROWSERBASE_REFUSED, ...(reader ? { otherSource: reader } : {}) };
+    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work, words });
     const extension = browser.extension as unknown as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {

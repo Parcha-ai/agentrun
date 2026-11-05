@@ -939,6 +939,40 @@ test("a run's process that opened again after the last one ended unfinished is a
   assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
 });
 
+test("a live browser session reads as opened only once a browser call got one, right before that call; a refused open opens none", () => {
+  const refused = JSON.stringify({ ok: false, code: "auth", message: "The browser provider refused its credential (401)." });
+  const tag = (r) => `${r.kind}${r.tool_use_id ? `:${r.tool_use_id}` : ""}${SESSION.test(r.summary ?? "") ? ":session" : ""}`;
+  const rows = timelineOf([
+    user("Browse.", 0),
+    assistant([call("a", "run", { code: 'await page.goto("https://example.com")' })], 1),
+    result("a", "run", refused, 2, { isError: true }),
+    assistant([call("b", "snapshot", {})], 3),
+    result("b", "snapshot", "- heading", 4),
+  ]);
+  assert.deepEqual(rows.filter((r) => r.kind !== "usage").map(tag), ["user_message", "tool_use:a", "tool_result:a", "phase:session", "tool_use:b", "tool_result:b"]);
+  const never = timelineOf([user("Browse.", 0), assistant([call("a", "run", { code: 'await page.goto("https://example.com")' })], 1), result("a", "run", refused, 2, { isError: true })]);
+  assert.equal(never.some((r) => SESSION.test(r.summary ?? "")), false, JSON.stringify(never.map(tag)));
+});
+
+test("a browser call that got a session but failed after (a blank page read as not content) still opened it, right before that call", () => {
+  const blank = JSON.stringify({ ok: false, code: "not_content", retryable: true, effect: "none", message: "This browser is fresh and has loaded no page yet: it was just opened. Navigate to the page you need with run, then read again." });
+  const tag = (r) => `${r.kind}${r.tool_use_id ? `:${r.tool_use_id}` : ""}${SESSION.test(r.summary ?? "") ? ":session" : ""}`;
+  const rows = timelineOf([
+    user("Browse.", 0),
+    assistant([call("a", "browser_read", {})], 1),
+    result("a", "browser_read", blank, 2, { isError: true }),
+    assistant([call("b", "run", { code: 'await page.goto("https://example.com")' })], 3),
+    result("b", "run", "ok", 4),
+  ]);
+  assert.deepEqual(rows.filter((r) => r.kind !== "usage").map(tag), ["user_message", "phase:session", "tool_use:a", "tool_result:a", "tool_use:b", "tool_result:b"]);
+  // A call the browser never got to (unreachable, refused, rate limited at the start, cancelled) opened none.
+  for (const code of ["auth", "browser_unavailable", "rate_limited", "aborted"]) {
+    const failed = JSON.stringify({ ok: false, code, message: "x" });
+    const none = timelineOf([user("Browse.", 0), assistant([call("a", "browser_read", {})], 1), result("a", "browser_read", failed, 2, { isError: true })]);
+    assert.equal(none.some((r) => SESSION.test(r.summary ?? "")), false, code);
+  }
+});
+
 test("a message after an adapter turn's end is the person's next message, not a steer: a codex turn stopped right after a tool result", () => {
   const userMessages = (rows) => rows.filter((r) => r.kind === "user_message").map((r) => r.summary);
   const live = (entries) => {
@@ -956,4 +990,11 @@ test("a message after an adapter turn's end is the person's next message, not a 
     user("Go on.", 3),
   ];
   assert.deepEqual([userMessages(timelineOf(entries)), userMessages(live(entries))], [["You: Write five files", "You: Go on."], ["You: Write five files", "You: Go on."]]);
+});
+
+test("a browser session reads as opened only on a failure that shows one: refused before creation (a navigation policy the provider can't enforce), a provider error or a timeout at the start opened none", () => {
+  const read = (code) => timelineOf([user("Browse.", 0), assistant([call("a", "browser_read", {})], 1), result("a", "browser_read", JSON.stringify({ ok: false, code, message: "x" }), 2, { isError: true })]);
+  const opened = (rows) => rows.some((r) => SESSION.test(r.summary ?? ""));
+  for (const code of ["refused", "command_failed", "timeout", "auth", "browser_unavailable", "rate_limited", "aborted", "no_such_code"]) assert.equal(opened(read(code)), false, `${code}: no session shown`);
+  for (const code of ["not_content", "stale_snapshot", "code_error", "session_ended", "session_replaced", "blocked", "effect_unknown", "waiting_for_human"]) assert.equal(opened(read(code)), true, `${code}: the session it failed in`);
 });

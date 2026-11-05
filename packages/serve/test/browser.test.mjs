@@ -107,6 +107,32 @@ test("two parallel workflow nodes that browse each keep their evidence file", as
   for (const name of files) assert.match(await readFile(join(evidence, name), "utf8"), /The answer is forty-two\./, name);
 });
 
+const REFUSED_BROWSER = new URL("./fixtures/faux-browser-refused.mjs", import.meta.url).pathname;
+const REFUSED_WORDS = "Browserbase refused BROWSERBASE_API_KEY (401): set it where AgentRun starts, or save it in Settings → Tool keys.";
+
+// `other`: the page reader the run has, by the name its tool is bound under (fetch_page, the legacy name, is its own).
+for (const [tools, other] of [[["browser", "read"], null], [["browser", "web_fetch"], "web_fetch"], [["browser", "fetch_page"], "fetch_page"]]) {
+  test(`a refused Browserbase key reads as the model keys' refusals do, names the run's page reader only when it has one, by its own name (${tools.join(", ")}), and opens no session on the Timeline`, async (t) => {
+    withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" });
+    const { api } = await serve(t, { fauxBrowser: REFUSED_BROWSER });
+    assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools } })).status, 201);
+    const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    // A refused create may still land at the provider, so its run settles once the create deadline (60 s) passed.
+    const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 150_000 });
+    const failed = rows.find((row) => row.kind === "tool_result" && row.tool_name === "snapshot");
+    assert.equal(failed?.tool_status, "failed", JSON.stringify(rows));
+    const said = (await api("GET", `/runs/${started.body.run_id}`)).body.result.final_answer;
+    assert.ok(said.includes(REFUSED_WORDS), said);
+    assert.doesNotMatch(said, /\bplanes?\b|\blanes?\b|executor/, said);
+    if (other) assert.ok(said.includes(`${other} still reads public pages`), said);
+    else assert.doesNotMatch(said, /web_fetch|fetch_page/, said);
+    if (other === "fetch_page") assert.doesNotMatch(said, /web_fetch/, "the name the run's tool is bound under, not its capability's");
+    assert.ok(failed.summary.includes("Browserbase refused BROWSERBASE_API_KEY (401)"), failed.summary);
+    assert.equal(rows.some((row) => /Opened a live browser session/.test(row.summary ?? "")), false, "no session was opened");
+  });
+}
+
 test("capabilities say the same about the browser in features and in tools: browserbase when the tool is available, none when it is not", async (t) => {
   for (const [values, want] of [[{ BROWSERBASE_PROJECT_ID: "fake-project" }, "none"], [{ BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" }, "browserbase"]]) {
     await t.test(want, async (t) => {
