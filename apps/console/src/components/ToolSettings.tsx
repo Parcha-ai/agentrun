@@ -172,7 +172,9 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
   return (
     <section aria-label="Tool settings" ref={section}>
       <div className="mb-2"><span className="caps text-[12px] font-semibold">Tool settings</span></div>
-      <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. A tool on ask makes the run wait for your approval at each call.</p>
+      {/* What ask means here: an agentic run waits for the owner's approval at each call; a workflow's call node can't
+          wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
+      <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
         // The server's permission for this agent when its read says it (GET /agents/{id}), else capabilities'.
         permissionFallbackOf={(g) => read(g.name)?.default_permission ?? g.permission}
