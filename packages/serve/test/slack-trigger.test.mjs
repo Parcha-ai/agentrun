@@ -4,7 +4,8 @@
 // told twice deduped), a reply in the thread reaching that run, a bot's message ignored, and one line posted in the thread
 // when the run asks or ends, tried again until Slack takes it. With the app's id saved, another app's events are ignored;
 // a bot token Slack refuses turns posting off until the settings are saved again; and a trigger forgets a thread untouched
-// for 30 days, keeping its 1,000 latest.
+// for 30 days, keeping its 1,000 latest. In the engine, a Slack firing takes its trigger's turn, its trigger's cap of due
+// firings, and its key's day of dedupe, as a webhook event's does.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -16,6 +17,7 @@ import { schemaProblems } from "./schema-support.mjs";
 import { follow, serve, withEnv } from "./support.mjs";
 import { fakeSlack, SLACK_BOT_ID, SLACK_BOT_TOKEN, SLACK_BOT_USER, SLACK_TEAM } from "./fixtures/fake-slack.mjs";
 import { ANSWER_POSTED_CHARS, slackLine } from "../dist/slack.js";
+import { ApiError } from "../dist/errors.js";
 import { Triggers } from "../dist/triggers.js";
 import { fakeClock, firings, made } from "./trigger-support.mjs";
 
@@ -316,4 +318,93 @@ test("each line a thread gets says how to go on by what the run waits on: a ques
   assert.equal(ended("completed", "x".repeat(ANSWER_POSTED_CHARS + 5)), `Done: ${link}\n\n${"x".repeat(ANSWER_POSTED_CHARS)}…`);
   assert.equal(ended("failed", "an answer"), `Failed: ${link}`);
   assert.equal(ended("cancelled", null), `Cancelled: ${link}`);
+});
+
+/** The engine alone, on a fake clock, with a Slack trigger listing LISTED: `deps` over the defaults. */
+async function slackEngine(t, deps = {}) {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "slack-engine-"));
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  let runs = 0;
+  const triggers = new Triggers(data, { targetIssues: async () => [], start: async () => ({ run_id: `run-${++runs}` }), message: async () => {}, statusOf: async () => "running", runOf: async () => null, say: () => {}, clock, ...deps });
+  t.after(async () => {
+    triggers.close();
+    await rm(data, { recursive: true, force: true });
+  });
+  triggers.start();
+  const trigger = await triggers.create({ name: "help desk", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  return { clock, triggers, trigger };
+}
+const slackMessage = (ts, thread_ts = ts, mention = thread_ts === ts) => ({ team: SLACK_TEAM, channel: LISTED, ts, thread_ts, user: PERSON, text: "hello", event_id: `Ev${ts}`, mention });
+function held() {
+  let resolve, reject;
+  const promise = new Promise((ok, no) => ((resolve = ok), (reject = no)));
+  return { promise, resolve, reject };
+}
+
+test("a Slack message's firing is driven in its trigger's turn, as a webhook event's is: a tick while its message is out sends it no second time", { timeout: 60_000 }, async (t) => {
+  const calls = [];
+  const { clock, triggers, trigger } = await slackEngine(t, {
+    message: () => {
+      const next = held();
+      calls.push(next);
+      return next.promise;
+    },
+  });
+  const poll = await triggers.create({ name: "nightly", source: { kind: "schedule", every_s: 60 }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  assert.equal(triggers.receiveSlack(slackMessage("1780272000.000100")).created, true);
+  await until(() => triggers.slackThreadOf("run-1"), "the thread's run");
+  assert.equal(triggers.receiveSlack(slackMessage("1780272001.000100", "1780272000.000100")).created, true);
+  await until(() => calls.length === 1, "the reply's message out");
+  // A tick for another trigger's time: the reply's firing is due, with no retry time, so the tick asks for it too.
+  clock.to(triggers.get(poll.id).next_at);
+  await until(() => triggers.firings(poll.id).firings[0]?.status === "started", "the schedule's own firing");
+  await sleep(100);
+  assert.equal(calls.length, 1, "the reply's message is out once");
+  calls[0].resolve();
+  await until(() => triggers.firings(trigger.id).firings[0].status === "sent", "sent");
+  assert.equal(calls.length, 1);
+});
+
+test("a Slack trigger holds at most 20 firings due, as any trigger does: a new message past them is refused (429, retryable) before anything is written, and Slack's retry of one it holds is still the same firing", { timeout: 60_000 }, async (t) => {
+  const starts = [];
+  const { triggers, trigger } = await slackEngine(t, {
+    start: () => {
+      const next = held();
+      starts.push(next);
+      return next.promise;
+    },
+  });
+  for (let i = 0; i < 20; i++) assert.equal(triggers.receiveSlack(slackMessage(`${1780272000 + i}.000100`)).created, true, `message ${i}`);
+  assert.equal(triggers.firings(trigger.id).firings.filter((f) => f.status === "due").length, 20);
+  assert.throws(() => triggers.receiveSlack(slackMessage("1780273000.000100")), (error) => error instanceof ApiError && error.code === "rate_limited" && error.status === 429);
+  assert.equal(triggers.firings(trigger.id).firings.length, 20, "nothing written");
+  assert.equal(triggers.receiveSlack(slackMessage("1780272000.000100")).created, false, "a retry of one it holds");
+  // Once they reach their runs, a new message is taken.
+  for (let i = 0; i < 20; i++) {
+    await until(() => starts.length > i, `start ${i}`);
+    starts[i].resolve({ run_id: `run-${i}` });
+  }
+  await until(() => triggers.firings(trigger.id).firings.every((f) => f.status === "started"), "all started");
+  assert.equal(triggers.receiveSlack(slackMessage("1780273000.000100")).created, true);
+});
+
+test("a Slack message's firing is kept for its key's day after it leaves the history, so Slack's retry of it then is the same firing, never a second message to its thread's run", { timeout: 120_000 }, async (t) => {
+  const messages = [];
+  const { triggers, trigger } = await slackEngine(t, { message: async (target, input, key) => void messages.push(key) });
+  assert.equal(triggers.receiveSlack(slackMessage("1780272000.000100")).created, true);
+  await until(() => triggers.slackThreadOf("run-1"), "the thread's run");
+  // A reply in the thread, then 200 more threads: the reply's firing leaves the history (its last 200).
+  const first = triggers.receiveSlack(slackMessage("1780272001.000100", "1780272000.000100"));
+  assert.equal(first.created, true);
+  await until(() => messages.length === 1, "the reply sent");
+  for (let i = 0; i < 200; i++) {
+    assert.equal(triggers.receiveSlack(slackMessage(`${1780280000 + i}.000100`)).created, true);
+    await until(() => triggers.firings(trigger.id).firings[0].status !== "due", `thread ${i} started`);
+  }
+  await until(() => triggers.firings(trigger.id).firings.every((f) => f.status !== "due"), "all settled");
+  assert.ok(!triggers.firings(trigger.id).firings.some((f) => f.key === first.firing.key), "out of the history");
+  const again = triggers.receiveSlack(slackMessage("1780272001.000100", "1780272000.000100"));
+  assert.equal(again.created, false, "the same firing");
+  await sleep(100);
+  assert.equal(messages.length, 1, "sent once");
 });
