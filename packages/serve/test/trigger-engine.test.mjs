@@ -225,3 +225,31 @@ test("a firing's input is checked as its run is given it: the trigger's input wi
   assert.equal(checked.length, 2);
   for (const [input, content] of [[checked[0], "Hello."], [checked[1], "Again."]]) assert.match(input.content, new RegExp(`^${content}\\n\\n\\(Started by hand from the schedule "nightly" at .+\\.\\)$`));
 });
+
+test("firings a restart finds due past their retry wait, queued behind a slow lookup, are each driven once: the timer asks for none of them again meanwhile", async (t) => {
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  // A server that went down while three firings waited out a full server's 429: each due, its retry time passed.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  kept.triggers[0].firings.push(...[1, 2, 3].map((n) => ({ key: `fir_${String(n).repeat(32)}`, by: "manual", nominal_at: "2026-06-01T00:00:00Z", status: "due", at: "2026-06-01T00:00:00.000Z", attempts: 1, retry_at: "2026-06-01T00:00:05.000Z" })));
+  await writeFile(file, JSON.stringify(kept));
+  const lookups = [];
+  const held = { resolve: undefined };
+  const slow = new Promise((resolve) => (held.resolve = resolve));
+  const second = await engine(t, { runOf: async (key) => (lookups.push(key), lookups.length === 1 ? slow : null) }, { data: first.data, at: "2026-06-01T00:01:00Z" });
+  // Every timer the engine arms that is due at once, while the first lookup is held and the clock is asked again and again.
+  let atOnce = 0;
+  const { arm } = second.clock;
+  second.clock.arm = (fire, ms) => (ms <= 0 && atOnce++, arm(fire, ms));
+  for (let i = 0; i < 20; i++) {
+    second.clock.to("2026-06-01T00:01:00Z");
+    await sleep(1);
+  }
+  assert.equal(lookups.length, 1, "the others wait their turn");
+  assert.ok(atOnce <= 1, `the timer asked again ${atOnce} times`);
+  held.resolve(null);
+  await until(() => second.triggers.firings(made.id).firings.every((f) => f.status !== "due"), "every firing settled");
+  assert.deepEqual(lookups.sort(), [1, 2, 3].map((n) => `fir_${String(n).repeat(32)}`), "each looked up once");
+});
