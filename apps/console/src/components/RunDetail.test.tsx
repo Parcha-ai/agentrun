@@ -31,6 +31,23 @@ describe("RunDetail, a run waiting on a question", () => {
   });
 });
 
+// A run paused at its spend cap waits on a raise, not an answer: a message to it is refused (409 budget_reached).
+describe("RunDetail, a run paused at its spend cap", () => {
+  const f = runFixture("run.input_required.waiting.1");
+  // Words with no apostrophe: the page's markup escapes one (&#x27;), and these tests read its text as written.
+  const SAID = "Not sent: the run has spent $0.04 of its $0.05 cap, and its next faux-1 request needs at least $0.11. Raise the cap to at least $0.16 to run it.";
+  const paused: Run = { ...f.run, pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0, needs_usd: 0.1024, said: SAID, at: "2026-11-04T20:08:05.127Z" } };
+  it("shows the cap's words in the banner and offers no composer: no answer, no follow-up", () => {
+    const shown = page(paused, f.page.rows);
+    expect(shown).toContain("Paused at its $0.05 spend cap");
+    expect(shown).toContain(SAID);
+    expect(shown).not.toContain("Answer the question");
+    expect(shown).not.toContain("Ask a follow-up");
+    // The banner is the cap's, not a question's (the run's header keeps its status, input required).
+    expect(shown).not.toContain("Asked you the question above.");
+  });
+});
+
 // The Report tab of a run with no answer yet says what is true of it: working, waiting on the person, stopped or paused.
 // Only a queued or working run reads "Writing the answer"; one that ended says how (the error, the cancel, no answer).
 describe("RunDetail's Report tab before an answer", () => {

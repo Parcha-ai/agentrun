@@ -76,8 +76,9 @@ export interface OpenCodeHarnessOptions {
 
 /** What the adapter holds of the drive in flight, to stop its turn. */
 export interface DriveControl {
-  /** Stop the turn in flight: OpenCode aborts it, and the drive ends once its end is in the log. Resolves true when that
-   *  happened within `ms`, false when the drive must be halted instead. */
+  /** Stop the turn in flight: OpenCode aborts it, and the drive ends once OpenCode's records of it are mirrored, with no
+   *  end written for the turn (it stays open). Resolves true when that happened within `ms`, false when the drive must be
+   *  halted instead. */
   interrupt(ms: number): Promise<boolean>;
 }
 
@@ -557,8 +558,11 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         const said = turn?.finalText ?? "";
         turn = undefined;
         if (signal.aborted) throw signal.reason;
-        if (interrupting) outcome = { status: "interrupted" };
         await barrier();
+        // Interrupted, by a person's stop or the server's own: no end is written, as codex's interrupt writes none. The
+        // turn stays open in the session: its host settles a person's stop (settleOpenTurn), and the next open resumes a
+        // turn the server's stop cut, which is no one's stop (#1578).
+        if (interrupting) return { status: "interrupted" };
         if (said) journal.message({ type: "message", role: "assistant", text: said });
         journal.message({ type: "turn", ...outcome } satisfies TranscriptEntry);
         await journal.flush();

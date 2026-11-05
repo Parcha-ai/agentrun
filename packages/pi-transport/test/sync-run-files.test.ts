@@ -25,8 +25,8 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
-import { PULL_PACK_SCRIPT, UNPACK_SCRIPT } from "../src/home/workspace.ts";
 import { type Pipe, pullAgentHome, pullDir, seedAgentHome, seedDir } from "../src/sync/index.ts";
+import { PULL_PACK_SCRIPT, UNPACK_SCRIPT } from "../src/sync/transfer.ts";
 import { archive, contents, longName, member, tree } from "./sync-support.ts";
 
 process.umask(0o022);

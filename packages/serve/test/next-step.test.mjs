@@ -162,7 +162,7 @@ test("the banner says in words which boxes are ready: none with nothing enabled,
   const none = await serve(t);
   assert.equal(none.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${ENABLE_DOCKER}. daytona: ${ENABLE_DAYTONA}.`);
   const faux = await serve(t, { faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname, fauxBox: new URL("./fixtures/faux-box.mjs", import.meta.url).pathname });
-  assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there.");
+  assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes have no network: a faux box (tests).");
   const bash = (await faux.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason], [true, undefined], "a box can run it");
 });

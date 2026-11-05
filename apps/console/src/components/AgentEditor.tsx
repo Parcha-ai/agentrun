@@ -263,12 +263,31 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               {!workflow && (
                 <Field label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
                   <div className={cn("grid grid-cols-1 gap-3", COLUMNS[choices.length] ?? "sm:grid-cols-3")} role="radiogroup" aria-label="Harness">
-                    {choices.map((h) => (
-                      <label key={h.id} title={h.reason} className={cn("flex items-start gap-3 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border", h.available ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
-                        <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
-                        <span><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : h.reason}</span></span>
-                      </label>
-                    ))}
+                    {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
+                        briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
+                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
+                    {choices.map((h) => {
+                      const row = (
+                        <>
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
+                          <span className="min-w-0"><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
+                        </>
+                      );
+                      const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
+                      return h.available ? (
+                        <label key={h.id} className={cn(edge, "flex cursor-pointer items-start gap-3")}>{row}</label>
+                      ) : (
+                        <div key={h.id} className={cn(edge, "opacity-60")}>
+                          <label className="flex cursor-not-allowed items-start gap-3">{row}</label>
+                          {h.reason && (
+                            <details className="mt-2 font-mono text-[11px] text-muted-foreground">
+                              <summary className="cursor-pointer select-none hover:text-foreground">Why, and what to do</summary>
+                              <p className="mt-1 break-words leading-[1.6]">{h.reason}</p>
+                            </details>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </Field>
               )}

@@ -5,6 +5,9 @@ import { App } from "./App";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
+// The Playground's picker watches its field's size; jsdom has no ResizeObserver (not a stub: globals are unstubbed after
+// each test).
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
 
 // Setup's box: offered with the counts of a server on this machine (GET /v2/setup/import), never ticked, sent only when
@@ -151,7 +154,11 @@ describe("App, setup's import of this machine's sessions", () => {
     await setPassword(host);
     await submit(host);
     await until(host, () => sent.length);
-    const options = () => [...host.querySelectorAll("option")].map((o) => o.textContent);
+    // The Playground's Agent picker, opened (its list renders only while open) and kept open: the agents it offers.
+    const picker = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
+    const options = () => [...document.querySelectorAll('[role="listbox"] [role="option"]')].map((o) => o.textContent);
+    await until(host, () => !!picker(), 6000);
+    await act(async () => { if (picker()!.getAttribute("aria-expanded") !== "true") picker()!.click(); });
     expect(await until(host, () => options().includes("imported"), 6000)).toBe(true);
     // Past the late answer of the read made before the import ended.
     await act(async () => { await new Promise((r) => setTimeout(r, 2000)); });

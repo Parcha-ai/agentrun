@@ -2,7 +2,8 @@
 // is the record (a bound box's read, write and edit run on this machine: bound-files.ts). A run's process that starts
 // again finds it by that label and first kills the commands the process before it left running. Serve destroys it at
 // every settle (a cancel included) and at archive, and its start sweeps the boxes of runs that have ended. A box gets the
-// run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it), no network,
+// run's work/ only, at BOX_WORK, a fixed environment (never this process's, so no key or token enters it), no network
+// (or, on Docker with the server's host list set, those hosts alone, through this process's egress proxy: box-egress.ts),
 // and limits on its CPUs, memory and processes. pi-transport is an optional peer of this package: it is loaded only for a
 // run whose place is a box.
 //
@@ -20,6 +21,7 @@ import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context"
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
 import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
+import { type BoxEgress, type DockerNetwork, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
 import { readJson, writeDurable } from "./files.js";
@@ -28,6 +30,12 @@ import { agentWorkDir, BOX_WORK, type Place } from "./place.js";
 
 /** The label a run's box carries: the run's id. */
 export const RUN_LABEL = "agentrun.run";
+/** And, on a box made with a network list, this one: the list's hash (netLabelOf). A box with none carries no such label,
+ *  so its `docker run` is as it was. */
+export const NET_LABEL = "agentrun.net";
+/** The network label's value for a list: the same hosts give the same label, in whatever order and case the setting
+ *  names them, each once. */
+export const netLabelOf = (allow: readonly string[]): string => createHash("sha256").update([...new Set(allow.map((host) => host.toLowerCase()))].sort().join(",")).digest("hex").slice(0, 16);
 /** And this one, the same on every run's box, which the start's sweep lists them by. */
 export const KIND_LABEL = "agentrun.box";
 /** The whole environment of a box's programs: a constant, never this process's. */
@@ -113,6 +121,16 @@ export function boxAllowOf(env: NodeJS.ProcessEnv): readonly string[] | "none" {
   return Object.freeze(hosts);
 }
 
+/** What a server's Docker boxes reach, resolved once at its start: the setting's list (boxAllowOf) where egressBlockedBy
+ *  (box-egress.ts) finds the daemon is this Linux machine's own, else none with the reason; `none` from the setting, with
+ *  it as the reason. */
+export async function boxNetworkOf(env: NodeJS.ProcessEnv, options: Parameters<typeof egressBlockedBy>[1] = {}): Promise<DockerNetwork> {
+  const allow = boxAllowOf(env);
+  if (allow === "none") return { allow: "none", reason: `${BOX_ALLOW_ENV} is none` };
+  const blocked = await egressBlockedBy(env, options);
+  return blocked ? { allow: "none", reason: blocked } : { allow };
+}
+
 /** Under `--faux` only: a module whose default export, given the data root, is the provider runs' boxes come from in
  *  place of Docker (the tests' faux box). */
 export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
@@ -148,8 +166,9 @@ export async function boxMounts(root: string, runDir: string, place: Place): Pro
   return [{ source: await mountSource(root, join(runDir, "work")), target: agentWorkDir(runDir, place) }];
 }
 
-/** The provider runs' boxes come from, and what a create of its box waits on first (`ready`, run-box below). */
-export type RunBoxes = BoxProvider & { ready?: BoxReady };
+/** The provider runs' boxes come from, what a create of its box waits on first (`ready`, run-box below), and, for a box
+ *  that reaches the server's host list, where it finds its egress proxy (`egress`, box-egress.ts). */
+export type RunBoxes = BoxProvider & { ready?: BoxReady; egress?: BoxEgress; net?: string };
 
 /** The provider runs' boxes come from: under `--faux` with a faux box, its module's; else Docker on this machine, run as
  *  this process's user (serve's: a run's process is its child), so what a box writes in work/ stays serve's, within the
@@ -164,7 +183,14 @@ export async function runBoxProvider(place: Place, env: NodeJS.ProcessEnv, root:
   // With no capability and no way to gain one (no program in a run's box changes user): as root (serve run as uid 0) a
   // box could otherwise make a device node in work/.
   const image = boxImageOf(env);
-  return { ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true }), ready: (context, note) => awaitImage(root, image, context, note) };
+  // The list the server resolved for this run's box (box-egress.ts boxNetworkOf), or none.
+  const allow = runBoxAllowOf(env);
+  return {
+    ...dockerBoxes({ image, ...(user ? { user } : {}), ...boxLimitsOf(env), dropCapabilities: true }),
+    ready: (context, note) => awaitImage(root, image, context, note),
+    // Where the proxy runs: the one line that picks it (box-egress.ts BoxEgress).
+    ...(allow === "none" ? {} : { egress: hostEgress(allow, env, egressLog), net: netLabelOf(allow) }),
+  };
 }
 
 /** What a run's box create waits on first, `note` taking its one timeline row: the server's pull of the Docker image
@@ -302,11 +328,31 @@ function mirrorFailed(paths: string, error: Error): void {
   process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${paths} filed in work/ but not copied into the run's box: ${error.message}` })}\n`);
 }
 
+/** Said in the run's process log: one of its egress proxy's decisions (the host, port, address and class). */
+const egressLog = (line: string): void => void process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_egress", line })}\n`);
+
 /** A box of this process's provider: the run's, by its label, or one made now with work/ bound, once its image is in
- *  (the provider's `ready`, `note` writing the one timeline row while it is built or pulled). */
+ *  (the provider's `ready`, `note` writing the one timeline row while it is built or pulled). A box that reaches the
+ *  server's host list has the run's egress proxy started first, its directory bound read-only and the proxy variables
+ *  in its environment, and, made or found, its relay started (startRelay). */
 async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir: string; place: Place }, context: Context, note: (summary: string) => Promise<void> | void): Promise<{ box: Box; made: boolean }> {
+  let egress: Awaited<ReturnType<BoxEgress>> | undefined;
+  try {
+    egress = boxes.egress ? await boxes.egress(run.id) : undefined;
+  } catch (error) {
+    throw new Error(`the run's box could not have its network: ${(error as Error).message}`);
+  }
+  // A box a process before this one made with another network (none, or another list: the server's setting changed
+  // since) is made again: its mounts and environment are fixed at its create. Its work/ is this machine's, bound.
+  await destroyListed(boxes, { [RUN_LABEL]: run.id }, (labels) => labels[NET_LABEL] !== boxes.net, context);
+  // And so is one bound to a proxy directory this process had to make again (the start's sweep took the old one once its
+  // proxy was gone): the box's bind holds the old directory, which no proxy listens in.
+  if (egress?.fresh) await destroyListed(boxes, { [RUN_LABEL]: run.id }, () => true, context);
   const found = await attachRunBox(boxes, run.id, context);
-  if (found) return { box: found, made: false };
+  if (found) {
+    if (egress) await startRelay(found, egress.socket, context, note);
+    return { box: found, made: false };
+  }
   // A box made while the server builds or pulls its image waits for the image, not for a `docker run` that pulls it.
   if (boxes.ready) {
     try {
@@ -316,9 +362,11 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
       throw new Error(`the run's box could not be made: ${(error as Error).message}`);
     }
   }
+  // Docker's network stays none either way: the box's only way out is the proxy's socket, which checks everything.
   const spec: BoxSpec = {
-    env: BOX_ENV, workspace: agentWorkDir(run.dir, run.place), mounts: await boxMounts(run.root, run.dir, run.place),
-    labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
+    env: egress ? { ...BOX_ENV, ...PROXY_ENV } : BOX_ENV, workspace: agentWorkDir(run.dir, run.place),
+    mounts: [...(await boxMounts(run.root, run.dir, run.place)), ...(egress ? [egress.mount] : [])],
+    labels: { [RUN_LABEL]: run.id, [KIND_LABEL]: "run", ...(boxes.net ? { [NET_LABEL]: boxes.net } : {}) }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
   };
   const made = await boxes.create(spec, context);
   if (!made.ok) {
@@ -326,7 +374,23 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
     await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
     throw new Error(`the run's box could not be made: ${made.error.message}`);
   }
+  if (egress) await startRelay(made.value, egress.socket, context, note);
   return { box: made.value, made: true };
+}
+
+/** The box's relay to its proxy's `socket` (box-egress.ts forwarder), started in the background and answered once it
+ *  listens. One that cannot start (an image with no socat or setsid, or a relay not listening in time) leaves the box with
+ *  no network, nothing listening on its proxy port, and the run's timeline says why (`note`). */
+async function startRelay(box: Box, socket: string, context: Context, note: (summary: string) => Promise<void> | void): Promise<void> {
+  const started = await box.exec(forwarderStart(socket), undefined, context);
+  if (!started.ok) throw new Error(`the run's box could not start its network relay: ${started.error.message}`);
+  let said = "";
+  const drain = async (stream: AsyncIterable<Uint8Array>, keep: boolean) => {
+    for await (const chunk of stream) if (keep && said.length < 1000) said += new TextDecoder().decode(chunk);
+  };
+  const [ended] = await Promise.all([started.value.wait(), drain(started.value.stdout, false), drain(started.value.stderr, true)]);
+  if (!ended.ok) throw new Error(`the run's box could not start its network relay: ${ended.error.message}`);
+  if (ended.value !== 0) await Promise.resolve(note(relayFailed(ended.value, said))).catch(() => undefined);
 }
 
 /** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's
