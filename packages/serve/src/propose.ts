@@ -6,7 +6,7 @@
 // agent's queue. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse
 // (a note holding a secret among them) is never kept anywhere.
 import { join } from "node:path";
-import { type Change, checkProposal, draftFiles, GRADE_CAPS, learnedStatus, parseReflection, type Problem, redactSecrets, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
+import { type Change, checkProposal, draftFiles, unstorable, GRADE_CAPS, learnedStatus, parseReflection, type Problem, redactSecrets, SKILLS_DIR, WORKFLOWS_DIR } from "./learn/index.js";
 import { homeOf, writeDurable } from "./files.js";
 import { activeOf, agentFolder, git, type Proposal, PROPOSAL, readBlobs, readSeed, type Turn, withAgentRepo } from "./learning.js";
 
@@ -89,6 +89,10 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   let left: Problem[] = [];
   let passing = files;
   if (checked.problems.length) {
+    // Before any item is kept from an answer the checks refuse: every name and text it gave, read whole. Something
+    // that must never be stored anywhere in it (in an edit the checks refused unread, too) refuses it all.
+    const never = unstorable(changes, input.refuse);
+    if (never.length) return { state: "dropped", reason: "checker", problems: [...checked.problems, ...never] };
     const named = new Set(changes.map(({ path }) => itemOf(path)));
     if (checked.problems.some((problem) => WHOLE.has(problem.rule) || problem.path === undefined || !named.has(itemOf(problem.path)))) return { state: "dropped", reason: "checker", problems: checked.problems };
     const out = new Set(checked.problems.map((problem) => itemOf(problem.path!)));

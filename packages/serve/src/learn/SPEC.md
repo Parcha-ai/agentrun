@@ -154,7 +154,9 @@ Over a cap is refused, never cut.
   again and goes on to the grader, and the run's learning names what was left out (`problems`). The whole proposal is
   refused when a problem names no item it proposed, when its rule refuses the whole (a count or a cap, `outside`,
   `deleted`, `index_full`) or must never be stored (`secret_value`, `secret_shape`, `invisible_unicode`: the run's
-  answer is not trusted for any item), or when the rest is refused again.
+  answer is not trusted for any item), or when the rest is refused again. Before any item is kept, every name and text
+  the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
+  which the checks refuse before they read its text.
 
 Whether a note holds one case's data is the grader's judgment, not the checker's.
 
