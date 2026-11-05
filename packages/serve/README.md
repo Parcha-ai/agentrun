@@ -905,7 +905,7 @@ answers once capabilities, a save's checks and a run's checks see the change, in
 key, so a key leaves what each harness offers as it is, and the harnesses are not checked again. A run already
 running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
 `BROWSERBASE_PROJECT_ID` is on the launcher's list for this, as every field a person may save is. Capabilities name each
-tool's key (`tools[].key`, a `GET /settings/tool-keys` id, `browserbase` for `browser`, which `kernel` unlocks too), so a page can link a tool's
+tool's key (`tools[].key`, a `GET /settings/tool-keys` id; for `browser` its vendor's, `kernel` where Kernel is picked or resolved, else `browserbase`), so a page can link a tool's
 missing names to where its key is saved. `agentrun-serve import` opens the saved keys in its data directory too and
 cuts each out of what it writes, as it cuts a key-shaped variable of its environment; one that does not open there is
 not known, so not cut, and the import says so.

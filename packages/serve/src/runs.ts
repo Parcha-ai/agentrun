@@ -1612,12 +1612,14 @@ export class Runs {
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
     // in the serve.json its start writes (start); resolving here is for a run made before that, whose browser stays
-    // Browserbase (keptFromBefore), the vendor it had then. A description with no secret
+    // Browserbase (keptFromBefore), the vendor it had then, kept as its choice and checked again at each launch like the
+    // rest. A description with no secret
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
-    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? keptFromBefore(planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }), served) : {};
-    if (!run.meta.tool_plane && Object.keys(plane).length) {
-      run.meta.tool_plane = plane;
+    const kept = run.meta.tool_plane ?? (run.tooling ? keptFromBefore(planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined })) : {});
+    const plane = recheckPlane(kept, served);
+    if (!run.meta.tool_plane && Object.keys(kept).length) {
+      run.meta.tool_plane = kept;
       void this.saveMeta(run).catch(() => undefined);
     }
     delete env[TOOL_PLANE_ENV];
