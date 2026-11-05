@@ -340,6 +340,25 @@ describe("one schedule", () => {
     expect(t.text()).toContain("Agent's default");
     expect(t.text()).not.toContain("($0.75)");
   });
+  // An action's answer can name another agent (the schedule was edited elsewhere): it is applied as a read is, so the
+  // cap shows that agent's default at once, and never the old agent's amount.
+  it("shows the agent's default an action's answer names, at once, and never the old agent's amount", async () => {
+    const agents: AgentFixture[] = [...AGENTS, { agent_id: "big", kind: "agentic", definition: { name: "Big", max_cost_usd: 2 }, archived_at: null }];
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const pausedOn = (agent: string) => (call: { method: string }) => (call.method === "PATCH" ? json(200, { ...own, enabled: false, target: { ...own.target, agent_id: agent } }) : undefined);
+    const t = await open(server({ triggers: [own], agents, write: pausedOn("big") }).v2, { schedule: "trg_1" });
+    expect(t.text()).toContain("Agent's default ($0.50)");
+    await t.click(/^Pause$/);
+    expect(t.text()).toContain("Agent's default ($2.00)");
+    expect(t.text()).not.toContain("($0.50)");
+    act(() => root?.unmount());
+    // The new agent's read fails: the amount stays dropped.
+    const u = await open(server({ triggers: [own], agents, write: pausedOn("gone") }).v2, { schedule: "trg_1" });
+    expect(u.text()).toContain("Agent's default ($0.50)");
+    await u.click(/^Pause$/);
+    expect(u.text()).toContain("Agent's default");
+    expect(u.text()).not.toContain("($0.50)");
+  });
   it("says a trigger this page does not show is not a schedule that starts runs, with nothing to change it", async () => {
     const hook = { ...NIGHTLY, id: "trg_hook", name: "on push", source: { kind: "webhook" } } as unknown as Trigger;
     const t = await open(server({ triggers: [hook] }).v2, { schedule: "trg_hook" });
