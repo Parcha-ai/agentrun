@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunHeader } from "./RunHeader";
 import { RaiseCap } from "./NeedsYou";
+import { RunDetail } from "./RunDetail";
+import { messageFeatures, runFixture } from "@/fixtures";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 
 // A run paused at its spend cap, as a first-timer meets it: the chip says it is paused at its cap (not that it asks for
@@ -44,6 +46,29 @@ describe("RunHeader on a run paused at its spend cap", () => {
   it("a run waiting on a question still reads Input required", () => {
     const asking = base({ status: "input_required", state: "waiting", pending: { kind: "question", question: "Which city?", asked_at: "2026-11-05T00:00:05Z" } });
     expect(mount(asking).chip()).toBe("Input required");
+  });
+
+  it("a run waiting on a tool call's approval reads Approval required (the card's own heading)", () => {
+    const approving = base({ status: "input_required", state: "waiting", pending: { kind: "approval", id: "a1", tool: "bash", call_id: "c1", args_preview: "{}", requested_at: "2026-11-05T00:00:05Z" } } as Partial<Run>);
+    expect(mount(approving).chip()).toBe("Approval required");
+  });
+
+  it("a kind this console doesn't know keeps Input required", () => {
+    const other = base({ status: "input_required", state: "waiting", pending: { kind: "a_future_kind" } } as unknown as Partial<Run>);
+    expect(mount(other).chip()).toBe("Input required");
+  });
+
+  it("a budget pause sent with its kind only still offers a raise: the banner's, at the run's served cost.cap_usd", () => {
+    const f = runFixture("run.input_required.waiting.1");
+    const run = { ...f.run, kind: "agentic", status: "input_required", state: "waiting", ended_at: null, cost: { usd: 0.52, basis: "estimate", charge_state: null, cap_usd: 0.6 }, pending: { kind: "budget" } } as unknown as Run;
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(RunDetail, { run, agentName: "Calc", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions, onMessage: () => {}, tab: "report" })));
+    roots.push(() => act(() => root.unmount()));
+    const forms = host.querySelectorAll('form[aria-label="Raise the cap"]');
+    expect(forms).toHaveLength(1);
+    expect(forms[0]!.querySelector("input")?.getAttribute("placeholder")).toBe("more than $0.60");
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).toContain("Raise the cap and continue");
   });
 
   it("the header offers no raise while paused (the banner's raise continues it); a working capped run's header still does", () => {
