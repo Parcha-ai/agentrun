@@ -198,6 +198,17 @@ const toolingNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
  *  provider (runJudge) a run is not given. Refused at learn time and before a call runs any node, never after. */
 export const LEARNED_NODES = "a learned workflow runs model and tool-call nodes";
 
+/** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
+ *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
+export const LEARNED_MAX_TURNS = 8;
+
+/** A draft's agent nodes that ask more turns than LEARNED_MAX_TURNS. */
+const longNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] =>
+  dsl.inspectWorkflow(doc).nodes.flatMap((node) => {
+    const turns = (at(doc, node.path) as { max_turns?: unknown } | undefined)?.max_turns;
+    return typeof turns === "number" && turns > LEARNED_MAX_TURNS ? [{ rule: "workflow" as const, detail: `the agent node at ${node.path} asks max_turns ${turns}: a learned workflow's model node runs at most ${LEARNED_MAX_TURNS} turns` }] : [];
+  });
+
 /** The node the learned runner cannot run, as the DSL's own check says it (assertWorkflowCapabilities, which runWorkflow
  *  makes before any node runs) with the runner's deps: none when it can run every one. */
 const unrunnableNodes = (dsl: DraftReader, doc: unknown): DraftProblem[] => {
@@ -233,7 +244,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc)];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc)];
   } catch (error) {
     // The inspection reads the whole document, as validation need not: what it cannot read is refused, never passed.
     return [{ rule: "workflow", detail: `the workflow DSL cannot inspect it: ${(error as Error).message.slice(0, 200)}` }];

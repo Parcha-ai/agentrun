@@ -18,7 +18,7 @@
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { sideRequests } from "./cap.js";
-import { draftProblems } from "./learn/index.js";
+import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
@@ -147,7 +147,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const model = run.models.getModel(ref.provider, ref.modelId);
     if (!model) throw new Error(`the model ${ref.provider}/${ref.modelId} is not known here`);
     const registry = { getAll: () => run.models.getModels() as never, streamSimple: (m: unknown, ctx: object, options?: object) => sideStream(run.models, m, ctx, options) as never };
-    const runner = createPiHostRunner({ cwd: run.work, model: model as never, modelRegistry: registry as never }, { tools: [] });
+    const runner = createPiHostRunner({ cwd: run.work, model: model as never, modelRegistry: registry as never }, { tools: [], maxTurns: LEARNED_MAX_TURNS });
     runners.set(tier ?? "default", runner);
     return runner;
   };
