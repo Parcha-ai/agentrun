@@ -9,7 +9,7 @@ import { forModel } from "./durable/result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import { EffectObserver, effectDecider, observerFailure } from "./core/effects.js";
-import { browserFailure, classifyBrowserError } from "./core/failures.js";
+import { browserFailure, classifyBrowserError, isRefusal } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
 import type { RepeatGuard } from "./core/guard.js";
 import { drivingGuarded } from "./core/driving-guard.js";
@@ -358,6 +358,13 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
       return made;
     },
     async (error) => {
+      // A 401 or 403 is the provider's own answer that nothing was made: the record ends at once, with no lookup by tag
+      // and no release delayed for a create that might still land.
+      if (isRefusal(error)) {
+        await scope.commit((tx) => c.store.move(tx, row, { state: "released", reason: "create_failed", at: now() }));
+        await c.store.emitReleased(scope.cid, tag, scope.read, scope.context);
+        throw failure(error, scope, c.redact);
+      }
       const found = await provider.findByTag(tag, scope.signal).catch(() => []);
       // The session found by its tag is the one kept (bindByTag releases the others first), and it is owned before it is
       // recorded, as a create's own answer is: a store that cannot record it still lets close release it.
