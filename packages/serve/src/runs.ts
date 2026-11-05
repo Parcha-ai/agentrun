@@ -523,6 +523,8 @@ const raisedSince = (run: Run): boolean => {
 };
 /** The follow-up a raise of the pause it stands at asked for and that has not gone yet: one per pause. */
 const continuationOf = (run: Run): NonNullable<RunMeta["cap_continue"]> | undefined => {
+  // A run that has ended, or is ending (its follow-up's tries spent: failRaised, a cancel), sends none any more.
+  if (run.outcome || run.finishing || run.cancel) return undefined;
   const pause = pauseOf(run);
   const next = run.meta.cap_continue;
   return pause !== undefined && next?.pause === pause && !next.sent ? next : undefined;
@@ -2348,7 +2350,12 @@ export class Runs {
       // A raised run whose follow-up has not gone yet (its paused process still letting go, or the follow-up being sent)
       // takes a message once it has: after it, as the next turn, never into the process being let go.
       const following = () => continuationOf(run) !== undefined || run.resuming === "sending";
-      if (following()) await this.waitWhile(following, 100, "The run's raised cap's follow-up is still being sent");
+      if (following()) {
+        await this.waitWhile(following, 100, "The run's raised cap's follow-up is still being sent");
+        // Its follow-up's turn may have ended the run meanwhile (a quick answer): its end is written first, so the message
+        // then opens it again, as one to any ended run does, never refused for an end still being written.
+        await this.waitWhile(() => run.settles > 0 || Boolean(run.finishing && !run.outcome), 100, "The run's end is still being written");
+      }
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     } while (run.stopping);
     const steers = this.steers(run);
