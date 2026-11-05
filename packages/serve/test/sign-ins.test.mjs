@@ -5,7 +5,7 @@
 // the sign-ins, never a pointer; DELETE forgets one at the vendor and here, refused while held. No network: the
 // vendors are the tests' fakes.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -772,9 +772,10 @@ test("a workflow run of an agent with a browser sign-in serves no graph while th
   const held = JSON.stringify((await first.api("GET", `/runs/${runId}/graph`)).body);
   assert.ok(held.includes(`I kept ${ref}`), held);
   await first.close();
-  // A run saved with a browser plane, as one from before servers kept sign_in_handed: load counts it as handed the sign-in.
+  // Marked as a run handed the sign-in is (its browser plane, and the SHA-256 of the pointer it was handed): a workflow
+  // run is never handed one, but a run so marked is what load hides.
   const metaFile = join(first.data, "runs", runId, "serve.json");
-  await writeFile(metaFile, `${JSON.stringify({ ...JSON.parse(await readFile(metaFile, "utf8")), tool_plane: { browser: "browserbase" } })}\n`);
+  await writeFile(metaFile, `${JSON.stringify({ ...JSON.parse(await readFile(metaFile, "utf8")), tool_plane: { browser: "browserbase" }, sign_in_handed: createHash("sha256").update(ref, "utf8").digest("hex") })}\n`);
   // The next server holds another seal key: the sign-in no longer opens, so nothing the run said can be cut.
   process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
   const second = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE, allowCodeNodes: true });
