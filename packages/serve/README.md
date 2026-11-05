@@ -819,7 +819,9 @@ picks which one a run gets, never the model.
   the run for its relaunch, since a session it opened before may still write back at the vendor, but for no longer than
   such a session can live (pi-browser's session timeout, 30 minutes) while its process stays gone: a run that waits on
   its person after its process died, or is never opened again, lets the others save after that. One that names a run
-  that ended while the server was down counts as let go. A V1 limit: the lease goes to the first run of the agent to
+  that ended while the server was down counts as let go. Browserbase writes a saved context back a few seconds after
+  its session ends, so a Browserbase saver's lease stays named for it 10 seconds past its end: a run started in that
+  time starts from the context as it was, and saves nothing over it. A V1 limit: the lease goes to the first run of the agent to
   start with the browser in its tools, whether or not it opens a browser, and stays with it until it ends, so a long
   run that never browses keeps the others of that agent from saving meanwhile.
 - **What you see.** `GET /v2/agents/{id}` lists `sign_ins`: `{key: "default", provider, state, held_by, verified_at}`,

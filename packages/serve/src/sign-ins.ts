@@ -38,7 +38,12 @@ export type SignInView = { key: string; provider: Vendor; state: "ready" | "held
 export type Vendors = { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> };
 
 /** `gone_at`: when the holder's process was last found gone, while it holds the lease (markGone). */
-type Entry = { key: string; provider: Vendor; ref: string; verified_at: string | null; held_by: string | null; gone_at?: string | null };
+/** `held_until`: a Browserbase saver that ended still holds the lease until then (BROWSERBASE_SETTLE_MS). */
+type Entry = { key: string; provider: Vendor; ref: string; verified_at: string | null; held_by: string | null; gone_at?: string | null; held_until?: string | null };
+
+/** Browserbase writes a saved context back after its session ends (pi-browser waits profileSettleMs, 5 s, for it), so
+ *  its saver's lease outlasts the run's end by twice that: a run started meanwhile neither saves over it. */
+export const BROWSERBASE_SETTLE_MS = 10_000;
 
 /** How long a lease outlives its holder's process: pi-browser's default session timeout (DEFAULT_BROWSER_POLICY's
  *  sessionTimeoutS, 1800 s), which every session a run opens is created under, so none it opened before its process
@@ -104,6 +109,7 @@ export class SignIns {
    *  less than GONE_LEASE_MS ago (a run that waits on its person with no process is never let go otherwise). */
   private async held(entry: Entry): Promise<boolean> {
     if (entry.held_by === null) return false;
+    if (entry.held_until) return this.now() < Date.parse(entry.held_until);
     if (entry.gone_at && this.now() - Date.parse(entry.gone_at) >= GONE_LEASE_MS) return false;
     return this.holds(entry.held_by).catch(() => true);
   }
@@ -152,7 +158,7 @@ export class SignIns {
         entries.push(entry);
       }
       const save = entry.held_by === runId || !(await this.held(entry));
-      if (save) Object.assign(entry, { held_by: runId, gone_at: null });
+      if (save) Object.assign(entry, { held_by: runId, gone_at: null, held_until: null });
       try {
         await this.write(agentId, entries);
       } catch (error) {
@@ -171,7 +177,7 @@ export class SignIns {
   markGone(agentId: string, runId: string): Promise<void> {
     return this.locked(agentId, async () => {
       const entries = await this.read(agentId);
-      const mine = entries.filter((entry) => entry.held_by === runId && !entry.gone_at);
+      const mine = entries.filter((entry) => entry.held_by === runId && !entry.gone_at && !entry.held_until);
       if (!mine.length) return;
       for (const entry of mine) entry.gone_at = new Date(this.now()).toISOString();
       await this.write(agentId, entries);
@@ -185,9 +191,11 @@ export class SignIns {
       const marker = join(runDir, SIGN_IN_SAVED);
       const saved = await readFile(marker, "utf8").then((text) => text.trim(), () => undefined);
       const entries = await this.read(agentId);
-      const mine = entries.filter((entry) => entry.held_by === runId);
+      const mine = entries.filter((entry) => entry.held_by === runId && !entry.held_until);
       if (mine.length) {
-        for (const entry of mine) Object.assign(entry, { held_by: null, gone_at: null }, saved && !Number.isNaN(Date.parse(saved)) ? { verified_at: new Date(saved).toISOString() } : {});
+        const when = saved && !Number.isNaN(Date.parse(saved)) ? new Date(saved).toISOString() : undefined;
+        // A Browserbase session that saved is still being written back: the lease waits that out, named for this run.
+        for (const entry of mine) Object.assign(entry, { gone_at: null }, when && entry.provider === "browserbase" ? { held_until: new Date(this.now() + BROWSERBASE_SETTLE_MS).toISOString() } : { held_by: null, held_until: null }, when ? { verified_at: when } : {});
         await this.write(agentId, entries);
       }
       await rm(marker, { force: true });

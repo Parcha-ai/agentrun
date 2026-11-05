@@ -10,7 +10,7 @@ import { chmod, cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import { test } from "node:test";
 import { homeOf, writeDurable } from "../dist/files.js";
-import { GONE_LEASE_MS, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
+import { BROWSERBASE_SETTLE_MS, GONE_LEASE_MS, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
@@ -23,7 +23,7 @@ const FAUX_KERNEL = new URL("./fixtures/faux-kernel-check.mjs", import.meta.url)
 const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_DIE_WITH_REF", "FAUX_BROWSER_REFUSE_WITH_REF"];
 
 /** A store over `data` with fake vendors: each made object named in turn, each removal recorded (or refused). */
-function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRemove = false } = {}) {
+function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRemove = false, now } = {}) {
   const made = [];
   const removed = [];
   const vendors = {
@@ -33,7 +33,7 @@ function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRem
       removed.push([vendor, ref]);
     },
   };
-  return { store: new SignIns(data, key, vendors, async (run) => running.has(run)), made, removed, running, key };
+  return { store: new SignIns(data, key, vendors, async (run) => running.has(run), now ? { now } : {}), made, removed, running, key };
 }
 
 test("a pointer is sealed at rest, bound to its agent, and opens again for that agent alone; the view never holds it", async (t) => {
@@ -66,7 +66,8 @@ test("a pointer is sealed at rest, bound to its agent, and opens again for that 
 
 test("the save lease: the first run takes it, a run started while it holds gets the same sign-in with save false, and it ends with its run (released, or its run ended without a release)", async (t) => {
   const data = await scratch(t);
-  const { store, made, running } = fakeStore(data);
+  const clock = { now: Date.parse("2026-11-05T02:00:00.000Z") };
+  const { store, made, running } = fakeStore(data, { now: () => clock.now });
   running.add("run-1");
   const one = await store.forRun("alpha", "run-1", "browserbase");
   running.add("run-2");
@@ -79,10 +80,15 @@ test("the save lease: the first run takes it, a run started while it holds gets 
   const dir2 = await scratch(t);
   await store.release("alpha", "run-2", dir2);
   assert.equal((await store.view("alpha"))[0].held_by, "run-1");
-  // The holder's release, after a session that saved: ready, verified at that time.
+  // The holder's release, after a session that saved: verified at that time, and, Browserbase writing the context back
+  // after its session ends, held for the run that saved until that is done; then ready.
   const dir1 = await scratch(t);
   await writeFile(join(dir1, SIGN_IN_SAVED), "2026-11-05T01:02:03.000Z");
   await store.release("alpha", "run-1", dir1);
+  assert.deepEqual(await store.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: "2026-11-05T01:02:03.000Z" }]);
+  running.add("run-9");
+  assert.equal((await store.forRun("alpha", "run-9", "browserbase")).save, false, "a run started while it is written back saves nothing over it");
+  clock.now += BROWSERBASE_SETTLE_MS;
   assert.deepEqual(await store.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: "2026-11-05T01:02:03.000Z" }]);
   await assert.rejects(readFile(join(dir1, SIGN_IN_SAVED)), "the mark is taken");
   // A lease whose run ended with no release (a server that went down first) is stale: the next run takes it.
@@ -96,6 +102,11 @@ test("the save lease: the first run takes it, a run started while it holds gets 
   assert.deepEqual(kernel, { provider: "kernel", ref: made[1], save: true });
   assert.equal(made.length, 2);
   assert.deepEqual((await store.view("alpha")).map((s) => s.provider), ["browserbase", "kernel"]);
+  // Kernel saves as its browser ends: its saver's lease goes with the run, Browserbase's after its write-back.
+  const dir4 = await scratch(t);
+  await writeFile(join(dir4, SIGN_IN_SAVED), "2026-11-05T03:00:00.000Z");
+  await store.release("alpha", "run-4", dir4);
+  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state]), [["browserbase", "held"], ["kernel", "ready"]]);
 });
 
 test("local Chrome keeps no saved sign-in, refused by name; an unavailable browser has none", async (t) => {
@@ -250,8 +261,9 @@ test("through the API: an agent's first run holds the sign-in and saves; one sta
   const onDisk = await readFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), "utf8");
   assert.ok(!onDisk.includes(handed.ref));
 
-  // Forgotten: the context deleted at Browserbase, the pointer gone, beta's kept.
+  // Forgotten, once alpha's last saving run's context is written back: deleted at Browserbase, the pointer gone, beta's kept.
   assert.ok(contexts.has(handed.ref));
+  await until(() => signIns("alpha"), (list) => list[0]?.state === "ready");
   const forgot = await api("DELETE", "/agents/alpha/sign-ins/default");
   assert.deepEqual([forgot.status, forgot.body], [200, { key: "default", removed: [{ provider: "browserbase", at_vendor: "deleted" }] }]);
   assert.ok(bbCalls.some((call) => call.method === "DELETE" && call.path === `/v1/contexts/${handed.ref}` && call.authorized));
