@@ -33,7 +33,7 @@ import { REFLECT_REQUEST } from "./turns.js";
  *  after it (its rows are those between), its deadline, and how it ended. */
 export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
 /** Who sent the end-of-run turn: the server, never a person, and no request field sets it. The one value it is sent
- *  with, at its one call (reflectTurn); the tool gate reads it there (tool-gate.ts's carve-out). */
+ *  with, at its one call (reflectTurn); the tool gate reads it there and refuses that turn's writes under work/.learning/ (tool-gate.ts NOTE_ONLY_TEXT). */
 const REFLECT_ORIGIN = "reflect";
 export type TurnOrigin = typeof REFLECT_ORIGIN;
 /** The run asked its end-of-run turn and has not ended since. */
@@ -227,7 +227,7 @@ function once(running: Map<string, Promise<void>>, key: string, work: () => Prom
 }
 
 /** What learning needs of the server's options: the data directory and the agents, its tokens, the switch, and its bounds. */
-export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
+export type LearningOptions = Pick<RunsOptions, "agents" | "token" | "doorToken" | "storedKeys" | "ownSecrets" | "learning" | "learningBudget" | "reflectTimeoutMs" | "gradeTimeoutMs" | "gradeModel">;
 /** What the kernel (runs.ts) hands learning: its runs, and the parts of a run's life learning moves. */
 export type LearningKernel = {
   /** Run `id` when the kernel holds it; read from the agent store the first time (`get`). */
@@ -464,7 +464,7 @@ export class LearningRuns {
    *  once and kept until a person saves or deletes one (keysChanged). */
   shown(): Shown {
     const saved = (this.saved ??= new Map(SECRET_NAMES.map((name) => [name, this.options.storedKeys?.(name)])));
-    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken];
+    const values = [...hostSecrets(process.env, (name) => saved.get(name)), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? [])];
     const key = values.join("\0");
     if (this.cut?.key !== key) this.cut = { key, shown: secretsShown(values) };
     return this.cut.shown;
@@ -796,7 +796,7 @@ export class LearningRuns {
   private refused(run: Run): string[] {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(own ? [own] : [])];
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(this.options.ownSecrets?.() ?? []), ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a

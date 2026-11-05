@@ -1,3 +1,4 @@
+import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
@@ -69,8 +70,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [result, setResult] = useState<StartResult | null>(initialResult);
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
-    const error = (result && result.status >= 400 ? (result.body as { error?: { message?: unknown; details?: { box?: unknown } } } | null)?.error : undefined);
-    return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined } : undefined;
+    const error = (result && result.status >= 400 ? (result.body as { error?: { code?: unknown; message?: unknown; details?: { box?: unknown } & Record<string, unknown> } } | null)?.error : undefined);
+    return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined } : undefined;
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
@@ -174,6 +175,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               {refusal && (
                 <p className="border-b px-5 py-2.5 font-mono text-[12px] text-destructive-text md:px-6" role="alert">
                   The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
+                  <ToolBlockers agentId={agentId} details={refusal.details} />
                 </p>
               )}
               {result.runId && live ? (

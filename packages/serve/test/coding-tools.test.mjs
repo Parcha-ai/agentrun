@@ -35,24 +35,27 @@ test("no tool the table binds registers bash on the runner: what each installs a
   const bound = BOUND_TOOLS.filter((name) => missingEnv(TOOLS[name], {}).length === 0 && name !== "browser");
   for (const name of ["read", "write", "edit", "ask_person", "web_fetch"]) assert.ok(bound.includes(name), `${name} binds with no key`);
   assert.ok(bound.includes("bash"), "bash is in the table, for a box");
-  assert.deepEqual(await TOOLS.bash.bind(host), { tools: [], extensions: [] }, "on the runner bash binds nothing");
-  for (const name of bound.filter((name) => name !== "bash")) {
+  // bash and the background tools (background.ts) are sandbox-only: on the runner they bind nothing.
+  const shells = bound.filter((name) => TOOLS[name].sandboxOnly);
+  assert.deepEqual(shells, ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
+  for (const name of shells) assert.deepEqual(await TOOLS[name].bind(host), { tools: [], extensions: [] }, `on the runner ${name} binds nothing`);
+  for (const name of bound.filter((name) => !TOOLS[name].sandboxOnly)) {
     const binding = await TOOLS[name].bind(host);
     assert.deepEqual(binding.tools.map((tool) => tool.name), [name]);
     if (["read", "write", "edit"].includes(name)) assert.deepEqual(binding.extensions, [CodingTools], name);
-    for (const extension of [...installed, ...binding.extensions]) assert.ok(!names(extension).includes("bash"), `${name}: ${extension.name}`);
+    for (const extension of [...installed, ...binding.extensions]) assert.ok(!names(extension).some((tool) => shells.includes(tool)), `${name}: ${extension.name}`);
   }
 });
 
-test("in a box the source is pi's read, write, edit and bash, each call made on the box's environment, nothing else of a call changed", async () => {
+test("in a box the source is pi's read, write, edit and bash, and the background tools, each call made on the box's environment, nothing else of a call changed", async () => {
   const calls = [];
   const boxEnv = { cwd: "/run/agentrun/run/work", marker: "the box's" };
   const source = codingSource({ mode: "sandbox", box: "docker" }, { env: async (context) => (calls.push(context), boxEnv) });
-  assert.deepEqual(source.tools.map((tool) => tool.name).sort(), ["bash", "edit", "read", "write"]);
+  assert.deepEqual(source.tools.map((tool) => tool.name).sort(), ["bash", "bash_background", "bash_input", "bash_list", "bash_output", "bash_signal", "edit", "read", "write"]);
   assert.deepEqual(source.extension.tools, source.tools);
   assert.equal(source.extension.name, ArchilCodingTools.name, "the extension keeps pi's name");
   const pis = Object.fromEntries(ArchilCodingTools.tools.map((tool) => [tool.name, tool]));
-  for (const tool of source.tools) {
+  for (const tool of source.tools.filter((tool) => !tool.name.startsWith("bash_"))) {
     assert.equal(tool.parameters, pis[tool.name].parameters, `${tool.name} keeps pi's schema`);
     assert.equal(tool.replay, pis[tool.name].replay, `${tool.name} keeps pi's replay`);
     assert.deepEqual(tool.outputLimits, pis[tool.name].outputLimits);
@@ -66,6 +69,13 @@ test("in a box the source is pi's read, write, edit and bash, each call made on 
   await bash.execute({ command: "printf hi > out.txt" }, api, context);
   assert.deepEqual(seen, [{ command: "printf hi > out.txt", cwd: "/run/agentrun/run/work", env: {}, inherit: true }], "pi's bash, run in the box's cwd, on the box's own env alone");
   assert.deepEqual(calls, [context]);
+  // A background tool's call is one command in the box, from the box's work dir (background.ts).
+  seen.length = 0;
+  boxEnv.exec = async (command) => (seen.push([...command.slice(0, 2), ...command.slice(4, 6)]), { ok: true, value: { exitCode: 0 } });
+  const list = source.tools.find((tool) => tool.name === "bash_list");
+  assert.match((await list.execute({}, api, context)).content[0].text, /^No background processes in this run's box/);
+  assert.deepEqual(seen, [["sh", "-c", "/run/agentrun/run/work", "list"]]);
+  assert.deepEqual(calls, [context, context]);
   assert.throws(() => codingSource({ mode: "sandbox", box: "docker" }), /needs its box/);
 });
 

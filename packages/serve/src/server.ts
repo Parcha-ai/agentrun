@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
@@ -38,14 +38,17 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
+import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
+import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes } from "./boxes.js";
+import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
 import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
 import { startBoxRelay } from "./box-relay.js";
+import { vmRelay, type VmSdk } from "./box-relay-vm.js";
+import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { metersIn } from "./cap.js";
+import { meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
@@ -55,7 +58,8 @@ import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-ke
 import { SIGN_INS_DIR, SignIns, vendorsOver } from "./sign-ins.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
@@ -71,6 +75,8 @@ export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const IDEMPOTENCY_FILE = ".idempotency.json";
 const MAX_BODY = 1 << 20;
+/** The largest body a webhook trigger takes (POST /v2/hooks/{id}). */
+const HOOK_MAX_BODY = 256 << 10;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
@@ -168,6 +174,9 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export, given the data root, is the box provider runs' Docker boxes come
    *  from (the tests' faux box, pi-transport's local box): docker is then available, and nothing asks Docker. */
   fauxBox?: string;
+  /** Under `faux` only: a module that stands in for the VM provider's SDK (its client class, by the SDK's name for it),
+   *  so the VM box runs on the tests' fake, never the provider. */
+  fauxVm?: string;
   /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
    *  tests' fake network. */
   fauxEgress?: string;
@@ -201,6 +210,8 @@ export type ServeOptions = {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
+  onRunLoad?: (runId: string) => void;
   /** A test's seam: awaited before a run's serve.json is written (runs.ts beforeMetaSave). */
   beforeMetaSave?: (runId: string, meta: Readonly<Record<string, unknown>>) => Promise<void> | void;
   /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
@@ -266,6 +277,10 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
+/** Why a trigger never messages a run: it has no spend cap, and every turn a trigger drives is capped. */
+const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
+/** What an unknown trigger's request is checked against, so it is refused in a known trigger's time. */
+const NO_TRIGGER_SECRET = `whsec_${randomBytes(32).toString("base64")}`;
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
@@ -349,6 +364,9 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/triggers\/([^/]+)$/, name: "deleteTrigger" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
+  { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
+  // Answered before the bearer check: the request's signature is its credential.
+  { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -521,7 +539,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -627,7 +645,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
    *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
-  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken];
+  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? [])];
+  // Each webhook trigger's secret, made below once the environment is read; shown nowhere, as the server's own are not.
+  let triggerSecrets: TriggerSecrets | undefined;
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
@@ -696,7 +716,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   };
   // The boxes AGENTRUN_BOXES lists, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
   // box stands in for Docker, and nothing asks Docker.
-  const boxes = await boxRegistry(env);
+  // Under --faux, the tests' fake stands in for the VM provider's SDK (startServe's `fauxVm`), never the provider.
+  const boxes = await boxRegistry(env, options.faux && options.fauxVm ? { vmSdk: () => import(pathToFileURL(resolve(options.fauxVm!)).href) as Promise<Record<string, unknown>> } : {});
   const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
   // The Docker box's image, asked of Docker now and pulled in the background when Docker has none (box-image.ts): docker
   // is preparing until it is in, and unavailable if the pull fails. Its record tells the run's processes; with no Docker
@@ -714,7 +735,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   let daytonaNoList: string | undefined;
   const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
     !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", network_reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
-  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" ? daytonaNetwork(offer) : offer));
+  // The VM box has no network whatever AGENTRUN_BOX_ALLOW names: its provider takes a host list, but has no read of a
+  // box's list back, so the server cannot check one held (run-box.ts ensureRemoteBox makes it blocked). Said, with why.
+  const vmNetwork = (offer: BoxOffer): BoxOffer => (!offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : { ...offer, network: "none", network_reason: VM_NO_LIST });
+  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" ? daytonaNetwork(offer) : offer.id === VM_PROVIDER.id ? vmNetwork(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
   const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
@@ -736,6 +760,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Daytona's boxes are made, seeded, pulled and destroyed here, with the key this server holds; a run's process reaches
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
+  // And the VM box's, the same way, with this server's SDK client: the relay's VM half makes a run's calls with it.
+  const vmBoxes = boxes.provider(VM_PROVIDER.id);
+  const vmClient = boxes.vmClient();
+  // What the provider says in an error is cut of every value this server holds (the VM token among them) before a run's
+  // process sees it.
+  const vmSecrets = () => [...learningSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
+  const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
+  const vmLimits = (() => {
+    const limits = boxLimitsOf(env);
+    return { cpus: limits.cpus, memoryMb: memoryMbOf(limits.memory) };
+  })();
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
   // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
   const onNoBoxList = (code: string, message: string) => {
@@ -748,6 +783,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (image) imageLog(image.state());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
+  triggerSecrets = new TriggerSecrets(data, env, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)));
   // Each agent's saved sign-ins (sign-ins.ts), under the seal key the tool keys are kept under: its vendor's calls on the
   // server's keys (under faux, the vendor's fake alone), and a lease held while the run it names has not ended.
   const signIns = new SignIns(data, sealKeyOf(withSecrets(base, "own")[SEAL_KEY_ENV]), vendorsOver(() => env, checkFetch), async (runId) => (await agents.request(() => agents.store.readRun(runId)))?.state === "running");
@@ -760,15 +796,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), signIns, approvers: options.accounts === true });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(vmBoxes && vmRelayHalf ? { vmBoxes, vmLimits, vmRelay: vmRelayHalf } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [], signIns, approvers: options.accounts === true });
   const daytona = daytonaApi(env);
-  const relay = remoteBoxes && daytona ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...daytona, serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
+  const relay = (remoteBoxes && daytona) || vmRelayHalf ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...(remoteBoxes && daytona ? daytona : {}), ...(vmRelayHalf ? { vm: vmRelayHalf } : {}), serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
   const expected = digest(`Bearer ${token}`);
   if (options.beforeAbort) runs.beforeAbort = options.beforeAbort;
   if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
   if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
   if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
+  if (options.onRunLoad) runs.onRunLoad = options.onRunLoad;
   if (options.messageOrigin) runs.messageOrigin = options.messageOrigin;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -829,6 +866,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     clock: options.triggerClock,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     async targetIssues(target) {
+      if (target.kind === "message_run") {
+        const run = await runs.get(target.run_id);
+        if (!run) return [{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }];
+        if (run.kind === "workflow") return [{ field: "target.run_id", reason: "not_allowed", message: "A workflow run takes no messages here." }];
+        return run.meta.max_cost_usd === undefined ? [{ field: "target.run_id", reason: "not_allowed", message: NO_CAP }] : [];
+      }
       const entry = await agents.get(target.agent_id);
       if (!entry) return [{ field: "target.agent_id", reason: "not_found", message: `no agent ${target.agent_id}` }];
       if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
@@ -842,6 +885,24 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true });
       return { run_id: run.id };
     },
+    async message(target, input, key) {
+      const run = await needRun(target.run_id);
+      if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
+      // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
+      if (await runs.tookMessage(run, key).catch((error: unknown) => { throw storeBusy(error) ? homeBusy() : error; })) return;
+      // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on
+      // its person is told nothing by a trigger.
+      if (run.meta.max_cost_usd === undefined) throw new ApiError("not_continuable", NO_CAP);
+      const { status, state } = statusOf(run);
+      if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
+      try {
+        await runs.message(run, String(input.content), key, { answers: false });
+      } catch (error) {
+        if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
+        throw error;
+      }
+    },
+    secrets: { mint: (id) => triggerSecrets!.mint(id), remove: (id) => triggerSecrets!.remove(id) },
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
     async runOf(key) {
       const started = await agents.request(() => agents.store.runOfOrigin(key));
@@ -941,17 +1002,41 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
-  /** The body's bytes, at most MAX_BODY of them. */
-  async function bytesOf(req: IncomingMessage): Promise<Buffer> {
+  /** The body's bytes, at most `max` of them. */
+  async function bytesOf(req: IncomingMessage, max = MAX_BODY): Promise<Buffer> {
     const chunks: Buffer[] = [];
     let size = 0;
     // An oversized body is read to its end before the refusal, so the client gets the answer and not a reset.
     for await (const chunk of req) {
       size += (chunk as Buffer).length;
-      if (size <= MAX_BODY) chunks.push(chunk as Buffer);
+      if (size <= max) chunks.push(chunk as Buffer);
     }
-    if (size > MAX_BODY) throw new ApiError("payload_too_large", `the body is over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
+    if (size > max) throw new ApiError("payload_too_large", `the body is over ${max} bytes`, { details: { limit: "max_body_bytes" } });
     return Buffer.concat(chunks);
+  }
+
+  /** POST /v2/hooks/{trigger_id}: a webhook trigger's firing, signed by the Standard Webhooks spec under its secret
+   *  (trigger-secrets.ts), checked on the raw body before anything else. An unknown trigger, one that is off or not a
+   *  webhook's, and a check that fails are one answer, so no trigger id can be found by asking; an unknown one is
+   *  checked against a secret of no trigger's, so it takes the same time. A webhook-id already fired answers its firing. */
+  async function hook(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    const refuse = (reason: string) => {
+      authFailed(`/v2${path}`, reason);
+      return new ApiError("unauthenticated", "this route needs a request signed by the webhook trigger's secret");
+    };
+    // Headers that can never pass are refused before a byte of the body is read; they say nothing of the trigger.
+    const early = hookHeadersRefusal(req.headers, Date.now());
+    if (early) throw refuse(early);
+    const body = await bytesOf(req, HOOK_MAX_BODY);
+    let id = "";
+    try {
+      id = decodeURIComponent(/^\/hooks\/([^/]+)$/.exec(path)![1]!);
+    } catch {}
+    const secret = ID.test(id) && triggers.hookable(id) ? triggerSecrets!.value(id) : undefined;
+    const refusal = hookRefusal(secret ?? NO_TRIGGER_SECRET, req.headers, body, Date.now());
+    if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
+    const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
+    return send(res, created ? 202 : 200, firing, created ? {} : { "idempotent-replayed": "true" });
   }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
@@ -1278,17 +1363,35 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
+  // Each ended run's meters, from its store (meterFiguresIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, ReturnType<typeof metersIn>>();
+  const endedMeters = new Map<string, ReturnType<typeof meterFiguresIn>>();
+  // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
+  // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
+  // none (a run whose cost is known, or one ended before the figure was kept).
+  const endedSoFar = new Map<string, number | undefined>();
+  const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
+    const key = `${row.id} ${row.endedAt}`;
+    if (!endedSoFar.has(key)) {
+      let usd: number | undefined;
+      try {
+        const kept = (JSON.parse(readFileSync(join(dirname(dirname(agents.store.runStorePath(row.id))), RUN_META), "utf8")) as { cost_so_far?: { so_far_usd?: unknown } }).cost_so_far?.so_far_usd;
+        usd = typeof kept === "number" && Number.isFinite(kept) ? kept : undefined;
+      } catch {
+        usd = undefined;
+      }
+      endedSoFar.set(key, usd);
+    }
+    return endedSoFar.get(key);
+  };
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
       try {
-        meters = metersIn(agents.store.runStorePath(row.id));
+        meters = meterFiguresIn(agents.store.runStorePath(row.id));
       } catch {
-        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
+        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
       }
       endedMeters.set(key, meters);
     }
@@ -1328,22 +1431,23 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
-      const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
-      const browser = meters ? meters.browser.usd : 0;
-      const tools = meters?.others;
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
-      if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
-      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
-      // never passes as $0.
-      for (const [name, part] of parts) {
-        const line = lines.get(name) ?? lines.set(name, { usd: 0, unpriced: 0 }).get(name)!;
-        if (part === null) line.unpriced++;
-        else line.usd += part;
+      // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
+      // by any group, for what a run of unknown cost is known to have spent.
+      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
+      // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
+      // the lower bound unpriced_runs says it is.
+      const soFar = usd !== null || !read ? 0 : live ? (runs.cost(live).so_far_usd ?? 0) : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const meters = group === "meter" && usd !== 0 ? read : undefined;
+      if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
+      // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
+      for (const part of runLines({ usd, soFar, key, meters })) {
+        const line = lines.get(part.name) ?? lines.set(part.name, { usd: 0, unpriced: 0 }).get(part.name)!;
+        line.usd += part.usd;
+        if (part.unpriced) line.unpriced++;
       }
       if (usd === null) total.unpriced++;
-      else total.usd += usd;
+      total.usd += usd ?? soFar;
     }
     // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
     for (const entry of (await outcomes(data)).values()) {
@@ -1460,6 +1564,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, forCaller(caps, byOwnerSession(req)));
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
+    // The one route with no token: a webhook trigger's request, checked by its signature before anything else is read.
+    if (found.name === "receiveHook") return hook(req, res, path);
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -1874,12 +1980,20 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, triggers.list());
       case "createTrigger": {
         const body = await bodyOf(req);
+        // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
+        // note, so a retry under the key gets the same trigger, never a second one, and never the secret.
+        let secret: string | undefined;
         const answer = await idempotent(req, "/triggers", body, async () => {
-          const made = await triggers.create(body);
-          return { status: 201, body: made, headers: { location: `/v2/triggers/${made.id}` } };
+          const { secret: shown, ...made } = await triggers.create(body);
+          secret = shown;
+          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : made, headers: { location: `/v2/triggers/${made.id}` } };
         });
-        return send(res, answer.status, answer.body, answer.headers);
+        const replayed = answer.headers?.["idempotent-replayed"] === "true";
+        const { note: _, ...first } = answer.body as Json;
+        return send(res, answer.status, secret && !replayed ? { ...first, secret } : answer.body, answer.headers);
       }
+      case "rotateTriggerSecret":
+        return send(res, 200, triggers.rotate(id));
       case "getTrigger":
         return send(res, 200, triggers.get(id));
       case "updateTrigger":

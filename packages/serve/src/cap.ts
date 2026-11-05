@@ -420,8 +420,17 @@ export function spentIn(storeFile: string): number | null {
  *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
  *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart. A mark is never a charge here (the cap's alone). Never for a live run: its process
  *  holds the store exclusively. */
-export function metersIn(storeFile: string): { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null } {
-  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
+export type Meters = { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null };
+export function metersIn(storeFile: string): Meters {
+  const { known: _, ...meters } = meterFiguresIn(storeFile);
+  return meters;
+}
+
+/** metersIn's meters, and beside them each meter's known dollars: its settled charges' figures, whether or not another of
+ *  its charges is unknown (a hold, a call cut or never settled, is no charge here: it adds nothing). What a run of
+ *  unknown cost is known to have spent on each (server.ts /usage). */
+export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: number; browser: number; others: number } } {
+  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
@@ -430,13 +439,17 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
     const charges: (number | undefined)[] = [];
     const browser = { usd: 0 as number | null, seconds: 0 };
     const others: (number | undefined)[] = [];
+    // Each meter's known dollars, whether or not one of its charges is unknown: what a run of unknown cost is known to
+    // have spent on it (server.ts /usage).
+    const known = { tokens: 0, browser: 0, others: 0 };
     for (const { entry } of rows) {
       const data = (entry.data ?? {}) as Record<string, unknown>;
       if (entry.kind === TOOL_STARTED) marks.add(data.call);
       else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
-      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd));
+      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd)), (known.others += figureOf(data.usd) ?? 0);
       if (entry.kind !== TOOL_COST || data.tool !== "browser") continue;
       const usd = figureOf(data.usd);
+      known.browser += usd ?? 0;
       browser.usd = browser.usd === null || usd === undefined ? null : browser.usd + usd;
       browser.seconds += figureOf(data.seconds) ?? 0;
     }
@@ -444,7 +457,8 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
     const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
     const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools };
+    known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools, known };
   } finally {
     db.close();
   }
@@ -487,7 +501,11 @@ export function holdsInFlight() {
 export type RunSpend = { cap: number; spent(): number | null | Promise<number | null>; held?(): number; add(usd: number | null): void };
 let runSpend: RunSpend | undefined;
 let paying: Promise<unknown> = Promise.resolve();
-export const useSpend = (spend: RunSpend | undefined): void => void (runSpend = spend);
+export const useSpend = (spend: RunSpend | undefined): void => {
+  runSpend = spend;
+  // A paid call's refusal is its own spend's (its run's): another spend starts with none.
+  paidRoomRefusal = undefined;
+};
 
 /** Each paid call sent under the cap and not settled, at what it is held at. */
 const paidOpen = new Set<{ usd: number }>();
@@ -515,6 +533,21 @@ export const runCap = (): number | undefined => runSpend?.cap;
  *  reports (`charge` of its result, undefined for none) joins the spend. A charge it does not say (null), or a call that
  *  fails, counts at its held figure, as its mark does from the store (spentIn), since it may have charged that much.
  *  With no cap it just runs. */
+/** A paid call this run's cap refused for room (paidCall): its words, after the code, and its figures as a model
+ *  request's refusal keeps them (what was taken, and the call's hold as what it needs). The model's next request is
+ *  refused in these words and with these figures (takePaidRefusal), so the turn ends on the refusal, as a refused model
+ *  request's does, and the run waits on a raise (runs.ts pausedAt), its model never given a turn to route around it. */
+let paidRoomRefusal: { owner: RunSpend; words: string; figures: RefusalFigures } | undefined;
+/** The paid call's refusal the next model request of the run whose spend is `owner` is refused with, once: undefined
+ *  when there is none, or it is another spend's. Only a run's own guard asks (capModels for pi, harness-app.ts for the
+ *  others), never a guard a caller builds apart. */
+export function takePaidRefusal(owner: RunSpend | undefined): { words: string; figures: RefusalFigures } | undefined {
+  const refusal = paidRoomRefusal;
+  if (!refusal || !owner || refusal.owner !== owner) return undefined;
+  paidRoomRefusal = undefined;
+  return { words: refusal.words, figures: refusal.figures };
+}
+
 export async function paidCall<T>(name: string, call: () => Promise<T>, charge: (result: T) => number | null | undefined, hold: { usd: number; basis: string }): Promise<{ refused: string } | { result: T }> {
   const spend = runSpend;
   if (!spend) return { result: await call() };
@@ -524,7 +557,12 @@ export async function paidCall<T>(name: string, call: () => Promise<T>, charge: 
     // What is held for requests and calls still answering, apart from what was spent, as a model request's refusal says it.
     const holding = (spend.held?.() ?? 0) + paidHolds();
     // Written so that a figure that is not a number refuses.
-    if (!(read + holding + hold.usd <= spend.cap + FIT_TOLERANCE)) return { refused: paidRefusal(spend.cap, read, holding, name, hold) };
+    if (!(read + holding + hold.usd <= spend.cap + FIT_TOLERANCE)) {
+      // Refused for room: a raise would send it, so the run pauses at the model's next request (takePaidRefusal).
+      const refused = paidRefusal(spend.cap, read, holding, name, hold);
+      paidRoomRefusal = { owner: spend, words: refused.slice(`${SPEND_CAP_REACHED}: `.length), figures: { spentUsd: read + holding, needsUsd: hold.usd } };
+      return { refused };
+    }
     // Held from here; settled into the spend in the same step that lets the hold go, so no check between sees neither.
     const open = { usd: hold.usd };
     paidOpen.add(open);
@@ -611,11 +649,13 @@ export const roomRefusal = (text: string | undefined): string | undefined => (te
 export const nameOf = (model: Pick<Model<Api>, "name" | "id">): string => (model.name || model.id).replace(/^[^:]{1,40}:\s+(?=\S)/, "");
 
 /** A least in words: rounded up to the cent, so that it is enough ($0.1024 is $0.11). */
-export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - 1e-9) / 100).toFixed(2)}`;
+// Cents rounded up within the tail the fit check allows (FIT_TOLERANCE), no wider: a total past a cent by more than a
+// float's own tail rounds to the cent above, so the cap a refusal names admits what it refused.
+export const leastMoney = (usd: number): string => `$${(Math.ceil(usd * 100 - FIT_TOLERANCE * 100) / 100).toFixed(2)}`;
 /** The cap to raise to for a request past `cap` that needs `total` in all: a cent at least, and above the cap, never
  *  the cap itself, so a raise to it is one PATCH /runs/{id} takes. */
 export const raiseTo = (cap: number, total: number): string => {
-  const cents = Math.ceil(total * 100 - 1e-9);
+  const cents = Math.ceil(total * 100 - FIT_TOLERANCE * 100);
   return `$${((cents / 100 > cap + CAP_TOLERANCE ? cents : Math.floor((cap + CAP_TOLERANCE) * 100) + 1) / 100).toFixed(2)}`;
 };
 
@@ -754,16 +794,26 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const [{ calculateCost, createAssistantMessageEventStream }, simple] = await Promise.all([import("@earendil-works/pi-ai"), import("@earendil-works/pi-ai/api/simple-options")]);
   const partsOf = requestParts(overhead);
   let held = 0;
+  // The run's spend as a paid tool's check reads it (installed below, useSpend): the requests in flight held at their
+  // worst case apart from it (it adds the paid holds itself), and its charge joins the spend.
+  const own: RunSpend = { cap, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) };
   type Options = { maxTokens?: number; reasoning?: string; thinkingBudgets?: Record<string, number> } & Record<PropertyKey, unknown>;
   /** A request's worst case and the options it goes with (limited to what is left of the cap, when that is less than
    *  it asks for), or why the cap refuses it. `simpleCall`: through streamSimple or completeSimple, whose thinking pi-ai
    *  turns into a budget or an effort; a direct call sends its maxTokens as is. */
   type Judged = { worst: number; stopped: Stopped; options?: Options };
-  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean): Judged | { why: string; figures?: RefusalFigures } => {
+  const judge = (model: Model<Api>, context: Context, options: Options | undefined, simpleCall: boolean, turn: boolean): Judged | { why: string; figures?: RefusalFigures } => {
     if (unpriced.has(model.id)) return { why: noPrice(cap) };
     const ceiling = outputBound(model);
     if (ceiling === undefined) return { why: noCeiling(cap) };
     if (spent === null) return { why: unknownSpend(cap) };
+    // A paid call the cap just refused for room: the turn's next request, the one after its result, is refused in its
+    // words, and the run pauses there. A request after a message of the person's instead (a stop came first, and the
+    // person moved on) is a new turn's: the refusal is let go, and this request is judged as any other. Only the turn's
+    // own requests (stream, streamSimple) take it: a side request through the run's models (completeSimple: a
+    // compaction's summary, native web_search's own, request-start.ts) is judged as any other and leaves it for them.
+    const paid = turn ? takePaidRefusal(own) : undefined;
+    if (paid && context.messages.at(-1)?.role === "toolResult") return { why: `${CAP_REFUSAL_CODE}${paid.words}`, figures: paid.figures };
     const parts = partsOf(model, context);
     if (parts === undefined) return { why: unmeasured(cap) };
     const price = worstOf(calculateCost, model);
@@ -849,7 +899,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   };
   // A paid tool's check reads the spend, and the requests in flight held at their worst case apart from it (it adds the
   // paid holds itself), and its charge joins the spend.
-  useSpend({ cap, spent: () => spent, held: () => held, add: (usd) => void (spent = spent !== null && typeof usd === "number" && Number.isFinite(usd) ? spent + usd : null) });
+  useSpend(own);
   /** `options` with the request's worst case, and its figure if it is stopped, for its marks. */
   /** `options` with the request's worst case, its figure if it is stopped, and its attempts' record, for its marks: on an
    *  API the cap can watch, a fetch that records each attempt (`attempts`, undefined on one it cannot). */
@@ -861,7 +911,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (unwatched(model.api) ? undefined : []);
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): AssistantMessageEventStream => {
-      const judged = judge(model, context, options, simpleCall);
+      const judged = judge(model, context, options, simpleCall, true);
       if ("worst" in judged) {
         let events: AssistantMessageEventStream | undefined;
         const attempts = attemptsFor(model);
@@ -883,7 +933,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     };
   const complete = (send: (model: Model<Api>, context: Context, options?: Options) => Promise<AssistantMessage>, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): Promise<AssistantMessage> => {
-      const judged = judge(model, context, options, simpleCall);
+      const judged = judge(model, context, options, simpleCall, false);
       if (!("worst" in judged)) return Promise.resolve(refusal(model, judged.why));
       const attempts = attemptsFor(model);
       return admit(judged.worst, judged.stopped, () => send(model, context, carrying(judged.options ?? options, judged, attempts)), attempts);
