@@ -57,6 +57,28 @@ async function meetsDocument(api, view) {
   assert.deepEqual(schemaProblems(doc, doc.paths["/settings/tool-keys"].get.responses["200"].content["application/json"].schema, view), [], JSON.stringify(view));
 }
 
+test("a tool key saved then removed in Settings: the refusal names Settings → Tool keys first, then the variable, for Monid and for Parallel; the structured fields are unchanged", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
+  withMemory(t, ROOMY_MIB);
+  const { api } = await serve(t);
+  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: made() } })).status, 204);
+  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
+  const monid = "monid.discover needs a Monid key: save one in Settings → Tool keys (or set MONID_API_KEY where the server starts)";
+  const saved = await api("POST", "/agents", agent("finder", { tools: ["monid.discover"] }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.warnings.map((w) => w.message), [`The tool ${monid}.`], "the save's warning");
+  const run = await api("POST", "/agents/finder/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 409, JSON.stringify(run.body));
+  assert.ok(run.body.error.message.includes(monid), run.body.error.message);
+  assert.ok(!/environment does not set/.test(run.body.error.message), run.body.error.message);
+  assert.deepEqual(run.body.error.details.missing, { "monid.discover": ["MONID_API_KEY"] }, "the structured fields are unchanged");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "parallel" } })).status, 200);
+  assert.equal((await api("POST", "/agents", agent("searcher", { tools: ["web_search"] }))).status, 201);
+  const search = await api("POST", "/agents/searcher/runs", { input: { content: "hi" } });
+  assert.equal(search.status, 409, JSON.stringify(search.body));
+  assert.ok(search.body.error.message.includes("web_search does not run here on pi: parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)"), search.body.error.message);
+});
+
 test("a key saved by name is kept sealed: GET says which fields are set and from where, never a value; PUT merges by field, DELETE forgets; the file is 0600 and holds no value", async (t) => {
   // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
   const umask = process.umask(0o022);
