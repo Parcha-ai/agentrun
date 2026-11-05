@@ -43,7 +43,7 @@ letter or digit, then `.md`, and never `MEMORY.md`.
 | --- | --- | --- |
 | `name` | yes | a short title |
 | `description` | yes | one line that says when the note applies; it is the note's index line |
-| `type` | yes | `user`, `feedback`, `project` or `reference`, Claude Code's four |
+| `type` | no | `user`, `feedback`, `project` or `reference`, Claude Code's four; absent, `project` (the merge adds no line: the host's lines stay within the cap's 28 bytes) |
 | `supersedes` | no | the notes it replaces, `[old.md, other.md]` or one bare file name |
 | `status` | no, host only | `superseded`, `retired` or `pending` (a risky rule, waiting for its owner's OK); absent, the note is active |
 | `superseded_by` | no, host only | the note that replaced it, on a superseded note |
