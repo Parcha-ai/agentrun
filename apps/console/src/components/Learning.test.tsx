@@ -674,3 +674,29 @@ describe("the Learning tab's skills and workflows", () => {
     expect(t.button(/^Approve find-policies$/)).toBeUndefined();
   });
 });
+
+// "What the next run reads": the notes in use (the index) and the skills it is given, the active ones. A run after an
+// Approve is given the approved skill, so an agent whose learning is a skill alone never reads "nothing"; a skill that
+// waits for its owner's OK is given to no run, so it is left out.
+describe("the Learning tab's \"What the next run reads\"", () => {
+  const skill = (name: string, status: "active" | "pending") => ({ name, file: `skills/${name}/SKILL.md`, description: `When ${name} applies`, status, run: "run-b", bytes: 92, etag: `"${name}-v1"` });
+  const skillsOnly = () => view({ index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [skill("find-policies", "active"), skill("issue-refunds", "pending")] } as Partial<AgentLearning>);
+  const panel = (t: Awaited<ReturnType<typeof open>>) => t.host.querySelector('section[aria-label="What the next run reads"]') as HTMLElement;
+
+  it("counts and names the active skill it is given when no note is in use, and leaves out a pending one", async () => {
+    const t = await open(agent(true), { learning: async () => skillsOnly() });
+    const p = panel(t);
+    expect(p).toBeTruthy();
+    expect(p.querySelector("button")!.textContent).toContain("1 skill");
+    expect(p.querySelector("button")!.textContent).not.toContain("nothing");
+    await act(async () => { p.querySelector("button")!.click(); });
+    expect(p.textContent).toContain("Skills it's given: find-policies");
+    expect(p.textContent).not.toContain("issue-refunds");
+    expect(p.textContent).not.toContain("Nothing yet");
+  });
+
+  it("counts notes and skills together", async () => {
+    const t = await open(agent(true), { learning: async () => view({ skills: [skill("find-policies", "active")] } as Partial<AgentLearning>) });
+    expect(panel(t).querySelector("button")!.textContent).toMatch(/\d+ notes? · 1 skill/);
+  });
+});
