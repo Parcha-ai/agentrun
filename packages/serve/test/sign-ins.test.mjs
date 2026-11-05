@@ -478,3 +478,29 @@ test("a run's end lets its lease go only when its process let its sessions go: a
   now += BROWSERBASE_SETTLE_MS;
   assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, true);
 });
+
+test("a follow-up of a run that saved, opened while another run holds the lease, saves nothing: the save flag its sessions carry is its current launch's", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const lines = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const signIns = async () => (await api("GET", "/agents/alpha")).body.sign_ins;
+  const first = (await api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
+  const { after } = await follow(api, first, ["completed"]);
+  assert.deepEqual((await lines()).filter((op) => op.op === "profile").map((op) => op.save), [true], "it saved");
+  await until(signIns, (list) => list[0]?.state === "ready");
+  const gate = join(dir, "gate");
+  const second = (await api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  await until(lines, (ops) => ops.filter((op) => op.op === "profile").length === 2);
+  assert.equal((await signIns())[0].held_by, second);
+  const mark = (await lines()).length;
+  assert.equal((await api("POST", `/runs/${first}/messages`, { content: "Browse the example page again." })).status, 202);
+  await follow(api, first, ["completed"], { after });
+  const followUp = (await lines()).slice(mark);
+  assert.deepEqual(followUp.filter((op) => op.op === "sign-in").map((op) => op.save), [false], "handed save false");
+  assert.deepEqual(followUp.filter((op) => op.op === "profile").map((op) => [op.name, op.save]), [["default", false]], "and its session saves nothing, whatever its conversation was made with");
+  await writeFile(gate, "");
+  await follow(api, second, ["completed"], { deadlineMs: 60_000 });
+});

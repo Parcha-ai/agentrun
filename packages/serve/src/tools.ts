@@ -183,6 +183,13 @@ export const keptProfile = <P extends { create(spec: { profile?: { name: string;
   create: (spec, signal) => provider.create(spec.profile?.name === SIGN_IN_KEY ? { ...spec, profile: { ...spec.profile, name: ref } } : spec, signal),
 });
 
+/** `provider`, its sessions' profile as this launch was handed it: saving only as `kept.save` says, whatever the policy
+ *  a conversation was made with (a follow-up's was made under an earlier launch's lease), and none without a sign-in. */
+export const asHanded = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, kept: { save: boolean } | undefined): P => ({
+  ...provider,
+  create: (spec, signal) => provider.create(spec.profile ? { ...spec, profile: kept ? { ...spec.profile, save: kept.save } : undefined } : spec, signal),
+});
+
 /** Whether a session's change is one that saved to the run's sign-in: a session that ran on the profile, let go by the
  *  run (its tool, its idle time, a relaunch, its close, its end), never one the vendor had already lost or never made. */
 export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null; settings: { profile: string | null } } }, change: string): boolean =>
@@ -223,9 +230,11 @@ const browserTool: ToolEntry = {
               : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env, profiles: keptContexts(kept?.ref) }),
           driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
         };
+    // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
+    const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
     const provider = () => {
       if (refused) throw refused;
-      return parts.provider as never;
+      return handedProvider as never;
     };
     // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
     // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
