@@ -3,13 +3,17 @@
 // the new cap; the refused request was never sent, so nothing is paid for twice. A working run's live process keeps
 // its cap until its next process, and the answer says so. A server started again raises a paused run's cap the same.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { spentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, scratch, serve } from "./support.mjs";
-import { DatabaseSync } from "node:sqlite";
+import { agent, client, follow, letGo, scratch, serve, withEnv } from "./support.mjs";
 
 /** The tests' faux model priced on output only, $100 a million: a request's least (1,024 tokens) is $0.1024. */
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -108,4 +112,105 @@ test("a server started again raises a paused run's cap the same: the run goes on
   await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.cost.cap_usd, run.result.final_answer], ["completed", 2, "On The cap was raised to $2; continue the task.: done."], JSON.stringify(run));
+});
+
+/** The output-priced faux model in a process that cannot exit until EXIT_GATE exists: a paused run's let-go held open. */
+const SLOW_EXIT = new URL("./fixtures/faux-output-priced-slow-exit.mjs", import.meta.url).pathname;
+const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+const CONTINUE = (cap) => `The cap was raised to ${cap}; continue the task.`;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const holderPid = (data, runId) => JSON.parse(readFileSync(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+/** What the person's side of the run says, in order: its user messages' text. */
+const said = (rows) => rows.filter((row) => row.kind === "user_message").map((row) => row.text);
+
+test("a raise sent while the paused run's process is still being let go is taken at once, and the run goes on once that process is gone: under the new cap, one follow-up, no locked store and no failed run", { timeout: 120_000 }, async (t) => {
+  const gate = join(await scratch(t), "exit");
+  withEnv(t, { EXIT_GATE: gate });
+  const { api, data } = await serve(t, { faux: SLOW_EXIT });
+  const runId = await paused(api, "racing");
+  // Paused, its process was told to go and is held there: the let-go window is open.
+  const pid = holderPid(data, runId);
+  assert.ok(processAlive(pid), "the paused run's process is still being let go");
+  const raised = await raise(api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed, typeof raised.body.message_id], [200, true, "string"], JSON.stringify(raised.body));
+  assert.ok(processAlive(pid), "the raise was taken inside the let-go window");
+  await sleep(500);
+  assert.equal(said((await follow(api, runId, SETTLED)).rows).length, 1, "no follow-up while the old process still holds the run");
+  await writeFile(gate, "");
+  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.error, run.cost.cap_usd], ["completed", null, 1], JSON.stringify(run));
+  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1")], "one follow-up, after the old process was gone");
+  assert.ok(!JSON.stringify(rows).includes("database is locked"), "no locked store");
+});
+
+test("two raises of a paused run at once (a retry) resume it once: both answered 200, one follow-up", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const runId = await paused(api, "twice");
+  const answers = await Promise.all([raise(api, runId, { max_cost_usd: 1 }), raise(api, runId, { max_cost_usd: 1 })]);
+  assert.deepEqual(answers.map((a) => a.status), [200, 200], JSON.stringify(answers.map((a) => a.body)));
+  assert.equal(answers[0].body.message_id, answers[1].body.message_id, "the same follow-up");
+  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1")]);
+  assert.equal((await view(api, runId)).status, "completed");
+});
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`${harness}: a run paused at its cap, its cap raised, goes on: the follow-up runs under the new cap and the run completes`, { timeout: 120_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: OUTPUT_PRICED });
+    assert.equal((await api("POST", "/agents", agent(`raise-${harness}`, { harness, instructions: "Make three requests." }))).status, 201);
+    const { run_id } = (await api("POST", `/agents/raise-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
+    await follow(api, run_id, SETTLED, { deadlineMs: 60_000 });
+    assert.equal((await view(api, run_id)).pending?.kind, "budget", "paused at its cap");
+    const raised = await raise(api, run_id, { max_cost_usd: 1 });
+    assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+    const { rows } = await follow(api, run_id, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+    const run = await view(api, run_id);
+    assert.deepEqual([run.status, run.error, run.cost.cap_usd, run.result?.final_answer], ["completed", null, 1, "Read it."], JSON.stringify(run));
+    assert.deepEqual(said(rows), ["go", CONTINUE("$1")]);
+  });
+}
+
+/** The bin on `data`, as an operator starts it, in a process this test can kill. */
+async function serverProcess(data, env) {
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", SLOW_EXIT], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_ACCOUNTS: "0", ...env } });
+  let out = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  for (let i = 0; !/AGENTRUN_BASE_URL=/.test(out); i++) {
+    assert.ok(i < 400 && child.exitCode === null, `the server did not start: ${out}`);
+    await sleep(50);
+  }
+  return { child, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], (await readFile(join(data, ".token"), "utf8")).trim()) };
+}
+
+test("a raise taken, then the server killed before its follow-up went: the next server sends it, once, and the run completes; the same raise again changes nothing", { timeout: 150_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const gate = join(await scratch(t), "exit");
+  const first = await serverProcess(data, { EXIT_GATE: gate });
+  t.after(() => first.child.kill("SIGKILL"));
+  const runId = await paused(first.api, "crashed");
+  const pid = holderPid(data, runId);
+  assert.ok(processAlive(pid), "the paused process is held, so the follow-up waits");
+  const raised = await raise(first.api, runId, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  // The old run process lets go once its gate opens; the next server finds the raise taken and its follow-up not sent.
+  await writeFile(gate, "");
+  await letGo(data, runId);
+  const next = await startServe({ data, port: 0, faux: SLOW_EXIT, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  assert.deepEqual([(await view(api, runId)).status, said(rows)], ["completed", ["Write one.md", CONTINUE("$1")]], "one follow-up across the restart");
+  const again = await raise(api, runId, { max_cost_usd: 1 });
+  assert.equal(again.status, 409, `an ended run takes no raise: ${JSON.stringify(again.body)}`);
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    const marks = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record)).filter((entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused === true);
+    assert.equal(marks.length, 1, "one refusal booked, never a second");
+  } finally {
+    db.close();
+  }
 });
