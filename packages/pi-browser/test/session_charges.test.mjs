@@ -8,16 +8,18 @@ import { FakeBackend, fixturePage } from "@parcha/pi-browser/testing";
 const START = "https://example.test/start";
 const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
 
-/** A run whose model calls browser_read `reads` times, each read taking `readS` seconds, with the host's `prices`. */
-async function run(t, { prices, reads, readS }) {
+/** A run whose model calls browser_read `reads` times, each read taking `readS` seconds, with the host's `prices` and
+ *  `options`; `setup` readies the fake backend first. */
+async function run(t, { prices, reads, readS, options = {}, setup = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
     import("@earendil-works/pi-durable"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
   ]);
   const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  setup(backend);
   const charges = [];
-  const browser = createBrowserExtension({
+  const browser = createBrowserExtension({ ...options,
     provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null }, prices,
     onCharge: async (charge, tx, call) => {
       charges.push({ ...charge, call: call?.callId ?? null });
@@ -48,7 +50,7 @@ async function run(t, { prices, reads, readS }) {
   await browser.drain(harness, ctx);
   const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
   const booked = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 200), ctx)).items.filter((entry) => entry.kind === "host.charge");
-  return { charges, record, booked };
+  return { charges, record, booked, backend };
 }
 
 const sum = (charges, key) => Math.round(charges.reduce((total, charge) => total + charge[key], 0) * 1e12) / 1e12;
@@ -86,4 +88,14 @@ test("a free provider (local Chrome) and an unpriced one: the time is charged at
   t.mock.timers.reset();
   const unpriced = await run(t, { prices: { sessionUsdPerHour: null }, reads: 1, readS: 2 });
   assert.deepEqual(unpriced.charges.map(({ seconds, usd, state }) => [seconds, usd, state]), [[2, 0, "unpriced"], [58, 0, "unpriced"]]);
+});
+
+test("a session found by its tag, its create's answer lost, is billed when that release is confirmed: the provider charged its minimum", async (t) => {
+  // The create lands at the provider, its answer is lost and the lookup by tag fails too: the record stays without an
+  // id, and the release task finds the session by its tag after the create deadline and releases it.
+  const { charges, record, backend } = await run(t, { reads: 1, readS: 2, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); } });
+  assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [1, 1, 0]);
+  assert.equal(record.state, "released");
+  assert.deepEqual(charges.map(({ seconds, final, call }) => [seconds, final, call]), [[60, true, null]], "its whole minimum, once, at the release");
+  assert.deepEqual([record.spent.seconds, record.spent.usd, record.spent.final], [60, 0.002, true]);
 });

@@ -76,7 +76,14 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     for (const id of ids) if (["pending", "running"].includes(await provider.status({ id, tag: row.tag }, signal))) return true;
     return false;
   };
-  const releasedAll = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal) => !(await anyRunning(provider, row, await releaseAll(row, provider, signal), signal));
+  /** The ids released under `row`'s tag once none of them runs; null while one does. */
+  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal) => {
+    const ids = await releaseAll(row, provider, signal);
+    return (await anyRunning(provider, row, ids, signal)) ? null : ids;
+  };
+  /** A session found by its tag (its create's answer lost: the record has no id) is billed at its release too: the
+   *  provider ran it. A create the provider refused found nothing, and is billed nothing. */
+  const foundId = (row: InventoryRow, ids: readonly string[] | null) => (row.resourceId === null && ids?.length ? { resourceId: ids[0] } : {});
   /** Its error goes to the host's report, scrubbed, and `fallback` stands in; an abort is rethrown. */
   async function step<T>(runtime: ReleaseRuntime, run: () => Promise<T>, fallback: T): Promise<T> {
     try { return await run(); } catch (error) {
@@ -141,7 +148,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const at = iso(runtime.now());
         await emitReleased(cidOf(row), row.tag, runtime, context, at);
         await runtime.commit(async (tx) => {
-          await move(tx, row, { state: "released", at });
+          await move(tx, row, { state: "released", at, ...foundId(row, ids) });
           return { status: "terminal", outcome: { status: "completed", result: { released: ids.length } } };
         }, context);
       },
@@ -150,11 +157,11 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     // to a successor task in the same commit.
     abort: async (task, runtime, context) => {
       const { row, notBefore } = task.input;
-      let stopped = false;
+      let stopped: string[] | null = null;
       // Before the create deadline nothing found is proof of nothing: the successor keeps the delayed lookup.
-      if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedAll(provider, row, context.abortSignal)).catch(() => false);
+      if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedIds(provider, row, context.abortSignal)).catch(() => null);
       await runtime.commit(async (tx) => {
-        if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()) });
+        if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()), ...foundId(row, stopped) });
         else await tx.createTask(ReleaseTask, task.input, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });
         return { status: "terminal", outcome: { status: "aborted", reason: stopped ? "released by the abort handler" : "release handed to a successor task" } };
       }, context);
@@ -234,9 +241,11 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       try {
         const provider = await providerOf(harness, cidOf(row), row.plane, context);
         if (row.state === "lost") {
-          await ((await releasedAll(provider, row)) ? outcome("released", async (tx) => {
+          const ids = await releasedIds(provider, row);
+          await (ids ? outcome("released", async (tx) => {
             delete (await tx.doc(Inventory)).rows[row.tag];
             const record = (await tx.doc(Sessions, cidOf(row))).sessions.find((r) => r.tag === row.tag);
+            if (record && record.resourceId === null && ids.length) record.resourceId = ids[0]!;
             if (record && record.resourceId !== null) await bill(tx, cidOf(row), record, at, true);
           }) : outcome("lost"));
           continue;
