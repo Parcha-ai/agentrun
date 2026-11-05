@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const f = runFixture("run.with-files");
 const file = (path: string, content_type: string | null = "text/markdown; charset=utf-8"): RunFile => ({ path, size_bytes: 12, modified_at: "2026-11-04T12:00:00.000Z", content_type });
-const files = [file("hello.md"), file("notes/plan.md"), file("notes#1/plan.md"), file("notes#1/other.md")];
+const files = [file("hello.md"), file("notes/plan.md"), file("notes#1/plan.md"), file("notes#1/other.md"), file("notes/log.txt", "text/plain; charset=utf-8")];
 const answer = "I wrote [hello.md](hello.md). See also [x](other/missing.md), [top](#top) and [site](https://example.com).";
 
 async function open(final_answer: string, readFile = vi.fn(async (r: RunFile) => `# ${r.path}\n\nSee [hello.md](../hello.md).`)) {
@@ -115,6 +115,47 @@ describe("a folder name a URL would read as syntax", () => {
     await page.click(inside!);
     expect(readFile).toHaveBeenLastCalledWith(files[3]);
     expect(page.host.querySelector("dialog")?.getAttribute("aria-label")).toBe("notes#1/other.md");
+  });
+});
+
+// The viewer's Rendered / Raw starts from the file's kind (Markdown Rendered, other text Raw). A link moves the viewer to
+// another file in place, so the new file starts from its own kind, not from the one before it.
+describe("a link in the viewer, Rendered or Raw", () => {
+  const PLAN = "See [the log](log.txt) and [hello.md](../hello.md).";
+  const readFile = () => vi.fn(async (r: RunFile) => (r.path === "notes/plan.md" ? PLAN : r.path === "notes/log.txt" ? "line one\nline two" : `# ${r.path}`));
+  async function plan() {
+    const page = await open("Read [the plan](notes/plan.md).", readFile());
+    await page.click(page.named("the plan")!);
+    const dialog = () => page.host.querySelector("dialog") as HTMLElement;
+    const picked = () => dialog().querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="View"] input:checked')?.value;
+    const inside = (text: string) => [...dialog().querySelectorAll("article button")].find((e) => e.textContent === text) as HTMLElement | undefined;
+    return { ...page, dialog, picked, inside };
+  }
+
+  it("a Markdown file's link to a run text file opens it in Raw", async () => {
+    const v = await plan();
+    expect(v.picked()).toBe("rendered");
+    await v.click(v.inside("the log")!);
+    expect(v.readFile).toHaveBeenLastCalledWith(files[4]);
+    expect(v.dialog().getAttribute("aria-label")).toBe("notes/log.txt");
+    expect(v.picked()).toBe("raw");
+    expect(v.dialog().querySelector("pre")?.textContent).toBe("line one\nline two");
+    expect(v.dialog().querySelector("article")).toBeNull();
+  });
+
+  it("a Markdown file's link to another Markdown file stays Rendered", async () => {
+    const v = await plan();
+    await v.click(v.inside("hello.md")!);
+    expect(v.dialog().getAttribute("aria-label")).toBe("hello.md");
+    expect(v.picked()).toBe("rendered");
+    expect(v.dialog().querySelector("article")).not.toBeNull();
+  });
+
+  it("a Markdown file in Raw shows its links as typed, with nothing to click", async () => {
+    const v = await plan();
+    await act(async () => { v.dialog().querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="View"] input[value="raw"]')!.click(); });
+    expect(v.dialog().querySelector("pre")?.textContent).toBe(PLAN);
+    expect(v.dialog().querySelector("[data-run-file], a")).toBeNull();
   });
 });
 
