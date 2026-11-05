@@ -182,5 +182,7 @@ test("the prompt's example workflow draft is a whole, valid draft the learned ru
     const nodes = dsl.inspectWorkflow(doc).nodes;
     for (const node of nodes) assert.ok(["chain", "extract", "call"].includes(node.kind), `${node.kind} at ${node.path}`);
     assert.equal(nodes.some((node) => node.kind === "call"), tools.includes("web_fetch"), "a call node only on a tool the agent has");
+    // With no tool to fetch with, the job's input is the text it reads (never a URL a model node would guess from).
+    if (!tools.includes("web_fetch")) assert.deepEqual(doc.schemas[doc.input.schemaId].required, ["text"], "the model-only example reads the page's text");
   }
 });

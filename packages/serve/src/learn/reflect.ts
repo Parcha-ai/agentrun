@@ -109,26 +109,46 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
 /** The prompt's example workflow draft, whole: its schemas declared once, its input and output naming them by `schemaId`,
  *  and a chain the learned runner runs (a `web_fetch` call when the agent has it, then a model node; else two model
  *  nodes), so an agent copies a draft the DSL and the checker pass (a test validates this text). */
-const exampleDraft = (fetches: boolean) => ({
-  v: 2,
-  name: "find-policies",
-  schemas: {
-    Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
-    Page: { type: "object", properties: { text: { type: "string" } } },
-    Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] },
-  },
-  input: { schemaId: "Store" },
-  output: { schemaId: "Policies", path: "policies" },
-  root: {
-    node: "chain",
-    steps: [
-      fetches
-        ? { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 }
-        : { node: "extract", label: "find", instructions: "Say where the store at {url} keeps its refund policy.", out: "Page", as: "page" },
-      { node: "extract", label: "read", instructions: "Say the store's refund policy, from the page.", out: "Policies", as: "policies" },
-    ],
-  },
-});
+const exampleDraft = (fetches: boolean) =>
+  fetches
+    ? {
+        v: 2,
+        name: "find-policies",
+        schemas: {
+          Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+          Page: { type: "object", properties: { text: { type: "string" } } },
+          Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] },
+        },
+        input: { schemaId: "Store" },
+        output: { schemaId: "Policies", path: "policies" },
+        root: {
+          node: "chain",
+          steps: [
+            { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+            { node: "extract", label: "read", instructions: "Say the store's refund policy, from the page.", out: "Policies", as: "policies" },
+          ],
+        },
+      }
+    : {
+        // With no tool to fetch with, the job's input is the page's text itself: every step reads what it is given,
+        // never a guess.
+        v: 2,
+        name: "find-policies",
+        schemas: {
+          Page: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+          Lines: { type: "object", properties: { lines: { type: "string" } }, required: ["lines"] },
+          Policies: { type: "object", properties: { refund: { type: "string" } }, required: ["refund"] },
+        },
+        input: { schemaId: "Page" },
+        output: { schemaId: "Policies", path: "policies" },
+        root: {
+          node: "chain",
+          steps: [
+            { node: "extract", label: "quote", instructions: "Copy the lines of the page's text that are about refunds.", out: "Lines", as: "lines" },
+            { node: "extract", label: "read", instructions: "Say the store's refund policy, from those lines.", out: "Policies", as: "policies" },
+          ],
+        },
+      };
 
 /** A skill's or a workflow draft's block: the name its block gives, and its text whole. */
 export type LearnedBlock = { readonly name: string; readonly text: string };
