@@ -258,6 +258,6 @@ test("a retired draft whose workflow.json the learning checker refuses is not re
   const before = git(repo, ["rev-parse", "main"]).trim();
   const refused = await restore("workflows/price-report/README.md", { ...json, cookie, origin });
   assert.equal(refused.status, 400, refused.text);
-  assert.match(refused.text, /model node .* names a tool/, refused.text);
+  assert.match(refused.text, /"rule":"workflow","path":"workflows\/price-report\/workflow\.json"/, refused.text);
   assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
 });
