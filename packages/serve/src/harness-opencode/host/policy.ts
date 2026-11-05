@@ -109,6 +109,91 @@ function objectAt(text: string, start: number): string | undefined {
 
 const PAID_END = new Set(["response.completed", "response.incomplete"]);
 
+// The content-filter stop, read as codex's policy reads it (run-adapters-codex host/policy.ts, the same Responses API),
+// in its form that also reads a gateway's data-only events.
+/**
+ * Whether the provider stopped the answer on its content filter: the stream's terminal event (or a whole body) is an
+ * `incomplete` response whose `incomplete_details.reason` is `content_filter`. Read by parsing each `data:` line on its
+ * own, as usageOf reads the usage, never by matching text; an answer cut at its output limit (`max_output_tokens`) is not one.
+ *
+ * The terminal event carries the whole response (its output, encrypted reasoning included), so its line can be longer
+ * than the proxy keeps of an answer; then the proxy's start of that line is read. The response's fields come in a fixed
+ * order, `id`, `object`, `created_at`, `status`, `background`, `error`, `incomplete_details`, then `instructions`, the
+ * tools and the output, so `incomplete_details` is near the line's start. It is read only on a line that is the event's
+ * own: one the SSE `event: response.incomplete` names (OpenAI's API), or whose data says `"type":"response.incomplete"`
+ * before its `"response":{` (a gateway that sends each event as its data alone: LiteLLM), as the first
+ * `"incomplete_details":{` after `"response":{` (one JSON object), whatever the JSON's spacing.
+ */
+export function filtered(text: string, lineStarts: readonly string[] = []): boolean {
+  let end = terminalResponse(text.split("\n"), false);
+  if (end === undefined) {
+    const whole = text.trimStart();
+    if (whole.startsWith("{")) {
+      try {
+        const body = JSON.parse(whole) as unknown;
+        if (isPlain(body) && body.object === "response") end = body;
+      } catch {}
+    }
+  }
+  end ??= terminalResponse(lineStarts, true);
+  return isPlain(end) && end.status === "incomplete" && isPlain(end.incomplete_details) && end.incomplete_details.reason === "content_filter";
+}
+
+/** The response of the last terminal event in `lines` (`filtered`), each `data:` line parsed on its own; with `starts`,
+ *  the lines are kept starts, and one that is a `response.incomplete` event's (by its name, or its data's type ahead of
+ *  its response) is read from its start. */
+function terminalResponse(lines: readonly string[], starts: boolean): unknown {
+  let end: unknown;
+  let named = false;
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      named = line.slice(6).trim() === "response.incomplete";
+      continue;
+    }
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    const incomplete = named || ownIncomplete(data);
+    named = false;
+    if (!data.startsWith("{")) continue;
+    try {
+      const event: unknown = JSON.parse(data);
+      if (isPlain(event) && typeof event.type === "string" && PAID_END.has(event.type)) end = event.response;
+    } catch {
+      // A line the window cut (skipped), or a kept start the event's name says is the stop's.
+      if (starts && incomplete) end = startOfResponse(data) ?? end;
+    }
+  }
+  return end;
+}
+
+const RESPONSE_KEY = /"response"\s*:\s*\{/;
+const INCOMPLETE_TYPE = /"type"\s*:\s*"response\.incomplete"/;
+const DETAILS_KEY = /"incomplete_details"\s*:\s*\{/;
+
+/** Whether a kept start's data is a `response.incomplete` event's own: its `type` says so ahead of its `response` (a
+ *  quote of it in an answer's text is escaped, so it never reads as one). */
+function ownIncomplete(data: string): boolean {
+  const type = data.search(INCOMPLETE_TYPE);
+  const response = data.search(RESPONSE_KEY);
+  return type >= 0 && (response < 0 || type < response);
+}
+
+/** The status and `incomplete_details` of the response a `response.incomplete` event's line starts with (`filtered`), or
+ *  undefined when the line's kept start does not hold them. */
+function startOfResponse(data: string): Record<string, unknown> | undefined {
+  const response = data.search(RESPONSE_KEY);
+  if (response < 0) return undefined;
+  const found = DETAILS_KEY.exec(data.slice(response));
+  if (!found) return undefined;
+  const json = objectAt(data, response + found.index + found[0].length - 1);
+  if (json === undefined) return undefined;
+  try {
+    return { status: "incomplete", incomplete_details: JSON.parse(json) as unknown };
+  } catch {
+    return undefined;
+  }
+}
+
 /** The usage of the response an answer ends with: its `response.completed` (or `response.incomplete`) event, each `data:`
  *  line parsed on its own, or a whole JSON body's; for a line the proxy's 64 KiB window cut, the last `"usage":{` object
  *  in the text. Undefined, an unknown cost, when there is none. */
@@ -285,6 +370,7 @@ export function openCodePolicy(options: OpenCodePolicyOptions): ProviderPolicy {
       return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
     },
     usageOf,
+    filtered,
     watch: options.onCall ? () => watchCalls(options.onCall!) : undefined,
     modelOf: () => options.model,
     // Under a spend cap the host admits each request with what is left can buy, which goes into max_output_tokens.

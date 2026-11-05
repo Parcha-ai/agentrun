@@ -271,6 +271,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       ...(options.price ? { price: options.price } : {}),
       log,
       ...(options.fetch ? { fetch: options.fetch } : {}),
+      // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
+      onFiltered: (message) => ctx.halt?.(new Error(message)),
     }, proxyKey);
     const mcpKey = randomBytes(32).toString("base64url");
     // A start that fails here closes the model proxy it opened: the drive's own close is the finally below.
