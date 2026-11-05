@@ -855,7 +855,10 @@ picks which one a run gets, never the model.
   read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): …"), and its rows are
   not read, since what it says could repeat the pointer, which the server could not cut. Once the sign-in opens again
   (the right seal key back), its rows are read and shown, cut of it. A run that was never handed the sign-in (one
-  launched signed out since the key changed) is taken up as any other. Its `held_by` still names a run that
+  launched signed out since the key changed) is taken up as any other. That a run was handed it is kept in its
+  `serve.json`; a launch that can't save that hands it none, and the run browses signed out. A one-time limit of the
+  upgrade to this: a run still going across that upgrade has no such mark, so if the upgraded server also can't read
+  its sign-in at that same start, it is taken up signed out and its text is not cut of the pointer. Its `held_by` still names a run that
   holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the

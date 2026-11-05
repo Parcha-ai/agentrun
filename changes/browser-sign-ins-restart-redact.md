@@ -7,3 +7,5 @@ A run a server takes up after a restart, its process still going, never shows it
 - The line a run's end keeps in the agent store (its answer, or its error) is cut of the same values its served answer is, whole.
 - A run a restarted server loads, ended or going, has its pointer read back before its conversation is read, so a conversation that repeats it is cut from the first.
 - A run still going that was handed its agent's sign-in, which the restarted server cannot read (its seal key changed or is missing, or the sign-ins file is damaged or unreadable), is not taken up: it is stopped (or, its process already gone, never opened again), ends failed saying why, and its rows are not read until the sign-in opens again. A run launched signed out is taken up as any other.
+- A launch that can't save that it handed the run its sign-in hands none: the run browses signed out.
+- A one-time limit of the upgrade: a run still going across it carries no mark that it was handed the sign-in, so if the upgraded server also can't read that sign-in at the same start, the run is taken up signed out and its text is not cut of the pointer.

@@ -1641,10 +1641,15 @@ export class Runs {
     run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
     // Never shown in its errors, from now on: a server started since its launch has handed it nothing yet.
     if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
-    // Kept, a flag alone: a later server that cannot read the sign-in knows this run's text could hold it.
+    // Kept, a flag alone: a later server that cannot read the sign-in knows this run's text could hold it. Not kept, the
+    // run is handed none (it starts signed out): a run whose text could hold the pointer is always one a server knows.
     if (run.signIn && !run.meta.sign_in_handed) {
       run.meta.sign_in_handed = true;
-      await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it was handed a sign-in is not saved: ${error.message}`));
+      await this.saveMeta(run).catch((error: Error) => {
+        delete run.meta.sign_in_handed;
+        run.signIn = undefined;
+        warn(run.id, `its browser starts signed out: that it was handed a sign-in could not be saved (${error.message})`);
+      });
     }
   }
 

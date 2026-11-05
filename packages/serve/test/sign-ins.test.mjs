@@ -6,7 +6,7 @@
 // vendors are the tests' fakes.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmod, cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
@@ -762,4 +762,27 @@ test("a sign-ins file that cannot be read or parsed reads back as unreadable, ne
   await writeFile(file, "{ not json");
   assert.equal(await store.peek("alpha", "browserbase"), "unreadable", "a damaged file");
   assert.equal(await store.peek("beta", "browserbase"), undefined, "an agent with none at all");
+});
+
+test("a launch that can't save that it was handed the sign-in hands none: the run browses signed out", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN: "1" }, KEYS);
+  const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const lines = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  // Its first launch gets no sign-in (Browserbase makes no context), so it was never handed one.
+  const runId = (await api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
+  const { after } = await follow(api, runId, ["completed"]);
+  // Its serve.json can't be written now (a folder where its temporary file goes); Browserbase is back.
+  const blocked = join(data, "runs", runId, "serve.json.tmp");
+  await mkdir(blocked);
+  t.after(() => rm(blocked, { recursive: true, force: true }));
+  delete process.env.AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN;
+  const mark = (await lines()).length;
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Browse the example page again." })).status, 202);
+  const followUp = await until(async () => (await lines()).slice(mark), (ops) => ops.some((op) => op.op === "create"));
+  assert.deepEqual(followUp.filter((op) => op.op === "sign-in" || op.op === "profile"), [], "handed nothing, so it browses signed out");
+  await rm(blocked, { recursive: true, force: true });
+  await follow(api, runId, ["completed"], { after, deadlineMs: 60_000 });
 });
