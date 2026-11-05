@@ -786,8 +786,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     async runOf(key) {
       const started = await agents.request(() => agents.store.runOfOrigin(key));
       if (!started) return null;
-      // Not set up (no serve.json) while the store has it running: its server went down first, and this start's recovery
-      // fails it so (runs.ts); or failed so already.
+      // Never set up as runs.ts load reads it (notSetUp: the store has it running and its serve.json holds no input), which
+      // this start's recovery fails as server_lost_at_setup; or failed so already.
       const run = await runs.get(started.runId);
       return { run_id: started.runId, setup_lost: run?.notSetUp === true || run?.error?.details?.reason === SETUP_LOST };
     },
