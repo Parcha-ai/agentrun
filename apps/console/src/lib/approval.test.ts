@@ -33,7 +33,8 @@ describe("a pending approval", () => {
   });
 
   it("shows its arguments laid out when they are whole JSON, and as the server sent them when cut", () => {
-    expect(argsShown(APPROVAL.args_preview)).toBe("{\n  \"url\": \"http://public.example/\"\n}");
+    expect(argsShown(APPROVAL.args_preview)).toBe("url: http://public.example/");
+    expect(argsShown("{\"url\":\"https://a.example/\",\"n\":2,\"opts\":{\"x\":[1]}}")).toBe("url: https://a.example/\nn: 2\nopts: {\"x\":[1]}");
     const cut = `{"query":"${"x".repeat(40)}…`;
     expect(argsShown(cut)).toBe(cut);
     expect(argsShown("")).toBe("");
