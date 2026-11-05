@@ -57,6 +57,13 @@ test("a draft whose call or model node names Bash, exec_command or apply_patch i
   assert.equal(check(draft(richWorkflow({ tool: "web_search" }))).ok, true);
 });
 
+test("a draft whose agent node asks context fork is refused at learn time: a learned workflow's model node starts a fresh session", () => {
+  const forked = check(draft(workflow({ node: "agent" }).replace('"tools": []', '"tools": [],\n    "context": "fork"')));
+  assert.deepEqual(forked.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(forked.problems));
+  assert.match(forked.problems[0].detail, /the agent node at \/root asks context fork: a learned workflow's model node starts a fresh session/, forked.problems[0].detail);
+  assert.ok(check(draft(workflow({ node: "agent" }).replace('"tools": []', '"tools": [],\n    "context": "fresh"'))).ok, "fresh passes");
+});
+
 test("a draft whose agent node asks more turns than a learned workflow's runner gives (its max_turns over the cap) is refused at learn time, never at a call after earlier nodes spent", () => {
   const over = check(draft(workflow({ node: "agent" }).replace('"tools": []', '"tools": [],\n    "max_turns": 10')));
   assert.deepEqual(over.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(over.problems));

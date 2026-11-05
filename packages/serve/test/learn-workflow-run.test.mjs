@@ -179,6 +179,20 @@ test("a learned workflow whose later model node names a tool, though the agent w
   assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
+test("a learned workflow whose later agent node asks context fork is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const flow = answerFlow();
+  flow.root.steps = [
+    { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
+    { node: "agent", label: "forked", instructions: "Answer the question.", out: "Answer", as: "answer", context: "fork" },
+  ];
+  const { runId, rows } = await ran(api, data, "forked-flow", "pi", flowFiles("answer", flow));
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*asks context fork/, JSON.stringify(result));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
+});
+
 test("a learned workflow whose later agent node asks max_turns over the learned runner's cap is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
