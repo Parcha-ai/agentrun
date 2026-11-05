@@ -896,7 +896,10 @@ picks which one a run gets, never the model.
   a run it was handed is still going without the lease (`details.handed_to`): one that waits for its person, say, or
   one whose process went more than 30 minutes ago. What that run says could repeat the pointer, and once it is forgotten
   a restarted server could not read it back to cut it. The message names the run, never the pointer; forget it once
-  that run ends. Archiving an agent keeps its sign-ins; this server has no route that deletes an agent.
+  that run ends. A forgotten pointer is still kept, sealed as it was, in the agent's sign-ins file
+  (`forgotten`), the newest 32 per agent: never listed in `sign_ins`, never served, never handed to a run, never a
+  sign-in a forget finds. It is kept only so a later server still cuts it from what a run that was handed it said: one
+  that ended before the forget, or one opened again since on a new sign-in. Archiving an agent keeps its sign-ins; this server has no route that deletes an agent.
 
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs

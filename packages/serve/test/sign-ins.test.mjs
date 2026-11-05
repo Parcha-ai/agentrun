@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { homeOf, writeDurable } from "../dist/files.js";
-import { BROWSERBASE_SETTLE_MS, GONE_LEASE_MS, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
+import { BROWSERBASE_SETTLE_MS, GONE_LEASE_MS, MAX_FORGOTTEN, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
@@ -1122,4 +1122,113 @@ test("an ended run a list reads from its row alone has its error withheld while 
   process.env.AGENTRUN_SEAL_KEY = seal;
   const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
   for (const error of await listed(api)) assert.equal(error.message, "The browser died holding [redacted].");
+});
+
+/** A run of agent `alpha` that browsed signed in and ended repeating its sign-in's pointer, then the sign-in forgotten
+ *  (allowed: the run ended): the server, the run's id and the pointer. */
+async function forgottenAfterEnd(t, dir, log) {
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  await follow(first.api, runId, ["completed"], { deadlineMs: 60_000 });
+  await until(async () => (await first.api("GET", "/agents/alpha")).body.sign_ins, (list) => list[0]?.state === "ready");
+  const forgot = await first.api("DELETE", "/agents/alpha/sign-ins/default");
+  assert.equal(forgot.status, 200, JSON.stringify(forgot.body));
+  return { ...first, runId, ref };
+}
+
+/** That nothing `api` serves of run `runId` (its timeline, its view, both lists) holds `ref`; its timeline's text. */
+async function servedCut(api, runId, ref) {
+  const timeline = JSON.stringify((await api("GET", `/runs/${runId}/timeline`)).body);
+  for (const shown of [timeline, JSON.stringify((await api("GET", `/runs/${runId}`)).body), JSON.stringify((await api("GET", "/runs")).body), JSON.stringify((await api("GET", "/agents/alpha/runs")).body)]) assert.ok(!shown.includes(ref), shown);
+  return timeline;
+}
+
+test("a sign-in forgotten after its run ended is still cut from what that run said, after a restart: its pointer is kept sealed for that alone", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await forgottenAfterEnd(t, dir, log);
+  await first.close();
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  // The lists first (the run read from its row alone), then its timeline and view.
+  for (const path of ["/runs", "/agents/alpha/runs"]) assert.ok(!JSON.stringify((await api("GET", path)).body).includes(first.ref));
+  assert.ok((await servedCut(api, first.runId, first.ref)).includes("I kept [redacted] for you."));
+  assert.equal((await api("GET", `/runs/${first.runId}`)).body.result.final_answer, "I kept [redacted] for you.");
+});
+
+test("a run reopened after its first sign-in was forgotten has the old pointer cut from its follow-up, though it was handed a new one", { timeout: 300_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await forgottenAfterEnd(t, dir, log);
+  await first.close();
+  const second = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const mark = (await readFile(log, "utf8")).trim().split("\n").length;
+  // A follow-up: the run opens again on a new sign-in, and its model repeats the old pointer.
+  const { after } = await follow(second.api, first.runId, ["completed"]);
+  assert.equal((await second.api("POST", `/runs/${first.runId}/messages`, { content: "Once more." })).status, 202);
+  const done = await follow(second.api, first.runId, ["completed"], { after, deadlineMs: 60_000 });
+  const fresh = (await readFile(log, "utf8")).trim().split("\n").slice(mark).map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  assert.ok(fresh && fresh.ref !== first.ref, "handed a new sign-in");
+  assert.ok(!JSON.stringify(done.rows).includes(first.ref), JSON.stringify(done.rows.map((row) => row.summary)));
+  await servedCut(second.api, first.runId, first.ref);
+  assert.equal((await second.api("GET", `/runs/${first.runId}`)).body.result.final_answer, "I kept [redacted] for you.");
+  await second.close();
+  // Handed two pointers now (its serve.json keeps `true`): a later server cuts every forgotten one, and the live one.
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.ok((await servedCut(api, first.runId, first.ref)).includes("I kept [redacted] for you."));
+});
+
+test("a forgotten sign-in is never a sign-in: GET /agents/{id} lists none, nothing serves it, no run is handed it, and forget finds none", { timeout: 240_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api, data, ref } = await forgottenAfterEnd(t, dir, log);
+  assert.deepEqual((await api("GET", "/agents/alpha")).body.sign_ins, []);
+  assert.ok(!JSON.stringify((await api("GET", "/agents")).body).includes(ref));
+  // Kept on disk, sealed: never in the clear, and the home's files never serve it.
+  const onDisk = await readFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), "utf8");
+  const kept = JSON.parse(onDisk);
+  assert.deepEqual([kept.sign_ins, kept.forgotten.map((gone) => [gone.key, gone.provider])], [[], [["default", "browserbase"]]]);
+  assert.ok(!onDisk.includes(ref));
+  assert.deepEqual((await api("GET", "/agents/alpha/home/files")).body.files.filter((file) => file.host_owned).map((file) => file.path), ["sign-ins"]);
+  assert.equal((await api("GET", "/agents/alpha/home/files/sign-ins/sign-ins.json")).status, 403);
+  assert.equal((await api("DELETE", "/agents/alpha/sign-ins/default")).status, 404, "nothing to forget");
+  // The next run is handed a new sign-in, never the forgotten one; and that one, forgotten, is kept beside it.
+  const mark = (await readFile(log, "utf8")).trim().split("\n").length;
+  await follow(api, (await api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id, ["completed"], { deadlineMs: 60_000 });
+  const handed = (await readFile(log, "utf8")).trim().split("\n").slice(mark).map((line) => JSON.parse(line)).filter((op) => op.op === "sign-in").map((op) => op.ref);
+  assert.ok(handed.length === 1 && handed[0] !== ref, JSON.stringify(handed));
+  assert.deepEqual((await api("GET", "/agents/alpha")).body.sign_ins.map((s) => s.key), ["default"]);
+  await until(async () => (await api("GET", "/agents/alpha")).body.sign_ins, (list) => list[0]?.state === "ready");
+  assert.equal((await api("DELETE", "/agents/alpha/sign-ins/default")).status, 200);
+  assert.equal(JSON.parse(await readFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), "utf8")).forgotten.length, 2);
+});
+
+test("an agent keeps its newest 32 forgotten pointers, sealed under their own binding: each opens only under this server's seal key, and only for cutting", async (t) => {
+  const data = await scratch(t);
+  const { store, made, key } = fakeStore(data);
+  for (let i = 0; i < MAX_FORGOTTEN + 1; i++) {
+    await store.forRun("alpha", `run-${i}`, "browserbase");
+    await store.forget("alpha", "default");
+  }
+  assert.equal(MAX_FORGOTTEN, 32);
+  const kept = await store.forgotten("alpha", "browserbase");
+  assert.deepEqual(kept, { refs: made.slice(1), unreadable: false }, "the oldest dropped");
+  assert.deepEqual(await store.forgotten("alpha", "kernel"), { refs: [], unreadable: false });
+  assert.deepEqual(await store.view("alpha"), []);
+  assert.equal(await store.peek("alpha", "browserbase"), undefined, "no sign-in");
+  // Never another agent's, nor under another seal key.
+  await mkdir(join(homeOf(data, "beta"), "sign-ins"), { recursive: true });
+  await cp(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), join(homeOf(data, "beta"), "sign-ins", "sign-ins.json"));
+  assert.deepEqual(await store.forgotten("beta", "browserbase"), { refs: [], unreadable: true });
+  const rotated = new SignIns(data, randomBytes(32), {}, async () => false);
+  assert.deepEqual(await rotated.forgotten("alpha", "browserbase"), { refs: [], unreadable: true });
+  assert.deepEqual((await new SignIns(data, key, {}, async () => false).forgotten("alpha", "browserbase")).refs.length, MAX_FORGOTTEN);
 });

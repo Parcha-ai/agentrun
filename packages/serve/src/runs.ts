@@ -1286,7 +1286,10 @@ export class Runs {
     const browser = isObject(meta?.tool_plane) && typeof meta.tool_plane.browser === "string" ? meta.tool_plane.browser : undefined;
     const peeked = browser ? await this.options.signIns?.peek(agentId, browser).catch(() => "unreadable" as const) : undefined;
     if (peeked === "unreadable" || (meta?.sign_in_handed !== undefined && !browser)) return "withheld";
-    const pointer = typeof peeked === "object" && peeked.ref.length >= MIN_SECRET ? [peeked.ref] : [];
+    const handed = meta?.sign_in_handed;
+    const gone = browser ? await this.options.signIns?.forgotten(agentId, browser).catch(() => "unreadable" as const) : undefined;
+    const forgotten = typeof gone === "object" ? gone.refs.filter((ref) => typeof handed !== "string" || pointerHash(ref) === handed) : [];
+    const pointer = [...(typeof peeked === "object" ? [peeked.ref] : []), ...forgotten].filter((ref) => ref.length >= MIN_SECRET);
     const values = [...hostSecrets(process.env, this.options.storedKeys), ...pointer, this.options.token, this.options.doorToken];
     return (text) => withoutLoopback(redacted(text, values));
   }
@@ -1965,6 +1968,12 @@ export class Runs {
   private async peekSignIn(run: Run): Promise<"unreadable" | { ref: string } | undefined> {
     const browser = run.meta.tool_plane?.browser;
     const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
+    // Its agent's forgotten pointers too (sign-ins.ts Forgotten): the one it was handed, by its hash, or every one when
+    // which is not known (handed two, or a run from before the hash was kept). A sign-in forgotten after the run ended,
+    // or replaced since, is still cut from what it said.
+    const handed = run.meta.sign_in_handed;
+    const gone = browser ? await this.options.signIns?.forgotten(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
+    if (typeof gone === "object") for (const ref of gone.refs) if (ref.length >= MIN_SECRET && (typeof handed !== "string" || pointerHash(ref) === handed)) (run.handed ??= new Set()).add(ref);
     if (peeked === "unreadable" || peeked === undefined) return peeked;
     if (peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
     return peeked;
