@@ -11,7 +11,7 @@ import { toolChoices, toolGates } from "@/lib/toolSettings";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const ALL = ["allow", "ask", "deny"];
+const ALL: ("allow" | "ask" | "deny")[] = ["allow", "ask", "deny"];
 const SEARCH = { name: "web_search", available: true, providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: "auto", default_provider: "auto", resolves: { pi: "exa-keyless" }, permission: "allow", default_permission: "allow", permissions: ALL };
 const RAW = [
   { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL },

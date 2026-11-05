@@ -42,13 +42,18 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
   const own = ownSettings(answer, choices);
   const rows = toolRows(choices, gates);
   const { byTool, rest } = issuesFor(problem?.fields ?? {}, "", rows.map((t) => t.name));
-  // Each change is the whole of the server's settings: a capability the body leaves out takes its default.
-  const save = async (next: ToolSettings) => {
+  // Each save is the whole of the server's settings (a PUT replaces the map: a key the body leaves out takes its
+  // defaults), so it is a read-modify-write: the map is read as it is now, the one field the person touched is changed,
+  // and every other key and field (a permission, a provider, an MCP server's wildcard, one this console doesn't know)
+  // goes back as it was.
+  const save = async (edit: (current: ToolSettings) => ToolSettings) => {
     setBusy(true); setProblem(null);
     // A save's answer is the newest settings: a read still out (a Retry's) is dropped, never put back over it.
     const n = ++asked.current;
     try {
-      const saved = await v2.saveToolSettings(next);
+      // A read that fails here leaves the map last read, as before this re-read: the save still keeps every key it holds.
+      const now = await v2.toolSettings().catch(() => answer);
+      const saved = await v2.saveToolSettings(edit(ownSettings(now, choices)));
       if (n === asked.current) { setAnswer(saved); setLoadError(null); }
       onSaved();
     } catch (e) {
@@ -69,7 +74,7 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
         </div>
         <section aria-label="This server's providers">
           {rows.length ? (
-            <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onChange={(next) => void save(next)}
+            <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onEdit={(edit) => void save(edit)}
               resolvesOf={(t, provider) => (provider === t.provider ? <PerHarness choice={t} />
                 : capsRead === "reading" ? <span className="block font-mono text-[12px] text-muted-foreground">reading…</span>
                 : <span className="block text-[12px] text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <button type="button" onClick={retry} disabled={busy} className="caps ml-1 border px-2 py-0.5 text-[11px] hover:bg-accent disabled:opacity-45">Retry</button></span>)} />

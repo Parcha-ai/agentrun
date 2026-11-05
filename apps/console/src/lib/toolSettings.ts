@@ -82,15 +82,16 @@ export const withProvider = (settings: ToolSettings, tool: string, provider: str
 export const withPermission = (settings: ToolSettings, tool: string, permission: Permission | undefined, fallback: Permission): ToolSettings => withField(settings, tool, "permission", permission, fallback);
 
 /** The settings a layer sets, of `answer` (GET /v2/settings/tools gives every capability's provider, its default filled
- *  in, and each permission set): a provider unlike its default, and every permission, by settings key, a key this page
- *  shows no row for (a catalog tool's, an MCP server's wildcard) included. A PUT replaces the whole map, so a save made
- *  from these keeps what it does not change. */
+ *  in, and each permission set): every key and every field as the server holds it, a key this page shows no row for (a
+ *  catalog tool's, an MCP server's wildcard) and a field this console doesn't know included, but a capability's provider
+ *  equal to its default, which is the default filled in. A PUT replaces the whole map, so a save made from these keeps
+ *  what it does not change. */
 export function ownSettings(answer: ToolSettings, choices: readonly ToolChoice[]): ToolSettings {
   const defaults = new Map(choices.map((c) => [c.name, c.default_provider]));
   return Object.fromEntries(Object.entries(answer).flatMap(([key, setting]) => {
-    const provider = setting?.provider !== undefined && defaults.has(key) && setting.provider !== defaults.get(key) ? setting.provider : undefined;
-    const permission = isPermission(setting?.permission) ? setting.permission : undefined;
-    const own = { ...(provider !== undefined ? { provider } : {}), ...(permission ? { permission } : {}) };
+    if (!setting || typeof setting !== "object") return [];
+    const { provider, ...rest } = setting;
+    const own = provider !== undefined && !(defaults.has(key) && provider === defaults.get(key)) ? { ...rest, provider } : rest;
     return Object.keys(own).length ? [[key, own]] : [];
   }));
 }

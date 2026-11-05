@@ -17,6 +17,8 @@ const capsTools = (settings: ToolSettings, askNeeds = false) => [
   { name: "read", permissions: ALL, default_permission: "allow" },
   { name: "bash", permissions: ALL, default_permission: "allow" },
   { name: "ask_person", permissions: ["allow", "deny"], default_permission: "allow" },
+  // web_fetch as the server lists it: a GET answers its provider filled in, which the page knows as the default.
+  { name: "web_fetch", permissions: ALL, default_permission: "allow", providers: ["kernel", "parallel"], provider: settings.web_fetch?.provider ?? "kernel", default_provider: "kernel", resolves: { pi: "kernel", "claude-agent": "native", codex: "native" } },
   { name: "web_search", permissions: ALL, default_permission: "allow", providers: ["auto", "native", "exa-keyless", "parallel", "off"], provider: settings.web_search?.provider ?? "auto", default_provider: "auto", resolves: { pi: "exa-keyless", "claude-agent": "native", codex: "native" } },
 ].map((t) => ({ ...t, available: true, permission: settings[t.name]?.permission ?? t.default_permission, ...(askNeeds && t.permissions.includes("ask") ? { ask_needs: "password" } : {}) }));
 

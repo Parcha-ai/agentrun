@@ -86,7 +86,7 @@ describe("Settings → Tools saves the whole map, read then changed in one place
 
   it("the provider column for web_search and web_fetch is the same with the permission column beside it as without", () => {
     const cells = (withGates: boolean) => {
-      const html = renderToStaticMarkup(createElement(ToolTable, { label: "t", rows: toolRows(toolChoices([SEARCH, FETCH]), withGates ? toolGates(RAW) : []), settings: { web_search: { provider: "parallel" } }, fallbackOf: (t) => t.default_provider, resolvesOf: () => "r", issues: {}, onChange: () => {} }));
+      const html = renderToStaticMarkup(createElement(ToolTable, { label: "t", rows: toolRows(toolChoices([SEARCH, FETCH]), withGates ? toolGates(RAW) : []), settings: { web_search: { provider: "parallel" } }, fallbackOf: (t) => t.default_provider, resolvesOf: () => "r", issues: {}, onEdit: () => {} }));
       const doc = new DOMParser().parseFromString(html, "text/html");
       return ["web_search", "web_fetch"].map((n) => doc.querySelector(`tr[data-tool="${n}"] td:nth-child(2)`)!.outerHTML);
     };

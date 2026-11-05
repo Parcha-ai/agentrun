@@ -119,6 +119,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       {view.canMessage && !approval && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
       )}
+      {approval && <p className="border-t px-5 py-3 text-center font-mono text-[12px] text-muted-foreground md:px-8">Answer the approval above to continue.</p>}
       {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
     </div>
   );

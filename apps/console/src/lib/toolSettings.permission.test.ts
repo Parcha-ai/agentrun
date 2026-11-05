@@ -40,6 +40,12 @@ describe("tool permissions", () => {
     expect(withProvider(start, "web_search", undefined, "auto")).toEqual({ web_search: { permission: "ask" } });
   });
 
+  it("as on main, a capability's provider equal to its default is the default filled in, not a setting: dropped", () => {
+    const choices = toolChoices([CAPS_TOOLS[2], { name: "web_fetch", providers: ["kernel", "parallel"], provider: "kernel", default_provider: "kernel" }]);
+    expect(ownSettings({ web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } }, choices)).toEqual({});
+    expect(ownSettings({ web_search: { provider: "native" }, web_fetch: { provider: "kernel" } }, choices)).toEqual({ web_search: { provider: "native" } });
+  });
+
   it("the server's own settings keep every permission it holds, a catalog tool's and an MCP server's wildcard included", () => {
     const answer = {
       web_search: { provider: "auto", permission: "ask" as const },
