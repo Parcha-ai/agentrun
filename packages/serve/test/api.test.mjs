@@ -24,7 +24,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.deepEqual(body.features.agents, { create: true, list: true, update: true, revisions: true });
   assert.equal(body.features.messages.steer_workflow_runs, false);
   assert.equal(body.features.timeline.live_workflow_rows, false);
-  assert.equal(body.features.tool_permissions, false, "a tool setting carries no permission until the tool gate lands");
+  assert.equal(body.features.tool_permissions, true, "a tool setting carries a permission, which the tool gate holds every call to");
   const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]).length === 0 || !!process.env.KERNEL_API_KEY;
   const monid = !!process.env.MONID_API_KEY;
   assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["browser", keyed, true, false], ["monid.discover", monid, false, false], ["monid.inspect", monid, false, false], ["monid.run", monid, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash runs in no box on a server that has none");
@@ -159,10 +159,10 @@ test("an agent is created from a definition and skills, read back with its ETag,
 
 test("a definition field the store does not keep is refused by name, and an id already here is agent_exists", async (t) => {
   const { api } = await serve(t);
-  const kept = await api("POST", "/agents", agent("m", { input_schema: {}, output_schema: {}, max_cost_usd: 1 }));
+  const kept = await api("POST", "/agents", agent("m", { input_schema: {}, output_schema: {} }));
   assert.equal(kept.status, 422);
   assert.equal(kept.body.error.code, "input_invalid");
-  assert.deepEqual(kept.body.error.fields.map((f) => [f.field, f.reason]), [["definition.input_schema", "not_allowed"], ["definition.output_schema", "not_allowed"], ["definition.max_cost_usd", "not_allowed"]]);
+  assert.deepEqual(kept.body.error.fields.map((f) => [f.field, f.reason]), [["definition.input_schema", "not_allowed"], ["definition.output_schema", "not_allowed"]]);
   assert.deepEqual((await api("POST", "/agents", agent("m", { thinking: "off" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.thinking", "not_an_option"]], "thinking is never off");
   assert.deepEqual((await api("POST", "/agents", flowAgent("fm", answerFlow(), { thinking: "high" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.thinking", "not_allowed"]]);
   assert.deepEqual((await api("POST", "/agents", agent("m", { model: "gpt" }))).body.error.fields.map((f) => [f.field, f.reason]), [["definition.model", "bad_format"]]);

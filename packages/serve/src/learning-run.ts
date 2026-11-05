@@ -33,7 +33,7 @@ import { REFLECT_REQUEST } from "./turns.js";
  *  after it (its rows are those between), its deadline, and how it ended. */
 export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
 /** Who sent the end-of-run turn: the server, never a person, and no request field sets it. The one value it is sent
- *  with, at its one call (reflectTurn); the per-tool gate, once this server has one, takes it there. */
+ *  with, at its one call (reflectTurn); the tool gate reads it there (tool-gate.ts's carve-out). */
 const REFLECT_ORIGIN = "reflect";
 export type TurnOrigin = typeof REFLECT_ORIGIN;
 /** The run asked its end-of-run turn and has not ended since. */
@@ -613,7 +613,11 @@ export class LearningRuns {
       await this.kernel.save(run);
       const { reflectPrompt } = await import("./learn/index.js");
       const tools = await this.draftTools(run);
-      // The one call that sends the end-of-run turn, with its origin.
+      // The one call that sends the end-of-run turn, with its origin. Only while the run is finishing with no outcome yet,
+      // read in the same tick the origin's write starts in (toLiveDoor writes it before its first await): a message
+      // waits while the run is finishing (runs.ts message), so a write starts only before that wait ends. One whose
+      // process went while this turn was made ready has its outcome already: it is asked nothing.
+      if (!run.finishing || run.outcome) return;
       await this.kernel.toLiveDoor(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir: LEARNED_DIR, active: Object.keys(seed.notes).length, tools }), whenBusy: "followUp" }, REFLECT_ORIGIN);
       end = await this.reflectEnd(run, Date.parse(reflect.deadline));
     } catch (error) {
