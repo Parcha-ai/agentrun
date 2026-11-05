@@ -100,6 +100,9 @@ export type TimelineRow = {
   tool_input_preview?: string | null;
   tool_result_preview?: string | null;
   agent_label?: string | null;
+  /** `server` on the row of a message the server wrote into the run (an approval's resume, a raised cap's follow-up): a
+   *  `phase` row whose summary is "AgentRun: <its first line>". It is the message the turn took, never the person's. */
+  origin?: "server";
 };
 
 export type TimelinePage = {
