@@ -833,7 +833,8 @@ every browser call is refused. Under a cap the browser's time is held before it 
 The owner watches a run's browser live from the console, read-only: the same view for every vendor (pi-browser's own viewer,
 a screencast of the page the agent is on), never the vendors' own live-view links, which stay in the run's process. As a
 session opens, the run's process serves its viewer on a loopback port of its own and hands it to the server in one file in
-the run's directory, outside `work/` (`browser-live.json`, 0600), which goes when the session ends. `GET /v2/runs/{id}/browser`
+the run's directory, outside `work/` (`browser-live/<session>.json`, one file per session, 0600), which goes when that
+session ends: a session's end never touches another's, so a relaunch's old session never hides its new one's view. `GET /v2/runs/{id}/browser`
 answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server with its token in the fragment),
 `{state: "none"}` when the run has a browser but no session is open, and `{state: "off", reason}` when it has none: its agent
 has no `browser` tool, or its browser resolves unavailable here (the tool plane's words, `a local Chrome is not set up on this

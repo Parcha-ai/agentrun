@@ -6,7 +6,7 @@
 // dies with its session. On fakes: no network, no key.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FRAME } from "./fixtures/faux-browser.mjs";
@@ -39,8 +39,9 @@ async function watched(t, options = {}) {
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   const { after } = await follow(server.api, runId, ["input_required"]);
-  const file = join(server.data, "runs", runId, "browser-live.json");
-  assert.ok(await until(() => stat(file).then(() => true, () => false)), "the run's process handed its viewer over");
+  const dir = join(server.data, "runs", runId, "browser-live");
+  assert.ok(await until(() => readdir(dir).then((names) => names.some((name) => name.endsWith(".json")), () => false)), "the run's process handed its viewer over");
+  const file = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json")));
   return { server, origin, cookie, runId, file, after };
 }
 
@@ -52,7 +53,8 @@ test("the owner's signed-in page alone gets the viewer's link; the page is frame
   const w = await watched(t);
   const handed = JSON.parse(readFileSync(w.file, "utf8"));
   assert.equal(statSync(w.file).mode & 0o777, 0o600, "the hand-over is the server's user's alone");
-  assert.deepEqual(Object.keys(handed).sort(), ["id", "port", "tag", "token"]);
+  assert.deepEqual(Object.keys(handed).sort(), ["at", "id", "port", "tag", "token"]);
+  assert.equal(statSync(join(w.file, "..")).mode & 0o777, 0o700, "in a directory of the server's user's alone");
   assert.ok(!w.file.includes("/work/"), "outside the run's work/");
 
   // Owner-only: no credential 401, the server's token 403, the owner's session 200.
@@ -112,7 +114,7 @@ test("the viewer's token and its file are in no record, row, view, file list, ho
     said.push(path);
     assert.ok(!JSON.stringify(res.body).includes(handed.token) && !JSON.stringify(res.body).includes(handed.id), `${path} holds no token and no viewer id`);
   }
-  for (const path of [`/runs/${w.runId}/files/..%2Fbrowser-live.json`, `/runs/${w.runId}/files/../browser-live.json`, `/runs/${w.runId}/files/browser-live.json`]) {
+  for (const path of [`/runs/${w.runId}/files/..%2Fbrowser-live/${handed.tag}.json`, `/runs/${w.runId}/files/../browser-live/${handed.tag}.json`, `/runs/${w.runId}/files/browser-live/${handed.tag}.json`]) {
     const res = await w.server.api("GET", path);
     assert.ok(res.status >= 400 && !JSON.stringify(res.body).includes(handed.token), `${path}: ${res.status}`);
   }
@@ -196,6 +198,7 @@ test("a run's process that dies without letting its sessions go takes its hand-o
   const squatter = createServer((_req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<script src=/x.js></script>"); });
   await new Promise((resolve) => squatter.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => squatter.close(resolve)));
+  await mkdir(join(w.file, ".."), { mode: 0o700 });
   writeFileSync(w.file, JSON.stringify({ ...handed, port: squatter.address().port }), { mode: 0o600 });
   assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" }, "no live process: no viewer");
   assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/${handed.id}`, headers: { cookie: w.cookie } })).status, 404, "nothing proxied");

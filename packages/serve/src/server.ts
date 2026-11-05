@@ -38,7 +38,7 @@ import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, pla
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
-import { liveRest, proxyLiveHttp, proxyLiveUpgrade, readHandover, viewerAnswers, viewerLink } from "./browser-live.js";
+import { handoverById, type LiveHandover, liveRest, proxyLiveHttp, proxyLiveUpgrade, readHandover, readHandovers, viewerAnswers, viewerLink } from "./browser-live.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
@@ -1614,8 +1614,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
         // Only the run's live process serves its view: a file one that is gone left behind names none, whatever answers its port.
-        const handover = runs.hasProcess(run.id) ? await readHandover(run.dir) : undefined;
-        const live = handover && (await viewerAnswers(handover)) ? handover : undefined;
+        // The newest session whose viewer answers: an older one still open is the next, one that went quiet none.
+        let live: LiveHandover | undefined;
+        for (const handover of runs.hasProcess(run.id) ? await readHandovers(run.dir) : []) if ((live = (await viewerAnswers(handover)) ? handover : undefined)) break;
         return send(res, 200, live ? { state: "live", viewer: viewerLink(run.id, live) } : { state: "none" }, { "cache-control": "no-store" });
       }
       case "listRunFiles": {
@@ -1885,8 +1886,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
     }
     const run = await needRun(runId);
-    const handover = runs.hasProcess(run.id) ? await readHandover(run.dir) : undefined;
-    if (!handover || !liveRest(rest) || (rest.startsWith("/v/") && rest !== `/v/${handover.id}`)) throw new ApiError("not_found", "this run's browser has no live view at that address");
+    const viewer = /^\/v\/([A-Za-z0-9_-]{22})$/.exec(rest)?.[1];
+    // A viewer's page goes to that viewer's session; its two files, to the newest one's.
+    const handover = !runs.hasProcess(run.id) || !liveRest(rest) ? undefined : viewer ? await handoverById(run.dir, viewer) : await readHandover(run.dir);
+    if (!handover) throw new ApiError("not_found", "this run's browser has no live view at that address");
     await proxyLiveHttp(req, res, handover, rest);
   }
 
@@ -1954,8 +1957,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
     void (async () => {
       const run = await runs.get(viewing[1]!);
-      const handover = run && runs.hasProcess(run.id) ? await readHandover(run.dir) : undefined;
-      if (!handover || viewing[2] !== `/v/${handover.id}/ws`) return deny("404 Not Found");
+      const handover = run && runs.hasProcess(run.id) ? await handoverById(run.dir, viewing[2]!.slice(3, -3)) : undefined;
+      if (!handover) return deny("404 Not Found");
       proxyLiveUpgrade(req, socket, head, handover, viewing[2]!);
     })().catch(() => deny("500 Internal Server Error"));
   });
