@@ -627,6 +627,73 @@ test("pi under a cap: a Messages request that thinks, stopped after a short thin
   assert.equal(await spentSaid(plain), eight(held - most * 15 / 1e6 + (3 + STOP_ALLOWANCE) * 15 / 1e6), "thinking off: its input, 3 bytes and the allowance");
 });
 
+/** A Claude entry of pi-ai's own catalog, on Anthropic's API. */
+const catalogClaude = async (id) => {
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const found = builtinModels({}).getModel("anthropic", id);
+  assert.ok(found, `pi-ai's catalog lists ${id}`);
+  return found;
+};
+/** What a request on `on` with `context` holds for its input under a $1 cap: the hold of one asking 2,000 tokens, less
+ *  their price. */
+const inputHeld = async (on, context) => {
+  const { models, sent } = streamingModels();
+  void (await capModels(models, 1, 0)).streamSimple(on, context, { maxTokens: 2_000 });
+  return sent[0].options[HELD_USD] - 2_000 * on.cost.output / 1e6;
+};
+/** Adaptive thinking takes no budget: pi-ai sends the model's maxTokens as is and it thinks within them as it sees fit.
+ *  Sonnet 5.5 thinks adaptively at every level, a level or none (supportsMidConvoEffort); Opus 4.7 when given a level. */
+const ADAPTIVE = [["claude-sonnet-5-5", { reasoning: "medium" }], ["claude-sonnet-5-5", { reasoning: "high" }], ["claude-opus-4-7", { reasoning: "medium" }], ["claude-sonnet-5-5", {}]];
+
+for (const [id, options] of ADAPTIVE) {
+  test(`pi under a cap: a request to ${id}${options.reasoning ? ` at ${options.reasoning}` : " with no level"}, whose thinking is adaptive (no budget, bounded only by its output limit), stopped after a 300-byte thinking summary, counts the whole limit's unstreamed thinking: at its hold (the reader's case on Sonnet 5.5: a 20 KB context under a $1 cap, where ~40,000 adaptive thinking tokens cost about $0.45, counted $0.142 at medium and $0.224 at high: its level's budget, never sent; claude-agent's reader gives the hold for the same body)`, async () => {
+    const claude = await catalogClaude(id);
+    assert.ok(claude.compat?.forceAdaptiveThinking === true || claude.compat?.supportsMidConvoEffort === true, "setup: pi-ai thinks adaptively on it");
+    const per = claude.cost.output / 1e6;
+    const input = await inputHeld(claude, twentyKb);
+    const { models, sent } = streamingModels();
+    const capped = await capModels(models, 1, 0);
+    const request = capped.streamSimple(claude, twentyKb, options);
+    const held = sent[0].options[HELD_USD];
+    sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+    await request.result();
+    await settle();
+    const spent = await spentSaid(capped);
+    // ~40,000 thinking tokens, or what the $1 cap buys when that is less (Opus 4.7's $25 a million).
+    const thought = Math.min(40_000, Math.floor((1 - input) / per));
+    assert.ok(spent >= eight(input + thought * per), `at least what ${thought} adaptive thinking tokens cost, $${eight(input + thought * per)}: $${spent}`);
+    assert.equal(spent, eight(held), "at its hold: what streamed, the allowance and the limit's unstreamed thinking fill its output limit");
+  });
+
+  test(`pi under a cap: a request to ${id}${options.reasoning ? ` at ${options.reasoning}` : " with no level"}, whose thinking is adaptive, is sent with the output limit it is held at, no budget taken out of it: pi-ai sends an adaptive model's maxTokens as is`, async () => {
+    const claude = await catalogClaude(id);
+    const per = claude.cost.output / 1e6;
+    const input = await inputHeld(claude, twentyKb);
+    const { models, sent } = streamingModels();
+    void (await capModels(models, 1, 0)).streamSimple(claude, twentyKb, options);
+    const { maxTokens, [HELD_USD]: held, thinkingBudgets } = sent[0].options;
+    assert.equal(eight(input + maxTokens * per), eight(held), `sent with ${maxTokens} tokens, held at $${held}`);
+    assert.equal(thinkingBudgets, undefined, "no budget: pi-ai sends none to an adaptive model");
+  });
+}
+
+test("pi under a cap: a request to a Claude model whose thinking takes a budget (pi-ai's Sonnet 4.5), stopped after a 300-byte thinking summary, still counts its level's budget, the budget it was sent with, not its whole limit", async () => {
+  const claude = await catalogClaude("claude-sonnet-4-5");
+  assert.ok(claude.compat?.forceAdaptiveThinking !== true && claude.compat?.supportsMidConvoEffort !== true, "setup: pi-ai sends it a thinking budget");
+  const per = claude.cost.output / 1e6;
+  const { models, sent } = streamingModels();
+  const capped = await capModels(models, 1, 0);
+  const request = capped.streamSimple(claude, twentyKb, { reasoning: "medium" });
+  const opts = sent[0].options;
+  const budget = opts.thinkingBudgets?.medium ?? LEVEL_BUDGET.medium;
+  const input = opts[HELD_USD] - (opts.maxTokens + (opts.thinkingBudgets ? budget : 0)) * per;
+  sent[0].end("aborted", [{ type: "thinking", thinking: SUMMARY }], 0);
+  await request.result();
+  await settle();
+  const summary = Buffer.byteLength(SUMMARY);
+  assert.equal(await spentSaid(capped), eight(input + (summary + STOP_ALLOWANCE + Math.max(0, budget - summary)) * per), "its level's budget, less what streamed");
+});
+
 test("pi under a cap: a summary that fails with no answer counts at the worst case the cap held for it", async () => {
   const { models, sent } = fakeModels();
   const capped = await capModels({ ...models, completeSimple: () => Promise.reject(new Error("the connection reset")) }, 0.0015, 0);
