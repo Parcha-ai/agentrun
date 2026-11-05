@@ -446,7 +446,11 @@ test("a stop of a parked run withdraws the call: stopped, no pending approval, i
 
   const cancelRun = await fetching(first.api, "cancel-parked", "codex");
   const cancelId = (await parked(first.api, cancelRun)).view.pending.id;
+  // A cancel with no answered call in flight waits on nothing (runs.ts untilResolved runs only after it superseded one):
+  // it answers at its usual speed, well inside that wait's 3 s bound.
+  const asked = Date.now();
   assert.equal((await first.api("POST", `/runs/${cancelRun}/cancel`)).status, 202);
+  assert.ok(Date.now() - asked < 2_000, `a plain cancel answered in ${Date.now() - asked} ms`);
   await follow(first.api, cancelRun, ["cancelled"], { deadlineMs: 30_000 });
   const cancelRow = (await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(cancelRow.summary, /^Withdrawn/);
