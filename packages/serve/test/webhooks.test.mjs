@@ -1072,7 +1072,10 @@ test("a notice and its record are one write: the outbox holds the end and the wa
   assert.deepEqual(Object.keys(ledgerOf(dir)), ["run_1"]);
   assert.deepEqual([ledgerOf(dir).run_1.ended, ledgerOf(dir).run_1.wait], [ended, "row_7"], "recorded in the write that queued them");
   assert.equal(first.emit("run.ended", run, ended), "queued", "the same end: already queued");
-  await until(() => hook.got.length === 2, "both sent");
+  // Closed once each try has its answer, not once the receiver has the request: a close cuts a try in flight, and the
+  // next server sends its message again (at least once, under the same webhook-id).
+  await until(() => first.attemptsView().attempts.length === 2, "both sent and answered");
+  assert.deepEqual(first.attemptsView().attempts.map((a) => a.status_code), [200, 200]);
   await first.close();
   // The next server reads the ledger: the same end and the same wait queue nothing, a new end of the run does.
   const next = new Webhooks(dir, env, () => undefined, []);
