@@ -17,6 +17,7 @@
 // a crash cut off is never run again (`replay: "never"`): it is answered interrupted.
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { cut, registerLabel, registerOutcome } from "@parcha/pi-durable-agent/timeline";
 import { sideRequests } from "./cap.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
@@ -29,6 +30,29 @@ import { allows, CALL_TOOLS, learnedDraftTools, toolOf } from "./tools.js";
 import type { Complete } from "./llm.js";
 
 export const LEARNED_WORKFLOW_TOOL = "learned_workflow";
+
+/** One line of a learned workflow's output for its row: an object's fields as `name value`, else its JSON, cut. The row
+ *  says it through the timeline's own redaction (its summary's words), as any tool's outcome. */
+function outputLine(text: string): string | undefined {
+  let output: unknown;
+  try {
+    output = JSON.parse(text.split("\n")[0] ?? "");
+  } catch {
+    return undefined;
+  }
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const fields = Object.entries(output as Record<string, unknown>).map(([key, value]) => `${key} ${typeof value === "object" && value !== null ? JSON.stringify(value) : String(value)}`);
+    return fields.length ? cut(fields.join(", "), 120) : undefined;
+  }
+  return cut(JSON.stringify(output), 120);
+}
+
+// The timeline's words for a learned workflow's call: the workflow it ran (its name), and, once it returns, its output.
+registerLabel(LEARNED_WORKFLOW_TOOL, (a) => (typeof a.name === "string" && a.name ? `Ran the learned workflow ${a.name}` : "Ran a learned workflow"), undefined, { name: "Run a learned workflow" });
+registerOutcome(LEARNED_WORKFLOW_TOOL, (result) => {
+  const line = outputLine(result.text);
+  return line === undefined ? undefined : { failed: false, text: line };
+});
 
 /** The models a learned workflow's model nodes run on: the run's own (capped and marked: app.ts), as pi-ai's. */
 type RunModels = {
