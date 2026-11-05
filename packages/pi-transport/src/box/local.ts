@@ -41,6 +41,8 @@ const HAS_PROC = existsSync("/proc/self/environ");
  */
 const WATCHDOG_SCRIPT = `sleep "$1" || exit 0
 [ -f "$2/${RECORD_FILE}" ] || exit 0
+# The box's directory as /proc shows a process working in it, every link resolved.
+dir=$(cd -P -- "$2" 2>/dev/null && pwd -P) || dir=$2
 # end_group <group> <host's group>: ends the group unless it is 1 or less, this watchdog's own, or the host's ($4, the
 # group of the process that made the box).
 end_group() {
@@ -66,7 +68,7 @@ while [ "$round" -lt ${KILL_ROUNDS} ]; do
 	done
 done
 # One listing of every working directory, so a machine with thousands of processes costs two processes, not thousands.
-for pid in $(ls -l /proc/[0-9]*/cwd 2>/dev/null | awk -v d="$2" -v self="$$" '{
+for pid in $(ls -l /proc/[0-9]*/cwd 2>/dev/null | awk -v d="$dir" -v self="$$" '{
 	at = index($0, " -> "); if (!at) next
 	path = substr($0, at + 4); sub(/ \\(deleted\\)$/, "", path)
 	if (path != d && index(path, d "/") != 1) next
