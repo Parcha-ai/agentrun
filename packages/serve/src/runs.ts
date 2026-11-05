@@ -1249,6 +1249,20 @@ export class Runs {
     return withoutLoopback(redacted(text, this.refusedValues(run)));
   }
 
+  /** A run's error as its view and the run lists serve it: its message in shown()'s terms. */
+  private servedRunError<E extends { message: string }>(run: Run, error: E): E {
+    return { ...error, message: this.shown(run, error.message) };
+  }
+
+  /** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): this
+   *  server's secrets and tokens, and its agent's browser sign-in's pointer, read back as a load does (peekSignIn). */
+  private async rowShown(agentId: string, meta: Partial<RunMeta> | null, text: string): Promise<string> {
+    const browser = isObject(meta?.tool_plane) ? meta.tool_plane.browser : undefined;
+    const peeked = browser ? await this.options.signIns?.peek(agentId, browser).catch(() => undefined) : undefined;
+    const pointer = typeof peeked === "object" && peeked.ref.length >= MIN_SECRET ? [peeked.ref] : [];
+    return withoutLoopback(redacted(text, [...hostSecrets(process.env, this.options.storedKeys), ...pointer, this.options.token, this.options.doorToken]));
+  }
+
   /** A run's answer as serve serves it: no held secret, never cut (redactedAnswer). Loopback addresses stay: an answer is
    *  the model's own words, and a local address there can be what the person asked about. */
   private servedAnswer(run: Run, text: string | null): string | null {
@@ -2244,7 +2258,8 @@ export class Runs {
     // store keeps it for good, and a view of the run reads it back as its answer.
     const said = summary ?? (outcome === "completed" ? answerOfRun(run) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     const line = said ? redactedAnswer(said, this.refusedValues(run)) : said;
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
+    // Kept cut too, as its line is: a later server that can no longer read the pointer back serves it as kept.
+    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refusedValues(run)), ...(run.error.details ? { details: run.error.details } : {}) };
     // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
     // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.
     const endedAt = (run.endedAt ??= new Date().toISOString());
@@ -3068,7 +3083,8 @@ export class Runs {
       ended_at: endedAt,
       // An answer is served with no held secret in it, whole (key-refusal.ts redactedAnswer); the stored one stays as written.
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
-      error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
+      // Cut as its rows and answer are (shown): an error can quote what the run said, or a process's last line.
+      error: status === "failed" ? this.servedRunError(run, run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
@@ -3100,12 +3116,13 @@ export class Runs {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known);
     const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
+    const failed = STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null;
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
       ...(typeof meta?.effort === "string" ? { effort: meta.effort } : {}),
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
-      error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
+      error: failed && { ...failed, message: await this.rowShown(row.agent, meta, failed.message) },
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null, ...(row.costUsd == null ? (soFarOfMeta(meta) ?? {}) : {}) },
       archived_at: row.archivedAt ?? null,

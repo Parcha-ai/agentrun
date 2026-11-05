@@ -21,6 +21,7 @@ import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { CAP_REFUSAL_PREFIX, SPEND_CAP_REACHED } from "./cap.js";
 import { readJson, RUN_META, runDoorToken } from "./files.js";
 import { activeOf, detailShown, dropSeed, gradeModelOf, keepTurn, KEPT_LEARNING, layLearned, layPinnedSkills, LEARNED_DIR, type LearnedFile, type Learning, LEARNING_BUDGET, LEARNING_LABEL, learningBlocker, type LearningReason, type LearningState, learningTestHooks, learningView, type NoteLearned, pinSeed, type Proposal, PROPOSAL, readPin, readTurn, secretsShown, type Seed, seedAt, seedOf, shortLearning, type Shown, skillsAt, type Turn, withAgentGrade } from "./learning.js";
+import { redacted } from "./key-refusal.js";
 import { withoutFaux } from "./model.js";
 import type { Run, RunsOptions, Status } from "./runs.js";
 import { hostSecrets, secret, SECRET_NAMES, withSecrets } from "./secrets.js";
@@ -595,7 +596,7 @@ export class LearningRuns {
     const after = run.lastEntry ?? Math.max(0, ...run.rows.map((row) => entryOf(row.id)).filter(Number.isInteger));
     run.meta.reflect = { outcome, after, deadline: new Date(Date.now() + (this.options.reflectTimeoutMs ?? REFLECT_TIMEOUT_MS)).toISOString() };
     // The job's error, kept for a restart: the turn's is never the run's.
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
+    if (run.error) run.meta.error = { code: run.error.code, message: redacted(run.error.message, this.refused(run)), ...(run.error.details ? { details: run.error.details } : {}) };
     // Its answer is final now: when, and what its job cost, before the end-of-run turn spends any more.
     this.setLearning(run, "reflecting", null, said.reflecting, { answered_at: run.endedAt, job_cost_usd: this.kernel.costOf(run.rows) });
     this.kernel.mark(run);
