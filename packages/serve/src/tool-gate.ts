@@ -438,12 +438,18 @@ export class RunGate {
         // Withdrawn with its run (a cancel, or a stop while it waited): never run and nothing resumed; resolved, so the
         // run waits on it no more.
         if (answer?.decision === "canceled" || answer?.decision === "withdrawn") {
-          await this.durable!.harness.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision: answer.decision as string } }), this.context!);
-          held.resolved = true;
+          await this.resolveSilently(held, answer.decision);
           continue;
         }
         if (answer?.decision !== "allow" && answer?.decision !== "deny") continue;
         const decision = answer.decision;
+        // Read again just before acting: a stop or a cancel since overrides the answer (runs.ts supersede), and then
+        // nothing runs and nothing resumes. Once the call's intent is written, a stop takes its turn as any stop does.
+        const now = ((await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string }> | undefined)?.[held.id];
+        if (now?.decision !== decision) {
+          if (now?.decision === "canceled" || now?.decision === "withdrawn") await this.resolveSilently(held, now.decision);
+          continue;
+        }
         // An allow runs the call, unless its tool was set to deny since it asked.
         const result = decision === "deny" ? { text: refusedText(held.tool, answer.note), isError: true } : this.policy(held.tool) === "deny" ? { text: deniedText(held.tool), isError: true } : await this.run(held);
         // The arguments the message names are the server's redacted ones: the gate never writes a held value there.
@@ -456,6 +462,12 @@ export class RunGate {
     } finally {
       this.settling = false;
     }
+  }
+
+  /** A call withdrawn with its run: resolved in the run's store with nothing run and nothing resumed. */
+  private async resolveSilently(held: ApprovalRequest & { resolved?: true }, decision: string): Promise<void> {
+    await this.durable!.harness.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }), this.context!);
+    held.resolved = true;
   }
 
   /** The approved call, run once by the kernel through the journal any host tool's call goes through, as an effect of

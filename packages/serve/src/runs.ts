@@ -167,7 +167,8 @@ type RunMeta = {
 type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
 /** `by`: "message", a deny a person's message gave while the call waited (Runs.message). */
-type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message" };
+/** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, kept as it was given. */
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" } };
 /** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
 const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
@@ -407,7 +408,11 @@ function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals
     const byMessage = run.meta.approvals?.[approval.id]?.by === "message";
     const head = approval === waiting ? "Waiting for your approval" : byMessage ? "Declined by your message" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
     const summary = `${head}: ${approval.tool} ${clip(args, 400)}`;
-    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+    // A message that would have declined the call, which a stop or a cancel overrode: its words were never sent, and
+    // the row says so (the record keeps them whole).
+    const dropped = run.meta.approvals?.[approval.id]?.superseded;
+    const text = dropped?.by === "message" && dropped.note !== undefined ? `${args}\n\nNot sent: the run was ${said === "canceled" ? "cancelled" : "stopped"}. Your message: ${redact(dropped.note)}` : args;
+    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
   });
 }
 /** An import's answer, the one row reading of an answer left: its records hold no turn's end (it ran elsewhere), so its
@@ -2206,9 +2211,12 @@ export class Runs {
     if (run.kind !== "workflow") await this.caughtUp(run);
     // A tool call that waits for approval is withdrawn by the stop (never run, an answer after is 409); then a turn that
     // runs meanwhile is stopped as any working run's is, and with none the run is stopped as a stop leaves one.
-    const withdrawn = run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing && waitingApproval(run) ? await this.withdraw(run) : false;
+    const open = run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing;
+    const withdrawn = open && waitingApproval(run) ? await this.withdraw(run) : false;
+    // An answer the run's process has not acted on yet is overridden too: a stop wins, so nothing runs and nothing resumes.
+    const superseded = open ? await this.supersede(run, "withdrawn") : false;
     const { status, state } = statusOf(run);
-    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return withdrawn ? this.stopIdle(run) : false;
+    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return withdrawn || superseded ? this.stopIdle(run) : false;
     run.stopping = true;
     try {
       return await this.stopTurn(run);
@@ -2227,6 +2235,23 @@ export class Runs {
     this.refresh(run);
     if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
     return { mode: "answer", messageId: `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}` };
+  }
+
+  /** The answers given and not acted on yet (the run's process has not resolved them), overridden by a stop or a cancel:
+   *  `withdrawn` or `canceled`, each keeping the answer it superseded, so nothing runs and nothing resumes, and the
+   *  history shows what was given. The run's gate reads the answer again just before it acts (tool-gate.ts). */
+  private async supersede(run: Run, decision: "withdrawn" | "canceled"): Promise<boolean> {
+    const given = [...(run.approvals?.values() ?? [])].filter((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
+    if (!given.length) return false;
+    const now = new Date().toISOString();
+    const overridden = given.map((a) => {
+      const was = run.meta.approvals![a.id]!;
+      return [a.id, { decision, answered_at: now, superseded: { decision: was.decision, answered_at: was.answered_at, ...(was.note !== undefined ? { note: was.note } : {}), ...(was.by ? { by: was.by } : {}) } }] as const;
+    });
+    run.meta.approvals = { ...run.meta.approvals, ...Object.fromEntries(overridden) };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
   }
 
   /** stop()'s withdrawal of the tool call that waits for approval: never run, and an answer after is 409. */
@@ -2303,6 +2328,8 @@ export class Runs {
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `its canceled approval is not saved: ${error.message}`));
       this.restate(run);
     }
+    // An answer its process has not acted on yet is overridden too: nothing runs and nothing resumes.
+    await this.supersede(run, "canceled").catch((error: Error) => warn(run.id, `its superseded approval is not saved: ${error.message}`));
     if (run.kind === "agentic") {
       run.finishing = "cancelled";
       run.endedAt = new Date().toISOString();
