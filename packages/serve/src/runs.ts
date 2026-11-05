@@ -246,6 +246,8 @@ export type Run = {
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
+  /** The write of its end-of-run turn's origin (toLiveDoor), which a person's turn waits for before it removes it. */
+  originWrite?: Promise<unknown>;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
   users: Set<string>;
   /** The rows the live path has shown as live, by id, over every connection to the run's door. */
@@ -1565,7 +1567,7 @@ export class Runs {
    *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts's carve-out); a person's message
    *  removes it. */
   private async toLiveDoor(run: Run, path: string, body?: Json, turnOrigin?: TurnOrigin): Promise<Json | null> {
-    if (turnOrigin) await writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`);
+    if (turnOrigin) await (run.originWrite = writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`));
     for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
       if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
       const door = this.doorOf(await this.record(run));
@@ -2220,6 +2222,8 @@ export class Runs {
   /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts's carve-out),
    *  so its origin goes, right before the turn is sent. */
   private async personsTurn(run: Run): Promise<void> {
+    // A write of the origin still in flight lands first, then goes: none starts from here (learning-run.ts reflectTurn).
+    await run.originWrite?.catch(() => undefined);
     await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
   }
 
