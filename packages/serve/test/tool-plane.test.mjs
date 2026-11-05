@@ -7,8 +7,8 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { BOUND_TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, explainsView, settingsIssues, ToolSettings } from "../dist/tool-plane.js";
+import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
+import { CAPABILITIES, explainsView, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -130,7 +130,7 @@ test("with no box on the server, a sandbox-only tool reads unavailable for that 
   const boxless = toolsView({}, {}, noBox);
   const bash = boxless.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, noBox, true], "a sandbox-only tool no box can run is unavailable, with the box's reason");
-  assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash"], "only a sandbox-only tool");
+  assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], "only the sandbox-only tools: bash and the background tools");
   const keyless = "Exa's free keyless search, no key";
   assert.deepEqual(boxless.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.available, tool.resolves, tool.why]), [
     ["web_fetch", true, each("kernel"), each("the guarded direct fetch")],
@@ -184,11 +184,17 @@ test("a pi agent that names no model and picks native search runs on a server wh
   assert.equal(run.status, 202, JSON.stringify(run.body));
 });
 
-test("settings are checked before anything is kept: an unknown capability, a provider not offered for it, and a permission, which waits for the tool gate", () => {
+test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", async () => {
   assert.deepEqual(settingsIssues({ web_search: { provider: "exa-keyless" }, web_fetch: {} }), []);
-  assert.deepEqual(settingsIssues({ ask_person: { provider: "native" } }).map((i) => [i.field, i.reason]), [["ask_person", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ ask_person: { provider: "native" } }).map((i) => [i.field, i.reason]), [["ask_person.provider", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ fetch_pages: {} }).map((i) => [i.field, i.reason]), [["fetch_pages", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ web_fetch: { provider: "native" } }).map((i) => [i.field, i.reason, i.message]), [["web_fetch.provider", "not_an_option", "web_fetch.provider is one of kernel, parallel"]]);
-  assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_yet", "permissions arrive with the tool gate"]]);
+  assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings"), []);
+  assert.deepEqual(settingsIssues({ web_search: { permission: "never" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_an_option", "definition.tool_settings.web_search.permission is one of allow, ask, deny"]]);
+  // The background tools follow bash's setting (tool-gate.ts SHELL_FAMILY): none is a name of the table's settings.
+  const { SHELL_FAMILY } = await import("../dist/tool-gate.js");
+  const heldToAnother = (name) => Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name;
+  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.") && !heldToAnother(name)), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, but those held to bash's setting, and its legacy names");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
@@ -210,9 +216,9 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   ]);
 
   for (const [body, fields] of [
-    [{ ask_person: { provider: "native" } }, [["ask_person", "not_allowed"]]],
+    [{ ask_person: { provider: "native" } }, [["ask_person.provider", "not_allowed"]]],
     [{ web_search: { provider: "kernel" } }, [["web_search.provider", "not_an_option"]]],
-    [{ web_fetch: { provider: "kernel", permission: "ask" } }, [["web_fetch.permission", "not_yet"]]],
+    [{ web_fetch: { provider: "kernel", permission: "maybe" } }, [["web_fetch.permission", "not_an_option"]]],
   ]) {
     const refused = await api("PUT", "/settings/tools", body);
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, fields], JSON.stringify(body));
@@ -236,17 +242,18 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual(made.body.definition.tool_settings, { web_search: { provider: "native" } });
   const own = (await api("GET", "/agents/searcher")).body;
   meets("/agents/{agent_id}", "get", own);
+  const allowed = (askable = true) => ({ permission: "allow", permission_from: "default", default_permission: "allow", permissions: askable ? ["allow", "ask", "deny"] : ["allow", "deny"] });
   assert.deepEqual(own.tools, [
-    { name: "read" },
-    { name: "web_fetch", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
-    { name: "fetch_page", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
-    { name: "web_search", provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
+    { name: "read", ...allowed() },
+    { name: "web_fetch", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "fetch_page", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "web_search", ...allowed(), provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
   ], "capabilities' order; its own pick over the server's, which is its default");
   assert.equal((await api("GET", "/agents")).body.agents[0].tools, undefined, "the projection is the one agent's read alone");
   const coded = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["web_search"] }));
   assert.equal(coded.status, 201, JSON.stringify(coded.body));
-  assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
-  for (const [tool_settings, field, reason] of [[{ web_search: { permission: "deny" } }, "definition.tool_settings.web_search.permission", "not_yet"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person", "not_allowed"]]) {
+  assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", ...allowed(), provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
+  for (const [tool_settings, field, reason] of [[{ web_search: { permission: "maybe" } }, "definition.tool_settings.web_search.permission", "not_an_option"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person.provider", "not_allowed"]]) {
     const refused = await api("POST", "/agents", agent("refused", { tools: ["web_search"], tool_settings }));
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [[field, reason]]], JSON.stringify(tool_settings));
   }
@@ -279,7 +286,9 @@ test("a kept plane at a later launch: as it was, but Parallel with its key gone 
     assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, text);
   }
   assert.equal(said.length, 2);
-  assert.match(said[0], /tool-settings\.json is not tool settings this server reads; every tool takes its default provider/);
+  assert.match(said[0], /tool-settings\.json does not read as JSON; every tool takes its defaults until a PUT/);
+  assert.match(said[1], /tool-settings\.json: web_search\.provider not_an_option; that entry is dropped/);
+  assert.ok(!said.join("").includes("bing"), "no value is said");
 });
 
 test("a workflow's model node naming web_search, its revision listing no tools, resolves and runs: on auto, to Parallel where the server holds its key; with keyless Exa picked, to Exa; an empty setting is no setting", async (t) => {
@@ -346,4 +355,14 @@ test("the run check resolves search as the run does: a workflow picking native s
   assert.doesNotMatch(said(await blockersOf(env, claude, {})), /web_search/, "uncapped: Claude's own search");
   assert.match(said(await blockersOf(env, claude, {}, { capped: true })), /The tool web_search does not run here on claude-agent: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet/, "capped: refused, its fees never let past the cap");
   assert.doesNotMatch(said(await blockersOf(env, { ...claude, toolSettings: {} }, {}, { capped: true })), /web_search/, "capped on auto: keyless Exa, nothing to refuse");
+});
+
+test("a run relaunched while a capability is set to deny is handed it denied; launched, it is handed the provider a held call would use, and the gate refuses each call", () => {
+  const tooling = { harness: "pi", tools: ["web_fetch"] };
+  const denied = { web_fetch: { permission: "deny" } };
+  assert.equal(planeFor({}, tooling, denied, { run: true }).web_fetch, "kernel", "at its launch: a deny lifted mid-run is lifted at the next call");
+  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied).web_fetch, "unavailable: denied", "relaunched while denied: denied");
+  assert.equal(relaunchPlane(undefined, {}, tooling, denied).web_fetch, "unavailable: denied", "a run made before its plane was kept: denied too");
+  assert.equal(relaunchPlane({ web_fetch: "unavailable: denied" }, {}, tooling, {}).web_fetch, "kernel", "a deny lifted since is lifted");
+  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied, { first: true }).web_fetch, "kernel", "its first launch, from its start: as under ask, the gate refusing each call");
 });
