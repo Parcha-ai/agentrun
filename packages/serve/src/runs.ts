@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, registerLabel, registerTurnEnding, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
@@ -1986,9 +1986,12 @@ export class Runs {
     return true;
   }
 
-  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
+  /** One message to the run's door. `origin`: who wrote it when the person did not (a raised cap's follow-up, an
+   *  approval's resume), carried to its user entry so the Timeline shows it as the server's (pi-durable-agent's
+   *  MessageOrigin); the model reads the same text either way. */
+  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number, origin?: MessageOrigin): Promise<void> {
     await this.beforeSubmit?.(run.id, content);
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}) }, readyMs);
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
