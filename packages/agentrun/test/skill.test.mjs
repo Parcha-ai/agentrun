@@ -223,9 +223,15 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
 async function echoServer(t) {
   const answer = { status: 422, secret: "", form: "json" };
   const server = createServer((req, res) => {
-    req.resume();
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       const { status, secret, form } = answer;
+      // An MCP server's preview that repeats what it was sent: each header's value in its instructions, and the URL.
+      if (form === "mcp") {
+        const sent = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ url: sent.url, instructions: `Call with ${Object.values(sent.auth.headers).join(" and ")}.` }));
+      }
       if (form === "shape") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
       if (form === "raw") return res.writeHead(status, { "content-type": "text/plain" }).end(`refused ${secret}`);
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "input_invalid", message: `refused ${secret} ${encodeURIComponent(secret)}` }, echo: { secret } }));
@@ -288,6 +294,17 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
     const ok = await cli(["tool-keys", "set", "parallel", "PARALLEL_API_KEY", ...base], { ...key, input: secret });
     assert.equal(ok.code, 0, ok.err);
     clean(ok, secret, "tool-keys set, a success");
+  }
+
+  // An MCP server's credential under any header name, `url` and `type` among them, is a secret: cut from a success that
+  // repeats it. The body's own url and auth.type are not, and print as they are.
+  Object.assign(echo.answer, { form: "mcp" });
+  const headers = { url: `not-a-secret-${randomBytes(8).toString("hex")}`, type: `not-a-secret-${randomBytes(8).toString("hex")}`, "x-api-key": `not-a-secret-${randomBytes(8).toString("hex")}` };
+  for (const args of [["mcp-servers", "preview"], ["mcp-servers", "save", "srv"]]) {
+    const sent = await cli([...args, "--body", "-", ...base], { ...key, input: JSON.stringify({ url: "https://mcp.example.com/mcp", auth: { type: "headers", headers } }) });
+    assert.equal(sent.code, 0, sent.err);
+    for (const value of Object.values(headers)) clean(sent, value, `${args.join(" ")}, a header's value`);
+    assert.match(sent.out, /"url":"https:\/\/mcp\.example\.com\/mcp"/, "the server's URL is no secret");
   }
 
   // A 200 that is not the agents list: not the server it says it is, so nothing is written.
