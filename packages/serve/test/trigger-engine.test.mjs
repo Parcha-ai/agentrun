@@ -409,3 +409,29 @@ test("a restart queues the failures it finds unsent before its first tick record
   assert.deepEqual(told, [firing(1, "failed").key], "the unsent failure was queued");
   await until(() => second.triggers.firings(made.id).firings.length >= 200 && second.triggers.firings(made.id).firings.every((f) => f.status !== "due"), "the restart's firing settled");
 });
+
+test("a webhook event's firing is driven in its trigger's turn: a tick while its message is out sends it no second time, and a busy run's refusal is tried again 5 s later", async (t) => {
+  const calls = [];
+  const { clock, triggers } = await engine(t, {
+    message: () => {
+      const next = held();
+      calls.push(next);
+      return next.promise;
+    },
+    secrets: { mint: () => "unused", remove: () => {} },
+  });
+  const hook = await triggers.create({ name: "inbox", source: { kind: "webhook" }, target: toRun9 });
+  const poll = await triggers.create(body({ every_s: 60 }));
+  assert.equal(triggers.receive(hook.id, "msg_1", "{}").created, true);
+  await until(() => calls.length === 1, "the event's message out");
+  // A tick for another trigger's time: the event's firing is due, with no retry time, so the tick asks for it too.
+  clock.to(triggers.get(poll.id).next_at);
+  await until(() => triggers.firings(poll.id).firings[0]?.status === "started", "the schedule's own firing");
+  assert.equal(calls.length, 1, "the event's message is out once");
+  calls[0].reject(WORKING());
+  await until(() => triggers.firings(hook.id).firings[0].retry_at, "refused while the run works: due again");
+  clock.to(triggers.firings(hook.id).firings[0].retry_at);
+  await until(() => calls.length === 2, "tried again at its retry time");
+  calls[1].resolve();
+  await until(() => triggers.firings(hook.id).firings[0].status === "sent", "sent once the run is idle");
+});
