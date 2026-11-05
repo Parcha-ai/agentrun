@@ -83,6 +83,8 @@ const pointerHash = (ref: string): string => createHash("sha256").update(ref, "u
 /** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
  *  key changed or is missing, or the sign-ins file is damaged or can't be read). */
 export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
+/** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
+export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
 /** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
@@ -1002,9 +1004,18 @@ export class Runs {
       // sign-in and hides it again. A load that threw here would leave this run cached half taken up, never watched.
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it is hidden is not saved: ${error.message}`));
     }
+    // An ended run handed a sign-in that does not open under this server's seal key: what it said could repeat the pointer,
+    // which nothing here can cut, so none of it is served: its store is not read, and its answer, output and error words
+    // are withheld. It ended as it ended: nothing is stopped or failed. Here only, never saved for it: each server decides
+    // from its own key, so the sign-in opening again shows it again, cut. A run from before servers kept sign_in_handed:
+    // any with a browser plane (a signed-out one is withheld too, only while the sign-in cannot be read).
+    if (row.state !== "running" && signIn === "unreadable" && (run.meta.sign_in_handed || run.meta.tool_plane?.browser) && !run.meta.unshown) run.meta.unshown = true;
     // Hidden under a key that did not open its sign-in, and that very sign-in opens again now (not one made since in its
     // place, which would not cut the pointer its rows hold): its rows are read, cut of it.
-    if (run.meta.unshown && typeof signIn === "object" && typeof run.meta.sign_in_handed === "string" && pointerHash(signIn.ref) === run.meta.sign_in_handed) {
+    // An ended run that never kept which sign-in it was handed (one from before servers did, its hidden mark saved by some
+    // later write) is shown again once the agent's sign-in opens: it was withheld only for want of the key.
+    const opensAgain = typeof signIn === "object" && (typeof run.meta.sign_in_handed === "string" ? pointerHash(signIn.ref) === run.meta.sign_in_handed : row.state !== "running" && run.meta.sign_in_handed === undefined);
+    if (run.meta.unshown && opensAgain) {
       delete run.meta.unshown;
       // Unsaved, the next server finds it hidden and this same sign-in open, and shows it again as this one does.
       await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it is shown again is not saved: ${error.message}`));
@@ -1018,7 +1029,8 @@ export class Runs {
       // A workflow run's decisions' cost too: an unknown one keeps the run's unknown after a restart. Unread, it is unknown.
       if (run.kind === "workflow") await this.readDecisionCost(run).catch(() => void (run.decisionCost = null));
       if (row.importedFrom) run.imported = row.importedFrom;
-      if (run.outcome === "failed") run.error = errorOfRow(row, meta);
+      // Its error words are the run's too (the row's summary may be its last line): withheld with the rest.
+      if (run.outcome === "failed") run.error = run.meta.unshown ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : errorOfRow(row, meta);
       run.settled = true;
     } else {
       // A cancel a server took and could not carry back before it went: its mark is written first (cancel()), so it is
@@ -2755,6 +2767,8 @@ export class Runs {
     await this.pinNeeds(run);
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
+    // Nothing it said can be cut here, so nothing it goes on to say could be shown: it is not opened again.
+    if (run.meta.unshown) throw new ApiError("not_continuable", WITHHELD_SIGN_IN);
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
     const release = await this.takePlace(run.harness);
@@ -3061,7 +3075,8 @@ export class Runs {
     const row = TERMINAL.has(status) ? stored : undefined;
     // The whole text of the answer the run's turn ended on (answerOfRun), never the line the store keeps, which is cut;
     // the store's line only for a run whose rows are not read (an import's).
-    const finalAnswer = run.kind === "workflow" ? null : (answerOfRun(run) ?? row?.summary ?? null);
+    // A run whose words are withheld (meta.unshown) answers nothing: its row's line is its own words too.
+    const finalAnswer = run.kind === "workflow" || run.meta.unshown ? null : (answerOfRun(run) ?? row?.summary ?? null);
     // When the turn of a message still open last wrote: a run working shows it is moving, or not.
     const progress = TERMINAL.has(status) || run.kind === "workflow" ? undefined : run.turns.progressAt();
     // A run its cap stopped keeps the answer it paid for.
@@ -3083,7 +3098,7 @@ export class Runs {
       updated_at: run.updatedAt,
       ended_at: endedAt,
       // An answer is served with no held secret in it, whole (key-refusal.ts redactedAnswer); the stored one stays as written.
-      result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
+      result: status === "completed" ? { output: run.kind === "workflow" && !run.meta.unshown ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
