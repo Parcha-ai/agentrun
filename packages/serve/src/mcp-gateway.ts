@@ -27,6 +27,7 @@ import type { McpCallResult, McpTool, SessionMcp } from "@parcha/agentrun-kernel
 import { TOOL_COST, TOOL_STARTED, TOOL_UNMETERED } from "@parcha/pi-durable-agent/timeline";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
+import { metaToolOf } from "./mcp-meta.js";
 import { type Gate, GATED_BY_GATEWAY, mcpToolName, type Park } from "./tool-gate.js";
 import { forModel } from "./result.js";
 import { writeInWork } from "./workspace.js";
@@ -120,6 +121,9 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     // Gone since the run's check (deleted, or a refresh removed the tool): the run is refused, never started without it.
     if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} is no longer saved.`);
     if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: ${parsed.tool} is no longer one of its tools since the last refresh.`);
+    // A meta tool granted before the rule (mcp-meta.ts): refused here, never run.
+    const meta = metaToolOf(saved.url, tool.name);
+    if (meta) throw new Error(`${name} can't be granted: ${meta.reason}`);
     const declared = mcpHeaderProblem(tool.inputSchema);
     if (declared) throw new Error(`The MCP tool ${name} declares a header it cannot send: ${declared}.`);
     if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };

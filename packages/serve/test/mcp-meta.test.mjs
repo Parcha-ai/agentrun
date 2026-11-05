@@ -42,8 +42,8 @@ test("Composio's COMPOSIO_MULTI_EXECUTE_TOOL reads grantable false with the reas
   assert.ok(JSON.stringify(refused.body).includes(`mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`), JSON.stringify(refused.body));
   assert.equal((await api("POST", "/agents", agent("direct", { tools: ["mcp:composio/GMAIL_SEND_EMAIL"] }))).status, 201, "the direct tool is granted");
   const doc = (await api("GET", "/openapi.json")).body;
-  const tool = Object.values(doc.components.schemas).find((schema) => schema?.properties?.input_schema && schema.properties.grantable);
-  assert.ok(tool, "the served document names grantable on an MCP tool");
+  const served = doc.paths["/settings/mcp-servers/{name}"].get.responses["200"].content["application/json"].schema;
+  assert.deepEqual(served.properties.tools.items.properties.grantable?.const, false, "the served document names grantable on an MCP tool");
 });
 
 test("a generic name is a meta tool only on its provider's host: Klavis's execute_action on a host that is not Klavis's is granted", async (t) => {
