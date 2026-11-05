@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/Composer";
-import { BudgetPaused, NeedsYou } from "@/components/NeedsYou";
+import { BudgetPaused, capWords, NeedsYou, RaiseCap } from "@/components/NeedsYou";
 import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
@@ -11,7 +11,7 @@ import { type LearningDiff, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
-import type { Run, RunFile, TimelineRow } from "@/lib/v2";
+import type { RaiseAnswer, Run, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -36,6 +36,8 @@ export type RunDetailProps = {
   /** Reads what the run's learning changed (GET /v2/runs/{id}/learning/diff): "What it changed", read only for a run
    *  that kept a note. */
   readLearningDiff?: () => Promise<LearningDiff>;
+  /** Raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again: offered beside a budget pause's banner. */
+  onRaiseCap?: (usd: number) => Promise<RaiseAnswer>;
 };
 type Tab = "graph" | "report" | "timeline" | "files";
 
@@ -47,6 +49,11 @@ type Tab = "graph" | "report" | "timeline" | "files";
  *  it is resumed. */
 function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunView): { title: string; note: string; spin: boolean } {
   const kind = (run.pending as { kind?: unknown } | null | undefined)?.kind;
+  // Paused at its spend cap: what it spent of its cap, from the served figures (without them, said without them).
+  if (run.status === "input_required" && run.pending?.kind === "budget") {
+    const { cap_usd: cap, spent_usd: spent } = run.pending;
+    return { title: "Paused at its spend cap", note: `${typeof spent === "number" ? `It has spent ${capWords(spent)} of its ${capWords(cap)} cap.` : `Its ${capWords(cap)} cap is reached.`} Raise the cap above to continue.`, spin: false };
+  }
   if (run.status === "input_required" && kind !== undefined && kind !== "question") return { title: "Waiting for you", note: "The run continues once you give it what it waits on.", spin: false };
   if (run.status === "input_required" && run.state === "waiting") return { title: "Waiting for your answer", note: view.messageMode === "answer" ? "The run continues when you reply below." : "The run continues once the question is answered.", spin: false };
   if (run.status === "input_required") return { title: "Stopped", note: `Stopped before it wrote an answer.${view.canMessage ? " Send a message below to continue it." : ""}`, spin: false };
@@ -55,7 +62,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial, graphView, costText, readLearningDiff, onRaiseCap }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
@@ -103,6 +110,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
               <p className="mt-1 font-mono text-[12px] text-muted-foreground">{[run.review.node && `Stopped at ${run.review.node}`, run.review.kind].filter(Boolean).join(" · ")}. A person takes it from here.</p></section>
           )}
           {view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
+          {view.needsYou && budget && onRaiseCap && <RaiseCap key={`${run.run_id}:${budget.at}`} pending={budget} onRaise={onRaiseCap} />}
           {tab === "report" && <RunResult run={run} rows={rows} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
