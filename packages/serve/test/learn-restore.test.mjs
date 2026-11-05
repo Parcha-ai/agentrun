@@ -221,3 +221,43 @@ test("restoring an item that waited for its owner's OK before it was retired is 
   assert.equal((await restore("answer-in-tables.md", { ...json, cookie, origin })).status, 200);
   assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via:/, "active before its retire: a plain restore");
 });
+
+test("a note a person retired by editing its status, or created already retired, says it was retired by a person, not a run", { timeout: 150_000 }, async (t) => {
+  const { api, port, server, etag } = await keeper(t, { "answer-in-tables.md": TABLES });
+  const put = (file, text, headers) => call(port, { method: "PUT", path: `/v2/agents/keeper/learning/files/${file}`, headers: { authorization: `Bearer ${server.token}`, "content-type": "text/markdown", ...headers }, body: text });
+  const edited = await put("answer-in-tables.md", note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: retired\n"), { "if-match": await etag("answer-in-tables.md") });
+  assert.equal(edited.status, 200, edited.text);
+  const created = await put("kept-retired.md", note("Kept retired", "A note made retired", "Not given to a run.\n", "status: retired\n"), { "if-none-match": "*" });
+  assert.equal(created.status, 201, created.text);
+  const items = (await api("GET", "/agents/keeper/learning")).body.notes.items;
+  for (const file of ["answer-in-tables.md", "kept-retired.md"]) {
+    const shown = items.find((item) => item.file === file);
+    assert.equal(shown?.status, "retired", JSON.stringify(shown));
+    assert.equal(shown.retired?.by, "person", `${file}: ${JSON.stringify(shown)}`);
+    assert.equal(shown.last_change?.by, "person", `${file}: ${JSON.stringify(shown)}`);
+  }
+});
+
+test("a restore reads its retire from a commit's subject alone: a merge whose body quotes the retire line is not taken as one", { timeout: 150_000 }, async (t) => {
+  const PENDING = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: pending\n");
+  const RETIRED = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", "status: retired\n");
+  const { repo, cookie, origin, restore } = await keeper(t, { "answer-in-tables.md": PENDING });
+  // A commit that retires it, whose subject is no person's retire, but whose body quotes one.
+  writeFileSync(join(repo, "answer-in-tables.md"), RETIRED);
+  git(repo, ["add", "--", "answer-in-tables.md"]);
+  git(repo, ["commit", "-q", "-m", "a merge of a run", "-m", "The grader wrote: learning: retired by a person: answer-in-tables.md"]);
+  const restored = await restore("answer-in-tables.md", { ...json, cookie, origin });
+  assert.equal(restored.status, 200, restored.text);
+  assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via/, "no person's retire of a held note: no approval recorded");
+});
+
+test("a retired draft whose workflow.json the learning checker refuses is not restored: it stays retired, nothing committed", { timeout: 150_000 }, async (t) => {
+  const BAD = JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object", properties: { total: { type: "number" } } } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: "Sum.", out: "Out", as: "out", tools: ["web_fetch"] } });
+  const README = "---\nname: price-report\ndescription: Sums the three shop prices; use for the morning report\nstatus: retired\n---\n";
+  const { repo, cookie, origin, restore } = await keeper(t, { "workflows/price-report/workflow.json": BAD, "workflows/price-report/README.md": README });
+  const before = git(repo, ["rev-parse", "main"]).trim();
+  const refused = await restore("workflows/price-report/README.md", { ...json, cookie, origin });
+  assert.equal(refused.status, 400, refused.text);
+  assert.match(refused.text, /model node .* names a tool/, refused.text);
+  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
+});
