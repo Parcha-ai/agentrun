@@ -2,8 +2,8 @@
 // ended with: on pi, the words pi-ai gives that stop on each API (its stop reason is only "error", so its fixed words are
 // what is read); on claude-agent and codex, the kernel's CONTENT_FILTERED, which the harness halts the turn with once its
 // model proxy reads the provider's stop (a refusal, an answer incomplete for content_filter). A run so ended fails
-// `moderated` (the contract's own run error code) in words a person can act on; the provider's own words stay on the
-// Timeline's error row, the request's record. A refusal whose provider gave its own explanation (pi on the Messages API)
+// `moderated` (the contract's own run error code) in words a person can act on; the Timeline's error row, the request's
+// record, keeps the harness's words for the stop (pi-ai's, or the kernel's CONTENT_FILTERED). A refusal whose provider gave its own explanation (pi on the Messages API)
 // has no fixed words and stays run_failed.
 import { CONTENT_FILTERED } from "@parcha/agentrun-kernel";
 

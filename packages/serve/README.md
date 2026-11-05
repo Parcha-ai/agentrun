@@ -1282,7 +1282,9 @@ left out: 2 sessions still being written: they come in next time
      (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)). A
      provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
      words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
-     the provider's own words stay on the Timeline's error row. On claude-agent and codex the session's model proxy reads
+     the Timeline's error row keeps the harness's own words for the stop: pi-ai's on pi ("Response incomplete:
+     content_filter", say), the kernel's on claude-agent and codex ("content_filter: the model provider stopped this
+     answer"), never the provider's own. On claude-agent and codex the session's model proxy reads
      the provider's stop and ends the turn at once, so the CLI never asks for the refused answer again.
      A stop sent while the run still reads `queued` (a message sent to it not yet in its timeline) waits, up to a
      request's deadline, for that message to show, then stops the turn as it stops any working run.
