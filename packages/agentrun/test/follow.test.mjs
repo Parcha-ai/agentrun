@@ -201,7 +201,7 @@ test("runs start --wait, runs wait and runs timeline --follow: exit by how the r
     assert.deepEqual([cancelled.code, cancelled.json().status], [1, "cancelled"]);
 
     const port = await closedPort();
-    const nowhere = await cli(["runs", "wait", id, "--base-url", `http://127.0.0.1:${port}/v2`], { AGENTRUN_API_KEY: "some-key" });
+    const nowhere = await cli(["runs", "wait", id, "--base-url", `http://127.0.0.1:${port}/v2`], { AGENTRUN_API_KEY: "fake-test-key" });
     assert.equal(nowhere.code, 3);
     assert.match(nowhere.err, /Cannot reach the server/);
     assert.equal((await cli(["runs", "wait", id, "--timeout", "soon", ...data])).code, 2);
