@@ -95,6 +95,13 @@ export function streamedBytes(message: { content?: unknown } | undefined): numbe
   }
   return bytes;
 }
+/** What of a model answer's reasoning streamed, in bytes (streamedBytes' unit): its thinking blocks. */
+export function reasoningBytes(message: { content?: unknown } | undefined): number {
+  const blocks = Array.isArray(message?.content) ? (message.content as Array<Record<string, unknown> | null>) : [];
+  let bytes = 0;
+  for (const block of blocks) if (typeof block?.thinking === "string") bytes += Buffer.byteLength(block.thinking, "utf8");
+  return bytes;
+}
 /** A request's figure if it is stopped before its end, given the answer it had streamed. */
 export type Stopped = (message: { content?: unknown }) => number;
 /** What a request stopped before its end counts at: its input and `streamed` tokens plus STOP_ALLOWANCE_TOKENS of output,
@@ -312,25 +319,34 @@ export function spentIn(storeFile: string): number | null {
 
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
- *  conversation as its settled timeline prices it. A mark is never a charge here (the cap's alone). Never for a live
- *  run: its process holds the store exclusively. */
-export function metersIn(storeFile: string): { tools: number | null; tokens: number | null } {
-  if (!existsSync(storeFile)) return { tools: 0, tokens: null };
+ *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
+ *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart. A mark is never a charge here (the cap's alone). Never for a live run: its process
+ *  holds the store exclusively. */
+export function metersIn(storeFile: string): { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null } {
+  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
     const root = rows.reduce((min, row) => Math.min(min, row.conversation), Infinity);
     const marks = new Set<unknown>();
     const charges: (number | undefined)[] = [];
+    const browser = { usd: 0 as number | null, seconds: 0 };
+    const others: (number | undefined)[] = [];
     for (const { entry } of rows) {
       const data = (entry.data ?? {}) as Record<string, unknown>;
       if (entry.kind === TOOL_STARTED) marks.add(data.call);
       else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
+      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd));
+      if (entry.kind !== TOOL_COST || data.tool !== "browser") continue;
+      const usd = figureOf(data.usd);
+      browser.usd = browser.usd === null || usd === undefined ? null : browser.usd + usd;
+      browser.seconds += figureOf(data.seconds) ?? 0;
     }
     const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
     const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0 };
+    const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools };
   } finally {
     db.close();
   }
@@ -379,6 +395,19 @@ const paidOpen = new Set<{ usd: number }>();
 /** What the paid calls under way are held at, together (0 when none is): the one figure every check of the run's cap
  *  adds to what the run has spent, a model request's (capModels, capBefore) and a paid call's (paidCall). */
 export const paidHolds = (): number => [...paidOpen].reduce((sum, { usd }) => sum + usd, 0);
+
+/** A paid hold that outlives the paidCall that took it (a browser session's, browser-cost.ts), counted in paidHolds as a
+ *  call's is until `drop`: its figure is `usd`, which its owner moves as charges use it. */
+export const keepHold = (usd: number): { usd: number; drop(): void } => {
+  const open = { usd, drop: () => void paidOpen.delete(open) };
+  paidOpen.add(open);
+  return open;
+};
+/** A charge booked outside any paidCall (a browser session's, booked in the commit that bills it) joins what the run's
+ *  process counts as spent, as a paid call's does; with no cap, nothing counts it. */
+export const addSpend = (usd: number | null): void => runSpend?.add(usd);
+/** The run's cap, when it has one. */
+export const runCap = (): number | undefined => runSpend?.cap;
 
 /** `call`, a paid tool's (`name`), under the run's cap, by the rule a model request keeps: refused, in words that name
  *  its price and the cap and never calling it, unless what the run has spent plus what the call is held at (`hold`: its
@@ -638,14 +667,33 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
     const thinking = simpleCall && model.reasoning && options?.reasoning ? (options.reasoning as Parameters<typeof simple.thinkingBudgetForLevel>[0]) : undefined;
-    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api);
+    // Adaptive thinking (pi-ai's current Claude models on Anthropic's API) takes no budget: pi-ai sends the request's
+    // maxTokens as is, and the model thinks within them as it sees fit: at any level, none included, on a model with
+    // mid-conversation effort, else when given a level.
+    const compat = model.api === "anthropic-messages" && model.reasoning ? model.compat as { forceAdaptiveThinking?: boolean; supportsMidConvoEffort?: boolean } | undefined : undefined;
+    const adaptive = compat?.supportsMidConvoEffort === true || (compat?.forceAdaptiveThinking === true && thinking !== undefined);
+    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api) && !adaptive;
     const base = simple.clampMaxTokensToContext(model, transcript, options?.maxTokens ?? ceilingTokens(model));
     const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
     const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
     const most = mostOutput(cost, least, asked, left);
     if (most === undefined) return { why: capRefusal(cap, spent, holding, name, cost(least)), figures: { spentUsd: spent + holding, needsUsd: cost(least) } };
-    // Stopped before its end, at most the output it was sent with: what it streamed and the allowance, within its worst case.
-    const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message));
+    // The reasoning a stop leaves unseen: a model's reasoning streams as a summary or not at all (the Responses API; Claude
+    // 4-class thinking), so a request that reasons counts its level's budget (the budget it was sent with, on a budget
+    // API), or its whole limit when it gives no level and its API reasons by default; none on a budget API with thinking
+    // off, or on a model that does not reason. Adaptive thinking is bounded only by the limit, so it counts the limit
+    // less the answer's 1,024 tokens. An estimate, as levels are not limits the provider keeps: within the hold.
+    const hiddenOf = (limit: number): number => {
+      if (adaptive) return Math.max(0, limit - ANSWER_TOKENS_LEAST);
+      if (!model.reasoning || (thinking as string | undefined) === "off") return 0;
+      if (thinking === undefined) return BUDGET_APIS.has(model.api) ? 0 : limit;
+      const budget = simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets);
+      return budgeted ? Math.max(0, Math.min(budget, limit - ANSWER_TOKENS_LEAST)) : budget;
+    };
+    // Stopped before its end, at most the output it was sent with: what it streamed, the part of its reasoning budget that
+    // did not stream (max(0, budget - the reasoning streamed), so thinking that streamed is not counted twice), and the
+    // allowance, within its worst case.
+    const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message) + Math.max(0, hiddenOf(limit) - reasoningBytes(message)));
     if (most === asked) return { worst: cost(asked), stopped: stoppedAt(asked) };
     // Limited: sent with `most` tokens at most, thinking included. On a budget API the budget is squeezed first, keeping
     // the answer's 1,024, and maxTokens is what is left of `most` beside it, so pi-ai's sum is `most`.

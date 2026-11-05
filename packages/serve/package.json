@@ -60,6 +60,7 @@
     "@secretlint/core": "13.1.0",
     "@secretlint/profiler": "13.1.0",
     "@secretlint/secretlint-rule-preset-recommend": "13.1.0",
+    "croner": "11.0.0",
     "undici": "^8.12.2"
   },
   "peerDependencies": {

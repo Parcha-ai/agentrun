@@ -15,6 +15,7 @@ import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
+import { FIRING_STATUSES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 import { NOT_YET, PICKABLE, PROVIDERS } from "./tool-plane.js";
 
@@ -252,11 +253,11 @@ const TOOL_SETTINGS = {
     properties: { provider: { enum: [...PROVIDERS[name]], description: `Default ${PROVIDERS[name][0]}.` }, permission: { type: "string", description: `Reserved for the tool gate: refused until then (422 not_yet, "${NOT_YET}").` } },
   }])),
 };
-/** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, or `unavailable: <reason>`. */
-const RESOLUTION = { type: "string", pattern: "^(native|kernel|exa-keyless|parallel|unavailable: .+)$" };
+/** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, `browserbase`, or `unavailable: <reason>`. */
+const RESOLUTION = { type: "string", pattern: "^(native|kernel|exa-keyless|parallel|browserbase|unavailable: .+)$" };
 const RESOLVES = {
   type: "object", additionalProperties: false, required: [...HARNESSES], properties: Object.fromEntries(HARNESSES.map((harness) => [harness, RESOLUTION])),
-  description: "What the tool resolves to on each harness: native (the harness's own tool, or on pi one request to the model provider's hosted search), kernel (the guarded direct fetch), exa-keyless (Exa's keyless MCP search), parallel, or unavailable: <reason>.",
+  description: "What the tool resolves to on each harness: native (the harness's own tool, or on pi one request to the model provider's hosted search), kernel (the guarded direct fetch; on browser, Kernel's hosted browser), exa-keyless (Exa's keyless MCP search), parallel, browserbase (Browserbase's hosted browser), or unavailable: <reason>.",
 };
 /** Why a capability resolves as it does on each harness: one plain sentence each, from the same resolution. */
 const WHY = {
@@ -270,7 +271,7 @@ const TOOL_SETTINGS_ANSWER = closed(Object.fromEntries(PICKABLE.map((name) => [n
  *  resolves to on the agent's harness and model. */
 const AGENT_TOOLS = {
   type: "array",
-  description: "Each tool the agent's current revision grants, in capabilities.tools' order. A tool with a provider choice (web_search, web_fetch, and fetch_page, web_fetch's legacy name) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it.",
+  description: "Each tool the agent's current revision grants, in capabilities.tools' order. A tool with a provider choice (web_search, web_fetch, and fetch_page, web_fetch's legacy name; browser) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it.",
   items: {
     type: "object", additionalProperties: false, required: ["name"],
     properties: { name: { type: "string" }, provider: { type: "string" }, provider_from: { enum: ["agent", "server", "default"] }, default_provider: { type: "string" }, resolved: RESOLUTION },
@@ -444,6 +445,60 @@ const RUN_NOTES: Record<string, Json> = {
 };
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
+/** trigger/1: schedules that start an agent's capped runs (triggers.ts). */
+const TRIGGER_MARK = { "x-agentrun-serve": "trigger/1" };
+const DATE_TIME = { type: "string", format: "date-time" };
+const TRIGGER_SOURCE = {
+  oneOf: [
+    closedWith({ kind: { const: "schedule" }, cron: { type: "string", description: "Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap." } }, { timezone: { type: "string", default: "UTC", description: "The IANA zone the cron line is read in." } }),
+    closed({ kind: { const: "schedule" }, at: { ...DATE_TIME, description: "Once, at this time (to the second, in the future); the trigger turns itself off after." } }),
+    closedWith({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
+  ],
+  description: `When it fires: a cron line in a zone, one time, or every N seconds (${MIN_EVERY_S} or more). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+};
+const TRIGGER_TARGET = closedWith(
+  {
+    kind: { const: "start_run" },
+    agent_id: { type: "string", description: "The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here." },
+    input: { type: "object", description: "The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone." },
+    max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap, required: every run a trigger starts is capped." },
+  },
+  { effort: { $ref: "#/components/schemas/Effort" } },
+);
+const TRIGGER_FIRING = closedWith(
+  {
+    key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
+    by: { enum: ["schedule", "manual"] },
+    nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
+    status: { enum: [...FIRING_STATUSES], description: "`due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`. `missed`: times not fired while the server was down or its timer late, `count` of them from `nominal_at` on." },
+    at: { ...DATE_TIME, description: "When it was recorded." },
+    run_id: { type: ["string", "null"] },
+    reason: { type: ["string", "null"] },
+    error: { oneOf: [closed({ code: { type: "string" }, message: { type: "string" } }), { type: "null" }] },
+  },
+  { count: { type: "integer", minimum: 1 }, attempts: { type: "integer", minimum: 0 }, retry_at: DATE_TIME },
+);
+const TRIGGER = closed({
+  id: { type: "string" },
+  name: { type: "string", maxLength: 200 },
+  enabled: { type: "boolean" },
+  source: TRIGGER_SOURCE,
+  target: TRIGGER_TARGET,
+  overlap: { enum: [...OVERLAP], description: "What a firing does while the trigger's last run is active: `skip`, recorded as a skipped firing." },
+  next_at: { type: ["string", "null"], format: "date-time", description: "When it fires next; null while it is off." },
+  last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts." },
+  created_at: DATE_TIME,
+  updated_at: DATE_TIME,
+  last_firing: { oneOf: [TRIGGER_FIRING, { type: "null" }] },
+});
+const TRIGGER_WRITE = {
+  name: { type: "string", minLength: 1, maxLength: 200, description: "Default the trigger's id." },
+  enabled: { type: "boolean", default: true, description: "Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up." },
+  source: TRIGGER_SOURCE,
+  target: TRIGGER_TARGET,
+};
+const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { type: "string" } };
+const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {
   oneOf: [
     closedWith({
@@ -855,13 +910,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider: web_search auto (codex's own search or, on pi, the model provider's hosted one, else Parallel where the server holds its key, which bills it, else Exa's keyless search; claude-agent's own search only as native), native (that alone), exa-keyless (that alone) or parallel; web_fetch kernel or parallel. An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.",
+      description: "Each capability that has a choice, and its provider: web_search auto (codex's own search or, on pi, the model provider's hosted one, else Parallel where the server holds its key, which bills it, else Exa's keyless search; claude-agent's own search only as native), native (that alone), exa-keyless (that alone) or parallel; web_fetch kernel or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
     put: {
-      operationId: "putToolSettings", tags: ["capabilities"], summary: "Set the providers of web_search and web_fetch",
-      description: `Replaces the settings: a capability the body leaves out takes its default. Kept in the data directory, read by every run launched from then on, and capabilities say so at once. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider. An unknown capability, a provider not offered for it, and a permission (422 not_yet, "${NOT_YET}") are refused.`,
+      operationId: "putToolSettings", tags: ["capabilities"], summary: "Set the providers of web_search, web_fetch and browser",
+      description: `Replaces the settings: a capability the body leaves out takes its default. Kept in the data directory, read by every run launched from then on, and capabilities say so at once. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider, and so does a browser vendor picked without its key. An unknown capability, a provider not offered for it, and a permission (422 not_yet, "${NOT_YET}") are refused.`,
       requestBody: { required: true, content: { "application/json": { schema: TOOL_SETTINGS } } },
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider now."), ...errors(400, 401, 415, 422, 429, 500) },
       "x-agentrun-serve": "providers/1",
@@ -942,6 +997,61 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "listWebhookDeliveries", tags: ["local"], summary: `The last ${ATTEMPTS_KEPT} attempts, newest first`,
       responses: { "200": json(closed({ attempts: { type: "array", items: WEBHOOK_ATTEMPT } }), "Each attempt."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/triggers": {
+    get: {
+      operationId: "listTriggers", tags: ["local"], summary: "The triggers: schedules that start an agent's capped runs",
+      description: TRIGGER_ERRORS,
+      responses: { "200": json(closed({ triggers: { type: "array", items: TRIGGER } }), "Each trigger, oldest first, with its last firing."), ...errors(401, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    post: {
+      operationId: "createTrigger", tags: ["local"], summary: "Make a trigger: a schedule that starts a run of an agent, capped",
+      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\`, as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last ${HISTORY_KEPT} firings are kept. 422 for a source other than a schedule, a target with no max_cost_usd, or an agent that is a workflow or does not take the input.`,
+      parameters: [ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["source", "target"], properties: TRIGGER_WRITE } } } },
+      responses: { "201": json(TRIGGER, "Made."), ...errors(400, 401, 409, 415, 422, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+  },
+  "/triggers/{trigger_id}": {
+    get: {
+      operationId: "getTrigger", tags: ["local"], summary: "One trigger",
+      parameters: [TRIGGER_ID],
+      responses: { "200": json(TRIGGER, "The trigger."), ...errors(401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    patch: {
+      operationId: "updateTrigger", tags: ["local"], summary: "Change a trigger, or turn it off and on",
+      description: "Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.",
+      parameters: [TRIGGER_ID],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: TRIGGER_WRITE } } } },
+      responses: { "200": json(TRIGGER, "Changed."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    delete: {
+      operationId: "deleteTrigger", tags: ["local"], summary: "Delete a trigger and its firings; the runs it started stay",
+      parameters: [TRIGGER_ID],
+      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+  },
+  "/triggers/{trigger_id}/fire": {
+    post: {
+      operationId: "fireTrigger", tags: ["local"], summary: "Run it now: one firing per Idempotency-Key",
+      description: "A firing now, on or off, under the same overlap rule as a scheduled one; it is driven before the answer. The same key again answers its firing as it stands (200, `Idempotent-Replayed: true`), and starts no second run, for `limits.idempotency_ttl_s` after it fired, even once the firing has left the history; past that it is a new firing, which a run the key started still answers. A firing never moves `last_run_id` back to an older run. 400 with no Idempotency-Key.",
+      parameters: [TRIGGER_ID, { name: "Idempotency-Key", in: "header", required: true, description: "Required here: a retry with the same key fires once.", schema: { type: "string", minLength: 1, maxLength: 255 } }],
+      responses: { "202": json(TRIGGER_FIRING, "Fired: its run started, or why not."), "200": json(TRIGGER_FIRING, "This key's firing, as it stands."), ...errors(400, 401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+  },
+  "/triggers/{trigger_id}/firings": {
+    get: {
+      operationId: "listTriggerFirings", tags: ["local"], summary: `The trigger's last ${HISTORY_KEPT} firings, newest first`,
+      parameters: [TRIGGER_ID],
+      responses: { "200": json(closed({ firings: { type: "array", items: TRIGGER_FIRING } }), "Each firing."), ...errors(401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
     },
   },
   "/settings/webhook/deliveries/{webhook_id}/redeliver": {
@@ -1074,6 +1184,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
+    trigger: {
+      oneOf: [closed({ id: { type: "string", description: "The trigger (GET /triggers/{trigger_id}); it may have been deleted since." }, firing_key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing that started it." } }), { type: "null" }],
+      description: "The trigger that started the run, and its firing; null for a run a caller started.",
+      ...TRIGGER_MARK,
+    },
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
@@ -1101,6 +1216,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
   },
   TimelineRow: {
+    origin: {
+      const: "server",
+      description: "On the row of a message the server wrote into the run (a raised cap's follow-up, an approval's resume): a `phase` row, \"AgentRun: <its first line>\", where a person's message would be a `user_message` one. It counts, as a person's does, as the message its turn took. Absent on every other row.",
+      "x-agentrun-serve": "origin/1",
+    },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
       description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. Its \`summary\` and \`text\` are its \`detail\` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
@@ -1125,7 +1245,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash`; a workflow revision's place is runner or none (a sandbox place is 422).",
       "x-agentrun-serve": "place/1",
     },
-    tool_settings: { ...TOOL_SETTINGS, description: "The agent's own settings of web_search and web_fetch (their provider), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
+    tool_settings: { ...TOOL_SETTINGS, description: "The agent's own settings of web_search, web_fetch and browser (their provider), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
   },
   AgentCreate: {
@@ -1155,7 +1275,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`; a Daytona box's with a `reason` when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer.", "x-agentrun-serve": "place/2" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable, or what a preparing one waits for." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list.", "x-agentrun-serve": "place/2" } } } },
       },
       description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
@@ -1262,6 +1382,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { enum: ["sealed", "unavailable"] } },
       description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
       "x-agentrun-serve": "webhook/1",
+    },
+    triggers: {
+      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, overlap: { type: "array", items: { enum: [...OVERLAP] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" } }),
+      description: "/triggers: schedules that start an agent's capped runs: the source and target kinds this server takes, what a firing does while the last run is active, the shortest interval, and how many firings each trigger keeps.",
+      ...TRIGGER_MARK,
     },
   },
   "Features/agents": { revisions: { type: "boolean", description: "`GET /agents/{agent_id}/revisions` and `POST /agents/{agent_id}/current`.", "x-agentrun-serve": "serve/1" } },
@@ -1404,6 +1529,14 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     modelsSource.description = "Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `managed`, `chatgpt` and `env` are the hosted API's.";
     modelsSource["x-agentrun-serve"] = "models/2";
     fields.push(...sourcesAdded.map((value) => `Capabilities.models.source.${value}`));
+  }
+  // browser/1: the browser tool runs on Browserbase or Kernel, picked per server and per agent (tool-plane.ts), so
+  // capabilities' `features.browser` may name Kernel's, which the contract's enum (browserbase, chrome, none) lacks.
+  const browser = ((schemas.Features as Json).properties as Record<string, Json>).browser as Json & { enum?: string[] };
+  if (Array.isArray(browser.enum) && !browser.enum.includes("kernel")) {
+    browser.enum = [...browser.enum, "kernel"];
+    browser["x-agentrun-serve"] = "browser/1";
+    fields.push("Features.browser.kernel");
   }
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
