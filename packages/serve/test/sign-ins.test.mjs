@@ -9,8 +9,8 @@ import { randomBytes } from "node:crypto";
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { homeKey, homeOf } from "../dist/files.js";
-import { kernelProfile, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
+import { homeOf } from "../dist/files.js";
+import { SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile } from "../dist/tools.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -24,7 +24,7 @@ function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRem
   const made = [];
   const removed = [];
   const vendors = {
-    create: async (vendor, home) => (vendor === "kernel" ? kernelProfile(home) : (made.push(`ctx-${made.length + 1}-${home}`), made.at(-1))),
+    create: async (vendor) => (made.push(`${vendor === "kernel" ? "agentrun-kernel" : "ctx"}-${made.length + 1}`), made.at(-1)),
     remove: async (vendor, ref) => {
       if (refuseRemove) throw new Error(`${vendor} answered 500`);
       removed.push([vendor, ref]);
@@ -88,10 +88,10 @@ test("the save lease: the first run takes it, a run started while it holds gets 
   running.delete("run-3");
   assert.equal((await store.view("alpha"))[0].state, "ready");
   assert.equal((await store.forRun("alpha", "run-4", "browserbase")).save, true);
-  // Kernel: its own sign-in beside Browserbase's, a profile named by the agent's home key, with no vendor call.
+  // Kernel: its own sign-in beside Browserbase's, a profile of its own made at Kernel.
   const kernel = await store.forRun("alpha", "run-4", "kernel");
-  assert.deepEqual(kernel, { provider: "kernel", ref: `agentrun-${homeKey("alpha")}-default`, save: true });
-  assert.equal(made.length, 1);
+  assert.deepEqual(kernel, { provider: "kernel", ref: made[1], save: true });
+  assert.equal(made.length, 2);
   assert.deepEqual((await store.view("alpha")).map((s) => s.provider), ["browserbase", "kernel"]);
 });
 
@@ -123,21 +123,27 @@ test("forget: refused while held, then deleted at the vendor and here; a vendor 
   assert.deepEqual(await refusing.store.view("beta"), []);
 });
 
-test("the vendors' calls: Browserbase's context made with the project and deleted by id; Kernel's profile named, never made here, deleted by name", async () => {
+test("the vendors' calls: Browserbase's context made with the project and deleted by id; Kernel's profile made under a random name, never one derived from the agent, and deleted by name", async () => {
   const asked = [];
-  const fake = async (url, init) => (asked.push([init.method, String(url), init.headers, init.body ?? null]), init.method === "POST" ? Response.json({ id: "ctx-9" }) : new Response(null, { status: 404 }));
+  const fake = async (url, init) => (asked.push([init.method, String(url), init.headers, init.body ?? null]), init.method !== "POST" ? new Response(null, { status: 404 }) : String(url).endsWith("/profiles") ? Response.json({ id: "prof-1", name: JSON.parse(init.body).name }) : Response.json({ id: "ctx-9" }));
   const env = { BROWSERBASE_API_KEY: "bb-key", BROWSERBASE_PROJECT_ID: "proj-1", KERNEL_API_KEY: "k-key" };
   const vendors = vendorsOver(() => env, async () => fake);
-  assert.equal(await vendors.create("browserbase", "alpha-0123"), "ctx-9");
-  assert.equal(await vendors.create("kernel", "alpha-0123"), "agentrun-alpha-0123-default");
+  assert.equal(await vendors.create("browserbase"), "ctx-9");
+  const [one, two] = [await vendors.create("kernel"), await vendors.create("kernel")];
+  for (const name of [one, two]) assert.match(name, /^agentrun-[0-9a-f]{24}$/, "random, and well inside pi-browser's 64 characters");
+  assert.notEqual(one, two);
   await vendors.remove("browserbase", "ctx-9");
-  await vendors.remove("kernel", "agentrun-alpha-0123-default");
+  await vendors.remove("kernel", one);
   assert.deepEqual(asked.map(([method, url, headers, body]) => [method, url, headers["x-bb-api-key"] ?? headers.authorization, body]), [
     ["POST", "https://api.browserbase.com/v1/contexts", "bb-key", JSON.stringify({ projectId: "proj-1" })],
+    ["POST", "https://api.onkernel.com/profiles", "Bearer k-key", JSON.stringify({ name: one })],
+    ["POST", "https://api.onkernel.com/profiles", "Bearer k-key", JSON.stringify({ name: two })],
     ["DELETE", "https://api.browserbase.com/v1/contexts/ctx-9", "bb-key", null],
-    ["DELETE", "https://api.onkernel.com/profiles/agentrun-alpha-0123-default", "Bearer k-key", null],
+    ["DELETE", `https://api.onkernel.com/profiles/${one}`, "Bearer k-key", null],
   ], "a 404 on delete is gone already");
-  await assert.rejects(vendorsOver(() => env, async () => undefined).create("browserbase", "a"), /no browserbase to call/);
+  const otherName = vendorsOver(() => env, async () => async () => Response.json({ id: "prof-2", name: "someone-else" }));
+  await assert.rejects(otherName.create("kernel"), /another profile/);
+  await assert.rejects(vendorsOver(() => env, async () => undefined).create("browserbase"), /no browserbase to call/);
 });
 
 test("in the run: Browserbase opens the agent's context as the profile `default` and never makes one; Kernel's create is asked for the agent's profile by its name at Kernel", async () => {
@@ -146,10 +152,10 @@ test("in the run: Browserbase opens the agent's context as the profile `default`
   await assert.rejects(store.resolve("acct|profile:other", () => "made"), /no saved sign-in/);
   await assert.rejects(keptContexts(undefined).resolve("acct|profile:default", () => "made"), /no saved sign-in/);
   const asked = [];
-  const kernel = keptProfile({ name: "kernel", create: async (spec) => asked.push(spec.profile ?? null) }, "agentrun-alpha-0123-default");
+  const kernel = keptProfile({ name: "kernel", create: async (spec) => asked.push(spec.profile ?? null) }, "agentrun-0123456789abcdef01234567");
   await kernel.create({ profile: { name: "default", save: false } });
   await kernel.create({});
-  assert.deepEqual(asked, [{ name: "agentrun-alpha-0123-default", save: false }, null]);
+  assert.deepEqual(asked, [{ name: "agentrun-0123456789abcdef01234567", save: false }, null]);
   assert.equal(kernel.name, "kernel");
 });
 

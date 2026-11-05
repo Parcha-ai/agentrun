@@ -10,11 +10,12 @@
 // two runs of one agent. The first run of the agent to start with the browser holds the lease and its sessions save;
 // a run started while another holds it starts from the same sign-in and saves nothing. The lease ends when its run's
 // process goes or the run ends (runs.ts), and one whose run has ended since (a server that went down first) is stale.
+import { randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError } from "./errors.js";
-import { homeKey, homeOf, writeWhole } from "./files.js";
+import { homeOf, writeWhole } from "./files.js";
 
 export const SIGN_INS_DIR = "sign-ins";
 const FILE = "sign-ins.json";
@@ -31,7 +32,7 @@ export type HandedSignIn = { provider: Vendor; ref: string; save: boolean };
 /** A sign-in as GET /agents/{id} shows it (the contract's SignIn): never its ref. */
 export type SignInView = { key: string; provider: Vendor; state: "ready" | "held"; held_by: string | null; verified_at: string | null };
 /** The vendor's side: make an agent's object (its pointer), and delete one. */
-export type Vendors = { create(vendor: Vendor, homeKey: string): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> };
+export type Vendors = { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> };
 
 type Entry = { key: string; provider: Vendor; ref: string; verified_at: string | null; held_by: string | null };
 type Stored = { format: typeof FORMAT; sign_ins: Entry[] };
@@ -43,9 +44,6 @@ export function vendorOf(resolution: string): Vendor | undefined {
   if (resolution === "chrome" || resolution === "cdp") throw new Error("a local Chrome keeps no saved sign-in: its cookies would sit on this server's disk");
   return undefined;
 }
-
-/** Kernel's profile names are global to its account, so an agent's is named by its home key. */
-export const kernelProfile = (key: string): string => `agentrun-${key}-${SIGN_IN_KEY}`;
 
 const aad = (agentId: string, entry: Pick<Entry, "key" | "provider">) => `${FORMAT}|${agentId}|${entry.key}|${entry.provider}`;
 
@@ -114,7 +112,7 @@ export class SignIns {
       let ref: string;
       if (entry) ref = unseal(key, Buffer.from(entry.ref, "base64"), aad(agentId, entry)).toString("utf8");
       else {
-        ref = await this.vendors.create(vendor, homeKey(agentId));
+        ref = await this.vendors.create(vendor);
         entry = { key: SIGN_IN_KEY, provider: vendor, ref: "", verified_at: null, held_by: null };
         entry.ref = seal(key, Buffer.from(ref, "utf8"), aad(agentId, entry)).toString("base64");
         entries.push(entry);
@@ -166,8 +164,10 @@ const base = (set: string | undefined, fallback: string) => (set?.trim() || fall
 
 /** The vendors over their REST APIs, with the server's keys (`env`, read at each call) through `fetchFor` (the tests'
  *  fakes under faux). Browserbase: a context made for the agent (POST /v1/contexts, which opens no session; Browserbase
- *  bills a session's browser time and proxy data), deleted with DELETE /v1/contexts/{id}. Kernel: no call to make one
- *  (pi-browser's provider makes a missing profile at the run's first session); deleted with DELETE /profiles/{name}. A
+ *  bills a session's browser time and proxy data), deleted with DELETE /v1/contexts/{id}. Kernel: a profile made under a
+ *  random name (POST /profiles, which starts no browser; Kernel bills a browser's running time), since a profile name
+ *  is the account's, so one derived from the agent would be any server's on that account; deleted with DELETE
+ *  /profiles/{name}. The name is the pointer, sealed as a context id is, and well inside pi-browser's 64 characters. A
  *  404 on delete is gone already. */
 export function vendorsOver(env: () => NodeJS.ProcessEnv, fetchFor: (vendor: Vendor) => Promise<typeof fetch | undefined>): Vendors {
   const call = async (vendor: Vendor, method: "POST" | "DELETE", url: string, headers: Record<string, string>, body?: unknown): Promise<Response> => {
@@ -180,8 +180,14 @@ export function vendorsOver(env: () => NodeJS.ProcessEnv, fetchFor: (vendor: Ven
   const bb = (e: NodeJS.ProcessEnv) => ({ url: base(e.BROWSERBASE_BASE_URL, "https://api.browserbase.com"), headers: { "x-bb-api-key": e.BROWSERBASE_API_KEY ?? "" } });
   const kernel = (e: NodeJS.ProcessEnv) => ({ url: base(e.KERNEL_BASE_URL, "https://api.onkernel.com"), headers: { authorization: `Bearer ${e.KERNEL_API_KEY ?? ""}` } });
   return {
-    async create(vendor, key) {
-      if (vendor === "kernel") return kernelProfile(key);
+    async create(vendor) {
+      if (vendor === "kernel") {
+        const { url, headers } = kernel(env());
+        const name = `agentrun-${randomBytes(12).toString("hex")}`;
+        const made = ((await (await call(vendor, "POST", `${url}/profiles`, headers, { name })).json()) as { name?: unknown }).name;
+        if (made !== name) throw new Error("kernel answered another profile than the one asked for");
+        return name;
+      }
       const e = env();
       const { url, headers } = bb(e);
       // Behind a proxy (a base URL set) the project is the key's, as pi-browser's provider has it; a direct key names it.

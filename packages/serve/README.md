@@ -799,14 +799,16 @@ Sign in once in one of an agent's runs (for now, through the run's browser while
 agent starts from that signed-in browser. Sign-ins are kept per agent, never shared between agents, and the server
 picks which one a run gets, never the model.
 
-- **Where the cookies are.** At the browser's vendor: a Browserbase context, or a Kernel profile named
-  `agentrun-<home key>-default` (Kernel's names are shared across its account, so the agent's home key is in it). This
+- **Where the cookies are.** At the browser's vendor: a Browserbase context, or a Kernel profile under a random name
+  (`agentrun-` and 24 hex digits: Kernel's names are its account's, so a name derived from the agent would be any
+  server's that shares the key). This
   server keeps only a pointer per agent and vendor, sealed under the seal key (`AGENTRUN_SEAL_KEY`) and bound to its
   agent, in `<data>/homes/<key>/sign-ins/sign-ins.json`. With no seal key nothing is kept and runs start signed out;
   capabilities say `sign_ins: true` only with a seal key and a browser vendor here. A local Chrome keeps none: its
   cookies would sit on this server's disk.
 - **How a run gets it.** Before a run with the `browser` tool is launched, the server makes the agent's context at
-  Browserbase if it has none (`POST /v1/contexts`, which opens no session; Browserbase bills sessions, not contexts),
+  Browserbase (`POST /v1/contexts`, which opens no session; Browserbase bills sessions, not contexts) or its profile at
+  Kernel (`POST /profiles`, which starts no browser) if it has none,
   and hands the run's process the pointer over its pipe, with its secrets, never in its environment. The run's process
   never gets the seal key. Every session the run opens uses that profile, by the name `default`; the model never sees
   the pointer. A vendor that does not answer leaves that run's browser signed out, said in the server's log.
