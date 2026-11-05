@@ -959,7 +959,8 @@ test("a message after an adapter turn's end is the person's next message, not a 
 });
 
 test("a waiting row's words are the host's redact's: a browser hand-over's reason and request_sign_in's, settled and live, never a held value in the clear", () => {
-  const held = "sk-held-0123456789abcdef";
+  // A value the host holds, made here (no real key).
+  const held = ["held", "value", "for", "this", "test"].join("-");
   const redact = (text) => text.replaceAll(held, "[redacted]");
   const entries = [
     assistant([call("r", "request_sign_in", { reason: `Sign in with ${held}` })], 0),
