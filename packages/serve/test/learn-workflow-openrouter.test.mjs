@@ -77,13 +77,40 @@ test("a codex run through a gateway at OpenRouter's URL (AGENT_MODEL_BASE_URL) k
   assert.deepEqual(adapters.learnedRoute("codex", env, prepared), prepared);
 });
 
-test("claude-agent through the operator's own gateway (ANTHROPIC_BASE_URL) is not offered learned workflows, whose requests could not follow it; on Anthropic or OpenRouter it is", () => {
+test("claude-agent through the operator's own gateway (ANTHROPIC_BASE_URL) is not offered learned workflows, whose requests could not follow it; on Anthropic or OpenRouter it is", async () => {
   const model = "anthropic/claude-sonnet-5.5";
   const gateway = { ANTHROPIC_BASE_URL: "http://127.0.0.1:9/anthropic", ANTHROPIC_API_KEY: ANTHROPIC };
-  assert.match(adapters.learnedWorkflowsOff("claude-agent", gateway, model) ?? "", /ANTHROPIC_BASE_URL/);
-  assert.equal(adapters.learnedWorkflowsOff("claude-agent", { ANTHROPIC_API_KEY: ANTHROPIC }, model), undefined);
-  assert.equal(adapters.learnedWorkflowsOff("claude-agent", { OPENROUTER_API_KEY: KEY }, model), undefined);
+  assert.match(await adapters.learnedWorkflowsOff("claude-agent", gateway, model) ?? "", /ANTHROPIC_BASE_URL/);
+  assert.equal(await adapters.learnedWorkflowsOff("claude-agent", { ANTHROPIC_API_KEY: ANTHROPIC }, model), undefined);
+  assert.equal(await adapters.learnedWorkflowsOff("claude-agent", { OPENROUTER_API_KEY: KEY }, model), undefined);
   // codex goes through its gateway on the run's models (runModels), and pi through its own: neither is turned off.
-  assert.equal(adapters.learnedWorkflowsOff("codex", { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL_API_KEY: KEY }, "openai/gpt-6-sol"), undefined);
-  assert.equal(adapters.learnedWorkflowsOff("pi", gateway, model), undefined);
+  assert.equal(await adapters.learnedWorkflowsOff("codex", { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL_API_KEY: KEY }, "openai/gpt-6-sol"), undefined);
+  assert.equal(await adapters.learnedWorkflowsOff("pi", gateway, model), undefined);
+});
+
+test("an opencode run, on codex's route, names its learned workflow's model as codex's does: on OpenRouter alone, OpenRouter's name for it", async () => {
+  const env = { OPENROUTER_API_KEY: KEY };
+  const opencode = await adapters.codexModel(env, "openai/gpt-6-sol", "opencode");
+  assert.deepEqual(adapters.learnedRoute("opencode", env, opencode.model), { provider: "openrouter", modelId: "openai/gpt-6-sol" });
+  const own = { OPENROUTER_API_KEY: KEY, OPENAI_API_KEY: OPENAI };
+  const direct = await adapters.codexModel(own, "openai/gpt-6-sol", "opencode");
+  assert.deepEqual(adapters.learnedRoute("opencode", own, direct.model), direct.model);
+});
+
+test("a learned workflow follows its harness only to an origin its requests can reach: Anthropic, OpenAI, OpenRouter, or codex's and opencode's gateway; any other fails closed", async () => {
+  for (const harness of ["claude-agent", "codex", "opencode"]) {
+    assert.equal(adapters.learnedOriginOk(harness, "https://openrouter.ai/api", {}), true, harness);
+    assert.equal(adapters.learnedOriginOk(harness, "https://elsewhere.example", {}), false, harness);
+  }
+  assert.equal(adapters.learnedOriginOk("claude-agent", "https://api.anthropic.com", {}), true);
+  assert.equal(adapters.learnedOriginOk("codex", "https://api.openai.com", {}), true);
+  assert.equal(adapters.learnedOriginOk("opencode", "https://api.openai.com", {}), true);
+  // A gateway is the run's models' own for codex and opencode (runModels), never for claude-agent.
+  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" };
+  assert.equal(adapters.learnedOriginOk("opencode", "http://127.0.0.1:9", gateway), true);
+  assert.equal(adapters.learnedOriginOk("claude-agent", "http://127.0.0.1:9", gateway), false);
+  // opencode on OpenRouter alone, on OpenAI, through a gateway: offered.
+  assert.equal(await adapters.learnedWorkflowsOff("opencode", { OPENROUTER_API_KEY: KEY }, "openai/gpt-6-sol"), undefined);
+  assert.equal(await adapters.learnedWorkflowsOff("opencode", { OPENAI_API_KEY: OPENAI }, "openai/gpt-6-sol"), undefined);
+  assert.equal(await adapters.learnedWorkflowsOff("opencode", { ...gateway, AGENT_MODEL_API_KEY: KEY }, "openai/gpt-6-sol"), undefined);
 });
