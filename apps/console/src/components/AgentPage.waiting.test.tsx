@@ -21,7 +21,7 @@ const view = (notes: LearningNote[], skills: LearnedItem[] = [], workflows: Lear
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(learning: AgentLearning, pendingTotal = 0) {
+async function open(learning: AgentLearning, pendingTotal = 0, opened = "runs") {
   const asked: string[] = [];
   const v2 = {
     getAgent: async () => ({ agent, etag: null }),
@@ -32,7 +32,7 @@ async function open(learning: AgentLearning, pendingTotal = 0) {
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: "qa-learn", go: () => {}, tab: "runs", learning: "on" } as never)));
+  act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: "qa-learn", go: () => {}, tab: opened, learning: "on" } as never)));
   for (let i = 0; i < 12; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   const tab = () => [...host.querySelectorAll('[role="tab"]')].find((t) => /learning/i.test(t.textContent ?? "")) as HTMLElement;
   const badge = () => tab().querySelector("[aria-label$='wait for your OK'], [aria-label$='waits for your OK']");
@@ -62,5 +62,11 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
     const p = await open(view([note("a.md", "active")], [item("find", "pending")], [], "c2"), 4);
     expect(p.asked).toEqual(["learning", "pending notes"]);
     expect(p.badge()?.textContent).toBe("5");
+  });
+
+  it("on the Learning tab, counts from the tab's own read: one read, not two", async () => {
+    const p = await open(view([note("b.md", "pending")], [item("find", "pending")]), 0, "learning");
+    expect(p.badge()?.textContent).toBe("2");
+    expect(p.asked).toEqual(["learning"]);
   });
 });

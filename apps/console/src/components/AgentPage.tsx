@@ -79,12 +79,15 @@ export function AgentPage({ v2, agentId, defaultModel, modelSource, routePrefix,
     if (n === counted.current) setItemsWaiting(waitingCount(view, notesPending));
   };
   const learningShows = !!agent && agent.kind === "agentic" && (!!learning || tab === "learning");
+  // On the Learning tab the tab's own read reports the count (onLearning), so the page reads only on the other tabs.
+  const onLearningTab = tab === "learning";
+  useEffect(() => { setItemsWaiting(null); }, [agentId]);
   useEffect(() => {
-    setItemsWaiting(null);
-    if (!learningShows) return;
+    if (!learningShows) { setItemsWaiting(null); return; }
+    if (onLearningTab) return;
     const n = ++counted.current;
     Promise.resolve().then(() => v2.agentLearning(agentId)).then((v) => countFrom(v, n)).catch(() => {});
-  }, [v2, agentId, learningShows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [v2, agentId, learningShows, onLearningTab]); // eslint-disable-line react-hooks/exhaustive-deps
   const onLearning = (view: AgentLearning) => { const n = ++counted.current; void countFrom(view, n).catch(() => {}); };
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
