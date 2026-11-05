@@ -7,8 +7,8 @@ import type { Firing, Trigger, TriggerInput, TriggerSource } from "./v2";
 
 export type WhenKind = "cron" | "at" | "every";
 export type EveryUnit = "seconds" | "minutes" | "hours";
-/** The form's fields as typed. `at` and `startAt` are wall times (datetime-local) in `timezone`, which a cron line also
- *  names; `every` is a count of `everyUnit`. */
+/** The form's fields as typed. `at` and `startAt` are wall times (datetime-local) in this browser's zone; `timezone` is a
+ *  cron line's alone; `every` is a count of `everyUnit`. */
 export type Draft = { name: string; kind: WhenKind; cron: string; timezone: string; at: string; every: string; everyUnit: EveryUnit; startAt: string; agentId: string; content: string; maxCost: string; enabled: boolean };
 
 export const emptyDraft = (agentId = ""): Draft => ({ name: "", kind: "cron", cron: "", timezone: "UTC", at: "", every: "", everyUnit: "minutes", startAt: "", agentId, content: "", maxCost: "", enabled: true });
@@ -43,37 +43,28 @@ export function firingWords(f: Firing): string {
 /** A firing's status as its chip says it. */
 export const FIRING_LABEL: Record<Firing["status"], string> = { due: "Due", started: "Started", skipped: "Skipped", failed: "Failed", missed: "Missed" };
 
-const WALL = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+const WALL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
+const pad = (n: number) => String(n).padStart(2, "0");
 
-/** How far `zone`'s wall clock is ahead of UTC at instant `t`, in ms; undefined for a zone this browser does not know. */
-function offsetAt(t: number, zone: string): number | undefined {
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(t);
-  } catch {
-    return undefined;
-  }
-  const p = Object.fromEntries(parts.map((x) => [x.type, Number(x.value)]));
-  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - t;
+/** The instant a wall time typed in this browser (datetime-local) is, in the browser's own zone, to the second
+ *  ("2026-11-05T09:30:00Z"); null for no time. */
+export function instantOf(wall: string): string | null {
+  if (!WALL.test(wall)) return null;
+  const t = new Date(wall);
+  return Number.isNaN(t.getTime()) ? null : t.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-/** The instant a wall time (datetime-local) is in `zone`, to the second ("2026-11-05T09:30:00Z"); null for no time or a
- *  zone this browser does not know. */
-export function instantIn(wall: string, zone: string): string | null {
-  const m = WALL.exec(wall);
-  if (!m) return null;
-  const asUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] ?? 0));
-  const first = offsetAt(asUtc, zone);
-  if (first === undefined) return null;
-  // Once more at the guess, for a wall time on the other side of a clock change from the first reading.
-  const t = asUtc - (offsetAt(asUtc - first, zone) ?? first);
-  return new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z");
+/** An instant as a wall time (datetime-local) in this browser's zone, with its seconds when it has any (a start the
+ *  server set when the schedule was made), so it reads back as the same instant. */
+export function wallOf(iso: string): string {
+  const t = new Date(iso);
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}${t.getSeconds() ? `:${pad(t.getSeconds())}` : ""}`;
 }
 
-/** An instant as a wall time (datetime-local) in `zone`. */
-export function localIn(iso: string, zone: string): string {
-  const t = Date.parse(iso);
-  return new Date(t + (offsetAt(t, zone) ?? 0)).toISOString().slice(0, 16);
+/** "At least a minute.", "At least 2 minutes.": the shortest interval the server takes. */
+export function atLeast(seconds: number): string {
+  const w = span(seconds);
+  return /^\d/.test(w) ? `At least ${w}.` : `At least ${w === "hour" ? "an" : "a"} ${w}.`;
 }
 
 const NEEDED = "A number is needed.";
@@ -88,16 +79,14 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
     if (!d.cron.trim()) issues["source.cron"] = "A cron line is needed.";
     source = { kind: "schedule", cron: d.cron.trim(), timezone: d.timezone.trim() || "UTC" };
   } else if (d.kind === "at") {
-    const at = d.at ? instantIn(d.at, d.timezone.trim() || "UTC") : null;
-    if (!d.at) issues["source.at"] = "A time is needed.";
-    else if (at === null) issues["source.timezone"] = "This browser knows no time zone by that name.";
+    const at = instantOf(d.at);
+    if (at === null) issues["source.at"] = "A time is needed.";
     source = { kind: "schedule", at: at ?? "" };
   } else {
     const n = numberOf(d.every);
     if (!d.every.trim()) issues["source.every_s"] = "A number is needed.";
     else if (n === undefined) issues["source.every_s"] = NEEDED;
-    const start = d.startAt ? instantIn(d.startAt, d.timezone.trim() || "UTC") : undefined;
-    if (start === null) issues["source.timezone"] = "This browser knows no time zone by that name.";
+    const start = d.startAt ? instantOf(d.startAt) : null;
     source = { kind: "schedule", every_s: Math.round((n ?? 0) * UNIT_S[d.everyUnit]), ...(start ? { start_at: start } : {}) };
   }
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
@@ -116,15 +105,15 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
   };
 }
 
-/** A schedule as the form holds it, to edit. Its times read in its cron zone, else UTC. */
+/** A schedule as the form holds it, to edit: a one time and an interval's start in this browser's zone. */
 export function draftOf(t: Trigger): Draft {
   const s = t.source;
   const zone = "cron" in s ? s.timezone : "UTC";
   const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "", maxCost: String(t.target.max_cost_usd), enabled: t.enabled };
   if ("cron" in s) return { ...base, kind: "cron", cron: s.cron };
-  if ("at" in s) return { ...base, kind: "at", at: localIn(s.at, zone) };
+  if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at) };
   const unit: EveryUnit = s.every_s % 3600 === 0 ? "hours" : s.every_s % 60 === 0 ? "minutes" : "seconds";
-  return { ...base, kind: "every", every: String(s.every_s / UNIT_S[unit]), everyUnit: unit, startAt: localIn(s.start_at, zone) };
+  return { ...base, kind: "every", every: String(s.every_s / UNIT_S[unit]), everyUnit: unit, startAt: wallOf(s.start_at) };
 }
 
 /** Whether two JSON values are the same, whatever their keys' order. */

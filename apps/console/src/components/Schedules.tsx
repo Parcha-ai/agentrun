@@ -10,12 +10,14 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { bodyOf, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, issuesOf, patchOf, whenWords } from "@/lib/schedules";
+import { atLeast, bodyOf, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
 export type ScheduleView = { schedule?: string | null; edit?: boolean };
 type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: string) => string };
+/** `minEvery`: the shortest interval the server takes (capabilities' features.triggers.min_every_s), when it says. */
+type FormProps = { v2: Client; go: (hash: string) => void; minEvery?: number };
 
 const hashOf = (id: string) => `#/schedules/${encodeURIComponent(id)}`;
 /** A time the server gave, in the console's own words for times (UTC). */
@@ -23,10 +25,10 @@ const at = (iso: string) => `${when(iso)} UTC`;
 const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
 
 /** Schedules (serve's trigger/1): each starts an agent's capped runs with no one there. */
-export function SchedulesPage({ v2, view, go, agentName }: PageProps & { view: ScheduleView }) {
+export function SchedulesPage({ v2, view, go, agentName, minEvery }: PageProps & { view: ScheduleView; minEvery?: number }) {
   if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} />;
-  if (view.schedule === null) return <ScheduleForm v2={v2} go={go} />;
-  if (view.edit) return <ScheduleEdit key={view.schedule} v2={v2} go={go} id={view.schedule} />;
+  if (view.schedule === null) return <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
+  if (view.edit) return <ScheduleEdit key={view.schedule} v2={v2} go={go} id={view.schedule} minEvery={minEvery} />;
   return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} />;
 }
 
@@ -155,13 +157,13 @@ function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
   );
 }
 
-function ScheduleEdit({ v2, go, id }: { v2: Client; go: (hash: string) => void; id: string }) {
+function ScheduleEdit({ v2, go, id, minEvery }: FormProps & { id: string }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
   useEffect(() => { v2.getTrigger(id).then(setTrigger, (e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
-  return <ScheduleForm v2={v2} go={go} trigger={trigger} />;
+  return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} />;
 }
 
 /** One input with its label, its hint, and the issue under it (`data-issue`: the field the server names). */
@@ -195,7 +197,7 @@ async function allAgents(v2: Client): Promise<Agent[]> {
 }
 
 /** A new schedule, or `trigger` to edit. A save the server refuses (422) says each issue under the field it names. */
-function ScheduleForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => void; trigger?: Trigger }) {
+function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Trigger }) {
   const [draft, setDraft] = useState<Draft>(() => (trigger ? draftOf(trigger) : emptyDraft()));
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [issues, setIssues] = useState<Record<string, string>>({});
@@ -226,6 +228,10 @@ function ScheduleForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => v
       setSaving(false);
     }
   };
+  // An edit that changes when starts the schedule again from now (the server's rule for a new source): said before the save.
+  const edited = trigger ? bodyOf(draft).body : undefined;
+  const restarts = !!(trigger && edited && patchOf(trigger, edited).source);
+  const atInstant = draft.kind === "at" ? instantOf(draft.at) : null;
   const live = (agents ?? []).filter((a) => !a.archived_at || a.agent_id === draft.agentId);
   const kinds: { kind: Draft["kind"]; label: string }[] = [{ kind: "cron", label: "Cron" }, { kind: "at", label: "Once" }, { kind: "every", label: "Every" }];
   return (
@@ -246,9 +252,9 @@ function ScheduleForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => v
           </div>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><input name="cron" className={INPUT} value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
-            {draft.kind === "at" && <Field label="At" field="source.at" issue={issues["source.at"]}><input name="at" type="datetime-local" className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
+            {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${at(atInstant)}` : undefined}><input name="at" type="datetime-local" step={1} className={INPUT} value={draft.at} onChange={(e) => set("at")(e.target.value)} /></Field>}
             {draft.kind === "every" && (
-              <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint="A minute or more.">
+              <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
                 <span className="flex gap-2">
                   <input name="every" inputMode="decimal" className={INPUT} value={draft.every} onChange={(e) => set("every")(e.target.value)} placeholder="5" />
                   <select name="everyUnit" aria-label="Unit" className="h-10 border bg-background px-2 font-mono text-[13px]" value={draft.everyUnit} onChange={(e) => set("everyUnit")(e.target.value as Draft["everyUnit"])}>
@@ -257,12 +263,15 @@ function ScheduleForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => v
                 </span>
               </Field>
             )}
-            <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint={draft.kind === "cron" ? "The zone the cron line runs in." : "The zone the times here are in."}>
-              <input name="timezone" list="schedule-zones" className={INPUT} value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
-            </Field>
-            {draft.kind === "every" && <Field label="Starting (optional)" field="source.start_at" issue={issues["source.start_at"]}><input name="startAt" type="datetime-local" className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
+            {draft.kind === "cron" && (
+              <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint="The zone the cron line runs in.">
+                <input name="timezone" list="schedule-zones" className={INPUT} value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
+              </Field>
+            )}
+            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={draft.startAt && instantOf(draft.startAt) ? `= ${at(instantOf(draft.startAt)!)}` : undefined}><input name="startAt" type="datetime-local" step={1} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
           </div>
           {ZONES.length > 0 && <datalist id="schedule-zones">{ZONES.map((z) => <option key={z} value={z} />)}</datalist>}
+          {restarts && <p className="mt-3 text-[12px] text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
           <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>

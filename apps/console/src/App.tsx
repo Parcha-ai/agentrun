@@ -457,7 +457,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             </div>
           </div>
         : where.section === "schedules"
-        ? <SchedulesPage v2={v2} view={{ schedule: where.schedule, edit: where.edit }} go={go} agentName={agentName} />
+        ? <SchedulesPage v2={v2} view={{ schedule: where.schedule, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
