@@ -25,25 +25,36 @@ const at = (iso: string) => when(iso);
 const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
 
 /** Schedules (serve's trigger/1): each starts an agent's capped runs with no one there. */
-export function SchedulesPage({ v2, view, go, agentName, minEvery }: PageProps & { view: ScheduleView; minEvery?: number }) {
-  if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} />;
+/** `refreshMs`: how often an open schedule's page reads it again, so a firing shows as it happens (the list, twice that). */
+export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000 }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number }) {
+  if (view.schedule === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} />;
   if (view.schedule === null) return <ScheduleForm v2={v2} go={go} minEvery={minEvery} />;
   if (view.edit) return <ScheduleEdit key={view.schedule} v2={v2} go={go} id={view.schedule} minEvery={minEvery} />;
-  return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} />;
+  return <ScheduleDetail key={view.schedule} v2={v2} go={go} agentName={agentName} id={view.schedule} every={refreshMs} />;
 }
 
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
-function ScheduleList({ v2, go, agentName }: PageProps) {
+function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
+  // Read now, and again every `every` ms while the page is open (one read at a time), so a schedule's firings show.
   useEffect(() => {
     let live = true;
-    v2.listTriggers().then((r) => { if (live) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live) setError(problem(e, "the schedules")); });
-    return () => { live = false; };
-  }, [v2, tries]);
+    let reading = false;
+    const read = () => {
+      if (reading) return;
+      reading = true;
+      v2.listTriggers()
+        .then((r) => { if (live) { setTriggers(r.triggers); setError(null); } }, (e) => { if (live) setError(problem(e, "the schedules")); })
+        .finally(() => { reading = false; });
+    };
+    read();
+    const timer = setInterval(read, every);
+    return () => { live = false; clearInterval(timer); };
+  }, [v2, tries, every]);
   return (
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -77,7 +88,7 @@ function ScheduleList({ v2, go, agentName }: PageProps) {
   );
 }
 
-function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
+function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: string; every: number }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
@@ -87,8 +98,21 @@ function ScheduleDetail({ v2, go, agentName, id }: PageProps & { id: string }) {
   const [tries, setTries] = useState(0);
   // A Run now out: a second click while it is waits for it, so a double click fires once.
   const firing = useRef(false);
-  const read = () => Promise.all([v2.getTrigger(id), v2.triggerFirings(id)]).then(([t, f]) => { setTrigger(t); setFirings(f.firings); setError(null); });
+  // One read of the schedule and its firings at a time.
+  const reading = useRef(false);
+  const read = () => {
+    reading.current = true;
+    return Promise.all([v2.getTrigger(id), v2.triggerFirings(id)])
+      .then(([t, f]) => { setTrigger(t); setFirings(f.firings); setError(null); })
+      .finally(() => { reading.current = false; });
+  };
   useEffect(() => { read().catch((e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Read again every `every` ms while the page is open, so a timed firing, its run and the next time show with no
+  // reload; not while a read or a Run now is out. A read that fails here leaves the page as it was.
+  useEffect(() => {
+    const timer = setInterval(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every);
+    return () => clearInterval(timer);
+  }, [v2, id, every]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/schedules", label: "All schedules" }} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {

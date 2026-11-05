@@ -8,8 +8,14 @@ import type { Firing, Trigger, TriggerInput, TriggerSource } from "./v2";
 export type WhenKind = "cron" | "at" | "every";
 export type EveryUnit = "seconds" | "minutes" | "hours";
 /** The form's fields as typed. `at` and `startAt` are wall times (datetime-local) in this browser's zone; `timezone` is a
- *  cron line's alone; `every` is a count of `everyUnit`. */
-export type Draft = { name: string; kind: WhenKind; cron: string; timezone: string; at: string; every: string; everyUnit: EveryUnit; startAt: string; agentId: string; content: string; maxCost: string; enabled: boolean };
+ *  cron line's alone; `every` is a count of `everyUnit`. `read`: the instants an edited schedule had, kept so a time left
+ *  alone is sent as it was, not as its wall time reads back (a time in a clock change's repeated hour reads as its first
+ *  pass). */
+export type Draft = { name: string; kind: WhenKind; cron: string; timezone: string; at: string; every: string; everyUnit: EveryUnit; startAt: string; agentId: string; content: string; maxCost: string; enabled: boolean; read?: { at?: string; startAt?: string } };
+
+/** The instant a wall time is: the one read with the schedule while the wall time is still what it read as, else the
+ *  wall time as typed. */
+const instantKept = (wall: string, read: string | undefined) => (read && wall === wallOf(read) ? read : instantOf(wall));
 
 /** The browser's own zone: where a new cron line starts (as n8n's and Windmill's schedule forms start theirs). */
 export const browserZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -89,14 +95,14 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
     if (!d.cron.trim()) issues["source.cron"] = "A cron line is needed.";
     source = { kind: "schedule", cron: d.cron.trim(), timezone: d.timezone.trim() || browserZone() };
   } else if (d.kind === "at") {
-    const at = instantOf(d.at);
+    const at = instantKept(d.at, d.read?.at);
     if (at === null) issues["source.at"] = "A time is needed.";
     source = { kind: "schedule", at: at ?? "" };
   } else {
     const n = numberOf(d.every);
     if (!d.every.trim()) issues["source.every_s"] = "A number is needed.";
     else if (n === undefined) issues["source.every_s"] = NEEDED;
-    const start = d.startAt ? instantOf(d.startAt) : null;
+    const start = d.startAt ? instantKept(d.startAt, d.read?.startAt) : null;
     source = { kind: "schedule", every_s: Math.round((n ?? 0) * UNIT_S[d.everyUnit]), ...(start ? { start_at: start } : {}) };
   }
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
@@ -121,9 +127,9 @@ export function draftOf(t: Trigger): Draft {
   const zone = "cron" in s ? s.timezone : browserZone();
   const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "", maxCost: String(t.target.max_cost_usd), enabled: t.enabled };
   if ("cron" in s) return { ...base, kind: "cron", cron: s.cron };
-  if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at) };
+  if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at), read: { at: s.at } };
   const unit: EveryUnit = s.every_s % 3600 === 0 ? "hours" : s.every_s % 60 === 0 ? "minutes" : "seconds";
-  return { ...base, kind: "every", every: String(s.every_s / UNIT_S[unit]), everyUnit: unit, startAt: wallOf(s.start_at) };
+  return { ...base, kind: "every", every: String(s.every_s / UNIT_S[unit]), everyUnit: unit, startAt: wallOf(s.start_at), read: { startAt: s.start_at } };
 }
 
 /** Whether two JSON values are the same, whatever their keys' order. */
