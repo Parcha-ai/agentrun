@@ -119,3 +119,11 @@ test("claude-agent through a gateway at OpenRouter's URL (ANTHROPIC_BASE_URL, th
   const env = { ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1", ANTHROPIC_API_KEY: ANTHROPIC };
   assert.match(await adapters.learnedWorkflowsOff("claude-agent", env, "anthropic/claude-sonnet-5.5") ?? "", /ANTHROPIC_BASE_URL/);
 });
+
+test("claude-agent on OpenRouter's own route (an openrouter/anthropic/... model with OPENROUTER_API_KEY) keeps its learned workflows though ANTHROPIC_BASE_URL is set: its requests never go to that gateway", async () => {
+  const env = { ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1", OPENROUTER_API_KEY: KEY };
+  const ref = "openrouter/anthropic/claude-sonnet-5.5";
+  assert.equal(await adapters.learnedWorkflowsOff("claude-agent", env, ref), undefined);
+  const chosen = adapters.claudeModel(env, ref);
+  assert.equal(adapters.learnedRoute("claude-agent", env, chosen.model).provider, "openrouter");
+});
