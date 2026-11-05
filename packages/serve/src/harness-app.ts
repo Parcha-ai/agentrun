@@ -586,7 +586,8 @@ export function adapterRun(
         const now = () => plus(plus(plus(booking.spentUsd(), charged), sideSpend()), inFlight.total());
         useSpend({
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), now()),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), sideSpend())),
+          held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
           now,
         });

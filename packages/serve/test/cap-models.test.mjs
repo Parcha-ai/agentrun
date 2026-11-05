@@ -113,6 +113,48 @@ test("a paid call that fails counts at what it was held at, as a model request t
   assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$0\.001 of its \$0\.0015 cap, and its next m request needs at least \$0\.01\./);
 });
 
+test("a paid call the cap refuses while a model request is in flight names what is held for it apart from what the run has spent, in one format, with the cap that would run the call", async (t) => {
+  // $1,000 per million output tokens and 1,000 of them: the request in flight is held at $1. The run has spent $0.25 of
+  // its $1.50 cap; monid's run, quoted at $0.40, does not fit beside them.
+  const priced = model({ input: 0, output: 1_000, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1.5, 0.25);
+  t.after(() => useSpend(undefined));
+  const first = capped.streamSimple(priced, context);
+  assert.equal(sent.length, 1, "the request is in flight, held at $1");
+  let ran = false;
+  const refused = await paidCall("monid_run", async () => ((ran = true), 0), (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
+  assert.equal(refused.refused, "spend_cap_reached: Not sent: the run has spent $0.25 and holds $1 for calls still answering of its $1.50 cap, and monid_run could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.65 to run it.");
+  assert.equal(ran, false, "refused, not sent");
+  sent[0].end(0);
+  await first.result();
+});
+
+test("a paid call the cap refuses for an unknown spend says the cap in the same format as every other refusal", async (t) => {
+  const { models } = fakeModels();
+  await capModels(models, 1.5, null);
+  t.after(() => useSpend(undefined));
+  const refused = await paidCall("monid_run", async () => 0, (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
+  assert.equal(refused.refused, "spend_cap_reached: monid_run was not sent. What the run has spent is unknown, so its cap of $1.50 cannot be kept: the run is out of budget.");
+});
+
+test("a paid call's refusal names a cap that would run it, a cent above the cap at the least: a spend past a whole-cent cap by a hair still asks for more than that cap", async (t) => {
+  // $0.60 (and a hair) spent of a $1 cap: monid's $0.40 run passes it by a hair, and the cap that would run it is $1.01.
+  useSpend({ cap: 1, spent: () => 0.60000000001, add: () => {} });
+  t.after(() => useSpend(undefined));
+  const refused = await paidCall("monid_run", async () => 0, (charged) => charged, { usd: 0.4, basis: "the price monid_inspect quoted" });
+  assert.equal(refused.refused, "spend_cap_reached: Not sent: the run has spent $0.60 of its $1 cap, and monid_run could cost up to $0.40 (the price monid_inspect quoted). Raise the cap to at least $1.01 to run it.");
+});
+
+test("a model request whose model has no price is refused saying \"not sent\" once, in the words its row shows after \"Not sent:\", its cap in the same format as every other refusal", async (t) => {
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1.5, 0, { unpriced: new Set(["m"]) });
+  t.after(() => useSpend(undefined));
+  const refused = await capped.streamSimple(model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }), context).result();
+  assert.equal(sent.length, 0, "not sent");
+  assert.equal(refused.errorMessage, "spend_cap_reached: Not sent: the next model request's model has no price here, so the run's cap of $1.50 cannot be kept: the run is out of budget.");
+});
+
 /** monid's run of `endpoint` on the tests' fake: /slow runs until it is stopped, /late answers TIMED_OUT. */
 const monidRun = (endpoint, options = {}, signal) => monidClient({ key: MONID_KEY, fetch: fakeMonid, ...options }).run({ provider: "faux", endpoint }, signal);
 /** Past the turn the cap's count of an ended request takes. */
