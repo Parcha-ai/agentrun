@@ -272,3 +272,27 @@ test("while the cap refuses more of the person's time on a session, a new ask th
   assert.deepEqual(await asking, { refused: "no room for handing the browser to you" }, "the ask's own words");
   assert.deepEqual(asked, ["taking over the browser", "handing the browser to you"]);
 });
+
+test("a process that takes up an earlier process's ask holds the person's time again; with no room the ask still waits, unheld, until its own expiry", async (t) => {
+  const root = await scratch(t);
+  const before = hands(root, { holdMs: 60_000 });
+  const first = await before.person.handoff.request(ask(16, "ar-run-16-1"));
+  await sleep(5);
+  const second = await before.person.handoff.request(ask(17, "ar-run-17-1"));
+  before.person.close();
+  const after = hands(root, { holdMs: 60_000 });
+  t.after(() => after.person.close());
+  assert.equal(await after.person.handoff.outcome(second.interactionId), "pending");
+  await sleep(5);
+  assert.deepEqual([after.held.taken, after.held.dropped], [1, 0], "taken up: its time held again");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await after.person.handoff.outcome(second.interactionId), "done");
+  assert.equal(after.held.dropped, 1, "and dropped with its answer");
+  // No room in the process that takes it up: the ask waits all the same, and its answer reaches the wait.
+  after.held.refuse = "spend_cap_reached: no room";
+  assert.equal(await after.person.handoff.outcome(first.interactionId), "pending");
+  await sleep(5);
+  assert.equal(after.held.taken, 1, "nothing more held");
+  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
+  assert.equal(await after.person.handoff.outcome(first.interactionId), "done");
+});

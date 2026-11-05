@@ -327,6 +327,15 @@ export function personHands(options: {
     const ask = { tag: kept.tag, expiresAt: Date.parse(kept.expires_at), drop() {} };
     open.set(id, ask);
     watch();
+    // Its time was held by the process that asked, which is gone: held again here, under the cap, as an ask's is. With no
+    // room it still waits, unheld, until its own expiry (within the hold's window of its asking): the person may be partway
+    // through it, and that time is spent at the vendor either way. A take-over of the session asks the cap itself.
+    const user = `ask:${id}`;
+    void acquire(kept.tag, user, "handing the browser to you").then((refused) => {
+      if (refused) return;
+      if (settled.has(id) || open.get(id) !== ask) return release(kept.tag, user);
+      ask.drop = () => release(kept.tag, user);
+    }, () => undefined);
     return ask;
   };
 
