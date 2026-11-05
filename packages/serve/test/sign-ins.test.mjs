@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmod, cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { homeOf, writeDurable } from "../dist/files.js";
 import { BROWSERBASE_SETTLE_MS, GONE_LEASE_MS, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
@@ -15,7 +16,7 @@ import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
@@ -503,4 +504,39 @@ test("a follow-up of a run that saved, opened while another run holds the lease,
   assert.deepEqual(followUp.filter((op) => op.op === "profile").map((op) => [op.name, op.save]), [["default", false]], "and its session saves nothing, whatever its conversation was made with");
   await writeFile(gate, "");
   await follow(api, second, ["completed"], { deadlineMs: 60_000 });
+});
+
+test("a run whose live process the next server adopts after a crash never shows its browser sign-in's pointer: the server reads it back, read-only, before it serves the run", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  // The first server, in a process of its own, killed as a crash kills it while the run's browser is open.
+  const fixture = new URL("./fixtures/serve-signed-in.mjs", import.meta.url).pathname;
+  const first = spawn(process.execPath, [fixture, data, FAUX, FAUX_BROWSER, FAUX_BROWSERBASE], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => first.kill("SIGKILL"));
+  const base = await new Promise((resolve, reject) => {
+    let out = "";
+    first.stdout.on("data", (chunk) => { out += chunk; const found = /AGENTRUN_BASE_URL=(\S+)/.exec(out); if (found) resolve(found[1]); });
+    first.once("exit", (code) => reject(new Error(`the first server exited (${code})`)));
+  });
+  const api1 = client(base, (await readFile(join(data, ".token"), "utf8")).trim());
+  assert.equal((await api1("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await api1("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  first.kill("SIGKILL");
+  await new Promise((resolve) => first.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  t.after(() => { try { process.kill(holder.pid, "SIGKILL"); } catch {} });
+  // The next server adopts the run's live process; then the run answers with its pointer in its text.
+  const next = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await next.api("GET", `/runs/${runId}`)).status, 200);
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  await follow(next.api, runId, ["completed"], { deadlineMs: 60_000 });
+  const view = (await next.api("GET", `/runs/${runId}`)).body;
+  assert.match(view.result.final_answer, /I kept \[redacted\] for you\./);
+  for (const shown of [JSON.stringify(view), JSON.stringify((await next.api("GET", "/runs")).body), JSON.stringify((await next.api("GET", `/runs/${runId}/timeline`)).body)]) assert.ok(!shown.includes(ref), shown);
 });

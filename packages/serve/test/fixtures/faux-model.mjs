@@ -190,7 +190,8 @@ export default function reply(context, faux) {
   if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
   // "Browse the example page once <file> exists." answers, its browser still open, only once the test has made that file.
   const browseGate = /^Browse the example page once (\S+) exists\.$/.exec(first)?.[1];
-  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(() => faux.message(`Seen: ${textOf(context.messages.at(-1))}`));
+  // With `<file>.echo` there too, it answers that file's text instead (a model that repeats what it was given).
+  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(async () => faux.message(await (await import("node:fs/promises")).readFile(`${browseGate}.echo`, "utf8").catch(() => `Seen: ${textOf(context.messages.at(-1))}`)));
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");

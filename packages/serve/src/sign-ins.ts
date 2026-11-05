@@ -143,6 +143,15 @@ export class SignIns {
     }));
   }
 
+  /** The pointer of `agentId`'s sign-in for `resolution`, read only: no lease taken, nothing made or written. For a run
+   *  this server takes up already going (adopted after a restart), whose errors and answers must never show it. */
+  async peek(agentId: string, resolution: string): Promise<string | undefined> {
+    const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
+    if (!vendor) return undefined;
+    const entry = (await this.read(agentId).catch(() => [])).find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
+    return entry && this.open(agentId, entry);
+  }
+
   /** The sign-in run `runId` of `agentId` starts from on `resolution` (its plane's browser): made at the vendor when the
    *  agent has none, then leased to this run to save, unless another run of the agent holds the lease. None for a
    *  browser that keeps none, or with no seal key. */

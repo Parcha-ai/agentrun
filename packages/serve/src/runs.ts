@@ -804,6 +804,8 @@ export class Runs {
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else {
+      // Its browser's sign-in pointer is never shown, though no launch of this server handed it one: read back, read only.
+      await this.peekSignIn(run);
       // A cancel a server took and could not carry back before it went: its mark is written first (cancel()), so it is
       // the run's end, as it was from its 202 on, whatever the turn it cut reads.
       if (run.kind === "agentic" && existsSync(join(dir, RUN_CANCELLED))) {
@@ -1568,6 +1570,14 @@ export class Runs {
     run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
     // Never shown in its errors, from now on: a server started since its launch has handed it nothing yet.
     if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
+  }
+
+  /** The pointer of the sign-in a run going before this server started was handed, among the values its errors and
+   *  answers never show: read only, with no lease taken (pinSignIn takes one at its next launch). */
+  private async peekSignIn(run: Run): Promise<void> {
+    const browser = run.meta.tool_plane?.browser;
+    const ref = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => undefined) : undefined;
+    if (ref && ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(ref);
   }
 
   /** Lets go of the save lease the run holds on its agent's sign-in, if any: at once when its process let its sessions go
