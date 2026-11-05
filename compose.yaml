@@ -17,7 +17,7 @@ services:
       context: .
       dockerfile: packages/serve/docker/Dockerfile
     ports:
-      - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340"
+      - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340" # key-gate: loopback-rule this machines loopback, where the port is published
     volumes:
       # Everything the server keeps, on a named volume: a box mounts its run's part of it by the volume's subpath, which is
       # the one way a server in a container gives a box the run's files.
@@ -27,7 +27,7 @@ services:
     group_add:
       - "${DOCKER_GID:?set DOCKER_GID to the group of /var/run/docker.sock, which stat -c %g /var/run/docker.sock prints}"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"] # key-gate: loopback-rule the servers own loopback, its health check
       interval: 30s
       timeout: 5s
       retries: 3
@@ -37,7 +37,7 @@ services:
       # The hosts a box may reach, as a comma list; empty, the package registries and GitHub; none for no network.
       AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
-      AGENTRUN_PUBLIC_URL: ${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:${AGENTRUN_PORT:-7340}}
+      AGENTRUN_PUBLIC_URL: ${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:${AGENTRUN_PORT:-7340}} # key-gate: loopback-rule the published loopback port, the printed link
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_MODEL_FAST: ${AGENT_MODEL_FAST:-}
       AGENT_MODEL_STRONG: ${AGENT_MODEL_STRONG:-}
