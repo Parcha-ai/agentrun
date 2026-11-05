@@ -388,10 +388,13 @@ input as it goes. Each call is one short command in the run's box, on the same p
   stderr go together to `work/background/<id>/output.log`, beside `command`, `started`, `pid` (its process group) and,
   once it ends, `exit` (its code; 128 + n for signal n). The run's files show them (`GET /v2/runs/{id}/files`), so the
   console and the API show each log, during the run and after it.
+- A process runs until no live process of its group is left: a child the command starts with `&` (a server, its
+  output sent elsewhere) keeps it running, counted against the cap, signalled with it and ended at the run's end; its
+  exit code is the shell's.
 - At most 8 run at once in a run's box: a ninth start is refused, saying so, until one ends. Each log keeps the first
   16 MiB of the output; later output is dropped while the process runs on, and `bash_output` says so.
 - `bash_output {id, offset?, max_bytes?}` reads the log from a byte offset (0 when absent), at most 48 KiB a call (the
-  default), never splitting a character: whether the process still runs, its exit code once it ended, the log's size,
+  default), never splitting a character (a page too small for the character it starts at is refused, saying so): whether the process still runs, its exit code once it ended, the log's size,
   and the offset to read from next. Once it says the process ended, the log is whole.
 - `bash_input {id, text, close?}` writes `text` to the process's stdin as given (end a line with `\n`), at most 64 KiB a
   call; `close: true` closes its stdin after it, so the process reads the end of its input. The stdin is a fifo in the

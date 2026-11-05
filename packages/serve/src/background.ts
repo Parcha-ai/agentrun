@@ -7,8 +7,8 @@
 // In the box, a start makes `work/background/<id>/` (the run's files show it) with `command`, `started`, `output.log`
 // (stdout and stderr, the first BACKGROUND_LOG_BYTES of them), `pid` (the command's process group) and, once it ends,
 // `exit` (its code: 128 + n for signal n). The command runs under its own session (`setsid`), from a runner started with
-// `setsid -f nohup`, which writes `exit` once the command's output is all in the log, so a read that sees `exit` sees the
-// whole log. What only the box knows lives in its TMPDIR (else /tmp), under `.agentrun-background/<id>/`, never in
+// `setsid -f nohup`, which writes `exit` once the command's output is all in the log and no live process of its group
+// is left, so a read that sees `exit` sees the whole log, and a child left running keeps the process running. What only the box knows lives in its TMPDIR (else /tmp), under `.agentrun-background/<id>/`, never in
 // work/: the fifo the command reads as its stdin (a pull of a remote box refuses a pipe in work/), the runner's pid, and
 // the pid of the `sleep` that holds the fifo's write end open, so the command reads no end of input until `bash_input`
 // closes it. A process whose runner is gone without an `exit` (its box was replaced) is `lost`.
@@ -58,6 +58,10 @@ const RUNNER = [
   'if stdbuf -o0 true 2>/dev/null; then keep() { stdbuf -o0 head -c "$cap" >> "$L/output.log"; }; else keep() { head -c "$cap" >> "$L/output.log"; }; fi',
   'sleep 2147483647 > "$C/in" & h=$!; echo "$h" > "$C/hold"',
   `{ setsid -w sh -c 'echo $$ > "$1/.pid" && mv -f "$1/.pid" "$1/pid"; cd "$2" || exit 126; if command -v bash >/dev/null 2>&1; then exec bash -c "$3"; fi; exec sh -c "$3"' agentrun-background "$L" "$4" "$5" < "$C/in" 2>&1; echo $? > "$C/code"; } | { keep; [ "$(($(wc -c < "$L/output.log")))" -ge "$cap" ] && : > "$L/capped"; cat > /dev/null; }`,
+  // A child the command left running (a server started with &, its output sent elsewhere) keeps the process going: the
+  // group is waited for, so it stays running, signalled, counted and ended at the run's end until no live process of
+  // the group is left.
+  `g=$(cat "$L/pid" 2>/dev/null); live() { [ -n "$g" ] || return 1; if [ -r /proc/self/stat ]; then cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$g" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && $3 == g) n++ } END { exit n > 0 ? 0 : 1 }'; else kill -0 "-$g" 2>/dev/null; fi; }; while live; do sleep 0.5; done`,
   'kill "$h" 2>/dev/null; code=$(cat "$C/code" 2>/dev/null); [ -n "$code" ] || code=255',
   'printf \'%s\\n\' "$code" > "$L/.exit" && mv -f "$L/.exit" "$L/exit"; rm -f "$C/in"',
 ].join("\n");
@@ -71,7 +75,7 @@ const SCRIPT = [
   `alive() { [ -n "$1" ] || return 1; if [ -r /proc/self/stat ]; then s=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1); [ -n "$s" ] && [ "$s" != Z ] && [ "$s" != X ]; else kill -0 "$1" 2>/dev/null; fi; }`,
   'state() { if [ -f "$d/$1/exit" ]; then echo "exited $(cat "$d/$1/exit")"; elif alive "$(cat "$c/$1/runner" 2>/dev/null)"; then echo running; else echo lost; fi; }',
   'ids() { for p in "$d"/*; do i=${p##*/}; case $i in ""|*[!0-9]*) continue;; esac; [ -d "$p" ] && echo "$i"; done; }',
-  'running() { for i in $(ids); do [ "$(state "$i")" = running ] && echo "$i"; done; }',
+  'running() { for i in $(ids); do [ -f "$d/$i/exit" ] && continue; [ "$(state "$i")" = running ] && echo "$i"; done; }',
   'size() { echo $(($(wc -c < "$d/$1/output.log" 2>/dev/null || echo 0))); }',
   'case $op in',
   'start)',
@@ -108,7 +112,11 @@ const SCRIPT = [
   '  k=0; while [ ! -f "$d/$1/exit" ] && [ $k -lt 40 ]; do sleep 0.05; k=$((k+1)); done',
   '  echo "state $(state "$1")";;',
   'list)',
-  `  for i in $(ids); do printf '%s\\t%s\\t%s\\t%s\\t%s\\t' "$i" "$(state "$i")" "$(size "$i")" "$(cat "$d/$i/started" 2>/dev/null)" "$([ -f "$d/$i/ended" ] && echo ended)"; head -c 200 "$d/$i/command" 2>/dev/null | base64 | tr -d '\\n'; echo; done;;`,
+  // Every running one, then the newest $1 others, chosen before any of their details is read: the list costs the same
+  // however many ended before.
+  '  t=0; o=0; picked=""; for i in $(ids | sort -rn); do t=$((t+1)); if [ -f "$d/$i/exit" ] || [ "$(state "$i")" != running ]; then [ $o -lt "$1" ] || continue; o=$((o+1)); fi; picked="$picked $i"; done',
+  '  echo "total $t"',
+  `  for i in $picked; do printf '%s\\t%s\\t%s\\t%s\\t%s\\t' "$i" "$(state "$i")" "$(size "$i")" "$(cat "$d/$i/started" 2>/dev/null)" "$([ -f "$d/$i/ended" ] && echo ended)"; head -c 200 "$d/$i/command" 2>/dev/null | base64 | tr -d '\\n'; echo; done;;`,
   'end)',
   '  n=0; for i in $(running); do : > "$d/$i/ended"; g=$(cat "$d/$i/pid" 2>/dev/null); [ -n "$g" ] && kill -TERM -"$g" 2>/dev/null; n=$((n+1)); done',
   '  k=0; while [ $k -lt 60 ] && [ -n "$(running)" ]; do sleep 0.05; k=$((k+1)); done',
@@ -167,13 +175,14 @@ function stateWords(state: State, ended = false): string {
 
 const noSuch = (id: string) => new Error(`there is no background process ${id} in this run: bash_list shows them`);
 
-/** The end of `bytes` that ends inside a UTF-8 character, left for the next page: how many bytes to keep. */
+/** The end of `bytes` that ends inside a UTF-8 character, left for the next page: how many bytes to keep (none, when the
+ *  page holds only part of one character). */
 function wholeChars(bytes: Uint8Array): number {
   for (let back = 1; back <= Math.min(3, bytes.length); back++) {
     const byte = bytes[bytes.length - back]!;
     if ((byte & 0xc0) === 0x80) continue;
     const length = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
-    return length > back && bytes.length > back ? bytes.length - back : bytes.length;
+    return length > back ? bytes.length - back : bytes.length;
   }
   return bytes.length;
 }
@@ -190,7 +199,7 @@ const schema = (properties: Record<string, unknown>, required: string[]) => ({ t
 
 const bashBackground = defineTool({
   name: "bash_background",
-  description: `Start a shell command in the background in the run's box, from its work/, and answer at once with its id. Each call is a fresh shell (bash, else sh). The command runs until it exits, bash_signal ends it, or the run ends, which ends it. Its stdout and stderr go together to work/background/<id>/output.log, which the run's files keep: the first ${MIB} MiB of them, later output dropped while it runs on. Its stdin is a pipe that bash_input writes. At most ${BACKGROUND_MAX} run at once in a run's box. Read its output with bash_output, list them with bash_list.`,
+  description: `Start a shell command in the background in the run's box, from its work/, and answer at once with its id. Each call is a fresh shell (bash, else sh). The command runs until it and every child it left in its process group (a server started with &) have exited, bash_signal ends it, or the run ends, which ends it. Its stdout and stderr go together to work/background/<id>/output.log, which the run's files keep: the first ${MIB} MiB of them, later output dropped while it runs on. Its stdin is a pipe that bash_input writes. At most ${BACKGROUND_MAX} run at once in a run's box. Read its output with bash_output, list them with bash_list.`,
   parameters: schema({ command: { type: "string", minLength: 1, description: "The command, as you would give bash." } }, ["command"]),
   execute: async (args, api, context) => {
     const command = String((args as { command?: unknown }).command ?? "");
@@ -232,6 +241,8 @@ const bashOutput = defineTool({
     const read = at < 0 ? new Uint8Array() : decode(said.slice(at + 4));
     // A character the page would split is left for the next one, unless the process has ended and nothing follows.
     const keep = state.state === "running" || offset + read.length < size ? wholeChars(read) : read.length;
+    // A page too small for the one character it starts with reads nothing, and says what to ask instead.
+    if (keep === 0 && read.length > 0) throw new Error(`the character at byte ${offset} of background process ${id}'s output is longer than max_bytes ${max}: ask again with max_bytes 4 or more`);
     const bytes = read.subarray(0, keep);
     const next = offset + bytes.length;
     const more = next < size;
@@ -294,8 +305,10 @@ const bashList = defineTool({
   parameters: schema({}, []),
   replay: "safe",
   execute: async (_args, api, context) => {
-    const said = await inBox(api.env, "list", [], context);
-    const all = said.split("\n").filter(Boolean).map((line) => {
+    const said = await inBox(api.env, "list", [String(BACKGROUND_LIST_MAX)], context);
+    const [first = "", ...rows] = said.split("\n");
+    const total = Number(/^total (\d+)$/.exec(first)?.[1] ?? 0);
+    const all = rows.filter(Boolean).map((line) => {
       const [id = "", state = "", size = "0", started = "", ended = "", command = ""] = line.split("\t");
       return { id, ...stateOf(state), size: Number(size) || 0, ...(started ? { started } : {}), ...(ended ? { ended_at_run_end: true } : {}), command: new TextDecoder().decode(decode(command)) };
     }).sort((a, b) => Number(b.id) - Number(a.id));
@@ -303,7 +316,7 @@ const bashList = defineTool({
     if (!shown.length) return forModel("No background processes in this run's box: bash_background starts one.", { details: { processes: [] } });
     const running = all.filter((p) => p.state === "running").length;
     const lines = shown.map((p) => `${p.id}: ${stateWords(p, p.ended_at_run_end === true)}; ${p.size.toLocaleString("en-US")} bytes of output; started ${p.started ?? "at an unknown time"}; ${JSON.stringify(p.command.replace(/\s+/g, " ").slice(0, 120))}`);
-    const left = all.length - shown.length;
+    const left = total - shown.length;
     return forModel(`${running} of at most ${BACKGROUND_MAX} running.\n${lines.join("\n")}${left > 0 ? `\n(and ${left} older ones that ended)` : ""}`, { details: { running, processes: shown } });
   },
 });

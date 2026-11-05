@@ -105,9 +105,12 @@ test("start, then page by byte offset, then the exit code; a page never splits a
     { tool: "bash_output", args: { id: "99" } },
     { tool: "bash_signal", args: { id: "1", signal: "KILL" } },
     { tool: "bash_input", args: { id: "1", text: "late\n" } },
+    // A page smaller than the one character it starts with reads nothing, and says what to ask.
+    { tool: "bash_output", args: { id: "1", offset: 8, max_bytes: 2 } },
   ];
   const { said } = await boxedRun(t, plan);
   assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step, i) => [step.tool, i >= 6]), JSON.stringify(said));
+  assert.match(said[9].text, /the character at byte 8 of background process 1's output is longer than max_bytes 2: ask again with max_bytes 4 or more/);
   assert.equal(said[2].text, "Background process 1 exited with code 3. Output bytes 0 to 4 of 12; call again with offset 4 for the next part.\n\none\n");
   // Five bytes asked from 4: "two\n" and the first byte of the euro sign, which is left for the next page.
   assert.equal(said[3].text, "Background process 1 exited with code 3. Output bytes 4 to 8 of 12; call again with offset 8 for the next part.\n\ntwo\n");
@@ -116,6 +119,23 @@ test("start, then page by byte offset, then the exit code; a page never splits a
   assert.match(said[6].text, /there is no background process 99 in this run: bash_list shows them/);
   assert.match(said[7].text, /background process 1 exited with code 3, so no signal was sent/);
   assert.match(said[8].text, /background process 1 exited with code 3, so it takes no input/);
+});
+
+test("a child the command leaves running keeps the process running until its group is empty: listed, counted, and ended by a signal to the group", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "sleep 60 >/dev/null 2>&1 & echo parent done" } },
+    wait(1),
+    { tool: "bash_output", args: { id: "1" } },
+    { tool: "bash_list", args: {} },
+    { tool: "bash_signal", args: { id: "1", signal: "TERM" } },
+  ];
+  const { said, work } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.equal(said[2].text, "Background process 1 is running. Output bytes 0 to 12 of 12, all of it so far; call again with offset 12 for what comes next.\n\nparent done\n");
+  assert.match(said[3].text, /^1 of at most 8 running\.\n1: is running;/);
+  // The shell itself exited 0; its child ended with the TERM, and only then is the process done.
+  assert.equal(said[4].text, "Sent TERM to background process 1: it exited with code 0.");
+  assert.equal(groupAlive(Number(readFileSync(join(work, "background", "1", "pid"), "utf8"))), false, "its group is gone");
 });
 
 test("stdin reaches a `read` loop, line by line; close: true ends its input", { timeout: 120_000 }, async (t) => {
