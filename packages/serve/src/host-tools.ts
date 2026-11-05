@@ -9,7 +9,8 @@
 // and a call a crash cut off is answered interrupted, not run again. A tool is named by its catalog name here and goes
 // to the harness under its wire name (catalog.ts: `monid.run` is `monid_run`), which the harness calls and journals. A
 // refusal, an error and a write's or edit's result name a path in the workspace relative to it (`hello.md`), never by
-// the server's data directory (`workspaceRelative`); in a box they name the box's paths.
+// the server's data directory (`workspaceRelative`); in a box they name the box's paths. Each call passes the run's tool
+// gate first (tool-gate.ts): a denied call is refused, an asked one parked, and the harness is told so it ends the turn.
 import { StringDecoder } from "node:string_decoder";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
@@ -25,6 +26,7 @@ import { withSecrets } from "./secrets.js";
 import { WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { realOf, workspaceRelative } from "./workspace-paths.js";
+import type { Park, RunGate } from "./tool-gate.js";
 
 export { workspaceRelative } from "./workspace-paths.js";
 
@@ -104,7 +106,11 @@ const textOf = (content: unknown): string =>
   Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && "text" in block && typeof block.text === "string" ? block.text : "")).join("") : "";
 
 
-export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], extra: readonly ToolRegistration[] = []): HostTool[] {
+/** The host tools `names` names, on the run's coding source `coding`. `gated`: the run's tool gate, which every call
+ *  passes, and the park it takes (harness-app.ts), told of a call it parked, whose turn the harness ends; none (the
+ *  gate's own run of an approved call), each call runs as asked. `extra`: the run's own tools beyond the table (its
+ *  learned_workflow, learned-workflow.ts), which the gate passes like the rest. */
+export function hostTools(run: DurableRun, names: readonly string[], context: Context, results: ToolResults, coding: readonly ToolRegistration[] = CodingTools.tools ?? [], gated?: { gate: RunGate; park: Park }, extra: readonly ToolRegistration[] = []): HostTool[] {
   // The coding source gives the coding tools and nothing else: the network tools are this machine's own, below.
   const stray = coding.map((tool) => tool.name).filter((name) => !BOXED_TOOLS.includes(name));
   if (stray.length) throw new Error(`the coding source holds ${stray.join(", ")}, which is no coding tool`);
@@ -127,6 +133,12 @@ export function hostTools(run: DurableRun, names: readonly string[], context: Co
       inputSchema: tool.parameters as unknown as Record<string, unknown>,
       replay,
       async call(args, { callId, signal }) {
+        const refused = await gated?.gate.enter(name, args, callId, gated.park);
+        if (refused) {
+          const answer = { text: refused.text, isError: refused.isError };
+          results.set(callId, answer);
+          return answer;
+        }
         const out = bounded(tool.outputLimits);
         const notes: string[] = [];
         const env = await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context);

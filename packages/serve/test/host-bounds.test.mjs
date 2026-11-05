@@ -118,7 +118,7 @@ test("every host tool's largest result is within the host's result bound, which 
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
   // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow (app.ts).
   const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) } });
-  const all = hosts.hostTools({ ...run, claim: { work } }, Object.keys(hosts.REPLAY), ctx, new Map(), box.tools, [learned]);
+  const all = hosts.hostTools({ ...run, claim: { work } }, Object.keys(hosts.REPLAY), ctx, new Map(), box.tools, undefined, [learned]);
   assert.deepEqual(all.map((tool) => tool.name).sort(), Object.keys(hosts.REPLAY).map((name) => name.replace(".", "_")).sort(), "every host tool, under its wire name");
   const server = await claude.toolServer("hands", all.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })), async () => ({ content: [] }));
   const [near, far] = InMemoryTransport.createLinkedPair();
