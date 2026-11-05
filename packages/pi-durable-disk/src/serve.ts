@@ -28,6 +28,11 @@ export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHOR
 
 const MAX_BODY = 1 << 20;
 const REQUEST_ID = /^[\x21-\x7e]{1,200}$/;
+/** The request id a server-written message's origin marker is written under: the message's own, in a key space no caller
+ *  id is in. A caller's id is printable ASCII with no space (REQUEST_ID), so one with a space can never equal it, and
+ *  every caller id (`foo:origin` too) stays the caller's. The marker is matched to its message by its kind and text,
+ *  never by this id. A retry of the message writes none once its input is in (submit), so a message has one marker. */
+const originMarkId = (requestId: string): string => `origin of ${requestId}`;
 /** The entry kind that names the origin of a server-written message (pi-durable-agent's MESSAGE_ORIGIN, the same text):
  *  `{ origin, text }`, matched by its text to the user entry that follows it. */
 export const MESSAGE_ORIGIN_KIND = "agentrun.message_origin";
@@ -304,7 +309,11 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     if (guarded && (await waitsOnPerson(conversation, (asks as string[] | undefined) ?? [], context))) throw new HttpError(409, "WAITING", "the conversation waits on a person: this input may not answer it");
     // A message the server wrote: pi writes its user entry with no data, so its origin goes first as an entry of its own,
     // queued with it, which the Timeline matches to it by its text (MESSAGE_ORIGIN_KIND).
-    if (origin) await conversation.submit({ type: "write", requestId: `${requestId}:origin`, entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin: origin as JsonObject, text: textOfInput(content as UserInput) } } }, context);
+    // A retry of a message whose input is already in (a plain retry, or one first sent before an upgrade, whose marker went
+    // under another id) writes no second marker: pi takes the input again as the same submission, and a second marker
+    // would be left open for a later message with the same text, a person's.
+    const known = origin ? await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context) : undefined;
+    if (origin && known === undefined) await conversation.submit({ type: "write", requestId: originMarkId(requestId), entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin: origin as JsonObject, text: textOfInput(content as UserInput) } } }, context);
     const submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(guarded ? { whenBusy: "reject" as const } : whenBusy === undefined ? {} : { whenBusy }) }, context);
     let record: SubmissionRecord = await submission.status(context);
     if (wait === true) record = await submission.wait(context);

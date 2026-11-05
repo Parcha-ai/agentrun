@@ -71,6 +71,29 @@ for (const harness of ["pi", "claude-agent", "opencode"]) {
   });
 }
 
+test("pi: a caller's request id never collides with the marker a server message writes: after the server's \"foo\", an input the caller names \"foo:origin\" reaches the model, its submission done and its answer there", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB_HOLD });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("origin-ids", { tools: [] }))).status, 201);
+  const run = await api("POST", "/agents/origin-ids/runs", { input: { content: `Hold the answer until ${go}.` } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  const server = await toDoor(data, runId, { requestId: "foo", content: RAISED, whenBusy: "followUp", origin: { kind: "server", reason: "cap_raised" } });
+  assert.ok(server.status < 400, `the door took the server's message: ${JSON.stringify(server)}`);
+  // Any printable ASCII id is the caller's to choose, this one included.
+  const SAID = "And one more thing from me.";
+  const caller = await toDoor(data, runId, { requestId: "foo:origin", content: SAID, whenBusy: "followUp" });
+  assert.ok(caller.status < 400, `the door took the caller's own "foo:origin": ${JSON.stringify(caller)}`);
+  // The same request again, waiting: its own submission, answered once the run reaches it.
+  const answered = toDoor(data, runId, { requestId: "foo:origin", content: SAID, whenBusy: "followUp", wait: true });
+  await writeFile(go, "");
+  const done = await answered;
+  assert.deepEqual([done.status, done.body?.submission?.type, done.body?.submission?.status, typeof done.body?.answer], [200, "input", "done", "object"], `its submission is done and answered: ${JSON.stringify(done)}`);
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  assert.ok(userTexts(data, runId).includes(SAID), `the model was given the caller's text: ${JSON.stringify(userTexts(data, runId))}`);
+});
+
 test("the door refuses an origin that is not the server's, and writes nothing for it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
