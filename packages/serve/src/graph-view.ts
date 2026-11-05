@@ -46,8 +46,7 @@ const labelOf = (item: unknown): string | undefined => {
   return typeof named === "string" || typeof named === "number" ? String(named) : undefined;
 };
 
-/** The most of a call's error a log from before kept: one this long may have been cut there. */
-const ERROR_CUT_BEFORE = 2000;
+
 
 export async function runGraph(given: GraphInput) {
   const [{ graphNodeOf, nodeStatus, workflowGraph }, { readWorkflowRun }, { durableDecisions, readJournal }] = await Promise.all([
@@ -181,6 +180,8 @@ export async function runGraph(given: GraphInput) {
       questions: r.questions ?? null, answers: r.answers ?? null, evidence: r.evidence ?? [], rule: r.rule ?? null, action: r.action ?? null,
       cost_usd: typeof r.cost_usd === "number" ? r.cost_usd : null, cost_basis: r.cost_basis ?? null, latency_ms: r.latency_ms ?? null,
       state: r.state ?? null, state_truncated: r.state_truncated === true, error: typeof r.error === "string" ? r.error : null,
+      // Whole up to 64 KB (the DSL's receipt); `error_cut` marks one it kept cut, for the server to hold its tail back.
+      ...(r.error_truncated === true ? { error_cut: true } : {}),
       images: images.map((image) => ({ token: image.token ?? null, ref: image.ref ?? null, url: typeof image.ref === "string" ? runFile(image.ref) : null })),
     };
   });
@@ -200,9 +201,9 @@ export async function runGraph(given: GraphInput) {
       if (!start) continue;
       const effect = effects[placeOf.get(start)!]!;
       // An error is stored whole up to 64 KB (app.ts), longer ones cut and marked; one of a log from before, cut at 2000.
-      // Whole, as logged (up to 64 KB, app.ts); `error_cut` marks one stored cut, for the server to hold its tail back.
-      const cut = line.error !== undefined && (line.error_truncated === true || line.error.length === ERROR_CUT_BEFORE);
-      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, ...(cut ? { error_cut: true } : {}), endedAt: line.at });
+      // Whole, as logged (up to 64 KB, app.ts); `error_cut` marks one stored cut, for the server to hold its tail back
+      // (graph-served.ts, which also takes one of exactly 2000 characters, from a log made before, as cut).
+      Object.assign(effect, { status: line.status, output: line.output ?? null, error: line.error ?? null, ...(line.error_truncated === true ? { error_cut: true } : {}), endedAt: line.at });
     }
   }
 

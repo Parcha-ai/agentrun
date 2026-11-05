@@ -16,6 +16,8 @@ export const DECISION_INTERRUPTED = "decision_interrupted";
 /** The most of the state a receipt keeps, as UTF-8 JSON bytes: a larger state is kept as the first this many bytes of its
  *  JSON text, with `state_truncated: true`. */
 export const DECISION_STATE_MAX_BYTES = 64 * 1024;
+/** The most of a request's error a receipt keeps, in characters; a longer one is kept to it with `error_truncated`. */
+export const DECISION_ERROR_MAX = 64 * 1024;
 
 /** An image a request carried, as its receipt names it: the token the request used, the reference the host loaded, and
  *  the image's SHA-256, type and size (never the bytes). The digest fields are null when the image was never loaded (a
@@ -100,7 +102,10 @@ export type DecisionReceipt = {
    *  its JSON text (a string) with `state_truncated: true`. Absent on a receipt recorded before it was kept. */
   state?: unknown;
   state_truncated?: boolean;
+  /** The request's error, whole up to `DECISION_ERROR_MAX` characters: a host redacts it before it cuts it for a person.
+   *  A longer one is kept to that many with `error_truncated: true`; one recorded before was cut at 2000. */
   error?: string;
+  error_truncated?: boolean;
 };
 
 /** The action a receipt's answers and rule determine, recomputed without a model call: for an answered
