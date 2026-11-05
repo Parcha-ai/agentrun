@@ -46,12 +46,13 @@ const scripted = (steps) => {
   return (...args) => steps[Math.min(at++, steps.length - 1)](...args);
 };
 
-/** A capped, marked pi run on real pi-ai (Anthropic's API), its marks into `marks`. */
-async function capped(marks, models) {
+/** A capped, marked pi run on real pi-ai (Anthropic's API), its marks into `marks`. `store(entry)`, when given, runs before
+ *  each mark is kept: a store that is slow (it waits) or refuses (it throws) for that entry. */
+async function capped(marks, models, store) {
   const pi = models ?? (() => { const m = createModels(); m.setProvider(anthropicProvider()); return m; })();
   const marked = await markRequests(pi);
   const out = await capModels(marked.models, CAP, 0);
-  marked.open({ harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }) } });
+  marked.open({ harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => { await store?.(entry); marks.push(entry); } }) } });
   return out;
 }
 /** The first request's answer under `steps`, and whether the run then had room for a second ($0.001 held): what the first
@@ -151,6 +152,25 @@ test("a guard: an ordinary answer is priced once, its own cost, in this process 
   assert.equal(spentIn(storeOf(t, [...marks, { kind: "pi.assistant", model: [first] }])), own, "read again at its own cost, once");
   const again = await bookedFirst([STEPS.ok]);
   assert.equal(again.roomForAnother, true, "in this process: its own cost, room for another");
+});
+
+test("a request lost before any event in one attempt, its store slower than the end mark's old wait: pi has the error only once its mark at the hold is in the store, so a process that dies right then is read again at the hold", async (t) => {
+  const marks = [];
+  // The store takes 1.5 s for the end mark, past END_MARK_WAIT_MS (1 s).
+  const run = await capped(marks, undefined, (entry) => (entry.kind === REQUEST_ENDED ? new Promise((resolve) => setTimeout(resolve, 1_500)) : undefined));
+  const first = await run.streamSimple(MODEL, context, { ...options(scripted([STEPS.refused("ECONNRESET")])), maxRetries: 0 }).result();
+  // The process dies the moment pi has the error: what the store holds then is all a later process reads.
+  const held = [...marks];
+  assert.equal(first.stopReason, "error");
+  assert.equal(spentIn(storeOf(t, [...held, { kind: "pi.assistant", model: [first] }])), 0.001, `read again at its hold: ${JSON.stringify(held.map((m) => [m.kind, m.data]))}`);
+});
+
+test("a request whose end mark the store refuses fails loudly, and is read again at its hold, never at $0", async (t) => {
+  const marks = [];
+  const run = await capped(marks, undefined, (entry) => { if (entry.kind === REQUEST_ENDED) throw new Error("SQLITE_FULL"); });
+  const first = await run.streamSimple(MODEL, context, { ...options(scripted([STEPS.refused("ECONNRESET")])), maxRetries: 0 }).result();
+  assert.match(first.errorMessage ?? "", /^the model request's end could not be recorded/, "the request fails saying its end was not recorded");
+  assert.equal(spentIn(storeOf(t, [...marks, { kind: "pi.assistant", model: [first] }])), 0.001, "read again at its start's hold: the request stays open, never closed at $0 by pi's entry");
 });
 
 test("a guard: a 429 then an answer is the answer, priced once; an answer cut part way books its hold; a request refused at connect never left", async () => {
