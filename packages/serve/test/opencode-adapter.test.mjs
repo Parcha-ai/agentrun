@@ -192,6 +192,22 @@ test("a stop ends the turn interrupted, OpenCode aborting it; the next message i
   assert.ok(!JSON.stringify(last).includes("[Recovery]"), "no recovery note: the stopped turn's end is in the log");
 });
 
+test("an interrupt mid-turn leaves the turn open in the session (no end is written for it): the host settles it, or the next open resumes it, as codex's does", async () => {
+  const started = Promise.withResolvers();
+  const slow = { name: "slow", description: "Waits.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: (_args, { signal }) => new Promise((resolve) => { started.resolve(); signal.addEventListener("abort", () => resolve({ text: "stopped", isError: true }), { once: true }); }) };
+  const { adapter: a } = adapter([{ call: "hands_slow" }, { text: "Again." }]);
+  const store = memorySessionStore();
+  const sp = spec([slow], { key: "s-interrupt-open" });
+  const s = await session(a, store, sp);
+  await s.session.send("wait");
+  await started.promise;
+  await s.session.interrupt();
+  const ended = await s.session.turnEnd();
+  const turns = transcriptOf(foldSession(sp.key, await store.read(sp.key))).filter((r) => r.data?.type === "turn").map((r) => r.data.status);
+  await s.session.close();
+  assert.deepEqual({ ended, state: s.session.state, turns }, { ended: { status: "interrupted" }, state: "open_turn", turns: [] }, "the interrupted turn is open, with no end in the session's records");
+});
+
 test("a process killed mid-turn, inside a never call: the next process takes the session back from the log, reports the call, never runs it again, and the turn completes", async () => {
   const started = Promise.withResolvers();
   let runs = 0;
