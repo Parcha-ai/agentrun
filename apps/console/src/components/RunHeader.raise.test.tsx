@@ -51,6 +51,21 @@ describe("RunHeader's Raise the cap", () => {
     expect((t.host.querySelector('input[aria-label="New cap in dollars"]') as HTMLInputElement).value).toBe("2");
   });
 
+  it("an open header form follows a new pause: a working run that pauses, then pauses again after a raise, shows each pause's suggestion", async () => {
+    const paused = (cap: number, suggested: number, at: string) => run({ status: "input_required", state: "waiting", cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: cap },
+      pending: { kind: "budget", cap_usd: cap, spent_usd: 0, needs_usd: 0.1024, suggested_cap_usd: suggested, said: "Not sent.", at } });
+    const onRaiseCap = async (usd: number): Promise<RaiseAnswer> => ({ run_id: "r1", max_cost_usd: usd, resumed: true, status: "input_required", state: "waiting" });
+    const t = mount(run(), onRaiseCap);
+    await act(async () => { t.button("Raise the cap")!.click(); });
+    const value = () => (t.host.querySelector('input[aria-label="New cap in dollars"]') as HTMLInputElement).value;
+    expect(value()).toBe("");
+    const render = (r: Run) => act(() => root!.render(createElement(RunHeader, { run: r, agentName: "Calc", actions: { onStop: () => {}, onCancel: () => {}, onRaiseCap } })));
+    render(paused(10, 12, "2026-11-05T00:00:05Z"));
+    expect(value()).toBe("12");
+    render(paused(12, 15, "2026-11-05T00:00:09Z"));
+    expect(value()).toBe("15");
+  });
+
   it("a run with no cap, an ended run and a workflow run offer no raise; nor does a page that gives no way to raise", () => {
     for (const r of [run({ cost: { usd: 0.01, basis: "estimate", charge_state: null, cap_usd: null } }), run({ status: "completed", state: "idle", ended_at: "2026-11-05T00:01:00Z" }), run({ kind: "workflow" })]) {
       const t = mount(r, async () => { throw new Error("no raise"); });
