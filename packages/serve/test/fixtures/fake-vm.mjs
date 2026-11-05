@@ -22,10 +22,13 @@ export const vm = {
   running: () => vm.sandboxes.filter((sandbox) => sandbox.exitCode === null),
   /** How long each program's start takes, as a provider's round trip does (0: at once). */
   execDelayMs: 0,
+  /** Makes each program's stdout fail after its first chunk, as a broken stream from the provider does. */
+  failStdout: false,
   /** Ends sandbox `id` as the provider would at its lifetime: its programs killed, its directory gone. */
   end: (id) => vm.sandboxes.find((sandbox) => sandbox.sandboxId === id)?.terminate({ wait: true }),
   reset: () => {
     vm.execDelayMs = 0;
+    vm.failStdout = false;
     for (const sandbox of vm.sandboxes) sandbox.terminate({ wait: true });
     vm.clients.length = 0;
     vm.sandboxes.length = 0;
@@ -83,7 +86,14 @@ class FakeSandbox {
           });
         },
       },
-      stdout: child.stdout,
+      stdout: vm.failStdout
+        ? (async function* () {
+            for await (const chunk of child.stdout) {
+              yield chunk;
+              throw new Error("the output stream broke");
+            }
+          })()
+        : child.stdout,
       stderr: child.stderr,
       wait: () => exited,
     };

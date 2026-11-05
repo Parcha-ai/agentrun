@@ -88,8 +88,9 @@ function pump(source: AsyncIterable<Uint8Array>): Pump {
   return state;
 }
 
-/** `read`: the streams whose read began (each is read once); `delivered`: those whose reply ended whole. */
-type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stderr", Pump>; exited?: number; waited: boolean; read: Set<"stdout" | "stderr">; delivered: Set<"stdout" | "stderr">; timer?: NodeJS.Timeout };
+/** `read`: the streams whose read began (each is read once); `finished`: those whose reply ended, whole or broken (a
+ *  stream that failed has nothing more to give). */
+type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stderr", Pump>; exited?: number; waited: boolean; read: Set<"stdout" | "stderr">; finished: Set<"stdout" | "stderr">; timer?: NodeJS.Timeout };
 
 /** The relay's handler of a run's VM calls, over the server's client `sdk`: `handle(runId, path, req, res)` answers the
  *  call at `path` (what follows `/runs/<id>/vm/`), the caller's token already checked. `drop(runId)` lets go of the run's
@@ -126,11 +127,12 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
     held?.streams.stderr.cancel();
     execs.delete(id);
   };
-  /** A program is let go once its exit was read and both its streams were delivered whole, or EXEC_KEEP_MS after its exit. */
+  /** A program is let go once its exit was read and both its streams' replies ended (delivered whole, or broken because
+   *  the stream failed), or EXEC_KEEP_MS after its exit. */
   const settle = (id: string) => {
     const held = execs.get(id);
     if (!held || held.exited === undefined) return;
-    if (held.waited && held.delivered.size === 2) return forget(id);
+    if (held.waited && held.finished.size === 2) return forget(id);
     held.timer ??= setTimeout(() => forget(id), EXEC_KEEP_MS);
     held.timer.unref?.();
   };
@@ -173,7 +175,7 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
               else starting.delete(runId);
             }
             const exec = randomUUID();
-            const held: Held = { run: runId, process, streams: { stdout: pump(process.stdout), stderr: pump(process.stderr) }, waited: false, read: new Set(), delivered: new Set() };
+            const held: Held = { run: runId, process, streams: { stdout: pump(process.stdout), stderr: pump(process.stderr) }, waited: false, read: new Set(), finished: new Set() };
             execs.set(exec, held);
             process.wait().then((code) => {
               held.exited = code;
@@ -244,9 +246,10 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
           if (gone) return void forget(id);
           // A stream that broke, or was let go before it was all sent (the run's end), is a broken answer, never a short
           // one: the caller sees its read fail.
-          if (stream.failure !== undefined || stream.cancelled) return void res.destroy();
-          res.end();
-          held.delivered.add(name);
+          if (stream.failure !== undefined || stream.cancelled) res.destroy();
+          else res.end();
+          // Ended either way: a failed stream holds no slot once its exit is read too.
+          held.finished.add(name);
           settle(id);
           return;
         }

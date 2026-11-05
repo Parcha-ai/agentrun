@@ -197,6 +197,14 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   assert.deepEqual(await (await call(b.run_id, `exec/${big.exec}/wait`)).json(), { code: 0 });
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal((await slow.arrayBuffer()).byteLength, 4_000_000, "the whole output, read after the exit");
+  // A program whose output stream broke has its reply broken, and is let go once its exit is read: it holds no slot.
+  vm.failStdout = true;
+  const broken = await (await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["sh", "-c", "echo one; sleep 0.2; echo two"] })).json();
+  vm.failStdout = false;
+  await assert.rejects(async () => (await call(b.run_id, `exec/${broken.exec}/stdout`)).arrayBuffer(), "a broken stream is a broken reply, never a short one");
+  assert.equal(await (await call(b.run_id, `exec/${broken.exec}/stderr`)).text(), "");
+  assert.equal(typeof (await (await call(b.run_id, `exec/${broken.exec}/wait`)).json()).code, "number", "its exit is read");
+  await until(async () => (await call(b.run_id, `exec/${broken.exec}/stdin-close`)).status === 404, "the broken program let go");
   // A reader that goes away lets its program go: what it held is dropped, and the program is no longer the run's to ask.
   const started = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["yes"] });
   assert.equal(started.status, 200);
