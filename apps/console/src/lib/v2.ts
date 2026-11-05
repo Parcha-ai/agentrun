@@ -73,8 +73,10 @@ export type TriggerSource =
   | { kind: "schedule"; at: string }
   | { kind: "schedule"; every_s: number; start_at: string };
 /** What a firing does: start a run of `agent_id` with `input`, capped at `max_cost_usd`. */
-export type TriggerTarget = { kind: "start_run"; agent_id: string; input: { content?: string } & Record<string, unknown>; max_cost_usd: number; effort?: string };
-export type FiringStatus = "due" | "started" | "skipped" | "failed" | "missed";
+/** `max_cost_usd` absent: each run takes the agent's default cap per run (its definition's max_cost_usd). */
+export type TriggerTarget = { kind: "start_run"; agent_id: string; input: { content?: string } & Record<string, unknown>; max_cost_usd?: number; effort?: string };
+/** `sent`: a firing of a trigger that sends a message to a run (not a schedule this console shows). */
+export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed";
 /** One firing: by the schedule or by hand (Run now), for `nominal_at`, and what came of it. `count`: a missed row's
  *  times; `attempts` and `retry_at`: a due one a full server keeps for later. */
 export type Firing = { key: string; by: "schedule" | "manual"; nominal_at: string; status: FiringStatus; at: string; run_id: string | null; reason: string | null; error: { code: string; message: string } | null; count?: number; attempts?: number; retry_at?: string };

@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capWords, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, dollars, isScheduleTrigger, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
@@ -22,7 +22,7 @@ type FormProps = { v2: Client; go: (hash: string) => void; minEvery?: number };
 const hashOf = (id: string) => `#/schedules/${encodeURIComponent(id)}`;
 /** A time the server gave, as the console says every time: in the viewer's own zone. */
 const at = (iso: string) => when(iso);
-const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
+const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sent: "success", skipped: "muted", missed: "warning", failed: "error", due: "active" };
 
 /** Schedules (serve's trigger/1): each starts an agent's capped runs with no one there. */
 /** `refreshMs`: how often an open schedule's page reads it again, so a firing shows as it happens (the list, twice that). */
@@ -75,10 +75,10 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
       </div>
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !triggers ? <ListSkeleton label="Loading the schedules" rows={4} />
-        : !triggers.length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">No schedules yet. A schedule starts an agent's runs at the times you set, each one capped.</p>
+        : !triggers.filter(isScheduleTrigger).length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">No schedules yet. A schedule starts an agent's runs at the times you set, each one capped.</p>
         : (
           <ul className="border">
-            {triggers.map((t) => (
+            {triggers.filter(isScheduleTrigger).map((t) => (
               <li key={t.id} data-schedule={t.id} className="grid grid-cols-1 gap-x-6 gap-y-1.5 border-b px-4 py-3 last:border-b-0 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
@@ -95,7 +95,25 @@ function ScheduleList({ v2, go, agentName, every }: PageProps & { every: number 
             ))}
           </ul>
         )}
+      {triggers && others(triggers) > 0 && (
+        <p className="mt-3 font-mono text-[12px] text-muted-foreground">
+          {others(triggers) === 1 ? "1 other trigger (webhooks, messages to a run) is not shown here." : `${others(triggers)} other triggers (webhooks, messages to a run) are not shown here.`}
+        </p>
+      )}
       {triggers && error && <ProblemCard problem={error} className="mt-4" />}
+    </div>
+  );
+}
+
+/** How many of the server's triggers this page does not show (not schedules that start runs). */
+const others = (triggers: Trigger[]) => triggers.filter((t) => !isScheduleTrigger(t)).length;
+
+/** A trigger this console does not show, opened by its address: what it is, and nothing to change it. */
+function NotASchedule() {
+  return (
+    <div className="p-5 md:p-8">
+      <a href="#/schedules" className="caps flex items-center gap-2 text-[11px] text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Schedules</a>
+      <p className="mt-4 border px-4 py-6 text-[13px] text-muted-foreground">This trigger is not a schedule that starts runs (a webhook, or messages to a run): this page does not show it.</p>
     </div>
   );
 }
@@ -126,7 +144,17 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   // Read again while the page is open, so a timed firing, its run and the next time show with no reload; not while a
   // read or a Run now is out. A read that fails here leaves the page as it was.
   useRereads(() => { if (!reading.current && !firing.current) read().catch(() => {}); }, every, [v2, id]);
+  // A schedule with no cap of its own runs under its agent's default (definition.max_cost_usd): read it to say so.
+  const [agentCap, setAgentCap] = useState<number | undefined>(undefined);
+  const capAgent = trigger && isScheduleTrigger(trigger) && typeof trigger.target.max_cost_usd !== "number" ? trigger.target.agent_id : null;
+  useEffect(() => {
+    if (!capAgent) return;
+    let live = true;
+    v2.getAgent(capAgent).then((r) => { if (live) setAgentCap(typeof r.agent.definition.max_cost_usd === "number" ? r.agent.definition.max_cost_usd : undefined); }, () => {});
+    return () => { live = false; };
+  }, [v2, capAgent]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} link={{ href: "#/schedules", label: "All schedules" }} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
+  if (!isScheduleTrigger(trigger)) return <NotASchedule />;
 
   const act = async (what: "pause" | "delete", work: () => Promise<unknown>, failed: string) => {
     setBusy(what); setSaid(null);
@@ -180,7 +208,7 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-[13px] sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-[11px] text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={`#/agents/${encodeURIComponent(trigger.target.agent_id)}`} className="hover:underline">{agentName(trigger.target.agent_id) || trigger.target.agent_id}</a></dd>
         <dt className="caps text-[11px] text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(trigger.target.input)}</dd>
-        <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">{capWords(trigger.target.max_cost_usd)}</dd>
+        <dt className="caps text-[11px] text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(trigger.target.max_cost_usd, agentCap)}</dd>
         <dt className="caps text-[11px] text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
       </dl>
       <section className="mt-6" aria-label="Firings">
@@ -207,6 +235,8 @@ function ScheduleEdit({ v2, go, id, minEvery }: FormProps & { id: string }) {
   const [tries, setTries] = useState(0);
   useEffect(() => { v2.getTrigger(id).then(setTrigger, (e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]);
   if (!trigger) return error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} /> : <ListSkeleton label="Loading the schedule" rows={4} />;
+  // Never an editor for another kind of trigger: its save would rebuild it as a schedule that starts runs.
+  if (!isScheduleTrigger(trigger)) return <NotASchedule />;
   return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} />;
 }
 
@@ -250,9 +280,14 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
   useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
   const set = <K extends keyof Draft>(key: K) => (value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
   const shown = new Set(["name", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd", ...(trigger ? [] : ["enabled"])]);
+  // The picked agent's default cap per run (definition.max_cost_usd): with one, the schedule's own cap may be left empty
+  // and each run takes the agent's. An edited schedule that already ran under its agent's default keeps it so too.
+  const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
+  const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
+  const capOptional = agentCap !== undefined || (!!trigger && typeof trigger.target.max_cost_usd !== "number" && draft.agentId === trigger.target.agent_id);
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    const { body, issues: missing } = bodyOf(draft);
+    const { body, issues: missing } = bodyOf(draft, capOptional);
     setRest([]);
     if (!body) { setIssues(missing ?? {}); return; }
     setIssues({}); setSaving(true);
@@ -273,7 +308,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
     }
   };
   // An edit that changes when starts the schedule again from now (the server's rule for a new source): said before the save.
-  const edited = trigger ? bodyOf(draft).body : undefined;
+  const edited = trigger ? bodyOf(draft, capOptional).body : undefined;
   const restarts = !!(trigger && edited && patchOf(trigger, edited).source);
   // The instants the hints say: the ones the save sends (a time left alone keeps the instant it was read with).
   const atInstant = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
@@ -327,7 +362,8 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
           </select>
         </Field>
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} hint="Required: each run this schedule starts stops at this spend.">
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+          hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
           <input name="maxCost" inputMode="decimal" className={`${INPUT} max-w-40`} value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder="2" />
         </Field>
         {!trigger && (

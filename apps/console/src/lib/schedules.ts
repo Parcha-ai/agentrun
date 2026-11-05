@@ -37,8 +37,18 @@ export function whenWords(source: TriggerSource): string {
   return `Every ${span(source.every_s)}`;
 }
 
+/** Dollars: "$2.00", "$0.50"; an amount finer than a cent as given ("$0.005"). */
+export const dollars = (usd: number) => `$${Number.isInteger(Math.round(usd * 1e6) / 1e4) ? usd.toFixed(2) : String(usd)}`;
 /** A cost cap: "$2.00 a run", "$0.50 a run"; a cap finer than a cent as given ("$0.005 a run"). */
-export const capWords = (usd: number) => `$${Number.isInteger(Math.round(usd * 1e6) / 1e4) ? usd.toFixed(2) : String(usd)} a run`;
+export const capWords = (usd: number) => `${dollars(usd)} a run`;
+/** A schedule's cap as it applies: its own, else the agent's default ("Agent's default ($0.50)"), said even before the
+ *  agent's is read. Never an undefined amount. */
+export const capOf = (own: number | undefined, agentDefault: number | undefined) =>
+  typeof own === "number" ? capWords(own) : typeof agentDefault === "number" && agentDefault > 0 ? `Agent's default (${dollars(agentDefault)})` : "Agent's default";
+
+/** Whether a trigger is one this console shows: a schedule that starts runs. GET /triggers also lists webhooks and
+ *  schedules that send a message to a run. */
+export const isScheduleTrigger = (t: Trigger) => (t.source as { kind?: string })?.kind === "schedule" && (t.target as { kind?: string })?.kind === "start_run";
 
 /** What came of a firing. A started one's run is linked beside it. */
 export function firingWords(f: Firing): string {
@@ -49,11 +59,13 @@ export function firingWords(f: Firing): string {
     case "missed": return why(`Missed ${f.count ?? 1} ${f.count === 1 || f.count === undefined ? "time" : "times"}`, f.reason);
     case "failed": return why("Failed", f.error?.message ?? f.reason);
     case "due": return f.retry_at ? `Due: the server was full, tries again at ${clock(f.retry_at)}` : "Due";
+    case "sent": return "Sent";
+    default: return String(f.status);
   }
 }
 
 /** A firing's status as its chip says it. */
-export const FIRING_LABEL: Record<Firing["status"], string> = { due: "Due", started: "Started", skipped: "Skipped", failed: "Failed", missed: "Missed" };
+export const FIRING_LABEL: Record<Firing["status"], string> = { due: "Due", started: "Started", sent: "Sent", skipped: "Skipped", failed: "Failed", missed: "Missed" };
 
 const WALL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -87,8 +99,10 @@ const NEEDED = "A number is needed.";
 const numberOf = (text: string): number | undefined => (text.trim() !== "" && Number.isFinite(Number(text)) ? Number(text) : undefined);
 
 /** The body a create or an edit sends, or what is missing, by the field the server would name. Nothing else is checked
- *  here: a short interval, a cron line that does not parse and a cap of 0 are the server's to refuse. */
-export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string, string> } {
+ *  here: a short interval, a cron line that does not parse and a cap of 0 are the server's to refuse. `capOptional`:
+ *  the picked agent has a default cap per run (or an edited schedule already ran under it), so an empty cap is left out
+ *  and each run takes the agent's; the server refuses it, under the field, if the agent has none by then. */
+export function bodyOf(d: Draft, capOptional = false): { body?: TriggerInput; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
   let source: TriggerInput["source"];
   if (d.kind === "cron") {
@@ -108,7 +122,7 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
   const cap = numberOf(d.maxCost);
-  if (!d.maxCost.trim()) issues["target.max_cost_usd"] = "A cost cap is needed: every run a schedule starts is capped.";
+  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = "A cost cap is needed: every run a schedule starts is capped."; }
   else if (cap === undefined) issues["target.max_cost_usd"] = NEEDED;
   if (Object.keys(issues).length) return { issues };
   return {
@@ -116,7 +130,7 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
       ...(d.name.trim() ? { name: d.name.trim() } : {}),
       enabled: d.enabled,
       source,
-      target: { kind: "start_run", agent_id: d.agentId, input: { content: d.content }, max_cost_usd: cap! },
+      target: { kind: "start_run", agent_id: d.agentId, input: { content: d.content }, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
     },
   };
 }
@@ -125,7 +139,7 @@ export function bodyOf(d: Draft): { body?: TriggerInput; issues?: Record<string,
 export function draftOf(t: Trigger): Draft {
   const s = t.source;
   const zone = "cron" in s ? s.timezone : browserZone();
-  const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "", maxCost: String(t.target.max_cost_usd), enabled: t.enabled };
+  const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "", maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
   if ("cron" in s) return { ...base, kind: "cron", cron: s.cron };
   if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at), read: { at: s.at } };
   const unit: EveryUnit = s.every_s % 3600 === 0 ? "hours" : s.every_s % 60 === 0 ? "minutes" : "seconds";
