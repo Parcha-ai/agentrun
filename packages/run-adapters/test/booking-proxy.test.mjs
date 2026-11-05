@@ -74,3 +74,45 @@ test('a guard: a record from before the booking rule (no booked figure) is read 
   await writer.append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: 'm', heldUsd: HOLD } }, { kind: RUNNER_RECORDS.turn, data: { turn: 1, usd: null, input: 0, output: 0, cacheRead: 0 } }]);
   assert.equal(await later(store), HOLD, 'an unknown cost at its hold, as before');
 });
+
+/** The text of a server-sent event's data, as JSON (the content and reasoning readers below). */
+const dataOf = (event) => JSON.parse(event.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n'));
+/** A policy whose reasoning streams only as a summary: it says the body's hidden budget, and reads each event's content
+ *  (summary and text) and its reasoning, never the framing around them. */
+const HIDDEN = 2_000;
+const summarized = {
+  ...policy,
+  reasoningHidden: () => HIDDEN,
+  reasoningBytesOf: (event) => Buffer.byteLength(dataOf(event).summary ?? ''),
+  contentBytesOf: (event) => { const data = dataOf(event); return Buffer.byteLength(data.summary ?? '') + Buffer.byteLength(data.text ?? ''); },
+};
+
+test("a request its client stops part way books what its content streamed and the part of its hidden reasoning budget its summary did not cover, max(0, budget - summary), as the proxy's stop fields say it, never the wire's bytes; a later process reads the same", async (t) => {
+  const [summary, text] = ['Weighing the two readings', 'The answer so far: 思考'];
+  const stream = Buffer.from(`event: summary\ndata: ${JSON.stringify({ id: 'resp_0123456789', sequence_number: 1, summary })}\n\nevent: text\ndata: ${JSON.stringify({ id: 'resp_0123456789', sequence_number: 2, text })}\n\n`);
+  // What a stop counts at, as serve's cap counts it: what streamed and the 1,024-token allowance, at $10 a million.
+  const stoppedUsd = (tokens) => (tokens + 1_024) * 10 / 1e6;
+  const store = memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:b'), { key: 'chat:b', beforeRequest: () => ({ holdUsd: HOLD, stoppedUsd }) });
+  const p = await startModelProxy({ policy: summarized, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, log: () => {}, fetch: async (_url, init) => new Response(new ReadableStream({
+    start(c) { c.enqueue(new Uint8Array(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } }) }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  await new Promise((resolve) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      let read = 0;
+      res.on('data', (chunk) => { read += chunk.length; if (read >= stream.length) { req.destroy(); resolve(); } });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end('{}');
+  });
+  for (let i = 0; i < 200 && !(await store.read('chat:b')).some((r) => r.kind === RUNNER_RECORDS.turn); i++) await new Promise((r) => setTimeout(r, 10));
+  const content = Buffer.byteLength(summary) + Buffer.byteLength(text);
+  const want = stoppedUsd(content + Math.max(0, HIDDEN - Buffer.byteLength(summary)));
+  assert.ok(want < HOLD && stream.length !== content, 'the case tells the figures apart: within the hold, and the wire is not the content');
+  assert.equal(Math.round(booking.spentUsd() * 1e9) / 1e9, Math.round(want * 1e9) / 1e9, "the stop's content and its unseen reasoning");
+  assert.equal(Math.round((await later(store)) * 1e9) / 1e9, Math.round(want * 1e9) / 1e9, 'read again at the same figure');
+});
