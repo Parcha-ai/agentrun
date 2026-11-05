@@ -35,6 +35,18 @@ test("a run that streams hundreds of deltas opens the saved keys once, and a key
   const streamed = long.reads - brief.reads;
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: KEY } })).status, 204);
   await writeFile(gate, "");
+  // Every page read while the long run streams its answer, live rows among them: a live row that showed the key would
+  // be replaced by its settled row by the end, so each page is checked as it is read.
+  let liveShown = 0;
+  for (const end = Date.now() + 60_000; ; ) {
+    const { rows: page } = (await api("GET", `/runs/${long.runId}/timeline`)).body;
+    assert.ok(!holdsRun(JSON.stringify(page), KEY), `a page read mid-stream holds part of the key saved mid-run: ${JSON.stringify(page.map((row) => [row.id, row.kind, row.text?.slice(0, 80)]))}`);
+    liveShown += page.filter((row) => row.id.includes(":live:") && row.text?.includes("[redacted]")).length;
+    if (page.some((row) => row.kind === "final_answer")) break;
+    assert.ok(Date.now() < end, "the long run answers within a minute");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(liveShown > 0, "a live row showed the key's place, redacted, while the answer streamed");
   for (const runId of [brief.runId, long.runId]) await follow(api, runId, ["completed", "failed"]);
   const rows = (await api("GET", `/runs/${long.runId}/timeline`)).body.rows;
   assert.ok(rows.some((row) => row.kind === "final_answer"), JSON.stringify(rows.map((row) => row.kind)));

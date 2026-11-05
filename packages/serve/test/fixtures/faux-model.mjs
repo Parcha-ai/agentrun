@@ -143,7 +143,9 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message([faux.text("Reading the notes first, word by word. ".repeat(streamed[1] === "briefly" ? 1 : 250)), faux.toolCall("read", { path: "notes.txt" })], { stopReason: "toolUse" });
     return untilExists(streamed[2]).then(() => {
       const key = process.getBuiltinModule("node:fs").readFileSync(streamed[3], "utf8").trim();
-      return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`${"Answering at length. ".repeat(100)}The key is ${key}. Done.`)]);
+      // The key about 200 characters in, then about 2 KB more: a live row shows the key's place once the stream is past its
+      // held-back tail (a live block's first few characters can be missing from it, so the key is not at its very start).
+      return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`${"Answering at length. ".repeat(10)}The key is ${key}. ${"Answering at length. ".repeat(90)}Done.`)]);
     });
   }
   // Records the first message it was given, exactly as the model received it, then answers (user-row-redact.test.mjs).
