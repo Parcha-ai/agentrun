@@ -69,3 +69,28 @@ test("the count is read once per commit of the folder's main: a list again reads
   assert.deepEqual((await api("GET", "/agents/cached")).body.learning, { pending: 2 });
   assert.equal(pendingTestHooks.reads, reads + 1, "one read for the new commit");
 });
+
+test("pendingCount: a folder it cannot read counts as unknown (undefined), not 0; one never made counts 0; and requests that miss the cache together read the folder once", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { pendingCount } = await import("../dist/learning-routes.js");
+  const data = mkdtempSync(join(tmpdir(), "pending-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  assert.equal(await pendingCount(data, "never-made"), 0, "a folder never made: nothing waits");
+  // A folder whose .git is not a repository git can read.
+  const broken = join(homeOf(data, "broken"), "learning", ".git");
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(join(broken, "HEAD"), "not a ref\n");
+  assert.equal(await pendingCount(data, "broken"), undefined, "a folder that can't be read: unknown, so the field is left out");
+  // Two calls on a commit not yet counted read it once.
+  const repo = join(homeOf(data, "two"), "learning");
+  mkdirSync(repo, { recursive: true });
+  git(repo, ["init", "-q", "-b", "main"]);
+  writeFileSync(join(repo, "MEMORY.md"), "");
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "seed"]);
+  const before = pendingTestHooks.reads;
+  const [a, b] = await Promise.all([pendingCount(data, "two"), pendingCount(data, "two")]);
+  assert.deepEqual([a, b], [0, 0]);
+  assert.equal(pendingTestHooks.reads - before, 1, "one read for both");
+});
