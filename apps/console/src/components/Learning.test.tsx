@@ -1121,3 +1121,30 @@ describe("the Learning tab's runs that kept nothing", () => {
     for (const row of rows) expect(row.match(/Not kept/g)).toHaveLength(1);
   });
 });
+
+// How many runs a note was given to, and read in, as the server counts them (each note's `runs`): "Given to N runs", and
+// "Read in N runs" once one read it. Never counted here from the runs the tab read.
+describe("the Learning tab's per-note run counts", () => {
+  it("says how many runs each note was given to and read in, from the server's counts", async () => {
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => (x.file === FIRST ? { ...x, runs: { given: 3, read: 1 } } : x.file === MINE ? { ...x, runs: { given: 2, read: 0 } } : { ...x, runs: { given: 0, read: 0 } }) as never);
+    const t = await open(agent(true), { learning: async () => v });
+    const first = t.card("Try /policies/refund-policy first")!.textContent ?? "";
+    expect(first).toContain("Given to 3 runs");
+    expect(first).toContain("Read in 1 run");
+    const mine = t.card("Keep it to three lines")!.textContent ?? "";
+    expect(mine).toContain("Given to 2 runs");
+    expect(mine).not.toContain("Read in");
+  });
+  it("counts nothing itself: runs that say they read a note leave its card as the server counts it", async () => {
+    const v = view();
+    v.notes.items = v.notes.items.map((x) => ({ ...x, runs: { given: 0, read: 0 } }) as never);
+    const read = [{ file: FIRST, name: "Try" }];
+    const runs = RUNS.map((r) => ({ ...r, learning: r.learning ? { ...r.learning, given: read, read } : r.learning }) as Run);
+    const t = await open(agent(true), { learning: async () => v, runs });
+    const first = t.card("Try /policies/refund-policy first")!.textContent ?? "";
+    expect(first).toContain("Given to 0 runs");
+    expect(first).not.toContain("Read in");
+    expect(first).not.toContain("Used in");
+  });
+});
