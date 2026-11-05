@@ -39,7 +39,7 @@ describe("ApprovalCard", () => {
     expect(host.querySelector("[aria-label='Approval required']")).toBeTruthy();
     expect(host.textContent).toContain("monid.run");
     const args = host.querySelector("pre")!;
-    expect(args.textContent).toBe("{\n  \"actor\": \"web-search\",\n  \"input\": {\n    \"query\": \"Contoso Freight\"\n  }\n}");
+    expect(args.textContent).toBe("actor: web-search\ninput: {\"query\":\"Contoso Freight\"}");
     // Never wider than the page at 375 px: the block scrolls in its own box, and long words break.
     expect(args.className).toMatch(/overflow-auto/);
     expect(args.className).toMatch(/max-h-/);
@@ -58,9 +58,9 @@ describe("ApprovalCard", () => {
   it("Allow answers allow with no note, once, however many clicks land before the answer", async () => {
     const page = mount();
     page.hold();
-    await act(async () => { page.button("Allow").click(); page.button("Allow").click(); page.button("Deny").click(); });
+    await act(async () => { page.button("Allow once").click(); page.button("Allow once").click(); page.button("Deny").click(); });
     expect(page.answers).toEqual([{ decision: "allow" }]);
-    expect(page.button("Allow").disabled).toBe(true);
+    expect(page.button("Allow once").disabled).toBe(true);
     expect(page.button("Deny").disabled).toBe(true);
     await page.release(null);
     await page.settle();
@@ -88,10 +88,10 @@ describe("ApprovalCard", () => {
 
   it("a refused answer is said in words and the buttons come back", async () => {
     const page = mount({ onAnswer: async () => "The run was stopped while this call waited, so the call was withdrawn. It never ran." });
-    await act(async () => { page.button("Allow").click(); });
+    await act(async () => { page.button("Allow once").click(); });
     await page.settle();
     expect(page.host.querySelector("[role='alert']")?.textContent).toBe("The run was stopped while this call waited, so the call was withdrawn. It never ran.");
-    expect(page.button("Allow").disabled).toBe(false);
+    expect(page.button("Allow once").disabled).toBe(false);
   });
 
   it("compact, for the Needs you strip: the same tool, arguments and buttons, the arguments in a shorter block", () => {
@@ -99,7 +99,7 @@ describe("ApprovalCard", () => {
     expect(host.textContent).toContain("Invoice checker");
     expect(host.textContent).toContain("monid.run");
     expect(host.querySelector("pre")!.className).toMatch(/max-h-28/);
-    expect(button("Allow")).toBeTruthy();
+    expect(button("Allow once")).toBeTruthy();
     expect(button("Deny")).toBeTruthy();
   });
 });

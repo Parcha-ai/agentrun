@@ -34,9 +34,10 @@ test("a skill and a workflow draft in shape pass beside a note, from a completed
   assert.deepEqual(check(draft()), { ok: true, problems: [], notes: [] });
 });
 
-test("the tools a draft may name are the agent's granted tools a workflow node runs here: never a harness's own", () => {
+test("the tools a draft may name are the agent's granted tools a workflow's call node runs here: never a harness's own", () => {
   assert.equal(typeof tools.learnedWorkflowTools, "function");
-  assert.deepEqual(tools.learnedWorkflowTools(GRANTED), ["read", "web_fetch", "web_search"]);
+  // A learned workflow's model node runs without tools: only a call node's tool is on the list (read is a model node's).
+  assert.deepEqual(tools.learnedWorkflowTools(GRANTED), ["web_fetch", "web_search"]);
   // A legacy name a revision still grants is on the list as granted, and by its capability's name.
   assert.deepEqual(tools.learnedWorkflowTools(["fetch_page"]), ["fetch_page", "web_fetch"]);
   assert.deepEqual(tools.learnedWorkflowTools([]), []);
@@ -51,13 +52,59 @@ test("a draft whose call or model node names Bash, exec_command or apply_patch i
       assert.match(result.problems[0].detail, new RegExp(`NODE_FIELD_INVALID at /root[/a-z0-9]*: .*tool "${tool}" is not one of the host's tools`));
     }
   }
-  // A tool the agent was not granted is refused the same way; one it was is not.
+  // A tool the agent was not granted is refused the same way; one it was is not, on a call node.
   assert.deepEqual(rules(check(draft(workflow({ tools: ["browser"] })))), ["workflow"]);
-  assert.equal(check(draft(workflow({ tools: ["web_search"] }))).ok, true);
+  assert.equal(check(draft(richWorkflow({ tool: "web_search" }))).ok, true);
+});
+
+test("a draft whose agent node asks context fork is refused at learn time: a learned workflow's model node starts a fresh session", () => {
+  const forked = check(draft(workflow({ node: "agent" }).replace('"tools": []', '"tools": [],\n    "context": "fork"')));
+  assert.deepEqual(forked.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(forked.problems));
+  assert.match(forked.problems[0].detail, /the agent node at \/root asks context fork: a learned workflow's model node starts a fresh session/, forked.problems[0].detail);
+  assert.ok(check(draft(workflow({ node: "agent" }).replace('"tools": []', '"tools": [],\n    "context": "fresh"'))).ok, "fresh passes");
+});
+
+test("a draft whose agent node asks more turns than a learned workflow's runner gives (its max_turns over the cap) is refused at learn time, never at a call after earlier nodes spent", () => {
+  const over = check(draft(workflow({ node: "agent" }).replace('"tools": []', '"tools": [],\n    "max_turns": 10')));
+  assert.deepEqual(over.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(over.problems));
+  assert.match(over.problems[0].detail, /the agent node at \/root asks max_turns 10: a learned workflow's model node runs at most 8 turns/, over.problems[0].detail);
+  assert.ok(check(draft(workflow({ node: "agent" }).replace('"tools": []', '"tools": [],\n    "max_turns": 8'))).ok, "at the cap, it passes");
+});
+
+test("a draft with a node the learned runner cannot run (a judge, pick or sift node, which needs a decision provider a run is not given) is refused as workflow at learn time, never at a call", () => {
+  const result = check(draft(richWorkflow({ judge: true })));
+  assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(result.problems));
+  assert.match(result.problems[0].detail, /judge node "refund" requires runJudge: a learned workflow runs model and tool-call nodes/, result.problems[0].detail);
+});
+
+test("a draft whose model node names any tool is refused as workflow, though the agent was granted it: a learned model node runs without tools, so it is refused at learn time, never at a call after earlier nodes spent", () => {
+  for (const named of [["web_fetch"], ["web_search"]]) {
+    for (const node of ["agent", "extract"]) {
+      const result = check(draft(workflow({ tools: named, node })));
+      assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], `${node} ${named}`);
+      assert.match(result.problems[0].detail, /model node at \/root names a tool \(.+\): a learned workflow's model node runs without tools/, `${node} ${named}`);
+    }
+  }
+  // A model node's own tool (read) is on no learned list: the DSL refuses it first.
+  assert.match(check(draft(workflow({ tools: ["read"] }))).problems[0].detail, /tool "read" is not one of the host's tools/);
+  // Inside a chain, after a node that would have run first.
+  const doc = JSON.parse(richWorkflow());
+  doc.root.steps[2] = { node: "extract", label: "late", instructions: "Read the page.", out: "Verdict", as: "verdict", tools: ["web_fetch"] };
+  const late = check(draft(JSON.stringify(doc)));
+  assert.deepEqual(rules(late), ["workflow"]);
+  assert.match(late.problems[0].detail, /model node at \/root\/steps\/2 names a tool \(web_fetch\)/);
+  // An empty list names none.
+  assert.equal(check(draft(workflow({ tools: [] }))).ok, true);
+});
+
+test("the tools a learned workflow may name on a run are those its run resolves: one its plane makes unavailable is not on the list", () => {
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY", web_search: "native" }), ["web_search"]);
+  assert.deepEqual(tools.learnedWorkflowTools(["web_fetch", "web_search"], { web_fetch: "kernel", web_search: "unavailable: web_search is turned off in settings" }), ["web_fetch"]);
+  assert.deepEqual(tools.learnedWorkflowTools(["fetch_page", "web_search"], { web_fetch: "parallel", web_search: "exa-keyless" }), ["fetch_page", "web_fetch", "web_search"]);
 });
 
 test("with no tool list a draft that names a tool is refused as no_tool_list; a tool-free draft passes", () => {
-  for (const json of [workflow(), richWorkflow()]) {
+  for (const json of [richWorkflow(), richWorkflow({ tool: "web_search" })]) {
     const result = check(draft(json), { tools: undefined });
     assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["no_tool_list", DRAFT_PATH]]);
     assert.match(result.problems[0].detail, /no tool list/);
@@ -122,7 +169,7 @@ test("a SKILL.md names its folder and says what it is for", () => {
 test("a draft is its workflow.json and README.md together, as the folder will hold them", () => {
   assert.deepEqual(check([added(DRAFT_PATH, workflow())]).problems, [{ rule: "workflow", path: README_PATH, detail: "the folder holds workflow.json without the other file" }]);
   assert.deepEqual(check([added(README_PATH, readme)]).problems, [{ rule: "workflow", path: DRAFT_PATH, detail: "the folder holds README.md without the other file" }]);
-  assert.equal(check([{ ...added(DRAFT_PATH, workflow({ tools: ["web_search"] })), status: "modified" }], { base: baseOf({ ...SEED, [DRAFT_PATH]: workflow(), [README_PATH]: readme }) }).ok, true, "one file changed, the other on the seed");
+  assert.equal(check([{ ...added(DRAFT_PATH, richWorkflow({ tool: "web_search" })), status: "modified" }], { base: baseOf({ ...SEED, [DRAFT_PATH]: workflow(), [README_PATH]: readme }) }).ok, true, "one file changed, the other on the seed");
   assert.deepEqual(check([added(DRAFT_PATH, workflow()), added(README_PATH, " \n")]).problems, [{ rule: "workflow", path: README_PATH, detail: "it does not start with front matter" }]);
   assert.deepEqual(rules(check(draft("{ not json"))), ["workflow"]);
   assert.match(check(draft(workflow({ node: "shell" }))).problems[0].detail, /NODE_KIND_UNKNOWN at \/root/);
@@ -215,4 +262,47 @@ test("a learned skill's description that wraps onto an indented line is served w
 test("a skill whose plain name is followed by an indented comment keeps its name: the comment is no part of it", () => {
   const served = servedSkill("---\nname: find-policies\n  # a helper\ndescription: Find refund policies\n---\nDo the job.\n");
   assert.equal(served.split("\n")[1], "name: find-policies");
+});
+
+// A call node's tool set to ask or deny (tool-gate.ts): the run would park or refuse it, so a learned draft never names
+// one. The checker is given the tools the gate does not allow, with what each is set to, and says so in #1601's words.
+const callDraft = (tool) => JSON.stringify({
+  v: 2,
+  name: "find-policies",
+  schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } },
+  input: { schemaId: "Store" },
+  output: { schemaId: "Page", path: "page" },
+  root: { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+}, null, 2);
+/** The same call node inside a composed workflow node. */
+const composedDraft = (tool) => JSON.stringify({
+  v: 2,
+  name: "find-policies",
+  schemas: { Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, Page: { type: "object" } },
+  input: { schemaId: "Store" },
+  output: { schemaId: "Page", path: "got" },
+  root: { node: "workflow", label: "sub", workflow: JSON.parse(callDraft(tool)), input: { url: "{url}" }, out: "Page", as: "got" },
+}, null, 2);
+const ASK_WORDS = "This workflow's call node calls web_fetch, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.";
+const DENY_WORDS = "This workflow's call node calls web_fetch, which is set to deny on this server.";
+const quote = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("a draft whose call node calls a tool set to ask or deny is refused as workflow at learn time, in #1601's words, inside a composed workflow node too; one set to allow passes", () => {
+  for (const [permission, words] of [["ask", ASK_WORDS], ["deny", DENY_WORDS]]) {
+    for (const [text, at] of [[callDraft("web_fetch"), "/root"], [composedDraft("web_fetch"), "/root/workflow/root"]]) {
+      const result = check(draft(text), { gated: { web_fetch: permission } });
+      assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], `${permission} ${at} ${JSON.stringify(result.problems)}`);
+      assert.match(result.problems[0].detail, new RegExp(`${quote(words)} \\(the call node at ${quote(at)}\\)`), result.problems[0].detail);
+    }
+  }
+  assert.ok(check(draft(callDraft("web_fetch"))).ok, "allowed, it passes");
+  assert.ok(check(draft(composedDraft("web_fetch"))).ok, "allowed, the composed one passes");
+});
+
+test("the tools a learned draft may name are the granted ones the gate allows: one set to ask or deny is left out, and named with its setting", () => {
+  assert.equal(typeof tools.learnedDraftTools, "function");
+  const granted = ["read", "web_fetch", "web_search"];
+  const permission = (name) => (name === "web_fetch" ? "ask" : name === "web_search" ? "deny" : "allow");
+  assert.deepEqual(tools.learnedDraftTools(granted, permission), { tools: tools.learnedWorkflowTools(granted).filter((name) => name !== "web_fetch" && name !== "web_search"), gated: { web_fetch: "ask", web_search: "deny" } });
+  assert.deepEqual(tools.learnedDraftTools(granted, () => "allow"), { tools: tools.learnedWorkflowTools(granted), gated: {} });
 });

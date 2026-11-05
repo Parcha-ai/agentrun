@@ -65,13 +65,6 @@ export function boxPath(path: string, hostWork?: string): string | undefined {
   return at === BOX_WORK || at.startsWith(`${BOX_WORK}/`) ? named : undefined;
 }
 
-/** Whether a run's file tools write this machine's work/ (the runner's, or a box's that binds it, as codingSource's own
- *  rule reads it): the tool gate checks the reflect turn's carve-out there, and refuses it anywhere else (a remote box). */
-export async function writesHere(place: Place, box?: BoxedEnv): Promise<boolean> {
-  if (place.mode === "runner") return true;
-  return Boolean(box?.hostWork && writesHeld() && (await box.bound?.()) === true);
-}
-
 /** A run's coding tools by its place: on the runner, CodingTools (no bash); in a box, pi's read, write, edit and bash,
  *  each with its arguments, output and replay as pi ships it and its environment the box's, and the background tools
  *  (background.ts), each call a command in the box. A file tool's path stays in the box's work dir; bash's command is
