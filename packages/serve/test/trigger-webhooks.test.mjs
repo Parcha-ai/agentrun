@@ -126,7 +126,7 @@ test("a message_run trigger sends each firing to its run, which takes it once: a
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "chat");
-  const run = await api("POST", "/agents/chat/runs", { input: { content: "Say hello." } });
+  const run = await api("POST", "/agents/chat/runs", { input: { content: "Say hello." }, max_cost_usd: 1 });
   await follow(api, run.body.run_id, ["completed"]);
   const created = await api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.body.run_id, input: { content: "A new event came in." } } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -167,7 +167,7 @@ test("a message_run firing reaches a run that is working: its live process takes
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "busy");
-  const run = (await api("POST", "/agents/busy/runs", { input: { content: "Take your time." } })).body;
+  const run = (await api("POST", "/agents/busy/runs", { input: { content: "Take your time." }, max_cost_usd: 1 })).body;
   await follow(api, run.run_id, ["working"]);
   const { id, secret } = (await api("POST", "/triggers", { source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "Also look at this." } } })).body;
   const started = Date.now();

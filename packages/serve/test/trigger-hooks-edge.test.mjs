@@ -148,7 +148,7 @@ test(`a message a run already took (${harness}), its firing left due by a restar
   const data = join(await scratch(t), "agents");
   const first = await serve(t, { data, ...options });
   await made(first.api, "chat", harness === "pi" ? {} : { harness });
-  const run = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." } })).body;
+  const run = (await first.api("POST", "/agents/chat/runs", { input: { content: "Say hello." }, max_cost_usd: 1 })).body;
   await follow(first.api, run.run_id, ["completed"]);
   const { id, secret } = (await first.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } })).body;
   const body = '{"ticket":7}';
