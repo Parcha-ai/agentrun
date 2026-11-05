@@ -90,7 +90,11 @@ export type AnalyticsFilter = { from?: string; to?: string; agent?: string };
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; learning?: boolean; toolSettings?: Record<string, Record<string, string>>; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: RevisionPlace; toolSettings?: Record<string, Record<string, string>>; note?: string };
-export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision };
+/** What starts a run: `key`, the caller's name for it (1 to 256 characters), which starts one run only, and `fingerprint`
+ *  (at most 256 characters), what was asked, kept to tell a retry from another request under the same key. */
+export type RunOrigin = { key: string; fingerprint?: string };
+/** `existing`: the run its origin had already started, nothing written now, with the fingerprint recorded then. */
+export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision; existing?: { fingerprint?: string } };
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
@@ -174,10 +178,20 @@ CREATE TABLE IF NOT EXISTS run_tool_metrics (
   calls  INTEGER NOT NULL,
   errors INTEGER NOT NULL,
   PRIMARY KEY (run_id, tool)
-);`;
+);
+CREATE TABLE IF NOT EXISTS run_origins (
+  key         TEXT PRIMARY KEY,
+  run_id      TEXT NOT NULL UNIQUE REFERENCES runs(id),
+  fingerprint TEXT,
+  at          TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS run_origins_are_written_once BEFORE UPDATE ON run_origins
+BEGIN SELECT RAISE(ABORT, 'an origin is written once'); END;
+CREATE TRIGGER IF NOT EXISTS run_origins_are_kept BEFORE DELETE ON run_origins
+BEGIN SELECT RAISE(ABORT, 'an origin is written once'); END;`;
 
-// archive_changes, runs_by_state, run_imports, run_metrics and run_tool_metrics came after version 1 without a new
-// version: an earlier version opens the file and ignores them. run_imports' trigger on runs is in the file, so that
+// archive_changes, runs_by_state, run_imports, run_metrics, run_tool_metrics and run_origins came after version 1 without
+// a new version: an earlier version opens the file and ignores them. run_imports' trigger on runs is in the file, so that
 // version still cannot change an imported run.
 const STORE_VERSION = 1;
 const SQLITE_READONLY_ROLLBACK = 776;
@@ -192,6 +206,11 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const checkId = (id: unknown, what: string): string => {
   if (typeof id !== "string" || !ID_PATTERN.test(id)) throw invalid(`the ${what} id is not letters, digits, ".", "_" or "-" (at most 128)`);
   return id;
+};
+const checkOrigin = (origin: unknown): RunOrigin => {
+  const text = (value: unknown, least: number) => typeof value === "string" && value.length >= least && value.length <= 256;
+  if (!isObject(origin) || !text(origin.key, 1) || (origin.fingerprint !== undefined && !text(origin.fingerprint, 0))) throw invalid("the origin is not { key, fingerprint? }, a key of 1 to 256 characters and a fingerprint of at most 256");
+  return { key: origin.key as string, ...(origin.fingerprint !== undefined ? { fingerprint: origin.fingerprint as string } : {}) };
 };
 const revisionHash = (r: { agent: string; parent: string | null; kind: string; body: unknown }) => sha256(canonical({ agent: r.agent, parent: r.parent, kind: r.kind, body: r.body }));
 const RUN_STATES: readonly RunState[] = ["running", "completed", "failed", "stopped", "escalated"];
@@ -528,10 +547,14 @@ export class AgentStore extends AgentStoreReader {
     });
   }
 
-  /** Start a run pinned to `revision` (default: the agent's current one): the run's directory is seeded in pi-durable-disk's layout, then its row goes in as `running`. */
-  async startRun(input: { agent: string; revision?: string }): Promise<StartedRun> {
+  /** Start a run pinned to `revision` (default: the agent's current one): the run's directory is seeded in pi-durable-disk's layout, then its row goes in as `running`.
+   *  With an `origin`, its row goes in with the run's, and a key already recorded returns the run it started (`existing`), whatever the agent and revision asked now. */
+  async startRun(input: { agent: string; revision?: string; origin?: RunOrigin }): Promise<StartedRun> {
     const agent = checkId(input?.agent, "agent");
     if ("runId" in input) throw invalid("startRun takes no run id: the store mints it");
+    const origin = input.origin === undefined ? undefined : checkOrigin(input.origin);
+    const recorded = origin && this.runOfOrigin(origin.key);
+    if (recorded) return recorded;
     const runId = uuidv7();
     const revisionId = input.revision ?? (this.db.prepare("SELECT current_revision FROM agents WHERE id = ?").get(agent) as { current_revision: string | null } | undefined)?.current_revision;
     if (!revisionId) throw invalid("the agent has no current revision: name one");
@@ -547,12 +570,32 @@ export class AgentStore extends AgentStoreReader {
     // The directory first, then the row: a seed that fails throws and nothing is written; a hard kill between the two leaves a directory no query shows.
     try {
       await seedRun({ storePath: run.storePath, workDir: run.workspace }, { runId, leases: [], profiles: {}, skills });
-      this.db.prepare("INSERT INTO runs (id, agent_id, revision_id, started_at, state) VALUES (?, ?, ?, ?, 'running')").run(runId, agent, revisionId, new Date().toISOString());
+      // A start under the same origin that got here first (another call, another connection) wins: this one's directory goes.
+      const winner = this.tx(() => {
+        const known = origin && this.runOfOrigin(origin.key);
+        if (known) return known;
+        const at = new Date().toISOString();
+        this.db.prepare("INSERT INTO runs (id, agent_id, revision_id, started_at, state) VALUES (?, ?, ?, ?, 'running')").run(runId, agent, revisionId, at);
+        if (origin) this.db.prepare("INSERT INTO run_origins (key, run_id, fingerprint, at) VALUES (?, ?, ?, ?)").run(origin.key, runId, origin.fingerprint ?? null, at);
+        return undefined;
+      });
+      if (winner) {
+        await rm(dir, { recursive: true, force: true });
+        return winner;
+      }
     } catch (error) {
       await rm(dir, { recursive: true, force: true });
       throw error;
     }
     return run;
+  }
+
+  /** The run `key` started (startRun's `origin`), as startRun returns it with `existing`; undefined when it started none. */
+  runOfOrigin(key: string): StartedRun | undefined {
+    const row = this.db.prepare("SELECT o.run_id, o.fingerprint, r.agent_id, r.revision_id FROM run_origins o JOIN runs r ON r.id = o.run_id WHERE o.key = ?").get(key) as Record<string, string | null> | undefined;
+    if (!row) return undefined;
+    const dir = path.join(this.dir, "runs", row.run_id!);
+    return { runId: row.run_id!, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: row.agent_id!, revision: this.readRevision(row.revision_id!), existing: row.fingerprint === null ? {} : { fingerprint: row.fingerprint! } };
   }
 
   /** End a run, once: `state` is how it ended, `summary` a line for the list (cut to 2000 characters, never refused, so a run always ends). A second call for an ended run is refused.

@@ -1284,7 +1284,9 @@ left out: 2 sessions still being written: they come in next time
      [below](#spend-cap)). A
      provider's content filter stopping the answer ends it `failed` with `moderated` on every harness, saying so in plain
      words ("The model provider stopped this answer (its content filter). Rephrase the request, or try another model.");
-     the provider's own words stay on the Timeline's error row. On claude-agent and codex the session's model proxy reads
+     the Timeline's error row keeps the harness's own words for the stop: pi-ai's on pi ("Response incomplete:
+     content_filter", say), the kernel's on claude-agent and codex ("content_filter: the model provider stopped this
+     answer"), never the provider's own. On claude-agent and codex the session's model proxy reads
      the provider's stop and ends the turn at once, so the CLI never asks for the refused answer again.
      A stop sent while the run still reads `queued` (a message sent to it not yet in its timeline) waits, up to a
      request's deadline, for that message to show, then stops the turn as it stops any working run.
@@ -1310,8 +1312,11 @@ left out: 2 sessions still being written: they come in next time
    agentic run waiting for an answer waits without one, until a message). A carry back that finds the store held by
    another writer is tried again with backoff, and at the next start.
 
-An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), written before
-the answer is sent, so a retry after a restart gets the first answer.
+An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), saved once the
+work is done and before the answer is sent, so a retry after a restart gets the first answer; a server that goes down
+between the work and the save loses it, and a save that fails still answers. A run create's key is also kept with its
+run in the agent store, written with the run itself, so a retry after any restart, or after that day, gets that run (as
+it is now, marked `Idempotent-Replayed: true`), and another body under the key is still `409 idempotency_mismatch`.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
