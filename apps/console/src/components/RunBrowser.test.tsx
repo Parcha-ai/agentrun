@@ -43,6 +43,7 @@ function nowhereBut(frame: HTMLIFrameElement | null, ...secrets: string[]) {
   for (const s of secrets) {
     const token = s.split("#t=")[1];
     expect(location.href).not.toContain(token);
+    expect(location.hash).not.toContain(token);
     expect(JSON.stringify(history.state ?? null)).not.toContain(token);
     for (const store of [localStorage, sessionStorage]) for (let i = 0; i < store.length; i++) expect(store.getItem(store.key(i)!) ?? "").not.toContain(token);
     expect(JSON.stringify(logs.map((args) => args.map(String)))).not.toContain(token);
@@ -51,6 +52,34 @@ function nowhereBut(frame: HTMLIFrameElement | null, ...secrets: string[]) {
     expect(html.split(token).length - 1, "the token appears once in the page").toBe(frame ? 1 : 0);
   }
 }
+
+describe("the run page reads the browser only from a server that serves it", () => {
+  const base = { run_id: RUN, agent_id: "browsing", agent_version: 1, revision: "rv1", kind: "agentic", status: "working", state: "working", title: "Look", created_at: "2026-11-05T09:00:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null } as Run;
+  async function live(caps: unknown) {
+    const reads: string[] = [];
+    const v2 = {
+      getRun: async () => base, listFiles: async () => ({ run_id: RUN, files: [], complete: true, truncated: false }),
+      getTimeline: async () => ({ run_id: RUN, status: "working", state: "working", rows: [], drop: [], reset: true, unchanged: false, final: false, has_more: false, next_after: 0 }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      runBrowser: async (id: string) => { reads.push(id); return { state: "live", viewer: VIEWER }; },
+    };
+    const { LiveRun } = await import("./LiveRun");
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(LiveRun, { v2: v2 as never, runId: RUN, caps: caps as never, agentName: () => "Browsing" })); });
+    await settle(80);
+    return { host, reads };
+  }
+  it("with features.browser_live, it reads the run's browser and offers the tab", async () => {
+    const p = await live({ features: { browser_live: { read_only: true } } });
+    expect(p.reads[0]).toBe(RUN);
+    expect([...p.host.querySelectorAll('[role="tab"]')].some((b) => /^Browser/.test(b.textContent ?? ""))).toBe(true);
+  });
+  it("without it (an older server), it never asks", async () => {
+    const p = await live({ features: {} });
+    expect(p.reads).toEqual([]);
+  });
+});
 
 describe("the run page's Browser tab", () => {
   it("is not there for a run with no browser (state off)", async () => {
@@ -81,6 +110,12 @@ describe("the run page's Browser tab", () => {
     expect(p.frame()!.getAttribute("src")).toBe(VIEWER);
     expect(p.frame()!.getAttribute("title")).toBe("The run's browser");
     nowhereBut(p.frame(), VIEWER);
+  });
+
+  it("frames the viewer with only what its page needs: its own scripts, and its own origin for the WebSocket and the cookie", async () => {
+    const p = await page(async () => ({ state: "live", viewer: VIEWER }), working, "browser");
+    expect(p.frame()!.getAttribute("sandbox")?.split(/\s+/).sort()).toEqual(["allow-same-origin", "allow-scripts"]);
+    expect(p.frame()!.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
   it("follows the session: live, then none at release, then live again with the new viewer, never the old one", async () => {
