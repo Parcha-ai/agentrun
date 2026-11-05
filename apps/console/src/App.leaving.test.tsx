@@ -311,3 +311,23 @@ describe("App, an untouched new agent", () => {
     expect(confirms).toEqual([]);
   });
 });
+
+// An edit made while Create is under way was never sent: the new agent's page opens only through the question, and
+// Cancel keeps the form with the edit.
+describe("App, an edit made while Create is under way", () => {
+  it("asks before opening the new agent's page; Cancel stays on the form with the edit", async () => {
+    hold = new Promise<void>((r) => { release = r; });
+    const page = await open("#/agents/new");
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    await page.type(page.host.querySelector("#agent-name"), "Made");
+    await page.type(page.instructions(), "Answer.");
+    await act(async () => { page.button(/^Create$/)!.click(); });
+    await page.wait(() => asked.includes("POST /v2/agents"), "the Create is under way");
+    await page.type(page.instructions(), "Answer, then check the sum.");
+    await act(async () => { release(); });
+    await page.settle(); await page.settle();
+    expect(confirms).toEqual([LEAVE]);
+    await page.wait(() => location.hash === "#/agents/new", "still the form");
+    expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+});
