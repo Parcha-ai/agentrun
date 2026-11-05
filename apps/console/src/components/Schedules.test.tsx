@@ -19,6 +19,8 @@ const firing = (over: Partial<Firing>): Firing => ({ key: "fir_x", by: "schedule
 const AGENTS = [
   { agent_id: "triage", kind: "agentic", definition: { name: "Triage" }, archived_at: null },
   { agent_id: "flow", kind: "workflow", definition: { name: "Refund flow" }, archived_at: null },
+  // An agent with a default cap per run (definition.max_cost_usd): a schedule on it may leave its own cap out.
+  { agent_id: "story", kind: "agentic", definition: { name: "Story", max_cost_usd: 0.5 }, archived_at: null },
 ];
 
 type Call = { method: string; path: string; body: unknown; key: string | null };
@@ -40,6 +42,8 @@ function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>
     calls.push(call);
     const m = /^\/v2\/triggers\/([^/]+)(\/fire|\/firings)?$/.exec(call.path);
     if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
+    const agentRead = /^\/v2\/agents\/([^/]+)$/.exec(call.path);
+    if (agentRead) { const a = AGENTS.find((x) => x.agent_id === decodeURIComponent(agentRead[1])); return a ? json(200, a) : json(404, { error: { code: "not_found", message: "no agent", retryable: false } }); }
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
     if (call.path === "/v2/triggers" && call.method === "POST") {
       const answer = write?.(call);
@@ -125,6 +129,16 @@ describe("the schedules list", () => {
     for (let i = 0; i < 20 && t.host.querySelectorAll("[data-schedule]").length < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(t.host.querySelectorAll("[data-schedule]")).toHaveLength(2);
   });
+  // GET /triggers also lists webhooks and schedules that send a message to a run: this page shows the schedules that
+  // start runs, and says how many others there are, never a broken row for them.
+  it("shows the schedules that start runs, and counts the other triggers it does not show", async () => {
+    const hook = { ...NIGHTLY, id: "trg_hook", name: "on push", source: { kind: "webhook" } } as unknown as Trigger;
+    const message = { ...NIGHTLY, id: "trg_msg", name: "nudge", target: { kind: "message_run", run_id: "r1", input: { content: "Go on." } } } as unknown as Trigger;
+    const t = await open(server({ triggers: [NIGHTLY, hook, message] }).v2, {});
+    expect([...t.host.querySelectorAll("[data-schedule]")].map((r) => r.getAttribute("data-schedule"))).toEqual(["trg_1"]);
+    expect(t.text()).toContain("2 other triggers (webhooks, messages to a run) are not shown here.");
+    expect(t.text()).not.toContain("undefined");
+  });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
     expect(t.text()).toContain("No schedules yet.");
@@ -178,6 +192,29 @@ describe("a new schedule", () => {
     const t = await open(server().v2, { schedule: null }, 120);
     await t.choose("every");
     expect(t.text()).toContain("At least 2 minutes.");
+  });
+  // The server takes no cap when the agent has a default (each firing uses the agent's): the field is optional then.
+  it("leaves the cap out on an agent with a default cap, and says the default under the field", async () => {
+    const { v2, calls } = server();
+    const t = await open(v2, { schedule: null });
+    await t.set("cron", "* * * * *");
+    await t.set("agent", "story");
+    await t.set("content", "Say hello.");
+    expect(t.text()).toContain("Uses the agent's default ($0.50) if empty.");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("target.max_cost_usd")).toBeNull();
+    const posted = calls.find((c) => c.method === "POST")?.body as { target: Record<string, unknown> } | undefined;
+    expect(posted?.target).toEqual({ kind: "start_run", agent_id: "story", input: { content: "Say hello." } });
+  });
+  it("says the server's refusal under the cap when the agent's default was taken away meanwhile", async () => {
+    const message = "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's.";
+    const { v2 } = server({ write: () => refuse([{ field: "target.max_cost_usd", reason: "missing", message }]) });
+    const t = await open(v2, { schedule: null });
+    await t.set("cron", "* * * * *");
+    await t.set("agent", "story");
+    await t.set("content", "Say hello.");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("target.max_cost_usd")).toBe(message);
   });
   it("says a missing cap under its field and sends nothing", async () => {
     const { v2, calls } = server();
@@ -266,6 +303,19 @@ describe("one schedule", () => {
       Object.defineProperty(Document.prototype, "visibilityState", visibility);
     }
   });
+  it("says a schedule with no cap of its own runs under the agent's default, never an undefined cap", async () => {
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const t = await open(server({ triggers: [own] }).v2, { schedule: "trg_1" });
+    expect(t.text()).toContain("Agent's default ($0.50)");
+    expect(t.text()).not.toContain("undefined");
+  });
+  it("says a trigger this page does not show is not a schedule that starts runs, with nothing to change it", async () => {
+    const hook = { ...NIGHTLY, id: "trg_hook", name: "on push", source: { kind: "webhook" } } as unknown as Trigger;
+    const t = await open(server({ triggers: [hook] }).v2, { schedule: "trg_hook" });
+    expect(t.text()).toContain("This trigger is not a schedule that starts runs (a webhook, or messages to a run): this page does not show it.");
+    expect(t.button(/^Pause$|^Resume$|^Edit$|^Run now$|^Delete$/)).toBeUndefined();
+    expect(t.text()).not.toContain("undefined");
+  });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();
     const t = await open(v2, { schedule: "trg_1" });
@@ -338,6 +388,17 @@ describe("one schedule", () => {
 });
 
 describe("editing a schedule", () => {
+  // A schedule with no cap of its own (the agent's default applies) edits like any other: its cap stays left out.
+  it("saves a name alone on a schedule with no cap of its own", async () => {
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const { v2, calls } = server({ triggers: [own] });
+    const t = await open(v2, { schedule: "trg_1", edit: true });
+    expect((t.host.querySelector('[name="maxCost"]') as HTMLInputElement).value).toBe("");
+    await t.set("name", "nightly");
+    await t.click(/^Save changes$/);
+    expect(t.issue("target.max_cost_usd")).toBeNull();
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "nightly" }]);
+  });
   // The server starts a schedule again from now whenever an edit names its source: an edit of the name alone must not.
   it("saves a name alone with no source in the PATCH, so the schedule keeps its times", async () => {
     // A start the server set when it was made (to the second) reads back to the second.
