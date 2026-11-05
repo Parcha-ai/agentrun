@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { test } from "node:test";
 import { hostName } from "../dist/host-check.js";
-import { serve } from "./support.mjs";
+import { call, serve } from "./support.mjs";
 
 /** A GET to the server at `port` with the Host header `host`, as a browser (`accept: text/html`) or a script sends it. */
 const get = (port, host, { path = "/v2/capabilities", accept = "application/json" } = {}) =>
@@ -67,4 +67,21 @@ test("on loopback, the public address's name and an --allow-host name are served
   for (const host of ["other.example.com", "example.com", "agentrun.example.com.evil.example", "internal"]) {
     assert.equal((await get(port, host)).status, 403, host);
   }
+});
+
+test("behind an HTTPS proxy on the same machine that keeps the browser's Host (Caddy's default), the owner sets up and signs in at the public address, and another origin is still refused", async (t) => {
+  const server = await serve(t, { accounts: true, publicUrl: "https://agentrun.example.com" });
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  const proxied = { host: "agentrun.example.com", "x-forwarded-proto": "https", origin: "https://agentrun.example.com", "content-type": "application/json" };
+  const post = (path, body, headers = proxied) => call(server.port, { method: "POST", path, headers, body });
+  const password = "not-a-secret-owner";
+  assert.equal((await post("/v2/setup", { password, code })).status, 201, "setup at the public address");
+  const signedIn = await post("/v2/auth/sign-in", { password });
+  assert.equal(signedIn.status, 200, signedIn.text);
+  const [cookie] = signedIn.headers["set-cookie"];
+  assert.match(cookie, /^__Host-agentrun-session=.*; Secure$/, "over https, the __Host- cookie");
+  const agents = await call(server.port, { path: "/v2/agents", headers: { host: "agentrun.example.com", "x-forwarded-proto": "https", cookie: cookie.split(";")[0] } });
+  assert.equal(agents.status, 200, agents.text);
+  const elsewhere = await post("/v2/auth/sign-in", { password }, { ...proxied, origin: "https://evil.example" });
+  assert.equal(elsewhere.status, 403, "a page on another origin, through the same proxy");
 });
