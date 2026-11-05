@@ -39,7 +39,7 @@ import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
 import { boundResult } from "@parcha/agentrun-kernel/process";
-import type { DurableRun } from "@parcha/pi-durable-disk";
+import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
 import { BOX_WORK } from "./place.js";
@@ -252,7 +252,11 @@ export function underLearning(work: string, args: unknown): boolean {
 /** One call that waits for approval, as the run's store keeps it. */
 export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice };
 /** Resumes the session with `content` as one message of its own (`approval-<id>`), writing `mark` with it or after it. */
-export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>) => Promise<void>;
+export type Resume = (id: string, content: string, mark: (tx: Tx) => Promise<unknown>, origin?: ResumeOrigin) => Promise<void>;
+/** Who wrote a resume, for the Timeline (pi-durable-agent's MessageOrigin): the server, carrying an answer, so it never
+ *  shows as the person's message. A person's message that declined the call: `said`, their words, which the Timeline
+ *  shows as theirs beside the server's row. */
+export type ResumeOrigin = { kind: "server"; reason: "approval" } | { kind: "server"; reason: "approval_declined"; said: string };
 
 /** `text` cut to at most ARGS_PREVIEW_BYTES. What is shown of a call's arguments is the whole of them redacted first, then
  *  cut (runs.ts), so a cut never leaves the head of a key no redaction recognizes. */
@@ -448,9 +452,15 @@ export class RunGate {
 
   /** pi's resume: an input to the root conversation under the request's own id, which pi takes once however often it
    *  is sent, then the mark. */
-  private readonly submit: Resume = async (id, content, mark) => {
+  private readonly submit: Resume = async (id, content, mark, origin) => {
     const root = await this.durable!.harness.root(this.context!);
-    await root.submit({ type: "input", requestId: `approval-${id}`, content, whenBusy: "followUp" }, this.context!);
+    const requestId = `approval-${id}`;
+    // pi writes its user entry with no data, so the resume's origin goes first as an entry of its own, which the Timeline
+    // matches to it by its text (pi-durable-disk's serve does the same). Once only: a resume tried again whose input is
+    // in already writes no second marker, which would be left open for a later message with the same text.
+    if (origin && (await root.commit((tx) => tx.submissionByRequest(root.id, requestId), this.context!)) === undefined)
+      await root.submit({ type: "write", requestId: `origin of ${requestId}`, entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin, text: content } } }, this.context!);
+    await root.submit({ type: "input", requestId, content, whenBusy: "followUp" }, this.context!);
     await this.durable!.harness.commit(mark, this.context!);
   };
 
@@ -465,7 +475,7 @@ export class RunGate {
     }
     this.settling = true;
     try {
-      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string; args_shown?: string }> | undefined;
+      const answers = (await readJson(join(this.where.root, RUN_META)))?.approvals as Record<string, { decision?: string; note?: string; args_shown?: string; by?: string }> | undefined;
       for (const held of open) {
         const answer = answers?.[held.id];
         // Withdrawn with its run (a cancel, or a stop while it waited): never run and nothing resumed; resolved, so the
@@ -494,7 +504,9 @@ export class RunGate {
         // The arguments the message names are the server's redacted ones: the gate never writes a held value there. The
         // result is cut as every host tool's is (boundResult, HOST_RESULT_MAX_CHARS, in its words): an executor's (an
         // MCP call's) comes uncut, and its journal keeps it whole.
-        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }));
+        // The server's message, never the person's: a declining message's words are theirs, beside it.
+        const origin: ResumeOrigin = decision === "deny" && answer.by === "message" && answer.note?.trim() ? { kind: "server", reason: "approval_declined", said: answer.note } : { kind: "server", reason: "approval" };
+        await this.resume!(held.id, resumeText(held, answer.args_shown ?? "(not shown)", decision, { ...result, text: boundResult(result.text).text }), (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: APPROVAL_ENTRY, data: { phase: "resolved", id: held.id, decision } }), origin);
         held.resolved = true;
       }
     } catch (error) {
