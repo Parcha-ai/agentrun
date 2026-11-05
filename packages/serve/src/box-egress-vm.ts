@@ -233,6 +233,14 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
     const made = await docker(egressVolumeArgs(key, options.uid, options.gid), 10_000);
     return made.code === 0 ? undefined : `docker volume create failed (${made.code})`;
   };
+  // The proxy container this server started, by the id `docker run` printed: what the watch looks at and the close
+  // removes. Never its name, which a container that is not this server's may hold.
+  let ours: string | undefined;
+  /** Removes the container this server started, by its id. */
+  const removeOurs = async () => {
+    if (ours) await docker(["rm", "--force", ours], 10_000);
+    ours = undefined;
+  };
   /** Starts the container, the image already in, and waits for its ready line. */
   const run = async (): Promise<EgressState> => {
     const volume = await ensureVolume();
@@ -243,12 +251,15 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
     const code = await egressCode(options.data);
     if (closed) return state;
     const started = await docker(egressRunArgs({ key, uid: options.uid, gid: options.gid, code, allow: options.allow }), 30_000);
-    // A close while it started: what it started goes too.
-    if (closed) return (await docker(["rm", "--force", name], 10_000), state);
+    // A name another container holds fails here (Docker's conflict), and that container is left as it is.
     if (started.code !== 0) return failed(`docker run failed (${started.code})`);
+    ours = started.stdout.trim().split("\n").at(-1)?.trim() || undefined;
+    if (!ours) return failed("docker run printed no container id");
+    // A close while it started: what it started goes too.
+    if (closed) return (await removeOurs(), state);
     const until = Date.now() + readyMs;
     for (;;) {
-      const logs = await docker(["logs", "--tail", "20", name], 5_000);
+      const logs = await docker(["logs", "--tail", "20", ours], 5_000);
       const lines = `${logs.stdout}\n${logs.stderr}`.split("\n").map((line) => line.trim());
       if (lines.some((line) => line.startsWith(EGRESS_READY))) return { state: "ready" };
       if (closed) return state;
@@ -292,8 +303,8 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
   const watch = setInterval(() => {
     if (closed || busy || state.state === "unavailable") return;
     void once(async () => {
-      const running = await docker(["inspect", "--format", "{{.State.Running}}", name], 5_000);
-      if (running.code === 0 && running.stdout.trim() === "true") {
+      const running = ours ? await docker(["inspect", "--format", "{{.State.Running}}", ours], 5_000) : undefined;
+      if (running?.code === 0 && running.stdout.trim() === "true") {
         misses = 0;
         if (state.state !== "ready") set({ state: "ready" });
         return;
@@ -317,7 +328,7 @@ export async function startEgressContainer(options: { env: NodeJS.ProcessEnv; da
       // What was under way ends first (a pull or a wait is aborted; a start checks `closed`), so nothing of this server's
       // touches Docker after its close.
       await busy?.catch(() => undefined);
-      await docker(["rm", "--force", name], 10_000);
+      await removeOurs();
     },
   };
 }

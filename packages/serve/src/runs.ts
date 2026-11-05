@@ -1623,7 +1623,9 @@ export class Runs {
       ...childEnv(process.env, this.options.token),
       // The run's box's network, as the server resolved it: never the setting itself, which the run's process ignores.
       [RUN_BOX_ALLOW_ENV]: this.options.dockerAllow === undefined || this.options.dockerAllow === "none" ? "none" : this.options.dockerAllow.join(","),
-      ...(this.options.dockerVolume ? { [RUN_BOX_VOLUME_ENV]: this.options.dockerVolume } : {}),
+      // And, on a Mac, its proxy's volume: set always, empty for none, so a stale value in the server's own environment
+      // never reaches a run.
+      [RUN_BOX_VOLUME_ENV]: this.options.dockerVolume ?? "",
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
       ...this.fauxEnv(),

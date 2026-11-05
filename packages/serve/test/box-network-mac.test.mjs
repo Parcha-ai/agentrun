@@ -197,7 +197,9 @@ test("demo through the API, Docker Desktop on a Mac: capabilities say allowlist;
   }
   const [{ pid }] = docker.started();
   await server.close();
-  assert.ok(docker.argv().some((args) => args[0] === "rm" && args.at(-1) === `agentrun-egress-${key}`), "the stop removes it");
+  const [{ id: proxyId }] = docker.started();
+  assert.ok(docker.argv().some((args) => args[0] === "rm" && args.at(-1) === proxyId), "the stop removes it, by its id");
+  assert.ok(!docker.argv().some((args) => args[0] === "rm" && args.at(-1) === `agentrun-egress-${key}`), "never by its name, which another container may hold");
   await until(() => !existsSync(`/proc/${pid}`) || !readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("main.js"), "the proxy's process gone");
 });
 
@@ -327,10 +329,38 @@ test("a server's close while its proxy's image is pulled ends the pull, starts n
   const server = await serve(t, MAC);
   await until(() => docker.argv().some((args) => args[0] === "pull" && args.at(-1) === EGRESS_IMAGE), "the pull");
   await server.close();
-  const after = docker.argv().length;
+  // The proxy's own calls: its image, its name, its label, its volume.
+  const egressCalls = () => docker.argv().filter((args) => args.some((arg) => arg.includes(EGRESS_IMAGE) || arg.includes("agentrun-egress-") || arg.includes("agentrun.egress")));
+  const after = egressCalls().length;
   await rm(join(docker.state, "pull-hold"));
   await new Promise((resolve) => setTimeout(resolve, 2_000));
-  assert.equal(docker.argv().length, after, "nothing after the close");
+  assert.equal(egressCalls().length, after, `nothing of the proxy's after the close: ${JSON.stringify(egressCalls().slice(after))}`);
   assert.deepEqual(docker.proxies(), [], "no proxy started");
-  assert.equal(docker.argv().at(-1)[0], "rm", "the close's own rm is its last call");
+  assert.ok(!docker.argv().some((args) => args[0] === "rm"), "nothing of its own to remove, and nothing removed by name");
+});
+
+test("a container that is not this server's but holds its proxy's name (no agentrun.egress label) is never removed: the proxy can't start, the network is none saying why, and the close leaves it", { timeout: 60_000 }, async (t) => {
+  const docker = await fakeDocker(t, "docker-desktop");
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const name = `agentrun-egress-${keyOf(data)}`;
+  const foreign = "b".repeat(64);
+  await mkdir(join(docker.state, "containers"), { recursive: true });
+  await writeFile(join(docker.state, "containers", `${foreign}.json`), JSON.stringify({ Id: foreign, Name: name, State: { Running: true, ExitCode: 0 }, Config: { Labels: {} }, HostConfig: {}, env: [], mounts: [] }));
+  const server = await serve(t, { ...MAC, data });
+  const offer = await dockerOf(server.api);
+  assert.equal(offer.network, "none");
+  assert.match(offer.network_reason, /^the box network proxy did not start \(docker run failed \(125\)\)/);
+  await server.close();
+  assert.ok(existsSync(join(docker.state, "containers", `${foreign}.json`)), "the foreign container is still there");
+  assert.ok(!docker.argv().some((args) => args[0] === "rm" && (args.at(-1) === name || args.at(-1) === foreign)), "never removed");
+});
+
+test("a stale AGENTRUN_RUN_BOX_VOLUME in the server's own environment never reaches a run on Linux: its box mounts no volume", { timeout: 90_000 }, async (t) => {
+  const docker = await fakeDocker(t, null, {}, { AGENTRUN_RUN_BOX_VOLUME: "agentrun-egress-0123456789ab" });
+  const { api } = await serve(t, { faux: PROBE, fauxPlatform: "linux" });
+  const runId = await boxedRun(api, [{ tool: "bash", args: { command: "true" } }]);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const [box] = docker.boxes();
+  assert.ok(!flags(box, "--mount").some((mount) => mount.startsWith("type=volume")), JSON.stringify(flags(box, "--mount")));
 });
