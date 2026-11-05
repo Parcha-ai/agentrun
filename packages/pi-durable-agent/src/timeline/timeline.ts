@@ -103,6 +103,10 @@ const abortedCall = (entry: EntryLike) => {
  *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
  *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
 export const RUN_RESUMED = "agentrun.run_resumed";
+/** The end of a turn on another harness (claude-agent, codex), written on a run's root by serve as the turn's last entry:
+ *  `{ key, status, ... }`. No row. The turn is over, so the next message is the person's next one, never a steer, even
+ *  when the turn's last entry was a tool's result (a stop that came after it, before the next model request). */
+export const TURN_END = "adapter.turn_end";
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -417,8 +421,8 @@ function createProjector(options: TimelineOptions) {
   // `conversation:id`: the call, when it comes, takes its result and is done.
   const early = new Map<string, { row: TimelineEvent; view: ToolResultView; shown: ToolResultView }>();
   const previous = new Map<number, string>();
-  // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
-  // the person's next message, not a steer.
+  // Whether every tool of the conversation's latest round ends the turn, or a turn's end (TURN_END) came after it: then
+  // the turn is over, and what comes next is the person's next message, not a steer.
   const ended = new Map<number, boolean>();
   // Conversations whose turn an abort cut since their latest tool round (a stop, a cancel): an aborted tool, or a model
   // request that had left and was aborted. That turn is over too, so the next message comes in a new turn, never a steer.
@@ -692,6 +696,7 @@ function createProjector(options: TimelineOptions) {
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
     // one, nor a compaction's). The turn it would have gone on with is over.
     else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isCompaction(entry)) cutTurns.add(conv);
+    else if (entry.kind === TURN_END) ended.set(conv, true);
     return out;
   }
 
