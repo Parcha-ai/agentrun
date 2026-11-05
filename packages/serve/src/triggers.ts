@@ -388,7 +388,7 @@ export class Triggers {
       if ("retry" in prior) return this.retry(triggerId, key, prior.retry);
       // A key stays bound to its run: one lost at setup is this firing's failure, never fired again. The next firing
       // goes ahead, and a run now is the person's retry.
-      if (prior.run?.setup_lost) return this.settle(triggerId, key, { status: "failed", run_id: prior.run.run_id, reason: LOST_AT_SETUP, error: { code: "run_failed", message: LOST_AT_SETUP } });
+      if (prior.run?.setup_lost) return this.failed(triggerId, key, { code: "run_failed", message: LOST_AT_SETUP }, { run_id: prior.run.run_id, reason: LOST_AT_SETUP });
       if (prior.run) return this.started(triggerId, key, prior.run.run_id);
       const busy = await this.busy(found.trigger, found.firing).catch((error: Error) => ({ retry: error }));
       if (this.closed) return;
@@ -446,8 +446,8 @@ export class Triggers {
 
   /** A failed firing: one more in its trigger's streak, the trigger turned off at FAILURES_TO_PAUSE, and trigger.failed
    *  queued (after the firing is written: a start finds one not yet queued and queues it, under the same webhook-id). */
-  private failed(triggerId: string, key: string, error: { code: string; message: string }): void {
-    this.settle(triggerId, key, { status: "failed", error }, (t, firing) => {
+  private failed(triggerId: string, key: string, error: { code: string; message: string }, also: Partial<Firing> = {}): void {
+    this.settle(triggerId, key, { status: "failed", error, ...also }, (t, firing) => {
       t.failures_in_a_row = settled(t).failures_in_a_row + 1;
       if (t.failures_in_a_row < FAILURES_TO_PAUSE || !t.enabled) return;
       Object.assign(t, { enabled: false, next_at: null, disabled: { at: iso(this.clock.now()), reason: "auto_paused" } });
