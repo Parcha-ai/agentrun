@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
@@ -38,7 +38,8 @@ import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fau
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
+import { type CarryBackRetry, knownToolCostOf, type Run, Runs, STATUSES, type Status, statusOf, toolCostOf, WAITS_ON_A_PERSON } from "./runs.js";
+import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
 import { type DockerNetwork, FAUX_EGRESS_ENV, sweepEgressDirs } from "./box-egress.js";
@@ -47,7 +48,7 @@ import { startBoxRelay } from "./box-relay.js";
 import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { memoryMbOf } from "./run-box.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { metersIn } from "./cap.js";
+import { meterFiguresIn } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
@@ -209,6 +210,8 @@ export type ServeOptions = {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
+  onRunLoad?: (runId: string) => void;
   /** A test's seam: awaited before a run's serve.json is written (runs.ts beforeMetaSave). */
   beforeMetaSave?: (runId: string, meta: Readonly<Record<string, unknown>>) => Promise<void> | void;
   /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
@@ -802,6 +805,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (options.beforeReopenLaunch) runs.beforeReopenLaunch = options.beforeReopenLaunch;
   if (options.beforeSubmit) runs.beforeSubmit = options.beforeSubmit;
   if (options.beforeMetaSave) runs.beforeMetaSave = options.beforeMetaSave;
+  if (options.onRunLoad) runs.onRunLoad = options.onRunLoad;
   if (options.messageOrigin) runs.messageOrigin = options.messageOrigin;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -1359,17 +1363,35 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
-  // Each ended run's meters, from its store (metersIn): kept, as its store no longer changes, keyed by its end, so a run
+  // Each ended run's meters, from its store (meterFiguresIn): kept, as its store no longer changes, keyed by its end, so a run
   // opened again and ended again is read again. A store that cannot be read leaves it all tokens.
-  const endedMeters = new Map<string, ReturnType<typeof metersIn>>();
+  const endedMeters = new Map<string, ReturnType<typeof meterFiguresIn>>();
+  // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
+  // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
+  // none (a run whose cost is known, or one ended before the figure was kept).
+  const endedSoFar = new Map<string, number | undefined>();
+  const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
+    const key = `${row.id} ${row.endedAt}`;
+    if (!endedSoFar.has(key)) {
+      let usd: number | undefined;
+      try {
+        const kept = (JSON.parse(readFileSync(join(dirname(dirname(agents.store.runStorePath(row.id))), RUN_META), "utf8")) as { cost_so_far?: { so_far_usd?: unknown } }).cost_so_far?.so_far_usd;
+        usd = typeof kept === "number" && Number.isFinite(kept) ? kept : undefined;
+      } catch {
+        usd = undefined;
+      }
+      endedSoFar.set(key, usd);
+    }
+    return endedSoFar.get(key);
+  };
   const metersOf = (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
     if (!meters) {
       try {
-        meters = metersIn(agents.store.runStorePath(row.id));
+        meters = meterFiguresIn(agents.store.runStorePath(row.id));
       } catch {
-        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
+        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
       }
       endedMeters.set(key, meters);
     }
@@ -1409,22 +1431,23 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
-      const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
-      const browser = meters ? meters.browser.usd : 0;
-      const tools = meters?.others;
-      const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
-      if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
-      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
-      // never passes as $0.
-      for (const [name, part] of parts) {
-        const line = lines.get(name) ?? lines.set(name, { usd: 0, unpriced: 0 }).get(name)!;
-        if (part === null) line.unpriced++;
-        else line.usd += part;
+      // An ended run's are its store's figures (metersOf keeps them, never its timeline), read for its lines by meter and,
+      // by any group, for what a run of unknown cost is known to have spent.
+      const read = (group === "meter" && usd !== 0) || usd === null ? (live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")), known: { tokens: 0, browser: knownToolCostOf(live.rows, "browser"), others: knownToolCostOf(live.rows, "browser", true) } } : metersOf(row)) : undefined;
+      // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
+      // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
+      // the lower bound unpriced_runs says it is.
+      const soFar = usd !== null || !read ? 0 : live ? (runs.cost(live).so_far_usd ?? 0) : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const meters = group === "meter" && usd !== 0 ? read : undefined;
+      if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
+      // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
+      for (const part of runLines({ usd, soFar, key, meters })) {
+        const line = lines.get(part.name) ?? lines.set(part.name, { usd: 0, unpriced: 0 }).get(part.name)!;
+        line.usd += part.usd;
+        if (part.unpriced) line.unpriced++;
       }
       if (usd === null) total.unpriced++;
-      else total.usd += usd;
+      total.usd += usd ?? soFar;
     }
     // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
     for (const entry of (await outcomes(data)).values()) {

@@ -236,6 +236,10 @@ export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?
 /** OpenRouter's API: its Anthropic Messages endpoint (`<base>/v1/messages`) and its Responses API (`<base>/v1/responses`)
  *  under one base, its key taken as a bearer token. The OpenRouter key goes nowhere else. */
 export const OPENROUTER_BASE = "https://openrouter.ai/api";
+/** Anthropic's own origin, where pi-ai's Anthropic provider sends (a gateway is not it). */
+export const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
+/** OpenAI's own origin, where pi-ai's OpenAI provider sends. */
+export const OPENAI_ORIGIN = "https://api.openai.com";
 
 export { openRouterOnly };
 
@@ -259,7 +263,7 @@ export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef, harness: 
   if (model.provider !== "openai") throw new HarnessUnavailable(`${harness} runs OpenAI models; the run's model is ${named}.`);
   if (openRouterOnly(harness, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, harness, named), modelId: named };
   if (!env.OPENAI_API_KEY) throw new HarnessUnavailable(`${harness} needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.`, undefined, ["OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
-  return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "", modelId: model.modelId };
+  return { origin: OPENAI_ORIGIN, credential: () => env.OPENAI_API_KEY ?? "", modelId: model.modelId };
 }
 
 /** codex's model for `ref` (a revision's; none, the host's default for codex), or opencode's (`harness`), which takes
@@ -310,7 +314,7 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): ClaudeP
   if (openRouterOnly("claude-agent", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "claude-agent", named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", id: `anthropic/${openRouterName(own)}` } };
   // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
   // takes Anthropic's key alone: OpenRouter's never goes there.
-  const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : "https://api.anthropic.com";
+  const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN;
   if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.", undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", id: own } };
 }
@@ -335,6 +339,82 @@ export function claudePriceModel(env: NodeJS.ProcessEnv, model: ModelRef): Model
   } catch {
     return { ...model, modelId: claudeModelId(model) };
   }
+}
+
+/** The model a learned workflow's requests on `harness` name in the run's models (pi-ai's catalog, app.ts): the route
+ *  the harness's own requests take (claudeProvider, codexProvider). Through OpenRouter, OpenRouter's name for the run's
+ *  model, whose key the run holds and whose entry prices it; the vendor's provider would need the vendor's key, which a
+ *  run on OpenRouter alone does not have. Otherwise the run's model as it is (Anthropic's own id for claude-agent); under
+ *  a faux harness, through codex's gateway (AGENT_MODEL_BASE_URL), or where the harness refuses the run (before any
+ *  request), `model` itself. */
+export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: ModelRef): ModelRef {
+  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return model;
+  try {
+    if (harness === "claude-agent") {
+      const { origin, auth, priceModel } = claudeProvider(env, model);
+      // OpenRouter's own route only (its key, as a bearer token): a gateway named by ANTHROPIC_BASE_URL, even at
+      // OpenRouter's URL, takes Anthropic's key (x-api-key), and learnedWorkflowsOff withholds learned workflows there.
+      return origin === OPENROUTER_BASE && auth === "bearer" ? { provider: "openrouter", modelId: priceModel.id } : { ...model, modelId: claudeModelId(model) };
+    }
+    if (harness === "codex" || harness === "opencode") {
+      // Through a gateway (AGENT_MODEL_BASE_URL), even one at OpenRouter's URL, the run's models hold the gateway's
+      // provider (runModels), not OpenRouter's: its model is the one prepared. opencode takes codex's route.
+      if (env.AGENT_MODEL_BASE_URL) return model;
+      const { origin, modelId } = codexProvider(env, model, harness);
+      return origin === OPENROUTER_BASE ? { provider: "openrouter", modelId } : model;
+    }
+  } catch {
+    // The harness refuses this run before any request: nothing is sent on this model.
+  }
+  return model;
+}
+
+/** Why a run on `harness` is offered no learned workflow, or undefined when it is. A learned workflow's model requests go
+ *  through the run's models (pi-ai's catalog, learnedRoute), whose Anthropic provider reaches api.anthropic.com alone:
+ *  claude-agent through the operator's own gateway (ANTHROPIC_BASE_URL) would have them go around it, with its key. So
+ *  that run gets none (fail closed), and its pin says why. codex and opencode (codex's route) the same, at any origin
+ *  learnedOriginOk does not name; their gateway is the run's models' own (runModels), and pi runs on them. A run its
+ *  harness refuses sends nothing, so it is not this one's to say. */
+export async function learnedWorkflowsOff(harness: string | undefined, env: NodeJS.ProcessEnv, ref: string | undefined): Promise<string | undefined> {
+  if (env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return undefined;
+  let origin: string;
+  if (harness === "claude-agent") {
+    const choice = claudeModel(env, ref);
+    if ("why" in choice) return undefined;
+    let chosen: ClaudeProvider;
+    try {
+      chosen = claudeProvider(env, choice.model);
+    } catch {
+      return undefined;
+    }
+    // On the route the run chose: the operator's gateway (ANTHROPIC_BASE_URL with Anthropic's key, x-api-key), at any
+    // URL, OpenRouter's too, is one a learned node's provider could not follow. OpenRouter's own route (its key, bearer)
+    // never goes there, whatever ANTHROPIC_BASE_URL says.
+    if (chosen.auth === "x-api-key" && env.ANTHROPIC_BASE_URL) return "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it";
+    origin = chosen.origin;
+  } else if (harness === "codex" || harness === "opencode") {
+    const choice = await codexModel(env, ref, harness);
+    if ("why" in choice) return undefined;
+    try {
+      origin = codexProvider(env, choice.model as ModelRef, harness).origin;
+    } catch {
+      return undefined;
+    }
+  } else return undefined;
+  if (learnedOriginOk(harness, origin, env)) return undefined;
+  return harness === "claude-agent"
+    ? "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it"
+    : `${harness} sends this run's model requests to ${origin}, where a learned workflow's requests could not follow`;
+}
+
+/** Whether a learned workflow's requests reach `origin`, where `harness` sends the run's own (learnedWorkflowsOff): the
+ *  run's models hold Anthropic's, OpenAI's and OpenRouter's providers, and, for codex and opencode (runModels), the
+ *  gateway at AGENT_MODEL_BASE_URL. Any other origin is not one they can follow. */
+export function learnedOriginOk(harness: string, origin: string, env: NodeJS.ProcessEnv): boolean {
+  if (origin === OPENROUTER_BASE) return true;
+  if (harness === "claude-agent") return origin === ANTHROPIC_ORIGIN;
+  if (harness === "codex" || harness === "opencode") return origin === OPENAI_ORIGIN || Boolean(env.AGENT_MODEL_BASE_URL);
+  return true;
 }
 
 /** claude-agent's model: the revision's (or the server's default for claude-agent, hostModel) as `provider/model-id`.
