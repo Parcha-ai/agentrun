@@ -429,16 +429,18 @@ export class AgentStoreReader {
       if (!PENDING_ENDS.has(state)) throw new AgentHomeError("invalid", `pending: ${String(state).slice(0, 40)} is not the state of an end`);
       pending[checkId(id, "run")] = state;
     }
-    const params = { from: filter.from === undefined ? null : checkTime(filter.from, "from"), to: filter.to === undefined ? null : checkTime(filter.to, "to"), agent: filter.agent === undefined ? null : checkId(filter.agent, "agent"), pending: JSON.stringify(pending) };
+    const params = { from: filter.from === undefined ? null : checkTime(filter.from, "from"), to: filter.to === undefined ? null : checkTime(filter.to, "to"), agent: filter.agent === undefined ? null : checkId(filter.agent, "agent"), ...(Object.keys(pending).length ? { pending: JSON.stringify(pending) } : {}) };
     const metric = (column: string) => (this.metrics ? `m.${column}` : "NULL");
     // Each run in scope once, with its group keys and, when it has ended, its metrics. A pending run (its end on its way)
     // has the state its end will have, and none of its metrics, cost or effort yet.
-    const scope = `WITH scope AS (SELECT r.id, COALESCE(p.value, r.state) AS state, p.key IS NOT NULL AS pending, r.started_at, r.ended_at, r.cost_usd,
+    // No pending run (the usual read): no join at all, each run at its stored state.
+    const anyPending = Object.keys(pending).length > 0;
+    const scope = `WITH scope AS (SELECT r.id, ${anyPending ? "COALESCE(p.value, r.state) AS state, p.key IS NOT NULL AS pending" : "r.state AS state, 0 AS pending"}, r.started_at, r.ended_at, r.cost_usd,
         CASE WHEN v.kind = 'workflow' THEN 'workflow' ELSE COALESCE(json_extract(v.body_json, '$.harness'), 'pi') END AS harness,
         ${this.imports ? "COALESCE(i.source, 'live')" : "'live'"} AS source, ${this.metrics ? "m.run_id IS NOT NULL" : "0"} AS metered,
         ${["input", "cache_read", "cache_write", "output", "requests", "unmetered", "active_ms", "effort"].map((c) => `${metric(c)} AS ${c}`).join(", ")}
       FROM runs r JOIN revisions v ON v.id = r.revision_id
-        LEFT JOIN json_each(:pending) p ON p.key = r.id AND r.state = 'running'
+        ${anyPending ? "LEFT JOIN json_each(:pending) p ON p.key = r.id AND r.state = 'running'" : ""}
         ${this.metrics ? "LEFT JOIN run_metrics m ON m.run_id = r.id AND r.state <> 'running'" : ""} ${this.imports ? "LEFT JOIN run_imports i ON i.run_id = r.id" : ""}
       WHERE ${this.runArchivedAtSql()} IS NULL AND (:from IS NULL OR r.started_at >= :from) AND (:to IS NULL OR r.started_at < :to) AND (:agent IS NULL OR r.agent_id = :agent))`;
     const group = `COUNT(*) AS runs, SUM(state IN ('completed', 'escalated')) AS completed, SUM(state = 'escalated') AS needs_review, SUM(state = 'failed') AS failed, SUM(metered) AS metered,
