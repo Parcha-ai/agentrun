@@ -122,9 +122,9 @@ test("a follow-up placed with a carry holds the carried text in the session's st
 });
 
 // A stop can land after the harness placed a prompt and before its CLI was sent it (the window between placeSubmissions
-// and the send): the prompt is placed, so no withdraw takes it, and nothing sent it. The harness marks each prompt just
-// before it hands it to its CLI (markSent, a kernel effect of its own); a placed prompt with no mark is unsent, and
-// settleTurn carries it (`unsent`) as it carries one stopped before it was placed. A prompt the host wrote (a follow-up's,
+// and the send): the prompt is placed, so no withdraw takes it, and nothing sent it. The adapter reads whether its CLI
+// recorded it; a placed prompt it never recorded is unsent, and settleTurn carries it (`unsent`) as it carries one
+// stopped before it was placed. A prompt the host wrote (a follow-up's,
 // `host`) is withdrawn and never carried: a host prompt that never ran is dropped (follow-up.ts).
 
 test("a prompt placed but never sent, stopped: settleTurn's `unsent` carries it into the next one, and it stays placed, so nothing sends it on its own", async () => {
@@ -175,17 +175,4 @@ test("a host's follow-up prompt named to the settle (`host`) is withdrawn and ne
   await processKit.settleTurn(placed, { host: 'follow-up:k', unsent: ['follow-up:k'] });
   await placed.submit({ id: 'next', kind: 'followUp', text: 'and now?' });
   assert.deepEqual(placed.pending().map((s) => s.text), ['and now?'], "a host prompt placed and never sent is not carried either");
-});
-
-test("markSent records a prompt's send mark as a kernel effect of its own, read back by sentMarks in this process and the next; a halted drive writes none", async () => {
-  const store = memorySessionStore();
-  const drive = await openOn(store);
-  await processKit.markSent(drive, 'client-1');
-  await processKit.markSent(drive, 'client-1');
-  assert.deepEqual([...processKit.sentMarks(drive.state())], ['client-1']);
-  assert.deepEqual([...processKit.sentMarks((await openOn(store)).state())], ['client-1'], 'durable');
-  const halted = await openOn(memorySessionStore());
-  halted.halt?.(new Error('stopped'));
-  await assert.rejects(processKit.markSent(halted, 'client-2'));
-  assert.deepEqual([...processKit.sentMarks(halted.state())], []);
 });
