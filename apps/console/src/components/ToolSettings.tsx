@@ -39,10 +39,10 @@ export function ToolTable({ label, rows, settings, fallbackOf, resolvesOf, issue
                   <td className="px-3 py-2">
                     <select aria-label={`${t.name} provider`} value={provider} disabled={busy} onChange={(e) => pick(e.target.value)}
                       className={cn("border bg-background px-2 py-1.5 font-mono text-[12px] outline-none focus:border-border-strong disabled:opacity-60", set && "border-primary text-primary")}>
-                      {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p)}{p === fallback ? " (default)" : ""}</option>)}
+                      {t.providers.map((p) => <option key={p} value={p}>{providerLabel(p, t.name)}{p === fallback ? " (default)" : ""}</option>)}
                     </select>
-                    {providerHelp(provider) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider)}</span>}
-                    {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback)}</span>}
+                    {providerHelp(provider, t.name) && <span className="mt-1 block max-w-[300px] text-[11px] text-muted-foreground">{providerHelp(provider, t.name)}</span>}
+                    {set && <span className="mt-1 block font-mono text-[11px] text-muted-foreground">default: {providerLabel(fallback, t.name)}</span>}
                   </td>
                   <td className="px-3 py-2.5">{resolvesOf(t, provider)}</td>
                   <td className="px-2 py-2 text-right">
@@ -62,13 +62,13 @@ export function ToolTable({ label, rows, settings, fallbackOf, resolvesOf, issue
 }
 
 /** A resolution, said plainly: an unavailable one in the warning colour with the server's reason. */
-export function Resolves({ value, prefix }: { value: string | undefined; prefix?: string }) {
-  const r = resolution(value);
+export function Resolves({ value, prefix, tool }: { value: string | undefined; prefix?: string; tool?: string }) {
+  const r = resolution(value, tool);
   return <span className={cn("block font-mono text-[12px]", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>{prefix}{r.text}</span>;
 }
 
 /** What a capability resolves to on each harness, one line each. */
-export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORDER.map((h) => <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} />)}</>;
+export const PerHarness = ({ choice }: { choice: ToolChoice }) => <>{HARNESS_ORDER.map((h) => <Resolves key={h} value={choice.resolves[h]} prefix={`${h}: `} tool={choice.name} />)}</>;
 
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
@@ -107,8 +107,8 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, value
           const read = agent?.tools?.find((x) => capabilityOf(x.name) === t.name);
           const known = read && read.provider === (value[t.name]?.provider ?? t.provider) ? read.resolved : undefined;
           const savedModel = (model ?? "") === ((agent?.definition.model as string | undefined) ?? "");
-          if (!own && harness === (agent?.definition.harness ?? "pi") && savedModel && known) return <Resolves value={known} prefix={`${harness}: `} />;
-          if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} />;
+          if (!own && harness === (agent?.definition.harness ?? "pi") && savedModel && known) return <Resolves value={known} prefix={`${harness}: `} tool={t.name} />;
+          if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} tool={t.name} />;
           return <span className="block font-mono text-[12px] text-muted-foreground">once saved</span>;
         }} />
       {rest.map((m) => <p key={m} className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{m}</p>)}
