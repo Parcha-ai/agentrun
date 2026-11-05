@@ -77,6 +77,14 @@ test("a draft with a node the learned runner cannot run (a judge, pick or sift n
   assert.match(result.problems[0].detail, /judge node "refund" requires runJudge: a learned workflow runs model and tool-call nodes/, result.problems[0].detail);
 });
 
+test("a draft whose output names no path is refused as workflow at learn time: a learned workflow's output is the value at output.path", () => {
+  const doc = JSON.parse(workflow());
+  delete doc.output.path;
+  const result = check(draft(JSON.stringify(doc, null, 2)));
+  assert.deepEqual(result.problems.map((p) => [p.rule, p.path]), [["workflow", DRAFT_PATH]], JSON.stringify(result.problems));
+  assert.match(result.problems[0].detail, /its output names no path: a learned workflow's output is the value at output\.path/);
+});
+
 test("a draft whose model node names any tool is refused as workflow, though the agent was granted it: a learned model node runs without tools, so it is refused at learn time, never at a call after earlier nodes spent", () => {
   for (const named of [["web_fetch"], ["web_search"]]) {
     for (const node of ["agent", "extract"]) {

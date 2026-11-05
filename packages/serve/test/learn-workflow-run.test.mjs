@@ -76,6 +76,25 @@ test("learned_workflow is never run again after a crash, on any harness, and say
   assert.match(said, /^- answer: Answers a question as a number/m);
 });
 
+test("learned_workflow's description shows each workflow's input as its schema says it, compact: its fields, their types, which are required and a short description", () => {
+  const flow = answerFlow();
+  flow.schemas.In = { type: "object", required: ["question"], properties: { question: { type: "string", description: "The question to answer, in the person's words" }, tickets: { type: "array", items: { type: "string" } } } };
+  const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(flow) }]);
+  assert.match(said, /^- answer: Answers a question as a number.*\n  input: \{question\* string "The question to answer, in the person's words", tickets array of string\} \(\* required\)$/m, said);
+  assert.ok(learning.workflowLine({ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(flow) }).includes("question* string"), "the pin's budget counts the same line");
+});
+
+test("a learned workflow whose output names no path is refused before any node runs: its output is the value at output.path", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const flow = answerFlow();
+  delete flow.output.path;
+  const { runId, rows } = await ran(api, data, "pathless", "pi", flowFiles("answer", flow));
+  const result = learnedResult(rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: its output names no path: a learned workflow's output is the value at output\.path/, JSON.stringify(result));
+  assert.deepEqual(entries(data, runId, ["agentrun.request_started"]).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
+});
+
 for (const harness of ["pi", "claude-agent", "codex"]) {
   test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
