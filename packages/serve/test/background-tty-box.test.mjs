@@ -16,12 +16,12 @@ test("a box with no script refuses tty: true in plain words, and makes nothing; 
   // Every program of /usr/bin and /bin but script.
   const bin = join(dir, "bin");
   const work = join(dir, "work");
-  await Promise.all([bin, work].map((d) => import("node:fs/promises").then((fs) => fs.mkdir(d))));
+  await Promise.all([bin, work, join(dir, "tmp")].map((d) => import("node:fs/promises").then((fs) => fs.mkdir(d))));
   for (const from of ["/usr/bin", "/bin"]) {
     for (const name of readdirSync(from)) if (name !== "script" && !existsSync(join(bin, name))) symlinkSync(join(from, name), join(bin, name));
   }
   const local = new NodeExecutionEnv({ cwd: work });
-  const env = { cwd: work, exec: (command, options, context) => local.exec(command, { ...options, env: { PATH: bin }, inheritEnv: false }, context) };
+  const env = { cwd: work, exec: (command, options, context) => local.exec(command, { ...options, env: { PATH: bin, TMPDIR: join(dir, "tmp") }, inheritEnv: false }, context) };
   const [start, output, , signal] = backgroundTools();
   await assert.rejects(start.execute({ command: "tty", tty: true }, { env }, ctx), /this box has no `script` program \(util-linux\), so tty: true cannot run here: start the command without tty/);
   assert.deepEqual(existsSync(join(work, "background")) ? readdirSync(join(work, "background")) : [], [], "the refused start made nothing");

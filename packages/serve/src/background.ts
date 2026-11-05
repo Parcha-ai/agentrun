@@ -118,12 +118,12 @@ const SCRIPT = [
   // And the terminal's foreground group, as the command's process reads it (its tpgid): an interactive shell's running
   // job is a group of its own, which Ctrl-C reaches and the shell's own group does not.
   `fgs() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($2 == g && $6 > 0) print $6 }'; }`,
-  // Signal $2 to process $1's group; on a tty process, to its terminal's processes instead, as a terminal delivers it:
+  // Signal $2 to process $1's group (its box-only copy, never work/'s); on a tty process (its box-only mark), to its terminal's processes instead, as a terminal delivers it:
   // INT to the foreground group alone (Ctrl-C), TERM and KILL to the command's group and the foreground group (script
   // would turn INT into TERM, and a script signalled itself exits 0): script then exits with the code its command ended
   // with. Before script has its command, script itself. Each group is signalled once (the command's and the foreground
   // group are often one), and a send that finds its group already gone is no failure: only a missing group is.
-  'hit() { g=$(cat "$d/$1/pid" 2>/dev/null); [ -n "$g" ] || return 1; k=; f=; if [ -f "$d/$1/tty" ]; then k=$(kids "$g"); f=$(fgs "$g"); fi; if [ -z "$k" ]; then kill -"$2" -"$g" 2>/dev/null; return 0; fi; if [ "$2" = INT ] && [ -n "$f" ]; then t=$f; else t="$k $f"; fi; for p in $(printf \'%s\\n\' $t | sort -u); do kill -"$2" -"$p" 2>/dev/null; done; return 0; }',
+  'hit() { g=$(cat "$c/$1/pgid" 2>/dev/null); [ -n "$g" ] || return 1; k=; f=; if [ -f "$c/$1/tty" ]; then k=$(kids "$g"); f=$(fgs "$g"); fi; if [ -z "$k" ]; then kill -"$2" -"$g" 2>/dev/null; return 0; fi; if [ "$2" = INT ] && [ -n "$f" ]; then t=$f; else t="$k $f"; fi; for p in $(printf \'%s\\n\' $t | sort -u); do kill -"$2" -"$p" 2>/dev/null; done; return 0; }',
   'case $op in',
   'start)',
   '  if [ "$5" = 1 ] && ! command -v script >/dev/null 2>&1; then echo noscript; exit 0; fi',
@@ -135,7 +135,7 @@ const SCRIPT = [
   '  mkdir "$d/$i" && mkdir "$c/$i" || exit 1',
   '  printf \'%s\' "$1" > "$c/$i/command"; date -u +%Y-%m-%dT%H:%M:%SZ > "$c/$i/started"; : > "$d/$i/output.log"',
   '  put "$i" command "$1"; put "$i" started "$(cat "$c/$i/started")" n',
-  '  mkfifo "$c/$i/in" || exit 1; [ "$5" = 1 ] && : > "$d/$i/tty"',
+  '  mkfifo "$c/$i/in" || exit 1; if [ "$5" = 1 ]; then : > "$c/$i/tty"; put "$i" tty ""; fi',
   '  setsid -f nohup sh -c "$4" agentrun-background "$d/$i" "$c/$i" "$3" "$w" "$1" "$5" </dev/null >/dev/null 2>"$c/$i/err" || exit 1',
   '  k=0; while [ ! -s "$c/$i/pgid" ] && [ ! -f "$c/$i/exit" ] && [ $k -lt 200 ]; do sleep 0.05; k=$((k+1)); done',
   '  [ -s "$c/$i/pgid" ] || [ -f "$c/$i/exit" ] || { cat "$c/$i/err" >&2; echo "process $i did not start" >&2; exit 1; }',
@@ -165,7 +165,7 @@ const SCRIPT = [
   // however many ended before.
   '  t=0; o=0; picked=""; for i in $(ids | sort -rn); do t=$((t+1)); if [ -f "$c/$i/exit" ] || [ "$(state "$i")" != running ]; then [ $o -lt "$1" ] || continue; o=$((o+1)); fi; picked="$picked $i"; done',
   '  echo "total $t"',
-  `  for i in $picked; do printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t' "$i" "$(state "$i")" "$(size "$i")" "$(cat "$c/$i/started" 2>/dev/null)" "$([ -f "$c/$i/ended" ] && echo ended)" "$([ -f "$d/$i/tty" ] && echo tty)"; head -c 200 "$c/$i/command" 2>/dev/null | base64 | tr -d '\\n'; echo; done;;`,
+  `  for i in $picked; do printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t' "$i" "$(state "$i")" "$(size "$i")" "$(cat "$c/$i/started" 2>/dev/null)" "$([ -f "$c/$i/ended" ] && echo ended)" "$([ -f "$c/$i/tty" ] && echo tty)"; head -c 200 "$c/$i/command" 2>/dev/null | base64 | tr -d '\\n'; echo; done;;`,
   'end)',
   '  n=0; for i in $(running); do : > "$c/$i/ended"; put "$i" ended ""; hit "$i" TERM; n=$((n+1)); done',
   '  k=0; while [ $k -lt 60 ] && [ -n "$(running)" ]; do sleep 0.05; k=$((k+1)); done',
