@@ -288,6 +288,8 @@ export type Run = {
   /** What every conversation of its store says it used, as the settle that ends it read them. */
   metrics?: RunMetrics;
   relaunches: number;
+  /** Its start's launch is next: the one a deny is told as under ask (relaunchPlane's `first`). */
+  firstLaunch?: true;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
   /** The store has it running and its serve.json holds no input: its server went down before it set the run up (whose
@@ -1721,7 +1723,10 @@ export class Runs {
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
     // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person).
-    const plane = relaunchPlane(run.meta.tool_plane, served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined });
+    // Its first launch, from its start, is told a deny as under ask; a later one is told it denied (relaunchPlane).
+    const first = run.firstLaunch === true;
+    run.firstLaunch = undefined;
+    const plane = relaunchPlane(run.meta.tool_plane, served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined, first });
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
       void this.saveMeta(run).catch(() => undefined);
@@ -2167,6 +2172,7 @@ export class Runs {
       run.preparing = prepared.then(() => undefined, () => undefined);
       if (!(await prepared)) return run;
     }
+    run.firstLaunch = true;
     this.launch(run);
     if (revision.kind === "workflow") return run;
     // The first message names the files given to the run (run-manifest.ts), on every harness.

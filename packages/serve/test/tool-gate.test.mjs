@@ -376,7 +376,8 @@ test("a workflow's call node reads its tool's permission as it runs: set to deny
   const dialled = await network(t);
   const hold = join(await scratch(t), "go");
   withEnv(t, { FAUX_WEB_HOLD: hold });
-  const { api } = await serve(t, GATE);
+  const server = await serve(t, GATE);
+  const { api } = server;
   const Page = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
   const flow = {
     v: 2, name: "read-twice",
@@ -400,7 +401,10 @@ test("a workflow's call node reads its tool's permission as it runs: set to deny
   await follow(api, started.body.run_id, ["failed", "completed"], { deadlineMs: 60_000 });
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(run.status, "failed", "the second call node is refused");
-  assert.match(JSON.stringify(run.error ?? run), new RegExp(quoted(deniedText("web_fetch"))), "in the gate's words");
+  assert.match(run.error?.message ?? "", /failed at Second read/, "at its second call node");
+  const ended = (await readFile(join(server.data, "runs", started.body.run_id, "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.t === "effect.end");
+  assert.deepEqual(ended.map((line) => [line.label, line.status]), [["First read", "done"], ["Second read", "failed"]]);
+  assert.equal(ended[1].error, deniedText("web_fetch"), "in the gate's words");
   assert.deepEqual((await dialled()).filter((dial) => dial.endsWith("notes.txt")), [], "and never dials");
 });
 

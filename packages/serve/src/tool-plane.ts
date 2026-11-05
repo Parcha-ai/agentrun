@@ -271,12 +271,13 @@ export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh
 export const keptFromBefore = (plane: Plane, env: NodeJS.ProcessEnv): Plane =>
   plane.browser === undefined ? plane : { ...plane, browser: browserKeysOf(env).browserbase ? "browserbase" : noBrowserKey("browserbase") };
 
-/** The Plane a run's process is handed at a launch after its first, under the server's `settings` now: its kept Plane
- *  checked again (recheckPlane) against the one it would get today; a run made before its plane was kept gets today's,
- *  its browser kept (keptFromBefore). A capability set to deny now is handed denied (planeFor without `run`), the
- *  gate's refusal kept by the tool's own: a deny lifted after that reaches the run at its next launch. */
-export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
-  const fresh = tooling ? planeFor(env, tooling, settings, { capped }) : {};
+/** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane checked again
+ *  (recheckPlane) against the one it would get today; a run made before its plane was kept gets today's, its browser
+ *  kept (keptFromBefore). At a launch after its first (a relaunch, a follow-up's, one after a restart) a capability set
+ *  to deny is handed denied (planeFor without `run`), the tool's own refusal backing the gate's; at its `first`, as
+ *  under ask, so a deny lifted while that process lives is lifted at the next call. */
+export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
+  const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
   if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}) });
   return tooling ? keptFromBefore(fresh, env) : {};
 }

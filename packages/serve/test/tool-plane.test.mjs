@@ -361,4 +361,5 @@ test("a run relaunched while a capability is set to deny is handed it denied; la
   assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied).web_fetch, "unavailable: denied", "relaunched while denied: denied");
   assert.equal(relaunchPlane(undefined, {}, tooling, denied).web_fetch, "unavailable: denied", "a run made before its plane was kept: denied too");
   assert.equal(relaunchPlane({ web_fetch: "unavailable: denied" }, {}, tooling, {}).web_fetch, "kernel", "a deny lifted since is lifted");
+  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied, { first: true }).web_fetch, "kernel", "its first launch, from its start: as under ask, the gate refusing each call");
 });
