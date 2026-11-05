@@ -59,9 +59,12 @@ test("the console's MCP requests, replayed on a real server, are taken and answe
   assert.equal(answers["preview, a server behind OAuth"].status, 422, said("preview, a server behind OAuth"));
   assert.equal(answers["preview, a server behind OAuth"].body.error.details.auth, "oauth");
   assert.equal(answers["sign in"].status, 200, said("sign in"));
-  // The browser opens the page, the fake approves, and its redirect brings the browser to the console's page.
+  // The browser opens the page, the fake approves, and its redirect brings the browser, with the cookie the start set
+  // (as the console's same-origin request keeps it), back to the console's page.
   const asked = await fetch(answers["sign in"].body.authorization_url, { redirect: "manual" });
-  const back = await fetch(asked.headers.get("location"), { redirect: "manual" });
+  const cookie = answers["sign in"].headers.get("set-cookie")?.split(";")[0];
+  assert.ok(cookie, "the start sets the sign-in's cookie");
+  const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie } });
   assert.equal(back.status, 302);
   assert.equal(back.headers.get("location"), recorded.sign_in_return);
 

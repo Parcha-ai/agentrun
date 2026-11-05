@@ -155,6 +155,7 @@ describe("Settings → MCP servers, adding one", () => {
       [refusal(422, "input_invalid", "invalid", { fields: [{ field: "url", reason: "redirect", message: "The MCP server answered 302, pointing to https://example.com/mcp." }] }), "This address redirects; use the final address"],
       [refusal(424, "upstream_failed", "The MCP server could not be reached: connection refused.", { retryable: true }), "The server failed: The MCP server could not be reached: connection refused."],
       [refusal(409, "no_sealing_key", "This server was handed no seal key."), "no seal key"],
+      [refusal(409, "wrong_origin", "This server's sign-in comes back to http://127.0.0.1:7340.", { details: { open: "http://127.0.0.1:7340/#/settings/mcp" } }), "Open http://127.0.0.1:7340/#/settings/mcp and sign in from it."],
     ];
     for (const [answer, words] of cases) {
       const s = server([[]], (c) => (c.path.endsWith("/preview") ? answer.clone() : undefined));
