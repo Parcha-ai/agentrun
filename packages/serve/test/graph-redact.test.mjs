@@ -92,12 +92,12 @@ const judged = {
 
 /** A judged run that ended: its map's one item is 190 characters, then the held key (cut at 200 for its label), and its
  *  judge saw the key in its state. */
-async function judgedRun(t) {
+async function judgedRun(t, item = CUT_KEY) {
   const calls = join(await scratch(t), "decisions.jsonl");
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls }, [...NAMES, "PARALLEL_API_KEY"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "PARALLEL_API_KEY"]);
   const { api, data } = await serve(t, { fauxJev: FAUX_DECISIONS });
   assert.equal((await api("POST", "/agents", flowAgent("graph-judged", judged, { tools: ["llm"] }))).status, 201);
-  const started = await api("POST", "/agents/graph-judged/runs", { input: { question: `Is ${CUT_KEY} a question?`, items: [`${"x".repeat(190)}${CUT_KEY}`] } });
+  const started = await api("POST", "/agents/graph-judged/runs", { input: { question: `Is ${CUT_KEY} a question?`, items: [`${"x".repeat(190)}${item}`] } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 50_000 });
   return { api, data, runId: started.body.run_id };
@@ -167,4 +167,20 @@ test("a call's error and a decision's state, each long enough to be cut, with th
   assert.equal(graph.decisions[0]?.state_truncated, true, JSON.stringify(graph.decisions.map((d) => [d.state_truncated, typeof d.state])));
   assert.ok(graph.effects.some((e) => e.status === "failed" && e.error), JSON.stringify(graph.effects.map((e) => [e.status, e.error?.length])));
   noKey(JSON.stringify(graph), "the graph");
+});
+
+test("a key saved after the graph was kept: a busy read from the kept view shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
+  // Not held when the run ran, nor when the graph was first read and kept; 8 characters of it share none with CUT_KEY.
+  const saved = ["later", "saved", "zyxwvutsrq"].join("-");
+  const { api, data, runId } = await judgedRun(t, saved);
+  const first = (await api("GET", `/runs/${runId}/graph`)).body;
+  assert.equal(first.stale, false);
+  assert.ok(JSON.stringify(first.nodes).includes(saved.slice(0, 10)), "not held yet: the label shows it, cut at 200");
+  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: saved } })).status, 204);
+  const release = hold(t, data, runId);
+  const graph = (await api("GET", `/runs/${runId}/graph`)).body;
+  release();
+  assert.equal(graph.stale, true);
+  const shown = JSON.stringify(graph);
+  for (let i = 0; i + 8 <= saved.length; i++) assert.ok(!shown.includes(saved.slice(i, i + 8)), `the kept view holds ${saved.slice(i, i + 8)}: ${JSON.stringify(graph.nodes)}`);
 });
