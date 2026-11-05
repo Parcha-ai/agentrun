@@ -128,8 +128,11 @@ export type ServeOptions = {
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
-   *  backend), in place of Browserbase's. */
+   *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
+  /** With `faux` only: a module whose default export is the fetch the check of a Kernel key goes through (the tests'
+   *  fake), in place of Kernel's API. */
+  fauxKernel?: string;
   /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
    *  network), in place of the system's resolver and undici. */
   fauxWeb?: string;
@@ -615,7 +618,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
-  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase };
+  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase, kernel: options.fauxKernel };
   const checkFetch = async (id: string): Promise<typeof fetch | undefined> => {
     if (!options.faux) return fetch;
     const fake = fakes[id];
@@ -765,9 +768,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
   // Under faux, a key the server starts with is checked only against a check's own fake (fauxBrowserbase,
-  // fauxMonidCheck): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
+  // fauxMonidCheck, fauxKernel): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
   // is not checked.
-  const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck };
+  const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck, kernel: options.fauxKernel };
   const startFetch = async (id: string): Promise<typeof fetch | null> => {
     if (!options.faux) return fetch;
     const fake = checkFakes[id];

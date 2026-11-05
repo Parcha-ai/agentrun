@@ -22,12 +22,13 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
-/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
- *  Browserbase's (the tests' fake backend). */
+/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
+ *  environment and the vendor its plane names (`browserbase`, `kernel`), in place of that vendor's (the tests' fake
+ *  backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
@@ -162,30 +163,47 @@ export const evidenceIn = (work: string) => {
   };
 };
 
-/** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
- *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go.
+/** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
+ *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
+ *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
+ *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
+ *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
  *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). */
 const browserTool: ToolEntry = {
-  summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
-  needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+  summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
+  // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
+  needs: [],
   nodes: true,
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
     ]);
+    const vendor = planeOf(host.env).browser ?? "browserbase";
+    const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
-      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv) => { provider: unknown; driver: unknown } }).default(host.env)
-      : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
+      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string) => { provider: unknown; driver: unknown } }).default(host.env, vendor)
+      : {
+          provider: refused ? undefined : vendor === "kernel" ? (await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }) : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }),
+          driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
+        };
+    const provider = () => {
+      if (refused) throw refused;
+      return parts.provider as never;
+    };
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
-    const provider = (parts.provider as { name: string }).name;
-    const price = browserPrice(provider, host.env);
-    const spend = browserSpend(provider, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
-    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
+    const price = browserPrice(providerName, host.env);
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
+    // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
+    // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
+    const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
+    const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
@@ -195,12 +213,15 @@ const browserTool: ToolEntry = {
     host.beforeResume(async (harness) => {
       // Its charges move what the process counts once each is committed, reconcile's own among them.
       spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
+      // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
+      if (refused) return;
       // Every session custody still tracks across a restart is held from here; one kept is released an idle window on
       // unless a call uses it.
       await browser.reconcile(harness as never, () => true, context);
       await spend.reopened(harness, browser.docs, context);
     });
     host.beforeRelease(async (harness) => {
+      if (refused) return;
       const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
       for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
         const conversation = await harness.conversation(id as never, context);
@@ -329,7 +350,10 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const boxless = entry.sandboxOnly ? noBox : undefined;
-    const refusal = entry.needs.map((name) => (Object.hasOwn(refused, name) ? refused[name] : undefined)).find((why) => why !== undefined);
+    // The browser needs the keys of the vendor it resolves to: one refused at the start leaves it unavailable, never on the
+    // other vendor, as a refused Parallel key never moves web_search elsewhere.
+    const needs = name === "browser" ? [...new Set(Object.values(plane ?? {}).flatMap(browserNeeds))] : entry.needs;
+    const refusal = needs.map((name) => (Object.hasOwn(refused, name) ? refused[name] : undefined)).find((why) => why !== undefined);
     const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined && refusal === undefined;
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
