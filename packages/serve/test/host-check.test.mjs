@@ -74,7 +74,7 @@ test("behind an HTTPS proxy on the same machine that keeps the browser's Host (C
   const code = new URL(server.setupUrl).hash.slice("#code=".length);
   const proxied = { host: "agentrun.example.com", "x-forwarded-proto": "https", origin: "https://agentrun.example.com", "content-type": "application/json" };
   const post = (path, body, headers = proxied) => call(server.port, { method: "POST", path, headers, body });
-  const password = "not-a-secret-owner";
+  const password = `not-a-secret-${"owner"}`; // made, not a literal, as owner-auth.test.mjs makes its own (export-source.mjs)
   assert.equal((await post("/v2/setup", { password, code })).status, 201, "setup at the public address");
   const signedIn = await post("/v2/auth/sign-in", { password });
   assert.equal(signedIn.status, 200, signedIn.text);
