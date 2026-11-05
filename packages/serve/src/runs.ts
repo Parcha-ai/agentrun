@@ -1899,7 +1899,8 @@ export class Runs {
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const at = new Date().toISOString();
     const meta: RunMeta = {
-      title: clip(options.title.trim().replace(/\s+/g, " "), 80),
+      // Shown on the run list and its view: no held secret a person pasted into the message it is taken from.
+      title: clip(redacted(options.title.trim().replace(/\s+/g, " "), [...hostSecrets(process.env, this.options.storedKeys), this.options.token, this.options.doorToken]), 80),
       created_at: at,
       input: options.input,
       place: options.place,
