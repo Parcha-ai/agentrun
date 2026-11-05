@@ -8,6 +8,7 @@ import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStor
 import { ApiError, invalid } from "./errors.js";
 import { DEFAULT_HARNESS, harnessOfBody } from "./harness.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
+import type { SignInView } from "./sign-ins.js";
 
 /** One agent as the routes show it: its row, its current revision and that revision's number (the oldest is 1). */
 export type AgentEntry = { agent: Agent; revision: Revision | null; version: number; revisions: number; runs: { count: number; live: number }; sizes: Map<string, number> };
@@ -282,8 +283,8 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
 
-/** `Agent` as the contract shows it, with its current revision. */
-export function agentView(entry: AgentEntry) {
+/** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref). */
+export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = []) {
   const { agent, revision } = entry;
   return {
     agent_id: agent.id,
@@ -293,7 +294,7 @@ export function agentView(entry: AgentEntry) {
     revisions: entry.revisions,
     source: null,
     skills: Object.entries(revision?.body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
-    sign_ins: [],
+    sign_ins: signIns,
     runs: entry.runs,
     region: "local",
     home_etag: etagOf(entry),
