@@ -17,20 +17,23 @@ let calc: { agent_id: string; kind: string; revision: string; revisions: number;
 let asked: string[];
 let answer: boolean;
 let confirms: string[];
+// The server's tools and places (capabilities): none by default; a test of a new agent's defaults serves some.
+let capsTools: unknown[];
+let capsPlaces: unknown;
 // A Create the test holds open: POST /v2/agents answers only once `release` is called.
 let hold: Promise<void> | null;
 let release: () => void;
 
 beforeEach(() => {
   calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition } };
-  asked = []; confirms = []; answer = false; hold = null;
+  asked = []; confirms = []; answer = false; hold = null; capsTools = []; capsPlaces = undefined;
   vi.stubGlobal("confirm", (message: string) => { confirms.push(message); return answer; });
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
     const method = init?.method ?? "GET";
     asked.push(`${method} ${path}`);
     if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
-    if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], tools: [], thinking: ["low"], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+    if (path === "/v2/capabilities") return json(200, { harnesses: [{ id: "pi", available: true }], tools: capsTools, thinking: ["low"], ...(capsPlaces ? { places: capsPlaces } : {}), features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (path === "/v2/agents" && method === "POST") {
       const body = JSON.parse(String(init!.body)) as { definition: typeof definition };
       if (hold) await hold;
@@ -274,5 +277,24 @@ describe("App, a Create that lands after its editor is gone", () => {
     expect(confirms.length).toBe(before + 1);
     await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
     expect(page.instructions()?.value).toBe("Answer, then check the sum.");
+  });
+});
+
+// A new agent's form fills in the server's defaults (its tools, and the place a new agent gets, a box when the server
+// serves one) as the capabilities arrive: they are no edit, so leaving an untouched new agent asks nothing.
+describe("App, an untouched new agent", () => {
+  it("leaves without asking, its defaults filled in", async () => {
+    capsTools = [{ name: "read", available: true }, { name: "write", available: true }, { name: "bash", available: true, sandbox_only: true }];
+    capsPlaces = { modes: ["runner", "sandbox"], default: "runner", boxes: [{ id: "docker", available: true }], default_place: { mode: "sandbox", box: "docker" } };
+    const page = await open("#/agents/new");
+    await page.wait(() => !!page.instructions(), "the new agent's editor");
+    await page.settle();
+    // The editor's own Settings step (the rail inside the page; the sidebar has a Settings of its own).
+    await page.click([...page.host.querySelectorAll("main ol button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    await page.wait(() => !!page.host.querySelector<HTMLInputElement>('input[name="place"][value="sandbox"]')?.checked, "the served default place is filled in");
+    expect(page.unloadAsks()).toBe(false);
+    await page.click(page.sidebar("Agents"));
+    await page.wait(() => location.hash === "#/agents", "on the agents list");
+    expect(confirms).toEqual([]);
   });
 });
