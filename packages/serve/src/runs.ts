@@ -2990,6 +2990,10 @@ export class Runs {
   /** A workflow run's graph as it stands (graph-view.ts), live while it runs. */
   async graph(run: Run) {
     if (run.kind !== "workflow") throw new ApiError("not_found", `the run ${run.id} is an agentic run; only a workflow run has a graph`);
+    // Its nodes, decisions and calls are read from its store and are what the run said: while this server can't read the
+    // browser sign-in it was handed (meta.unshown), the pointer they may repeat is not among the values cut, so none of it
+    // is served. Withheld in the same words as its answer, for a run still going too (it is stopped and ends failed).
+    if (run.meta.unshown) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
     // A revision never changes: read once, waiting out a busy store as a run's end does, never failing a poll on it.
     let workflow = this.workflows.get(run.revision);
     if (workflow === undefined) {

@@ -14,6 +14,7 @@ import { homeOf, writeDurable } from "../dist/files.js";
 import { BROWSERBASE_SETTLE_MS, GONE_LEASE_MS, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
+import { WITHHELD_SIGN_IN } from "../dist/runs.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
 import { agent, client, FAUX, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
@@ -679,6 +680,59 @@ test("a run that ended repeating its browser sign-in's pointer serves none of wh
   const again = JSON.stringify((await third.api("GET", `/runs/${runId}`)).body);
   assert.ok(again.includes("I kept [redacted] for you.") && !again.includes(ref), again);
   assert.ok(!JSON.stringify((await third.api("GET", `/runs/${runId}/timeline`)).body).includes(ref));
+});
+
+test("a workflow run of an agent with a browser sign-in serves no graph while the next server cannot read the sign-in: what its nodes said could repeat the pointer; the right key back, it is served again, cut", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  const sealKey = randomBytes(32).toString("base64");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: sealKey, FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE, allowCodeNodes: true });
+  assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  // Its agentic run makes the agent's sign-in: the pointer, as the run's browser was handed it.
+  const browsed = (await first.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id;
+  await follow(first.api, browsed, ["completed"], { deadlineMs: 60_000 });
+  const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  // The same agent made a workflow that repeats what it is given into a call: the pointer, in its graph's effects.
+  const flow = {
+    v: 2, name: "echo",
+    schemas: {
+      In: { type: "object", required: ["text"], properties: { text: { type: "string" } } },
+      Llm: { type: "object", required: ["text"], properties: { text: { type: "string" } } },
+      Out: { type: "object", required: ["said"], properties: { said: { type: "string" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Out", path: "result" },
+    root: { node: "chain", steps: [
+      { node: "code", label: "echo", code: "(s) => ({ echo: { prompt: 'I kept ' + s.text + ' for you.' } })" },
+      { node: "call", label: "say", via: "tool", tool: "llm", args: { prompt: "{echo.prompt}" }, out: "Llm", as: "said", deadline_s: 120 },
+      { node: "code", label: "result", code: "(s) => ({ result: { said: s.said.text } })" },
+    ] },
+  };
+  const edited = await first.api("PUT", "/agents/alpha/definition", { definition: { id: "alpha", name: "alpha", workflow: flow, tools: ["llm"] } });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { text: ref } })).body.run_id;
+  await follow(first.api, runId, ["completed"], { deadlineMs: 60_000 });
+  const held = JSON.stringify((await first.api("GET", `/runs/${runId}/graph`)).body);
+  assert.ok(held.includes(`I kept ${ref}`), held);
+  await first.close();
+  // A run saved with a browser plane, as one from before servers kept sign_in_handed: load counts it as handed the sign-in.
+  const metaFile = join(first.data, "runs", runId, "serve.json");
+  await writeFile(metaFile, `${JSON.stringify({ ...JSON.parse(await readFile(metaFile, "utf8")), tool_plane: { browser: "browserbase" } })}\n`);
+  // The next server holds another seal key: the sign-in no longer opens, so nothing the run said can be cut.
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const second = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE, allowCodeNodes: true });
+  assert.deepEqual((await second.api("GET", "/agents/alpha")).body.sign_ins.map((s) => s.state), ["unreadable"]);
+  const graph = await second.api("GET", `/runs/${runId}/graph`);
+  assert.deepEqual([graph.status, graph.body.error?.code, graph.body.error?.message], [403, "forbidden", WITHHELD_SIGN_IN], JSON.stringify(graph.body));
+  assert.ok(!JSON.stringify(graph.body).includes(ref));
+  await second.close();
+  // The right seal key back: its graph is served again, cut of the pointer, which opens now.
+  process.env.AGENTRUN_SEAL_KEY = sealKey;
+  const third = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE, allowCodeNodes: true });
+  const again = await third.api("GET", `/runs/${runId}/graph`);
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.ok(JSON.stringify(again.body).includes("I kept [redacted] for you.") && !JSON.stringify(again.body).includes(ref), JSON.stringify(again.body.nodes));
 });
 
 test("a run still going whose browser sign-in the next server cannot read (its seal key changed) is never taken up: it is stopped and ends failed, saying why, and nothing it says is served", { timeout: 180_000 }, async (t) => {

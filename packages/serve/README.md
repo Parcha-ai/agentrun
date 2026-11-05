@@ -916,8 +916,8 @@ picks which one a run gets, never the model.
   read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): …"), and its rows are
   not read, since what it says could repeat the pointer, which the server could not cut. Once the sign-in opens again
   (the right seal key back), its rows are read and shown, cut of it. A run that had already ended keeps how it ended,
-  but while the sign-in does not open none of what it said is served (rows, answer, output, error words), and it can't
-  be continued; this holds for any ended run with a browser, so one from before servers kept the mark is withheld too.
+  but while the sign-in does not open none of what it said is served (rows, answer, output, error words, a workflow
+  run's graph, which answers 403 `forbidden`), and it can't be continued; this holds for any ended run with a browser, so one from before servers kept the mark is withheld too.
   It is shown again, cut, once the sign-in opens. A run that was never handed the sign-in (one
   launched signed out since the key changed) is taken up as any other. That a run was handed it is kept in its
   `serve.json`; a launch that can't save that hands it none, and the run browses signed out. A one-time limit of the
