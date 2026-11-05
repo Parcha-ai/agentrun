@@ -75,6 +75,8 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
+/** Why a run going when its server started was stopped: its browser sign-in does not open under this server's seal key. */
+export const UNREADABLE_SIGN_IN = "This server's seal key changed, so the run's browser sign-in can't be read: the run was stopped, so nothing it says can show it.";
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
 /** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
@@ -152,6 +154,9 @@ type RunMeta = {
   launch_thinking?: { effort?: string; host?: string };
   /** Its tools' providers, resolved at its first launch and kept for its life (tool-plane.ts). */
   tool_plane?: Plane;
+  /** Set when a server found the run going with a browser sign-in it could not read (its seal key changed): the run was
+   *  stopped, and its store is never read for rows, which could repeat the pointer uncut. */
+  unshown?: true;
   /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
    *  which ran on the runner. */
   place?: Place;
@@ -786,6 +791,7 @@ export class Runs {
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(isObject(stored?.tool_plane) ? { tool_plane: stored.tool_plane as Plane } : {}),
+      ...(stored?.unshown === true ? { unshown: true as const } : {}),
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
@@ -798,7 +804,7 @@ export class Runs {
     const run = this.blank(row, dir, meta, known?.version ?? 0, harnessOfBody(known?.revision.body ?? {}), known ? await toolingOf(known.revision) : undefined, known?.revision);
     // Its browser's sign-in pointer, read back before anything of the run is read or held here: its rows, answers and
     // errors are cut of it from the first, though no launch of this server handed it one.
-    await this.peekSignIn(run);
+    const signIn = await this.peekSignIn(run);
     this.runs.set(row.id, run);
     run.launching = existsSync(join(dir, RUN_LAUNCHING));
     run.notSetUp = row.state === "running" && !isObject(stored?.input);
@@ -806,7 +812,7 @@ export class Runs {
     // An ended run is ended before its rows are read, so they never make it a wait: a last row that asks is no notice.
     if (row.state !== "running") run.outcome = STATUS_OF[row.state];
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
-    if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
+    if ((row.state !== "running" || !this.doorOf(record)) && !run.meta.unshown) await this.storeWhenFree(run);
     if (row.state !== "running") {
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
@@ -824,7 +830,18 @@ export class Runs {
         run.finishing = "cancelled";
       }
       const adopted = record && this.doorOf(record) ? record : null;
-      if (adopted) {
+      if (adopted && signIn === "unreadable") {
+        // Its process may repeat a pointer this server cannot read, so cannot cut: it is never followed, its store never
+        // read for rows; it is stopped (SIGTERM, as a cancel's), and the run ends failed, saying why, once it has gone.
+        run.error = { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
+        run.meta.unshown = true;
+        await this.saveMeta(run);
+        this.adoptProcess(run, adopted, false);
+        // Its turn aborted first, so the drain SIGTERM starts does not wait for it; one that outlives its drain is killed.
+        this.finish(run, "failed", true);
+        const pid = run.orphan;
+        if (pid) setTimeout(() => void (alive(pid) && process.kill(pid, "SIGKILL")), this.killAfterMs() + 5_000).unref();
+      } else if (adopted) {
         // A server that died between saving a stop and its abort reaching the run leaves the turn working.
         run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
         this.adoptProcess(run, adopted);
@@ -1123,12 +1140,13 @@ export class Runs {
 
   /** Supervise a run process an earlier server started: follow its door, and settle the run once its run.json says it
    *  let go (released, or its lease lapsed) or the process is gone. */
-  private adoptProcess(run: Run, record: Json): void {
+  /** `follow`: its rows are followed live from its door (never for a run whose rows are not shown, meta.unshown). */
+  private adoptProcess(run: Run, record: Json, follow = true): void {
     const pid = holderPid(record);
     if (!pid) return;
     run.orphan = pid;
     this.reportedBack(run);
-    this.connect(run);
+    if (follow) this.connect(run);
     let releasedAt: number | undefined;
     let unreadable = 0;
     const timer = setInterval(() => {
@@ -1592,11 +1610,14 @@ export class Runs {
   }
 
   /** The pointer of the sign-in a run this server loads was handed, among the values its rows, errors and answers never
-   *  show: read only, with no lease taken (pinSignIn takes one at its next launch). */
-  private async peekSignIn(run: Run): Promise<void> {
+   *  show: read only, with no lease taken (pinSignIn takes one at its next launch). `unreadable` when its agent keeps
+   *  one that does not open under this server's seal key. */
+  private async peekSignIn(run: Run): Promise<"unreadable" | undefined> {
     const browser = run.meta.tool_plane?.browser;
-    const ref = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => undefined) : undefined;
-    if (ref && ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(ref);
+    const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => undefined) : undefined;
+    if (peeked === "unreadable") return peeked;
+    if (peeked && peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
+    return undefined;
   }
 
   /** Lets go of the save lease the run holds on its agent's sign-in, if any: at once when its process let its sessions go
@@ -1798,7 +1819,7 @@ export class Runs {
     if (gone) await this.options.signIns?.markGone(run.agentId, run.id).catch((error: Error) => warn(run.id, `its sign-in's lease is not marked: ${error.message}`));
     // Its metrics are this settle's read, or none: never an earlier end's.
     run.metrics = undefined;
-    if (released || gone) await this.storeWhenFree(run, true);
+    if ((released || gone) && !run.meta.unshown) await this.storeWhenFree(run, true);
     // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
     // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
     // go: a settle with the process not gone means another live holder of the run, whose box is its own. That holder is
@@ -1889,7 +1910,8 @@ export class Runs {
     await this.dropBox(run, true);
     // Its end-of-run turn closed, and what the turn wrote set aside before the run reads ended (learning-run.ts).
     await this.learning.beforeSettle(run, outcome);
-    const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
+    // A run whose rows are not read (meta.unshown) has an unknown cost, never $0.
+    const cost = run.meta.unshown ? null : run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     // An unknown cost keeps what it cost so far beside it, for the list row read from the store.
     const soFar = cost === null && !run.imported ? soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) : undefined;
     if (soFar) run.meta.cost_so_far = soFar;

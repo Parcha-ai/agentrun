@@ -144,12 +144,16 @@ export class SignIns {
   }
 
   /** The pointer of `agentId`'s sign-in for `resolution`, read only: no lease taken, nothing made or written. For a run
-   *  this server takes up already going (adopted after a restart), whose errors and answers must never show it. */
-  async peek(agentId: string, resolution: string): Promise<string | undefined> {
+   *  this server loads (after a restart), whose rows, errors and answers must never show it: `{ ref }`; `unreadable`
+   *  when the agent keeps one that does not open under this server's seal key (none now, or another), told apart from
+   *  none at all (undefined). */
+  async peek(agentId: string, resolution: string): Promise<{ ref: string } | "unreadable" | undefined> {
     const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
     if (!vendor) return undefined;
     const entry = (await this.read(agentId).catch(() => [])).find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
-    return entry && this.open(agentId, entry);
+    if (!entry) return undefined;
+    const ref = this.open(agentId, entry);
+    return ref === undefined ? "unreadable" : { ref };
   }
 
   /** The sign-in run `runId` of `agentId` starts from on `resolution` (its plane's browser): made at the vendor when the
