@@ -253,3 +253,28 @@ test("an answer with no readable cost books its hold in this process and in a la
     assert.equal(spentIn(storeOf(t, stored)), 0.001, `${call}: a later process reads the hold too: ${JSON.stringify(marks.map((m) => [m.kind, m.data]))}`);
   }
 });
+
+test("a request the run stops while pi-ai waits to retry a lost attempt books its hold in this process and in a later one: its lost mark is written the moment the attempt is lost, not before a retry that never starts", async (t) => {
+  // Held at $0.01 under a $0.015 cap; its stop figure, with nothing streamed, is about $0.001.
+  const big = { ...MODEL, id: "claude-big", maxTokens: 10_000 };
+  const marks = [];
+  const run = await capped(marks, undefined, undefined, 0.015);
+  const stop = new AbortController();
+  let fetches = 0;
+  // A reset once the request left; the run stops it 100 ms later, inside pi-ai's wait before its retry (about 0.4 s).
+  const resetThenStop = async () => {
+    fetches += 1;
+    setTimeout(() => stop.abort(), 100);
+    throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }) });
+  };
+  const first = await run.streamSimple(big, context, { ...options(scripted([resetThenStop, STEPS.ok])), signal: stop.signal }).result();
+  await settle();
+  const upTo = marks.length;
+  assert.deepEqual([first.stopReason, fetches], ["aborted", 1], "stopped before its retry was sent");
+  await run.streamSimple(big, context, options(scripted([STEPS.ok]))).result();
+  // The next request is limited to what is left of the cap: $0.005 once the first is booked at its $0.01 hold.
+  const next = marks.slice(upTo).find((m) => m.kind === REQUEST_STARTED)?.data?.clamp;
+  assert.equal(next?.leftUsd, 0.005, `booked at its $0.01 hold in this process: ${JSON.stringify(next)}`);
+  // The store as the first request left it, before the next began: the hold its lost mark keeps.
+  assert.equal(Math.round(spentIn(storeOf(t, [...marks.slice(0, upTo), { kind: "pi.assistant", model: [first] }])) * 1e9) / 1e9, 0.01, `a later process reads the hold too: ${JSON.stringify(marks.slice(0, upTo).map((m) => [m.kind, m.data]))}`);
+});
