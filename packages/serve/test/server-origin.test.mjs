@@ -109,6 +109,21 @@ test("the door refuses an origin that is not the server's, and writes nothing fo
   assert.ok(!userTexts(data, runId).includes(RAISED), "nothing written for a refused origin");
 });
 
+// An input that may not answer (answers false: a trigger's message) is refused while the run works, after the door
+// would have queued its origin's marker: a marker with no input after it would name the next message as the server's.
+test("the door refuses an origin on an input that may not answer: 400, and no marker written, though the run works", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("origin-guarded", { tools: [] }))).status, 201);
+  const runId = (await api("POST", "/agents/origin-guarded/runs", { input: { content: `Hold the answer until ${go}.` } })).body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  const sent = await toDoor(data, runId, { requestId: "guarded-1", content: RAISED, answers: false, asks: ["ask_person"], origin: { kind: "server", reason: "cap_raised" } });
+  await writeFile(go, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  assert.deepEqual(storeEntries(data, runId).filter((e) => e.kind === disk.MESSAGE_ORIGIN_KIND), [], `no marker left with no message after it (the door answered ${JSON.stringify(sent)})`);
+  assert.deepEqual([sent.status, sent.body?.error], [400, "BAD_REQUEST"], JSON.stringify(sent));
+});
+
 test("the door's marker kind is the Timeline's: one name for the entry that names a server message's origin", () => {
   assert.equal(typeof disk.MESSAGE_ORIGIN_KIND, "string", "the door names its marker kind");
   assert.equal(disk.MESSAGE_ORIGIN_KIND, timeline.MESSAGE_ORIGIN);

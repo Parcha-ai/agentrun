@@ -20,6 +20,7 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { approvalRefusal } from "@/lib/approval";
 import { trackHistory } from "@/lib/back";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
@@ -28,7 +29,7 @@ import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody }
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
-import { toolChoices } from "@/lib/toolSettings";
+import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { Run, RunStatus } from "@/lib/v2";
 
 /** How often the console reads the capabilities again while no model is ready (NoModelBanner, ModelKeyCard). */
@@ -36,7 +37,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
+type Where = { section: Section; run?: string; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -45,6 +46,9 @@ export function route(h: string = location.hash): Where {
   // An agent's notes, pointed at from a run: its Learning tab with each `note` to show.
   m = h.match(/^#\/agents\/([^/?]+)\/learning\?(.*)$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), tab: "learning", notes: new URLSearchParams(m[2]).getAll("note") };
+  // An agent's Tools, on one tool's permission (a start refused for it links here).
+  m = h.match(/^#\/agents\/([^/?]+)\/edit\?(.*)$/);
+  if (m) { const tool = new URLSearchParams(m[2]).get("tool"); return { section: "agents", agent: decodeURIComponent(m[1]), edit: true, ...(tool ? { tool } : {}) }; }
   m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
@@ -268,8 +272,11 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
-  // The settings pages this server has: tool keys (their routes), and tools (a capability with a choice of provider).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length ? ["tools" as const] : []), ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
+  // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings. None from an older server.
+  const gates = toolGates(c?.tools);
+  // The settings pages this server has: tool keys (their routes), and tools (a capability with a choice of provider, or a
+  // permission to set).
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
@@ -372,6 +379,14 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const stop = async (runId: string) => {
     try { await v2.stop(runId); later(); return null; } catch (e) { return problemOf(e); }
   };
+  // An approval's answer is in the run's state at once (the server keeps it before its 204): the strip reads again now,
+  // after a refusal too, which may mean the run moved on.
+  const approve = async (runId: string, approvalId: string, decision: "allow" | "deny", note?: string) => {
+    let refused: string | null = null;
+    try { await v2.answerApproval(runId, approvalId, decision, note); } catch (e) { refused = approvalRefusal(e); }
+    setNeedsTry((n) => n + 1);
+    return refused;
+  };
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -421,7 +436,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} onSaved={readCaps} onOpen={readCaps} />
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
               : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} />}
           </Settings>
@@ -433,7 +448,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null}
-                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
+                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>
@@ -445,7 +460,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} defaultModel={editorCaps.defaultModel} modelSource={c?.models?.source} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
-          : <AgentEditPage key={where.agent ?? "new"} v2={v2} choices={choices} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps) }} agentId={where.agent} go={go} />
+          : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, modelSource: c?.models?.source, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps) }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
