@@ -20,10 +20,14 @@ export function priceLine(price: PendingApproval["price"]): string | null {
   return typeof price === "number" ? `Costs ${dollars(price)} per call` : null;
 }
 
-/** A call's arguments as the card shows them: laid out when the preview is whole JSON, else as the server sent it (a
- *  preview cut at 2 KiB ends in "…" and is shown so). */
+/** A call's arguments as the card shows them: when the preview is a whole JSON object, one "key: value" line per
+ *  top-level key (a string as it is, unquoted; any other value as JSON); else as the server sent it (a preview cut at
+ *  2 KiB ends in "…" and is shown so). The server's redaction is kept: this only lays out what it sent. */
 export function argsShown(preview: string): string {
-  try { return JSON.stringify(JSON.parse(preview), null, 2); } catch { return preview; }
+  let value: unknown;
+  try { value = JSON.parse(preview); } catch { return preview; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return JSON.stringify(value, null, 2);
+  return Object.entries(value as Record<string, unknown>).map(([key, v]) => `${key}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join("\n");
 }
 
 const ALREADY: Record<string, string> = {
