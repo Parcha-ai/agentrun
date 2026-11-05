@@ -175,3 +175,16 @@ describe("NeedsYouStrip, keeping track of what started and what is asked", () =>
     expect(html({ asking: [], failed: [], live: [], problem: "The runs could not be read: Failed to fetch" })).toContain("could not be read");
   });
 });
+
+describe("NeedsYouStrip, a run paused at its spend cap", () => {
+  const SAID = "Not sent: the run has spent $0.45 of its $0.50 cap, and its next Claude Sonnet 5.5 request needs at least $0.03. Raise the cap to at least $0.48 to run it.";
+  const paused = run("b1", "scorer", { status: "input_required", state: "waiting", title: "Score the lead: Initech", pending: { kind: "budget", cap_usd: 0.5, spent_usd: 0.45, needs_usd: 0.03, said: SAID, at: "2026-11-03T16:18:00Z" } });
+  it("says why it waits, in the cap's words, with no answer form: a message to it is refused until its cap is raised", () => {
+    const host = mount({ asking: [paused], failed: [], live: [] });
+    const card = host.querySelector('[data-run="b1"]')!;
+    expect(card.textContent).toContain(SAID);
+    expect(card.textContent).toContain("Paused at its $0.50 spend cap");
+    expect(card.querySelector("input, textarea, form")).toBeNull();
+    expect(card.querySelector('a[href="#/runs/b1"]')).not.toBeNull();
+  });
+});

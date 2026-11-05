@@ -1,5 +1,3 @@
-export type { Manifest, ManifestEntry, Pipe, WorkspaceErrorCode } from "../home/workspace.ts";
-export { MAX_LISTING_BYTES, WorkspaceError } from "../home/workspace.ts";
 export {
 	directoryMode,
 	type ExtractOptions,
@@ -34,3 +32,5 @@ export {
 	seedAgentHome,
 	seedDir,
 } from "./run-files.ts";
+export type { Manifest, ManifestEntry, Pipe, WorkspaceErrorCode } from "./transfer.ts";
+export { MAX_LISTING_BYTES, WorkspaceError } from "./transfer.ts";
