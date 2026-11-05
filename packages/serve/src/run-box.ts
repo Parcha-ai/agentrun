@@ -11,7 +11,9 @@
 // cannot bind work/, and its key is the server's alone. The server makes it (through the box relay, box-relay.ts), seeds
 // it with work/, pulls work/ back at each turn's end and once more before the run's end is recorded, and destroys it
 // after that pull; the run's process reaches it through the relay, which holds the key. What the run's own host tools
-// file in work/ meanwhile (writeInWork) is copied into the box too, so its tools read it.
+// file in work/ meanwhile (writeInWork) is copied into the box too, so its tools read it. The VM box is remote the same
+// way: the server makes, seeds, pulls and ends it with its own client, and the run's process runs pi-transport's VM
+// provider over the relay's VM half (box-relay-vm.ts), which holds the client and the token. It has no network.
 import { createHash } from "node:crypto";
 import { appendFile, lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
@@ -25,6 +27,7 @@ import { type BoxEgress, type DockerNetwork, EGRESS_MOUNT, egressBlockedBy, forw
 import { runBoxVolumeOf, vmDocker, vmEgress } from "./box-egress-vm.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
+import { VM_PROVIDER } from "./boxes.js";
 import { readJson, writeDurable } from "./files.js";
 import { FAUX_ENV } from "./model.js";
 import { agentWorkDir, BOX_WORK, type Place } from "./place.js";
@@ -229,7 +232,7 @@ export function runBox(given: BoxSource | (() => Promise<RunBoxes>), run: { id: 
   const filed = new Map<string, Uint8Array>();
   const open = async (context: Context, note: (summary: string) => Promise<void> | void): Promise<{ env: ExecutionEnv; box: Box }> => {
     const { boxEnv, endLeftCommands } = await import("@parcha/pi-transport/hands");
-    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run.dir, run.id, context) : await localRunBox(await source.provider(), run, context, note);
+    const { box, made } = "relay" in source ? await relayedRunBox(source.relay, run, context) : await localRunBox(await source.provider(), run, context, note);
     if (!made) {
       // A process before this one left it: what it still runs is killed first, since its calls were answered interrupted.
       const ended = await endLeftCommands(box, context);
@@ -402,21 +405,45 @@ async function startRelay(box: Box, socket: string, context: Context, note: (sum
 }
 
 /** A remote box, which the server finds or makes and seeds (ensureRemoteBox), reached through its relay: this process's
- *  Daytona provider holds no key, and every call it makes goes to the relay, which sends it on with the server's. */
-async function relayedRunBox(root: string, runDir: string, runId: string, context: Context): Promise<{ box: Box; made: boolean }> {
+ *  provider holds no key, and every call it makes goes to the relay, which sends it on with the server's (Daytona's key;
+ *  the VM box's client, box-relay-vm.ts). */
+async function relayedRunBox(root: string, run: { id: string; dir: string; place: Place }, context: Context): Promise<{ box: Box; made: boolean }> {
+  const { id: runId, dir: runDir } = run;
   const given = await relayedBox(root, runDir, runId, context.abortSignal);
-  const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
-  const boxes = daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl: given.apiUrl, fetch: relayFetch(root, runDir, runId) });
+  const boxes = run.place.mode === "sandbox" && run.place.box === VM_PROVIDER.id ? await relayedVmBoxes(root, runDir, runId) : await relayedDaytona(root, runDir, runId, given.apiUrl);
   const attached = await boxes.attach(given.id, context);
   if (!attached.ok) throw new Error(`the run's box could not be reached: ${attached.error.message}`);
   if (!attached.value) throw new Error(`the run's box ${given.id} is not running`);
   return { box: attached.value, made: given.made };
 }
 
+/** The run's process's Daytona provider: its calls go to the relay, which adds the key. */
+async function relayedDaytona(root: string, runDir: string, runId: string, apiUrl: string | undefined): Promise<BoxProvider> {
+  if (!apiUrl) throw new Error("the server gave the run's Daytona box no API address");
+  const { daytonaBoxes } = await import("@parcha/pi-transport/box/daytona");
+  return daytonaBoxes({ apiKey: RELAYED_KEY, apiUrl, fetch: relayFetch(root, runDir, runId) });
+}
+
+/** The run's process's VM provider: pi-transport's, over the relay's client (box-relay-vm.ts). It only attaches. */
+async function relayedVmBoxes(root: string, runDir: string, runId: string): Promise<BoxProvider> {
+  const [{ relayedVmSdk }, transport] = await Promise.all([import("./box-relay-vm.js"), import(`@parcha/pi-transport/box/${VM_PROVIDER.id}`) as Promise<{ modalBoxes: (sdk: unknown, options: { appName: string }) => BoxProvider }>]);
+  return transport.modalBoxes(relayedVmSdk(root, runDir, runId), { appName: "relayed" });
+}
+
+/** A remote box's limits, where its provider takes them (the VM box: CPUs and memory, from the same settings as a Docker
+ *  box's, boxLimitsOf). */
+export type RemoteLimits = { cpus?: number; memoryMb?: number };
+/** A Docker size (boxLimitsOf's memory) in MiB, the fraction dropped. */
+export const memoryMbOf = (memory: string): number => {
+  const size = /^(\d+(?:\.\d+)?)([bkmg])$/i.exec(memory);
+  return size ? Math.floor((Number(size[1]) * SIZE_UNITS[size[2]!.toLowerCase()]!) / MIB) : 0;
+};
+
 /** The spec of a run's remote box: its work/ comes with its seed, never a mount; its network the hosts `allow` names, or
- *  none. */
-const remoteSpec = (runId: string, allow: readonly string[] | "none"): BoxSpec => ({
+ *  none; its limits, where its provider takes them. */
+const remoteSpec = (runId: string, allow: readonly string[] | "none", limits: RemoteLimits = {}): BoxSpec => ({
   env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" ? "none" : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
+  ...(limits.cpus === undefined ? {} : { cpus: limits.cpus }), ...(limits.memoryMb ? { memoryMb: limits.memoryMb } : {}),
 });
 
 /** Whether a box's hosts, as its provider reads them (undefined: it does not say), are the hosts asked, as a set. */
@@ -454,10 +481,12 @@ export type RemoteBoxOptions = {
   allow?: readonly string[] | "none";
   onNoList?: (code: string, message: string) => void;
   pull?: (boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>) => Promise<unknown>;
+  /** The box's limits, where its provider takes them (remoteSpec). */
+  limits?: RemoteLimits;
 };
 
 export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions = {}): Promise<{ id: string; made: boolean }> {
-  const { wake, allow = "none", onNoList, pull = pullRemoteBox } = options;
+  const { wake, allow = "none", onNoList, pull = pullRemoteBox, limits } = options;
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
@@ -475,12 +504,12 @@ export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir
     box = undefined;
   }
   if (!box) {
-    let created = await boxes.create(remoteSpec(run.id, allow), context);
+    let created = await boxes.create(remoteSpec(run.id, allow, limits), context);
     if (!created.ok && asked === "allowlist" && NO_LIST.has(created.error.code)) {
       asked = "none";
       onNoList?.(created.error.code, created.error.message);
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
-      created = await boxes.create(remoteSpec(run.id, "none"), context);
+      created = await boxes.create(remoteSpec(run.id, "none", limits), context);
     }
     if (!created.ok) {
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);

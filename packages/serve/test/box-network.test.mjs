@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_ENV } from "../dist/run-box.js";
-import { follow, scratch, serve, withEnv } from "./support.mjs";
+import { follow, jsonLines, scratch, serve, withEnv } from "./support.mjs";
 import { startServe } from "../dist/index.js";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -58,7 +58,7 @@ async function fakeDocker(t, marks = {}, vars = {}) {
   for (const [name, text] of Object.entries(marks)) await writeFile(join(state, name), text);
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker", AGENTRUN_DOCKER_IMAGE: IMAGE, ...vars }, [BOX_ALLOW_ENV]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
-  const lines = (name) => (existsSync(join(state, name)) ? readFileSync(join(state, name), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+  const lines = (name) => jsonLines(join(state, name));
   return { state, runs: () => lines("argv.jsonl").filter((args) => args[0] === "run"), removed: () => lines("argv.jsonl").filter((args) => args[0] === "rm").map((args) => args.at(-1)), relays: () => lines("relays.jsonl") };
 }
 
@@ -502,7 +502,7 @@ test("a box's network label does not depend on the list's order: one an earlier 
   await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
   assert.equal(readFileSync(join(work, "out.txt"), "utf8"), "kept");
-  const execs = readFileSync(join(docker.state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((args) => args[0] === "exec");
+  const execs = jsonLines(join(docker.state, "argv.jsonl")).filter((args) => args[0] === "exec");
   assert.ok(execs.length > 0 && execs.every((args) => args.includes(id)), "its commands ran in the box the earlier process made");
   assert.deepEqual(docker.runs(), [], "taken over: no box made again");
 });

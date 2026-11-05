@@ -1,6 +1,7 @@
 import { Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
+import { ToolBlockers } from "@/components/ToolBlockers";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
@@ -8,7 +9,7 @@ import { exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
-type Problem = { message: string; fields?: FieldIssue[]; box?: string };
+type Problem = { message: string; fields?: FieldIssue[]; box?: string; details?: Record<string, unknown> };
 type Sent = { status: number; runId?: string; problem?: Problem };
 
 /** The agent page's run bar: an agentic agent's first message, or a workflow agent's input as JSON (its example to start
@@ -33,7 +34,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
       const r = await v2.startRun(id, body, key);
       return { status: r.status, runId: r.run.run_id };
     } catch (e) {
-      if (e instanceof ClientError) return { status: e.status, problem: { message: e.message, fields: e.fields, ...(e.code === "agent_not_runnable" && typeof e.details?.box === "string" ? { box: e.details.box } : {}) } };
+      if (e instanceof ClientError) return { status: e.status, problem: { message: e.message, fields: e.fields, ...(e.code === "agent_not_runnable" && typeof e.details?.box === "string" ? { box: e.details.box } : {}), ...(e.code === "agent_not_runnable" && e.details ? { details: e.details } : {}) } };
       return { status: 0, problem: { message: e instanceof Error ? e.message : String(e) } };
     }
   };
@@ -82,6 +83,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
         <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-[12px] text-destructive-text" role="alert">
           <p>The run did not start: {problem.message}</p>
           {problem.box && <p className="mt-1">This server can't run the {problem.box} box this agent runs in: change where it runs in its settings.</p>}
+          <ToolBlockers agentId={agent.agent_id} details={problem.details} />
           {more.length > 0 && <ul className="mt-1">{more.map((f) => <li key={`${f.field}:${f.message}`}>{f.field}: {f.message}</li>)}</ul>}
         </div>
       )}

@@ -327,7 +327,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxMonid: FAUX_MONID });
-    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"] }));
+    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"], tool_settings: { "monid.discover": { permission: "allow" }, "monid.inspect": { permission: "allow" }, "monid.run": { permission: "allow" } } }));
     assert.deepEqual([saved.status, saved.body.warnings], [201, []], JSON.stringify(saved.body));
     const run = await api("POST", `/agents/monid-${harness}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -344,11 +344,11 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, bash (in a box), the web tools and monid's three on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), the web tools and monid's three on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex", "opencode"];
-  const hosted = ["read", "write", "edit", "bash", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
+  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });

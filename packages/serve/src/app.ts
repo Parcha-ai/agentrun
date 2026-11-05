@@ -22,10 +22,12 @@ import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, openRouterOnly, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, learnedRoute, learnedWorkflowsOff, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
-import { withLearned } from "./learning.js";
+import { pinnedWorkflows, readPin, withLearned } from "./learning.js";
+import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "./learned-workflow.js";
+import { defineExtension } from "@earendil-works/pi-durable";
 import { completer } from "./llm.js";
 import { searchOn } from "./hosted-search.js";
 import { imageLoader } from "./pdf-pages.js";
@@ -33,12 +35,14 @@ import { EFFORT_ENV, type ModelRef, llmTiers, nodeTiers, runModels, type Tier, t
 import { gated, liveView, nodeLog, readLiveView } from "./pause.js";
 import { remotePlace, storedPlace } from "./place.js";
 import { runBox, runBoxProvider } from "./run-box.js";
+import { planeOf } from "./tool-plane.js";
 import { ASK_TOOL, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
-import { promptOf, systemOf } from "./skills.js";
+import { promptOf, readsFiles, systemOf } from "./skills.js";
 import { EnvironmentLine, environmentLine } from "./environment.js";
 import { effortGuidance } from "./effort-guidance.js";
 import { isObject } from "./validate.js";
 import { mirrorWrites } from "./workspace.js";
+import { deniedText, runGate } from "./tool-gate.js";
 
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
@@ -113,7 +117,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves, and
   // gets a start mark of its own, which its error entry answers.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced, refused: marked.refused });
+  // On another harness these models carry only the run's own requests (a learned workflow's, a hosted search's), under
+  // the run's one total, which the harness keeps (cap.ts capModels' `joined`): what they cost in earlier processes is
+  // read here, as the harness's booking does not hold it.
+  const joined = revision.kind === "agentic" && Boolean(revision.body.harness) && revision.body.harness !== DEFAULT_HARNESS;
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE), { sides: joined }), { unpriced: chosen.unpriced, refused: marked.refused, joined });
+  // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts):
+  // on another harness too, for a learned workflow's call node.
+  searchOn(models);
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   // The run's place, as its start resolved and kept it (serve.json): in a box, its coding tools run there (run-box.ts).
   const meta = await readJson(join(where.root, RUN_META));
@@ -124,6 +135,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // What the run's host tools file in work/ is copied into a remote box too, which does not share this machine's work/.
   if (box?.mirror) mirrorWrites(where.work, box.mirror);
   const coding = codingSource(place, box);
+  // Every tool call the run's model makes passes the run's tool gate (tool-gate.ts): pi's tools wrapped by name where the
+  // registry composes each agent's, another harness's host tools in their call. An approved call runs on this coding
+  // source, as the run's own would.
+  const toolGate = runGate(where, run.id, revision);
   const registry = createRegistry();
   // An agentic run's system prompt starts with the date and the workspace (environment.ts). On pi it is a section,
   // installed first so it comes before every other extension's and the instructions.
@@ -132,15 +147,34 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // What the run's agent learned goes into its instructions, and the skills it wrote join the revision's, the one path for
   // every harness (learning.ts).
   const learned = revision.kind === "agentic" ? await withLearned(where.root, where.work, revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
+  // The workflows the agent learned that its run may run, as one tool (learned-workflow.ts), when its pin names any: on
+  // the run's models, as side requests under its cap, each model node and `llm` call on the run's model of its tier,
+  // else the run's own (the only one the run was made with, and handed the key of); the `llm` tool's completion for a
+  // call node that names it; its call nodes on the agent's tools its run's plane resolves (the plane its harness and
+  // its tools read).
+  const flows = revision.kind === "agentic" ? await pinnedWorkflows(where.root, await readPin(where.root)) : [];
+  // On claude-agent and codex, on the route the harness's own requests take (learnedRoute): on OpenRouter alone,
+  // OpenRouter's name for the run's model, whose key the run holds, never the vendor's provider.
+  const learnedHarness = revision.kind === "agentic" ? revision.body.harness : undefined;
+  const learnedModel = (tier: unknown) => {
+    const ref = byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default");
+    return ref && learnedHarness && learnedHarness !== DEFAULT_HARNESS ? learnedRoute(learnedHarness, env, ref) : ref;
+  };
+  // A second guard beside the pin's (learning-run.ts): a run whose harness's requests go where a learned workflow's could
+  // not follow gets no tool, whatever its pin says.
+  const learnedTool = flows.length && revision.kind === "agentic" && !(await learnedWorkflowsOff(revision.body.harness, env, revision.body.model))
+    ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), policy: toolGate.policy, env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
+    : undefined;
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
   const guidance = effortGuidance(process.env[EFFORT_ENV]);
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const harness = revision.body.harness;
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
-    // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
+    // refuse; codex's prompt, and a faux harness's, name each skill and its file when the run reads its files (it reads
+    // the SKILL.md when it fits), else keep every skill whole (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check);
+    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check, { onDemand: readsFiles(revision.body.tools) });
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
@@ -160,12 +194,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
     // The run's stop record (serve.json, as serve saved it before a stop's abort): a turn it names is not resumed.
     const stopRecord = { ...(typeof meta?.stopped_at === "string" ? { stopped_at: meta.stopped_at } : {}), ...(typeof meta?.stopped_after === "number" ? { stopped_after: meta.stopped_after } : {}) };
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord);
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, learnedTool ? [...named, LEARNED_WORKFLOW_TOOL] : named, dir, guard, cancelledIn(where.root), where.work, coding.tools, stopRecord, toolGate, learnedTool ? [learnedTool] : []);
     // A paid host tool's settle goes to the run's root, as on pi (paid-calls.ts settleIn).
-    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
+    // A learned workflow's model requests go through the run's models, marked on its store once it opens (markRequests).
+    return { models: {}, registry: createRegistry(), door, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), learnedTool && marked.open(durable), onOpen(durable)), beforeResume: markResumed } as unknown as AppOptions;
   }
-  // web_search's own request to the model provider, when it resolves native, goes through the run's models (hosted-search.ts).
-  searchOn(models);
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
   // the run is released.
@@ -197,8 +230,21 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = [await promptOf(learned.instructions, learned.skills, where.work), guidance].filter(Boolean).join("\n\n");
-    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
+    if (learnedTool) {
+      registry.install(defineExtension({ name: "learned-workflow", tools: [learnedTool] }));
+      tools.push(learnedTool);
+    }
+    registry.install(toolGate.extension(tools));
+    // Each skill named with its file when the run reads its files (it reads the SKILL.md when it fits), else whole.
+    const instructions = [await promptOf(learned.instructions, learned.skills, where.work, { onDemand: readsFiles(revision.body.tools) }), guidance].filter(Boolean).join("\n\n");
+    // The calls that wait for a person's approval are read as the run opens, and their answers acted on from then.
+    const onOpen = async (durable: DurableRun) => {
+      settleIn(rootRecordOf(durable.harness));
+      marked.open(durable);
+      await toolGate.load(durable, BACKGROUND, coding.tools, learnedTool ? [learnedTool] : []);
+      toolGate.start();
+    };
+    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};
   const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, durableDecisions, nodeRunner, taskScope }, { EffectFailure, inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
@@ -212,6 +258,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   ]);
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
+  // A model node's tools pass the gate too; one set to ask is refused there, as no node can wait for a person. A call
+  // node is the author's own step, which cannot wait for an approval: runnable.ts refuses a run whose call node calls a tool
+  // set to deny or ask, and a tool set to either since is refused as its call node runs (runEffect).
+  const gatedTools = toolGate.extension([...nodeTools.values()].flatMap((binding) => binding.tools));
+  registry.install(gatedTools);
   // A decision node's images are files of the run's work directory (pdf_pages draws them there).
   const loadImage = imageLoader(where.work);
   const log = nodeLog(where.root);
@@ -237,6 +288,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const at = { path: executionPath ?? null, item: item?.index ?? null, tool: node.tool!, label: node.label };
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
+      // Its tool's permission now, the gate's one rule read as each call node runs (tool-gate.ts policy): a tool set to
+      // deny since the run started is refused in the gate's words, and one set to ask too, since a call node cannot wait
+      // for an approval. Neither runs.
+      const permission = toolGate.policy(node.tool!);
+      if (permission === "deny") throw new Error(deniedText(node.tool!));
+      if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
       const durable = opened;
       const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });
@@ -263,7 +320,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
   const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
     const bindings = (node.tools ?? []).flatMap((name) => nodeTools.get(name) ?? []);
-    return { model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [...new Set([coding.extension, ...bindings.flatMap((b) => b.extensions)])], tools: bindings.flatMap((b) => b.tools) };
+    return { model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [...new Set([coding.extension, ...bindings.flatMap((b) => b.extensions), gatedTools])], tools: bindings.flatMap((b) => b.tools) };
   };
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
   /** The node log's starts and ends, from the workflow's events: what a graph shows of a node's timing. */

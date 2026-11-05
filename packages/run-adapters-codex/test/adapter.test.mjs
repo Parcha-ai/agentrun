@@ -53,9 +53,9 @@ function adapter(script, extra = {}) {
     provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' },
     price: (_model, usage) => (usage.input + usage.output) / 1e6,
     sessionsDir: join(dir, 'sessions'),
-    standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_MODEL: 'remote', FAKE_CODEX_SCRIPT: file } },
+    standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_MODEL: 'remote', FAKE_CODEX_SCRIPT: file, ...(extra.standInEnv ?? {}) } },
     fetch: p.fetch,
-    ...extra,
+    ...Object.fromEntries(Object.entries(extra).filter(([k]) => k !== 'standInEnv')),
   });
   return { adapter: a, provider: p };
 }
@@ -698,4 +698,229 @@ test("a crash after the follow-up that carries a stopped prompt was placed, befo
   const modelSaw = model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
   assert.equal(modelSaw.length, 1, `one turn, the recovered one: ${JSON.stringify(modelSaw)}`);
   assert.match(modelSaw[0], /Write five files\.[\s\S]*stopped before any work on it began[\s\S]*Go on\./, "the recovery has the stopped prompt, its line, then the follow-up");
+});
+
+/** The session's writer, held at the first append `match` picks (it gets each record and the prompts' submission ids by
+ *  their text) until the test lets it go. */
+function holdingWriter(inner, match) {
+  const ids = new Map();
+  let held;
+  const reached = new Promise((resolve) => { held = resolve; });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let done = false;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => {
+    for (const r of records) if (r.kind === 'kernel.submission' && typeof r.data?.text === 'string') ids.set(r.data.text, r.data.id);
+    if (!done && records.some((r) => match(r, ids))) { done = true; held(); await gate; }
+    return inner.append(records);
+  } };
+  return { writer, reached, release };
+}
+/** The intent of the placement of the prompt that says `text`. */
+const placing = (text) => (r, ids) => r.kind === 'kernel.start' && Array.isArray(r.data?.placed) && r.data.placed.includes(ids.get(text));
+/** The intent of a prompt's send mark. */
+const marking = (r) => r.kind === 'kernel.start' && String(r.data?.key ?? '').startsWith('sent:');
+const seenBy = (model) => model.seen.map((r) => r.body.input.map((i) => i.content.map((c) => c.text).join('')).join('\n'));
+
+test("an interrupt that lands after the prompt was placed and before Codex was sent it: the session reads open_turn, and its settle carries the placed prompt into the next message's turn", async () => {
+  const spec = { key: 'step:placed-unsent', label: 'placed', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { writer, reached, release } = holdingWriter(await store.open(spec.key), placing('go'));
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer, models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  await reached;
+  // The stop lands while the prompt's placement is being written: once placed, Codex is never sent it.
+  const stopping = a.interrupt();
+  release();
+  await stopping;
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  const stopped = foldSession(spec.key, await store.read(spec.key));
+  const go = stopped.submissions.find((s) => s.text === 'go');
+  assert.ok(go && stopped.placed.has(go.id), 'setup: the stopped prompt was placed');
+  const afterStop = a.state;
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  const modelSaw = seenBy(model);
+  assert.deepEqual({ afterStop, follows: placed.at(-1) }, { afterStop: 'open_turn', follows: CARRIED }, "the placed prompt Codex was never sent is carried into the next message");
+  assert.equal(modelSaw.length, 1, `one turn, the follow-up's: ${JSON.stringify(modelSaw)}`);
+  assert.match(modelSaw[0], /go[\s\S]*stopped before any work[\s\S]*and now\?/, "the follow-up's turn has the stopped prompt, then the stopped line, then the follow-up");
+});
+
+test("an interrupt that lands after Codex recorded the prompt (mid-turn, in a tool call, where the rollout is mirrored): its rollout as the session keeps it holds the prompt, so the settle carries nothing and the next message's turn is its own", async () => {
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:recorded', label: 'recorded', system: [], tools: [wait], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { adapter: codex } = adapter(['call wait {}']);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  await reached;
+  await a.interrupt();
+  await a.turnEnd();
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  await a.turnEnd();
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  assert.equal(placed.at(-1), 'and now?', 'a prompt Codex recorded is not carried: it is never sent twice');
+});
+
+/** A provider whose first request is held until it is cut (the stopped turn's model call), then answers as `provider`. */
+function holdingFirst() {
+  const p = provider();
+  let first = true;
+  const fetch = (url, init) => {
+    if (!first) return p.fetch(url, init);
+    first = false;
+    p.seen.push({ url, body: JSON.parse(init.body) });
+    return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('cut')), { once: true }));
+  };
+  return { seen: p.seen, fetch };
+}
+/** Whether the rollout the next drive restores (the session's mirror of it) holds the client id. */
+async function restoredHolds(store, key, clientId) {
+  const { summarizeRollout, THREAD_STREAM, rolloutStream } = await import('../dist/rollout.js');
+  const drive = await openDrive({ writer: await store.open(key), signal: new AbortController().signal });
+  const journal = new NativeJournal(drive);
+  const thread = journal.records(THREAD_STREAM).at(-1)?.data;
+  const lines = thread ? (await journal.read(rolloutStream(thread.threadId))).map((r) => r.data) : [];
+  return summarizeRollout(lines).clientIds.has(clientId);
+}
+
+// Codex answers turn/start before it writes the turn's user message to its rollout (the real app-server, codex 0.164.0:
+// killed at the answer or 20 ms after it, the rollout holds no user item; 100 ms after, it does). A stop in that window
+// kills it with the prompt sent and never recorded: the next Codex, resumed from the session's rollout, never has it.
+test("an interrupt that lands after Codex answered turn/start and before its rollout holds the user message: the settle carries the prompt (the next Codex is resumed from a rollout without it), and the next message's turn has it first", async () => {
+  const spec = { key: 'step:answered-unrecorded', label: 'answered', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { adapter: codex, provider: model } = adapter([], { standInEnv: { FAKE_CODEX_RECORD_MS: '3000' } });
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  // Codex has answered turn/start: its thread's rollout has begun, and its user message is held 3 s.
+  for (const end = Date.now() + 10_000; !(await store.read(spec.key)).some((r) => r.kind === 'kernel.start' && Array.isArray(r.data?.placed) && r.data.placed.length); await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error('timed out waiting for the placement');
+  await new Promise((r) => setTimeout(r, 500));
+  await a.interrupt();
+  await a.turnEnd();
+  const afterStop = a.state;
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  const modelSaw = seenBy(model);
+  assert.deepEqual({ afterStop, follows: placed.at(-1) }, { afterStop: 'open_turn', follows: CARRIED }, 'the prompt Codex answered for and never recorded is carried');
+  assert.match(modelSaw.at(-1), /go[\s\S]*stopped before any work[\s\S]*and now\?/);
+});
+
+// The settle decides a placed prompt's carry by Codex's rollout as the session's log keeps it (mirrored every 2 s and at
+// each barrier). The next drive restores that same mirror, so the two must agree: a prompt is carried exactly when the
+// rollout the next Codex is resumed from lacks it. A stop while Codex's rollout holds the message and the mirror has not
+// taken it yet must not leave it both (a later write) or neither; a stopped drive mirrors nothing more.
+test("a stop while Codex's rollout holds the message and the session's mirror has not taken it, and one after the mirror did: the settle carries the prompt exactly when the rollout the next Codex restores lacks it, so the model has it once, never twice and never none", async () => {
+  const outcomes = [];
+  for (const [label, stopMs] of [['before the mirror', 300], ['after it', 3_000]]) {
+    const spec = { key: `step:mirror-${stopMs}`, label: 'mirror', system: [], tools: [], context: 'fresh' };
+    const store = memorySessionStore();
+    const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+    const { adapter: codex } = adapter([], { fetch: holdingFirst().fetch });
+    const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+    await a.send('go');
+    for (const end = Date.now() + 10_000; !(await store.read(spec.key)).some((r) => r.kind === 'kernel.start' && Array.isArray(r.data?.placed) && r.data.placed.length); await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error('timed out waiting for the placement');
+    await new Promise((r) => setTimeout(r, stopMs));
+    await a.interrupt();
+    await a.turnEnd();
+    if (a.state === 'open_turn') await a.settleOpenTurn();
+    await a.close();
+    const state = foldSession(spec.key, await store.read(spec.key));
+    const go = state.submissions.find((s) => s.text === 'go');
+    const recorded = await restoredHolds(store, spec.key, go.id);
+    const carried = state.submissions.some((s) => s.kind === 'withdraw' && s.target === go.id && s.carry);
+    outcomes.push({ label, recorded, carried });
+  }
+  assert.deepEqual(outcomes.map((o) => o.carried !== o.recorded), [true, true], `carried exactly when the restored rollout lacks it: ${JSON.stringify(outcomes)}`);
+  assert.deepEqual(outcomes[1], { label: 'after it', recorded: true, carried: false }, 'once the mirror has it, nothing is carried');
+});
+
+test("a follow-up's own prompt the host names to the settle (`opening`) is withdrawn and never carried: the next message's turn is the person's alone", async () => {
+  const spec = { key: 'step:host-follow-up', label: 'host', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const own = 'follow-up:step:host-follow-up:follow-up:check';
+  // The follow-up's prompt was recorded, and its process died before the harness took it.
+  const drive = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await drive.submit({ id: own, kind: 'prompt', text: 'Summarize the run.' });
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(a.state, 'open_turn', "setup: the follow-up's turn is open");
+  await a.settleOpenTurn({ opening: own });
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const modelSaw = seenBy(model);
+  assert.deepEqual(modelSaw.map((text) => [/Summarize the run/.test(text), /and now\?/.test(text)]), [[false, true]], `the person's message alone: ${JSON.stringify(modelSaw)}`);
+});
+
+/** The records of the session's mirrored rollout, read from the log (no drive opened: the session's own stays live). */
+async function rolloutRecords(store, key) {
+  const { THREAD_STREAM, rolloutStream } = await import('../dist/rollout.js');
+  const { journalRecords } = await import('@parcha/agentrun-kernel/process');
+  const state = foldSession(key, await store.read(key));
+  const thread = journalRecords(state, THREAD_STREAM).at(-1)?.data;
+  return thread ? journalRecords(state, rolloutStream(thread.threadId)).length : 0;
+}
+
+test("a stopped codex drive mirrors nothing more: after interrupt() resolves, the session's mirrored rollout does not grow, past the mirror's 2 s poll", async () => {
+  const spec = { key: 'step:mirror-quiet', label: 'quiet', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { adapter: codex } = adapter([], { fetch: holdingFirst().fetch });
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  for (const end = Date.now() + 10_000; !(await rolloutRecords(store, spec.key)); await new Promise((r) => setTimeout(r, 50))) if (Date.now() > end) throw new Error('timed out waiting for the rollout to be mirrored');
+  await a.interrupt();
+  const at = await rolloutRecords(store, spec.key);
+  await new Promise((r) => setTimeout(r, 2_500));
+  const after = await rolloutRecords(store, spec.key);
+  await a.turnEnd();
+  await a.close();
+  assert.equal(after, at, `the mirror held ${at} records at the stop and ${after} 2.5 s later`);
+});
+
+test("the settle reads a mirrored rollout only when the next drive would resume from it: a rollout whose first line is not session_meta is not resumed, so a prompt it holds is still carried", async () => {
+  const { NativeJournal, placeSubmissions } = await import('@parcha/agentrun-kernel/process');
+  const { THREAD_STREAM, rolloutStream } = await import('../dist/rollout.js');
+  const spec = { key: 'step:not-resumed', label: 'not-resumed', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  // A crashed process: the prompt placed and in a mirrored rollout whose session_meta never reached the log. The next
+  // drive cannot resume that thread (harness.ts, `resume`), so Codex will never have the prompt.
+  const dead = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await dead.submit({ id: 's1', kind: 'prompt', text: 'go' });
+  await placeSubmissions(dead, dead.pending());
+  const threadId = '0198a7c1-5b2e-7d43-9f10-3c6e8a2b4d10';
+  const journal = new NativeJournal(dead);
+  journal.append(THREAD_STREAM, { threadId, path: `sessions/2026/11/05/rollout-2026-11-05T08-00-00-${threadId}.jsonl` });
+  journal.append(rolloutStream(threadId), JSON.stringify({ timestamp: '2026-11-05T08:00:00.000Z', type: 'event_msg', payload: { type: 'item_completed', thread_id: threadId, turn_id: 't1', item: { type: 'UserMessage', id: 'u1', client_id: 's1', content: [{ type: 'text', text: 'go' }] } } }));
+  await journal.flush();
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(a.state, 'open_turn', 'setup: the crashed turn is open');
+  await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  assert.equal(placed.at(-1), CARRIED, 'the prompt the unresumable rollout held is carried: the next Codex never had it');
 });

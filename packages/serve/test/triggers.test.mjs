@@ -163,7 +163,7 @@ test("run now with the same Idempotency-Key twice starts one run; without a key 
   assert.match(keyless.body.error.message, /Idempotency-Key/);
 });
 
-test("a trigger that would start an uncapped run, a workflow's run, or fire on anything but a schedule is refused, by field", { timeout: 120_000 }, async (t) => {
+test("a trigger that would start an uncapped run, a workflow's run, or fire on a source this server has no kind for is refused, by field", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   await made(api, "capped");
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
@@ -175,9 +175,9 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
     return answer.body.error.fields[0].message;
   };
   const { max_cost_usd: _, ...uncapped } = schedule("capped", { every_s: 600 }).target;
-  assert.match(await refused({ ...schedule("capped", { every_s: 600 }), target: uncapped }, "target.max_cost_usd", "missing"), /required/);
+  assert.match(await refused({ ...schedule("capped", { every_s: 600 }), target: uncapped }, "target.max_cost_usd", "missing"), /set the agent's/);
   assert.match(await refused(schedule("flow", { every_s: 600 }), "target.agent_id", "not_allowed"), /workflow/);
-  await refused({ ...schedule("capped", { every_s: 600 }), source: { kind: "webhook" } }, "source.kind", "not_an_option");
+  await refused({ ...schedule("capped", { every_s: 600 }), source: { kind: "slack" } }, "source.kind", "not_an_option");
   await refused(schedule("capped", { every_s: 30 }), "source.every_s", "invalid");
   await refused(schedule("capped", { cron: "* * * * * *" }), "source.cron", "invalid");
   await refused(schedule("capped", { cron: "0 9 * * *", timezone: "Mars/Olympus" }), "source.timezone", "invalid");
@@ -185,7 +185,7 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule"], targets: ["start_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5 });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers, { routes: true, sources: ["schedule", "webhook"], targets: ["start_run", "message_run"], overlap: ["skip"], min_every_s: 60, history_kept: 200, catchup_window_s: 3600, failures_to_pause: 5, webhook: { signing: "standard-webhooks/v1", tolerance_s: 300, max_body_bytes: 262144, payload_kept_bytes: 16384, at_rest: "unavailable" } });
 });
 
 test("a firing left due by a server that went down mid-start is driven again at the next start and finds its run: one run, not two", { timeout: 180_000 }, async (t) => {

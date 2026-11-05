@@ -50,7 +50,18 @@ if (!state) {
 const args = process.argv.slice(2);
 const containers = join(state, "containers");
 mkdirSync(containers, { recursive: true });
-appendFileSync(join(state, "argv.jsonl"), `${JSON.stringify(args)}\n`);
+/** Notes one record, a line of JSON, in the state directory's `name`, as a reader in another process sees it come:
+ *  the file made empty first, then the line. With `torn-writes` there, the line goes in two halves 300 ms apart, so a
+ *  test's reader meets a half-written line as it can on a busy machine. */
+const note = (name, record) => {
+  const file = join(state, name);
+  const line = `${JSON.stringify(record)}\n`;
+  if (!existsSync(join(state, "torn-writes"))) return appendFileSync(file, line);
+  appendFileSync(file, line.slice(0, line.length >> 1));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  appendFileSync(file, line.slice(line.length >> 1));
+};
+note("argv.jsonl", args);
 
 const file = (id) => join(containers, `${id}.json`);
 const byId = (id) => (/^[0-9a-f]{64}$/.test(id) && existsSync(file(id)) ? JSON.parse(readFileSync(file(id), "utf8")) : undefined);
@@ -130,7 +141,7 @@ switch (args[0]) {
     const context = args.at(-1);
     if (context === "-" || !existsSync(join(context, "Dockerfile"))) fail("fake docker: a build takes a context directory with a Dockerfile, never stdin");
     const at = statSync(context);
-    appendFileSync(join(state, "builds.jsonl"), `${JSON.stringify({ tag, labels, context, mode: (at.mode & 0o777).toString(8), files: readdirSync(context).sort(), recipe: readFileSync(join(context, "Dockerfile"), "utf8") })}\n`);
+    note("builds.jsonl", { tag, labels, context, mode: (at.mode & 0o777).toString(8), files: readdirSync(context).sort(), recipe: readFileSync(join(context, "Dockerfile"), "utf8") });
     held("build-hold", "build-fail", () => {
       const once = join(state, "build-fail-once");
       if (existsSync(once)) {
@@ -168,7 +179,7 @@ switch (args[0]) {
     // Docker's `run` pulls an image it does not have, inside the call: the fake notes whether it would have, in
     // `made.jsonl`, which outlives the container.
     const image = args[args.indexOf("--entrypoint") + 2];
-    appendFileSync(join(state, "made.jsonl"), `${JSON.stringify({ id: container.Id, image, pulledInRun: !hasImage(image) })}\n`);
+    note("made.jsonl", { id: container.Id, image, pulledInRun: !hasImage(image) });
     if (!hasImage(image) && image.startsWith("agentrun-box:")) fail(`Unable to find image '${image}' locally\ndocker: Error response from daemon: pull access denied for agentrun-box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied.\nSee 'docker run --help'.`, 125);
     container.Mounts = container.mounts.map((mount) => ({ Type: mount.type ?? "bind", Source: mount.source, Destination: mount.target, RW: true }));
     if (container.Name && read(container.Name)) fail(`docker: Error response from daemon: Conflict. The container name "/${container.Name}" is already in use.`, 125);
@@ -263,7 +274,7 @@ switch (args[0]) {
     // no socat (127); with `no-setsid`, as one with no setsid (126); with `relay-dead`, as a relay that never listened
     // (124, that file's text on stderr).
     if (command.some((arg) => arg.includes("socat"))) {
-      appendFileSync(join(state, "relays.jsonl"), `${JSON.stringify({ id: container.Id, command })}\n`);
+      note("relays.jsonl", { id: container.Id, command });
       if (existsSync(join(state, "no-socat"))) process.exit(127);
       if (existsSync(join(state, "no-setsid"))) process.exit(126);
       if (existsSync(join(state, "relay-dead"))) fail(readFileSync(join(state, "relay-dead"), "utf8").trim(), 124);

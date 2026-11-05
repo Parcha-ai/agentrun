@@ -160,6 +160,8 @@ export default function reply(context, faux) {
     const gate = /Reflect once (\S+) exists\./.exec(system)?.[1];
     while (gate && !(await access(gate).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
     if (/Reflect slowly\./.test(system)) return slow(faux, 60_000, "Too late.");
+    // "Reflect by writing first.": the end-of-run turn tries to write a note as a file first, then answers.
+    if (/Reflect by writing first\./.test(system) && done === 0) return faux.message(faux.toolCall("write", { path: ".learning/written.md", content: "A note as a file.\n" }), { stopReason: "toolUse" });
     return faux.message(reflection(system, users));
   })();
 }

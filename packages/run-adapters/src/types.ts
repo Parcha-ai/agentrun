@@ -2,6 +2,7 @@
 // One interface serves both hosts: a DSL host's `runNode` (createHarnessRunner) and serve's runs. Nothing here
 // imports a host.
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
+import type { Ended } from "./booking.js";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -141,7 +142,9 @@ export interface ModelPort {
   beforeRequest(request: ModelRequest): Promise<ModelTicket | void>;
   /** Books a completed request. `ticket` is what its own `beforeRequest` returned: requests may be in flight together, so
    *  an answer is booked under the turn it was admitted as, not the latest one. */
-  afterRequest(usage: ModelUsage, ticket?: ModelTicket): Promise<void>;
+  /** `ended`: how the request ended, as the model proxy saw it (booking.ts), what it is booked by; absent (a host from
+   *  before it), booked as before, by `usd` and `stoppedAfterBytes`. */
+  afterRequest(usage: ModelUsage, ticket?: ModelTicket, ended?: Ended): Promise<void>;
   /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
 }
@@ -199,8 +202,9 @@ export interface AdapterSession {
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
    *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
    *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
-   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn). */
-  settleOpenTurn(): Promise<void>;
+   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn), naming its own prompt (`opening`): that one is withdrawn and
+   *  never carried, and the rest is left as it is. */
+  settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
