@@ -159,8 +159,9 @@ type SandboxInfo = {
 	readonly sandboxClass?: string;
 	/** Daytona blocks all of the sandbox's outbound traffic. A single sandbox's read carries it; a listing does not. */
 	readonly networkBlockAll?: boolean;
-	/** The hosts Daytona lets the sandbox reach (`domainAllowList`, comma-separated). A single sandbox's read carries it. */
-	readonly domainAllowList?: string;
+	/** The hosts Daytona lets the sandbox reach (`domainAllowList`: comma-separated, or a list of hosts). A single sandbox's
+	 *  read carries it. Anything else is no list Daytona keeps. */
+	readonly domainAllowList?: unknown;
 	readonly errorReason?: string;
 	/** Disk in GiB and the creation time, as Daytona reports them. */
 	readonly disk?: number;
@@ -218,6 +219,11 @@ function redirected(cause: unknown): boolean {
 	return /redirect/i.test(`${(cause as Error | null)?.message ?? ""} ${(inner as Error | null)?.message ?? ""}`);
 }
 
+/** A box's facts from its domain list: `allowlist` with its hosts; nothing (unknown) for none, or a list not read. */
+function allowFacts(domains: string[] | undefined): { network?: "allowlist"; allow?: readonly string[] } {
+	return domains && domains.length > 0 ? { network: "allowlist", allow: domains } : {};
+}
+
 /** Whether two domain lists hold the same hosts. */
 function sameDomains(a: readonly string[], b: readonly string[]): boolean {
 	const left = new Set(a);
@@ -225,12 +231,18 @@ function sameDomains(a: readonly string[], b: readonly string[]): boolean {
 	return left.size === right.size && [...left].every((entry) => right.has(entry));
 }
 
-/** The hosts of a `domainAllowList`, trimmed, lower-cased, without empty entries. */
-function domainsOf(list: string | undefined): string[] {
-	return (list ?? "")
-		.split(",")
-		.map((entry) => entry.trim().toLowerCase())
-		.filter((entry) => entry !== "");
+/** The hosts of a `domainAllowList` (comma-separated, or a list of hosts), trimmed, lower-cased, without empty entries; none
+ *  when it is absent; `undefined` for any other value, which is no list this code reads, never a throw. */
+function domainsOf(list: unknown): string[] | undefined {
+	const entries =
+		list === undefined || list === null
+			? []
+			: typeof list === "string"
+				? list.split(",")
+				: Array.isArray(list) && list.every((entry) => typeof entry === "string")
+					? (list as string[])
+					: undefined;
+	return entries?.map((entry) => entry.trim().toLowerCase()).filter((entry) => entry !== "");
 }
 
 function parseJson(bytes: Uint8Array): unknown {
@@ -507,11 +519,7 @@ function factsOf(info: SandboxInfo, provider: DaytonaBoxesOptions): BoxFacts {
 		workspace: info.labels?.[WORKSPACE_LABEL] ?? provider.workspace ?? DEFAULT_WORKSPACE,
 		maxLifetimeMs: Number.isFinite(lifetime) && lifetime > 0 ? lifetime : null,
 		// Only a block Daytona reports is `none`; anything else is left unknown (a tier's own policy may hold).
-		...(info.networkBlockAll === true
-			? { network: "none" as const }
-			: domainsOf(info.domainAllowList).length > 0
-				? { network: "allowlist" as const }
-				: {}),
+		...(info.networkBlockAll === true ? { network: "none" as const } : allowFacts(domainsOf(info.domainAllowList))),
 		snapshot: null,
 		...(typeof info.disk === "number" && info.disk > 0 ? { diskGb: Math.floor(info.disk) } : {}),
 		...(info.createdAt !== undefined && !Number.isNaN(Date.parse(info.createdAt))
@@ -953,7 +961,7 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			const kept = (got: SandboxInfo) =>
 				spec.network === "none"
 					? got.networkBlockAll === true
-					: allow.length === 0 || sameDomains(domainsOf(got.domainAllowList), allow);
+					: allow.length === 0 || sameDomains(domainsOf(got.domainAllowList) ?? [], allow);
 			if (!kept(info)) {
 				// A create's answer may leave the setting out, as a listing does: the sandbox's own read says.
 				const read = await rest.get(info.id, context);

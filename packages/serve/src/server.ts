@@ -21,7 +21,7 @@ import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
+import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, type HarnessCapability, harnessOffers } from "./harness.js";
@@ -48,12 +48,13 @@ import { metersIn } from "./cap.js";
 import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { redactedOutput } from "./key-refusal.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, pendingOf, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
 import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { HISTORY_KEPT, MIN_EVERY_S, OVERLAP, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
@@ -71,7 +72,6 @@ const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
-const IDEMPOTENCY_TTL_S = 86_400;
 const FILE_LIST_CAP = 2_000;
 /** What a stopping server's record allows past its runs' kill bound, the cap a start waits under: the runs' carry backs,
  *  retried while the agent store is held (about 15.5 s), their boxes' cleanup (up to a minute), and the deliveries', the
@@ -213,6 +213,8 @@ export type ServeOptions = {
    *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the index and the notes
    *  changed last, whole, while they fit (learning.ts learnedOf). */
   learningBudget?: number;
+  /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
+  triggerClock?: TriggerClock;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
@@ -328,6 +330,13 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/settings\/webhook\/test$/, name: "testWebhook" },
   { method: "GET", pattern: /^\/settings\/webhook\/deliveries$/, name: "listWebhookDeliveries" },
   { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
+  { method: "GET", pattern: /^\/triggers$/, name: "listTriggers" },
+  { method: "POST", pattern: /^\/triggers$/, name: "createTrigger" },
+  { method: "GET", pattern: /^\/triggers\/([^/]+)$/, name: "getTrigger" },
+  { method: "PATCH", pattern: /^\/triggers\/([^/]+)$/, name: "updateTrigger" },
+  { method: "DELETE", pattern: /^\/triggers\/([^/]+)$/, name: "deleteTrigger" },
+  { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
+  { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -425,6 +434,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
   const models = { ...modelSource(env), ready: needs === null, needs };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
+  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool));
   return {
     backend: "local",
     contract: CONTRACT,
@@ -444,7 +454,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
-    tools: toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyOf(tool.name) ? { ...tool, key: keyOf(tool.name) } : tool)),
+    tools,
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -473,7 +483,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       usage: { basis: "estimate", meters: ["tokens", "tools", "learning"] },
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
-      browser: "none",
+      /** The browser a run's `browser` tool drives: Browserbase's when the tool is available here (tools[]), else none. */
+      browser: tools.some((tool) => tool.name === "browser" && tool.available) ? "browserbase" : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
@@ -491,6 +502,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -682,7 +695,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
   let daytonaNoList: string | undefined;
   const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
+    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", network_reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
   const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" ? daytonaNetwork(offer) : offer));
   const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
   let boxOffers: BoxOffer[] = offersNow();
@@ -706,9 +719,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // its own through the relay below, which holds the key for it (box-relay.ts).
   const remoteBoxes = boxes.provider("daytona");
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
-  const onNoBoxList = (code: string) => {
+  // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
+  const onNoBoxList = (code: string, message: string) => {
     daytonaNoList = code;
-    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code }));
+    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code, message }));
     boxOffers = offersNow();
     if (offers) recompose();
   };
@@ -785,6 +799,39 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       });
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
+
+  // Schedules: each firing starts its run as POST /agents/{id}/runs does, capped, under the firing's key (triggers.ts).
+  // Firings an earlier server left due are driven again now, beside the recovery above.
+  const triggers = new Triggers(data, {
+    clock: options.triggerClock,
+    say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
+    async targetIssues(target) {
+      const entry = await agents.get(target.agent_id);
+      if (!entry) return [{ field: "target.agent_id", reason: "not_found", message: `no agent ${target.agent_id}` }];
+      if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
+      if (entry.revision.kind === "workflow") return [{ field: "target.agent_id", reason: "not_allowed", message: "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow." }];
+      return (await inputIssuesOf(entry.revision, target.input)).map((issue) => ({ ...issue, field: `target.${issue.field}` }));
+    },
+    async start(target, input, trigger) {
+      const entry = await needAgent(target.agent_id);
+      const run = await startRunOf(entry, { input, max_cost_usd: target.max_cost_usd, ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key } });
+      return { run_id: run.id };
+    },
+    async runOf(key) {
+      const started = await agents.request(() => agents.store.runOfOrigin(key));
+      if (!started) return null;
+      // Never set up as runs.ts load reads it (notSetUp: the store has it running and its serve.json holds no input), which
+      // this start's recovery fails as server_lost_at_setup; or failed so already.
+      const run = await runs.get(started.runId);
+      return { run_id: started.runId, setup_lost: run?.notSetUp === true || run?.error?.details?.reason === SETUP_LOST };
+    },
+    async statusOf(runId) {
+      const row = await agents.request(() => agents.store.readRun(runId));
+      return row ? runs.statusOfRow(row) : null;
+    },
+  });
+  stops.push(async () => triggers.close());
+  triggers.start();
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -993,34 +1040,41 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await runs.view(await needRun(first.runId)), headers };
       }
-      const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"]);
-      if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
-      if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
-      if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
-      if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0)) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
-      if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
-      if (issues.length) throw invalid(issues);
-      if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
-      // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
-      const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
-      const pinned = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
-      if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
-      const { revision, version } = pinned;
-      if (revision.kind === "workflow" && body.max_cost_usd !== undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here: its cost shows once it ends." }]);
-      const input = body.input as Json;
-      const wrong = await inputIssuesOf(revision, input);
-      if (wrong.length) throw invalid(wrong);
-      const place = resolvePlace(revision.body.place as Place | undefined);
-      await runnable(revision, place, { capped: body.max_cost_usd !== undefined });
-      // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
-      // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
-      const shown = redactedOutput(input, learningSecrets());
-      const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-      const run = await runs.create(entry, revision, version, { input, title, place, ...(origin ? { origin } : {}), ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}) });
       // Its view from the run itself: it is written, with its first message, so an answer read from the store, which a
       // busy store would turn into home_busy, would refuse a run that runs, and a retry would start a second one.
       return { status: 202, body: await runs.view(run, { stored: null }), headers: { location: `/v2/runs/${run.id}` } };
     });
+  }
+
+  /** A run of `entry`'s agent from a create's body, checked as POST /agents/{id}/runs checks it: that route's, and a
+   *  trigger's firing's, which names itself as the run's `trigger`. Under `origin`, a key that already started a run
+   *  gets that run (the agent store's run_origins). */
+  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin }: { trigger?: RunTrigger; origin?: RunOrigin } = {}): Promise<Run> {
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"]);
+    if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
+    if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
+    if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
+    if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0)) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
+    if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
+    if (issues.length) throw invalid(issues);
+    if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
+    // Each a ready file, before anything starts: copied into the run's work/inputs/ once its directory is made.
+    const files = Array.isArray(body.file_ids) ? await uploads.readyFiles(body.file_ids) : [];
+    const pinned = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+    if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
+    const { revision, version } = pinned;
+    if (revision.kind === "workflow" && body.max_cost_usd !== undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here: its cost shows once it ends." }]);
+    const input = body.input as Json;
+    const wrong = await inputIssuesOf(revision, input);
+    if (wrong.length) throw invalid(wrong);
+    const place = resolvePlace(revision.body.place as Place | undefined);
+    await runnable(revision, place, { capped: body.max_cost_usd !== undefined });
+    // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
+    // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
+    const shown = redactedOutput(input, learningSecrets());
+    const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
+    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
   /** A page of runs from the store, newest first: `agent`, `revision` and `status` narrow it. */
@@ -1635,9 +1689,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await usage(url));
       case "getStats": {
         const filter = analyticsFilter(url);
-        const [stats, analytics, rows] = await agents.request(() => [agents.store.stats(), agents.store.analytics(filter), agents.store.listRuns()] as const);
+        // A run this server holds as ended whose end the store does not have yet is pending: counted as it ended, its
+        // metrics left out until the store has them (stats.ts pendingOf).
+        const [stats, analytics, rows, pending] = await agents.request(() => {
+          const stats = agents.store.stats();
+          const pending = pendingOf(stats.running, runs);
+          return [stats, agents.store.analytics({ ...filter, pending }), agents.store.listRuns(), pending] as const;
+        });
         // How the runs that tried to learn fared: a held run's learning from memory, any other's end from the ledger.
-        return send(res, 200, { ...statsView(stats, runs), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
+        return send(res, 200, { ...statsView(stats, runs, pending), analytics: analyticsView(analytics, filter), learning: await runs.learning.counts(rows, filter) });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
@@ -1734,6 +1794,31 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, webhooks.attemptsView());
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
+      case "listTriggers":
+        return send(res, 200, triggers.list());
+      case "createTrigger": {
+        const body = await bodyOf(req);
+        const answer = await idempotent(req, "/triggers", body, async () => {
+          const made = await triggers.create(body);
+          return { status: 201, body: made, headers: { location: `/v2/triggers/${made.id}` } };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
+      }
+      case "getTrigger":
+        return send(res, 200, triggers.get(id));
+      case "updateTrigger":
+        return send(res, 200, await triggers.update(id, await bodyOf(req)));
+      case "deleteTrigger":
+        triggers.remove(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "fireTrigger": {
+        const key = req.headers["idempotency-key"];
+        if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Running a trigger now takes an Idempotency-Key of 1 to 255 characters: a retry with the same key fires it once.");
+        const fired = await triggers.fire(id, key);
+        return send(res, fired.created ? 202 : 200, fired.firing, fired.created ? {} : { "idempotent-replayed": "true" });
+      }
+      case "listTriggerFirings":
+        return send(res, 200, triggers.firings(id));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -1835,6 +1920,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     // count writes nothing (it lists and reads), so it is ended at once: its listing of a big home checks for no stop.
     closing = true;
     stopping.abort();
+    triggers.close();
     for (const [worker, { task }] of workers) {
       if (task === "plan") void worker.terminate();
       else worker.postMessage("stop");

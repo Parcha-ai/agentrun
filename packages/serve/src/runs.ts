@@ -17,6 +17,7 @@ import { registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, ru
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RunNotice, WEBHOOK_EVENTS } from "./webhooks.js";
+import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeWhole } from "./files.js";
@@ -166,6 +167,8 @@ type RunMeta = {
   /** A cancel that waits for the run's gate to cut the approved calls it overrode (Runs.cancel): their ids, kept so an
    *  operator (and a test) reads that it did, never how long it took. Absent on a cancel that waits on nothing. */
   cancel_waits_for?: string[];
+  /** The trigger that started it, and its firing's key (triggers.ts); absent for a run a caller started. */
+  trigger?: RunTrigger;
 };
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
@@ -246,6 +249,8 @@ export type Run = {
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
+  /** The write of its end-of-run turn's origin (toLiveDoor), which a person's turn waits for before it removes it. */
+  originWrite?: Promise<unknown>;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
   users: Set<string>;
   /** The rows the live path has shown as live, by id, over every connection to the run's door. */
@@ -586,14 +591,15 @@ export function statusOf(run: Run): { status: Status; state: State } {
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** How a run is asked to start: its input and title, its effort and cap, and what puts its files in its work/. `origin`:
- *  the store's key for what asked (an Idempotency-Key's): a key that already started a run gets that run. */
-export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; inputs?: (work: string) => Promise<unknown>; origin?: RunOrigin };
+ *  the store's key for what asked (an Idempotency-Key's, a trigger's firing): a key that already started a run gets that
+ *  run. `trigger`: the trigger and firing that started it. */
+export type StartOptions = { input: Json; title: string; place: Place; effort?: string; maxCostUsd?: number; trigger?: RunTrigger; inputs?: (work: string) => Promise<unknown>; origin?: RunOrigin };
 
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -842,6 +848,7 @@ export class Runs {
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
       ...(isObject(stored?.approvals) ? { approvals: stored.approvals as Record<string, ApprovalAnswer> } : {}),
+      ...(isObject(stored?.trigger) && typeof stored.trigger.id === "string" && typeof stored.trigger.firing_key === "string" ? { trigger: { id: stored.trigger.id, firing_key: stored.trigger.firing_key } } : {}),
     };
     // A turn's origin a server before this one set is not known to be the turn running now: it goes.
     await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
@@ -1320,10 +1327,14 @@ export class Runs {
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
       .then(() =>
-        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none"), (code) => {
-          if (this.remoteAllow === "none") return;
-          this.remoteAllow = "none";
-          this.options.onNoBoxList?.(code);
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), {
+          wake: this.wakeOf(run.id),
+          allow: (this.remoteAllow ??= this.options.boxAllow ?? "none"),
+          onNoList: (code, message) => {
+            if (this.remoteAllow === "none") return;
+            this.remoteAllow = "none";
+            this.options.onNoBoxList?.(code, message);
+          },
         }),
       )
       .finally(() => void (run.boxing = undefined));
@@ -1565,7 +1576,7 @@ export class Runs {
    *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts's carve-out); a person's message
    *  removes it. */
   private async toLiveDoor(run: Run, path: string, body?: Json, turnOrigin?: TurnOrigin): Promise<Json | null> {
-    if (turnOrigin) await writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`);
+    if (turnOrigin) await (run.originWrite = writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`));
     for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
       if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
       const door = this.doorOf(await this.record(run));
@@ -1659,7 +1670,7 @@ export class Runs {
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
     // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person).
     const settings = this.options.toolSettings?.() ?? {};
-    const fresh = run.tooling ? planeFor(served, run.tooling, settings, { capped: run.meta.max_cost_usd !== undefined }) : {};
+    const fresh = run.tooling ? planeFor(served, run.tooling, settings, { capped: run.meta.max_cost_usd !== undefined, run: true }) : {};
     const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served, { fresh, permission: (name) => permissionOf(name, settings as never, (run.tooling?.overrides ?? {}) as never) }) : fresh;
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
@@ -2062,7 +2073,7 @@ export class Runs {
     // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes first,
     // so a launch after a crash reads them back, never the settings of that moment, and keeping them is no write of its own.
     const tooling = await toolingOf(revision);
-    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
+    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined, run: true }) : {};
     // A run that learns: its seed read before it is made (learning-run.ts).
     const pin = await this.learning.onStart(entry.agent.id, revision);
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id, ...(options.origin ? { origin: options.origin } : {}) })).catch((error) => storeError(error, "revision"));
@@ -2077,6 +2088,7 @@ export class Runs {
       place: options.place,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(options.trigger ? { trigger: options.trigger } : {}),
       ...(Object.keys(plane).length ? { tool_plane: plane } : {}),
     };
     // The run's input is saved first, as the store has it running: a server that goes down from here on leaves a run the
@@ -2160,14 +2172,15 @@ export class Runs {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
-    // A person's message: no turn from here on is the server's own reflect turn (tool-gate.ts's carve-out).
-    await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
     // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
     // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
     // nothing else is sent, so no second turn races the parked call.
     if (run.kind === "agentic") {
       const waiting = waitingApproval(run);
-      if (waiting) return this.declineBy(run, waiting, content);
+      if (waiting) {
+        await this.personsTurn(run);
+        return this.declineBy(run, waiting, content);
+      }
     }
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
@@ -2202,6 +2215,9 @@ export class Runs {
     run.submitted++;
     this.refresh(run);
     try {
+      // After every wait, and once the count above holds the run from ending (so no end-of-run turn is asked from here):
+      // one asked while this message waited for the run's end wrote its origin then, after any earlier removal.
+      await this.personsTurn(run);
       await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
@@ -2211,6 +2227,14 @@ export class Runs {
       run.followUpOpen = undefined;
     }
     return { mode, messageId };
+  }
+
+  /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts's carve-out),
+   *  so its origin goes, right before the turn is sent. */
+  private async personsTurn(run: Run): Promise<void> {
+    // A write of the origin still in flight lands first, then goes: none starts from here (learning-run.ts reflectTurn).
+    await run.originWrite?.catch(() => undefined);
+    await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
   }
 
   /** Waits, up to a request's deadline, while `holds` (checked every `everyMs`): else 503 `unavailable`, saying `why`. */
@@ -2562,6 +2586,7 @@ export class Runs {
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
+      trigger: run.meta.trigger ?? null,
       // The notes it read once it settled: while it runs, or runs again for a follow-up, they are still being read.
       learning: this.learning.view(run.meta.learning, TERMINAL.has(status) && run.settled),
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,

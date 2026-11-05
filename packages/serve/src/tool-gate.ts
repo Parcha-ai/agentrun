@@ -207,7 +207,7 @@ export function gateOf(policy: (tool: string) => Permission): Gate {
 
 
 /** The file in a run's directory that names the origin of the turn it runs now: written by the server alone, as it sends
- *  the learning lane's reflect turn (runs.ts's toLiveDoor), and gone once a person's message comes. */
+ *  the learning lane's reflect turn (runs.ts's toLiveDoor), and gone before a person's turn is sent (runs.ts's personsTurn). */
 export const TURN_ORIGIN_FILE = "turn-origin.json";
 /** The run's store's record of a call that waits for approval (`phase: "requested"`), and of its answer acted on
  *  (`phase: "resolved"`), on its root conversation. */

@@ -15,8 +15,10 @@
 //
 // Each tool also has a permission, the tool gate's (tool-gate.ts): allow, ask or deny, the agent's over the server's over
 // the owner's default (a built-in kernel tool allow, a third-party catalog tool ask, told apart by its name), read by
-// the gate's one rule, permissionOf. A capability set to deny resolves to no provider; under ask, a harness's own search
-// (inside its CLI, where no call can wait for a person) gives way to the kernel's.
+// the gate's one rule, permissionOf. A capability set to deny resolves to no provider where it is shown; under ask, a
+// harness's own search (inside its CLI, where no call can wait for a person) gives way to the kernel's. A run is never
+// told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
+// call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -196,8 +198,10 @@ export type Tooling = { harness?: string; tools: readonly string[]; model?: stri
 /** The run's process's description of its tools' providers: JSON of its Plane. */
 export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
 
-/** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. */
-export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
+/** The Plane of a run of `tooling`, in the server's `env` (with its secrets) under its `settings`. `run`: the Plane a
+ *  run's process is handed, where a capability set to deny resolves as under ask (the provider a held call would use),
+ *  since the gate refuses its calls while it is denied; else the one shown and checked, where it resolves denied. */
+export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, run = false }: { capped?: boolean; run?: boolean } = {}): Plane {
   const harness = tooling.harness ?? DEFAULT_HARNESS;
   // A workflow's model nodes may each run on another tier's model, and a native search asks one model's provider: a
   // workflow's search resolves with no model (keyless Exa, or Parallel where picked), never on a model a node may not use.
@@ -207,7 +211,9 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const plane: Plane = {};
   const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {
-    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
+    if (!granted.includes(name)) continue;
+    const chosen = picked(name, settings, tooling.overrides);
+    plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
   if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
   return plane;

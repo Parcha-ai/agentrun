@@ -601,7 +601,7 @@ Like `archive_changes`, the two tables came without a new store version: a store
 metrics and gains the tables from the first `openStore`, and an earlier version still opens a store that has them, ignores them
 and reads every run and `stats` as before (one that ends a run opened again leaves its metrics as they were).
 
-`store.analytics({ from?, to?, agent? })` sums the metrics in one read, over the runs not archived that started in
+`store.analytics({ from?, to?, agent?, pending? })` sums the metrics in one read, over the runs not archived that started in
 [`from`, `to`) (ISO times in UTC) and are `agent`'s, each bound optional: `totals` (the runs, how many completed, an
 escalated run among them, how many of those need review (`needsReview`, the escalated ones), how many failed, how
 many have metrics, their tokens and token kinds, requests and unmetered requests, and their cost as `stats` sums it),
@@ -610,8 +610,11 @@ many have metrics, their tokens and token kinds, requests and unmetered requests
 the metrics' effort, null when unset), `byDay` (the UTC date a run started), `bySource` (`live`, or the source an imported
 run came from) and `tools` (the 20 with the most calls, by name on a tie, with their errors). Each group has `runs` beside
 `runsWithMetrics`, so a run with no metrics counts as a run and never as 0 tokens; a running run's metrics are its last
-end's, so it counts as one without them. It reads `run_metrics`, `run_tool_metrics`, `runs` and `revisions` alone, in one
-snapshot; a store without the metrics tables answers its runs with no metrics.
+end's, so it counts as one without them. `pending` names the running runs whose end the caller holds and the store does
+not have yet, each by the state its end will have (`PendingEnd`: `completed`, `escalated`, `failed` or `stopped`): such a
+run counts at that state in `totals`' counts, at no cost (known or unknown), and in no group or metric until its end is
+written; a run the store has ended already is read as it is. It reads `run_metrics`, `run_tool_metrics`, `runs` and
+`revisions` alone, in one snapshot; a store without the metrics tables answers its runs with no metrics.
 
 A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
 
@@ -707,7 +710,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `NewRevision`, `StartedRun`, `RunOrigin` (`store.startRun`'s `{ key, fingerprint? }`), `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup` and `AnalyticsFilter` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `RevisionPlace` (a body's optional `{mode, box?}`, ids its host knows), `NewRevision`, `StartedRun`, `RunOrigin` (`store.startRun`'s `{ key, fingerprint? }`), `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), `StoreStats` (what `stats` answers), `StoreAnalytics` with `AnalyticsGroup`, `AnalyticsFilter` and `PendingEnd` (what `analytics` answers and takes), `StoredMetrics` (a run's metrics as `carryBack`, `importRun` and `runMetrics` carry them), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -741,6 +744,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `runMetricsWithDecisions(records, decisions)` | `runMetricsOf`, with a workflow run's decision receipts (`DecisionLike`) beside its entries: each a request by `provider/model`, its `usage` (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, in `unmetered`. serve passes a workflow run's receipts at its end; `runMetricsOf` keeps one parameter, so `.map(runMetricsOf)` stays safe |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
 | `RUN_RESUMED` | The entry kind a host writes on the root as a run's process opens to go on with a run its last process left unfinished (`data`: `after`, `crash` or `server_stop`; `generation`; `at`): a `phase` row of its own at `at`, "Resumed after a crash" or "Resumed after the server stopped", and no request. A reader from before it ignores it, as it does any kind it does not know |
+| `TURN_END` | The entry kind a host writes on the root as a turn on another harness (claude-agent, codex) ends (`data`: `key`, `status`, ...). No row. A message after it is the person's next message, never a `(steer)`, even when the turn's last entry was a tool's result: a stop that came after the result and before the next model request |
 | `scrubUrls(text)` | `text` with each http(s) URL in it kept to its origin, its path and its query keys: query values, the fragment and credentials are dropped, as on every row. A host that adds rows of its own cleans their strings with it |
 | `cut(text, max)` | `text` cut to `max` characters, the last three `...` when it was longer: how a row's strings are cut to `CAPS` |
 | `METRIC_NAMES` | How `runMetricsOf` keeps tool and model names: `max` 256 characters, the `kept` 100 busiest of each, and the names it sums the rest and a nameless tool under: `otherTools` (`…other tools`), `otherModels` (`…other models`), `unnamedTool` (`…unnamed tool`) |

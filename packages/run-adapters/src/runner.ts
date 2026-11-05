@@ -282,7 +282,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const hold = held.get(turn);
       const stoppedUsd = stoppedAt.get(turn);
       stoppedAt.delete(turn);
-      const stopped = usage.usd === null && hold !== undefined && stoppedUsd && typeof usage.stoppedAfterBytes === "number" && usage.stoppedAfterBytes >= 0 ? heldFigure(stoppedUsd(usage.stoppedAfterBytes)) : undefined;
+      // Its hidden reasoning counts beside all it sent, less the reasoning it sent: max(0, budget - reasoning bytes), so
+      // reasoning that streamed is not counted twice and answer text never stands in for it.
+      const figure0 = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+      const hidden = figure0(usage.stoppedHiddenTokens);
+      const reasoned = figure0(usage.stoppedReasoningBytes);
+      const sent = typeof usage.stoppedAfterBytes === "number" && usage.stoppedAfterBytes >= 0 ? usage.stoppedAfterBytes : undefined;
+      const stopped = usage.usd === null && hold !== undefined && stoppedUsd && sent !== undefined ? heldFigure(stoppedUsd(sent + Math.max(0, hidden - reasoned))) : undefined;
       const figure = stopped === undefined ? hold : Math.min(hold!, stopped);
       spentUsd = spent(spentUsd, usage.usd === null ? figure : usage.usd);
       try {
