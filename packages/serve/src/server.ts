@@ -803,6 +803,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     async message(target, input, key) {
       const run = await needRun(target.run_id);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
+      if (await runs.tookMessage(run, key)) return;
       await runs.message(run, String(input.content), key);
     },
     secrets: { mint: (id) => triggerSecrets!.mint(id), remove: (id) => triggerSecrets!.remove(id) },

@@ -2004,6 +2004,28 @@ export class Runs {
   }
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
+  /** Whether the run's store already took a message under `requestId` (a trigger's firing sent it, and the server went
+   *  down before it wrote so). Read before sending it again: the store would take it once anyway, but a completed run
+   *  would be opened again for a message it already has. */
+  async tookMessage(run: Run, requestId: string): Promise<boolean> {
+    const file = this.storeFile(run);
+    if (!(await stat(file).catch(() => null))) return false;
+    const { DatabaseSync } = await import("node:sqlite");
+    return whenFree(async () => {
+      const db = new DatabaseSync(file, { readOnly: true });
+      try {
+        // The store keeps the id as JSON text.
+        return db.prepare("SELECT 1 FROM submissions WHERE request_id IN (?, ?) LIMIT 1").get(JSON.stringify(requestId), requestId) !== undefined;
+      } catch (error) {
+        // A store that keeps no submissions has taken none.
+        if (/no such table/.test((error as Error).message)) return false;
+        throw error;
+      } finally {
+        db.close();
+      }
+    }, this.busyDelays(), this.onBusy(run.id, "its store"));
+  }
+
   /** `requestId`: the message's id in the run's store, which takes one message per id (a trigger's firing key); default
    *  a new one. */
   async message(run: Run, content: string, requestId?: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {

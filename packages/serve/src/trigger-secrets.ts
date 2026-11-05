@@ -93,13 +93,18 @@ export class TriggerSecrets {
 
 /** How far a request's `webhook-timestamp` may be from this server's clock, either way. */
 export const HOOK_TOLERANCE_S = 300;
+/** A webhook-id: printable ASCII with no space, as the spec's `msg_...` ids are; it goes into a firing's key and history. */
+const HOOK_ID = /^[\x21-\x7e]{1,255}$/;
+/** The longest `webhook-signature` list read: room for many keys during a rotation, never an unbounded loop. */
+const MAX_SIGNATURES_CHARS = 2048;
 
 /** Why a request to /v2/hooks/{id} is not signed by `secret` under the Standard Webhooks spec, or undefined when it is:
  *  `webhook-signature` lists `v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">` signatures, space
  *  separated, under the secret's bytes, and any one that matches passes; the timestamp is within HOOK_TOLERANCE_S. */
 export function hookRefusal(secret: string, headers: Record<string, string | string[] | undefined>, body: Buffer, nowMs: number): string | undefined {
   const [id, timestamp, signatures] = ["webhook-id", "webhook-timestamp", "webhook-signature"].map((name) => headers[name]);
-  if (typeof id !== "string" || id.length < 1 || id.length > 255 || typeof timestamp !== "string" || typeof signatures !== "string") return "missing_headers";
+  if (typeof id !== "string" || typeof timestamp !== "string" || typeof signatures !== "string") return "missing_headers";
+  if (!HOOK_ID.test(id) || signatures.length > MAX_SIGNATURES_CHARS) return "malformed_headers";
   if (!/^\d{1,12}$/.test(timestamp) || Math.abs(nowMs / 1000 - Number(timestamp)) > HOOK_TOLERANCE_S) return "stale_timestamp";
   const expected = createHmac("sha256", Buffer.from(secret.slice("whsec_".length), "base64")).update(`${id}.${timestamp}.`).update(body).digest();
   const matched = signatures.split(" ").some((part) => {
