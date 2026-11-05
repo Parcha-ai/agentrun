@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: fix
----
-Under a spend cap, a model request whose response had begun and that then ended on an error counts at the worst case the cap held for it, as a request stopped before its end does. Before, it counted at its own usage, which is what had streamed when the error came (an overloaded event or a reset part way through: the input, and little or none of the output the provider can have billed), so a run could pass `max_cost_usd`. This holds in the run's process, where the next request is judged against the hold, and after a crash: the request's end mark says it ended on an error and holds the figure, and a summary that failed after it began writes its cost mark with `failed` and the hold. An error before any event of the response (refused at the HTTP level: a 429, a 5xx, which the provider does not bill and pi retries) still counts at its own usage, normally $0, and a request that never left (refused by the cap, its mark not written, a cancelled run's) counts nothing. The run's shown cost is unchanged.

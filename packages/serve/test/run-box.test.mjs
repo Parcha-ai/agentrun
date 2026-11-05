@@ -211,6 +211,99 @@ test("a box limit setting that every create would fail on refuses the start, nam
   for (const value of ["0", "1.5", "lots", "-5", "4194305", "9007199254740993", "none"]) assert.equal(await refused("AGENTRUN_BOX_PIDS", value), `AGENTRUN_BOX_PIDS is a whole number from 1 to 4194304, such as 1024; it is ${JSON.stringify(value)}`);
 });
 
+test("a box's host list: the default when unset or empty, the setting's hosts (lower-cased, each once) in its place, none for no network", async () => {
+  const { boxAllowOf, DEFAULT_BOX_ALLOW } = await import("../dist/run-box.js");
+  assert.deepEqual(DEFAULT_BOX_ALLOW, ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "github.com", "codeload.github.com"]);
+  assert.equal(boxAllowOf({}), DEFAULT_BOX_ALLOW);
+  assert.equal(boxAllowOf({ AGENTRUN_BOX_ALLOW: " " }), DEFAULT_BOX_ALLOW);
+  assert.equal(boxAllowOf({ AGENTRUN_BOX_ALLOW: "none" }), "none");
+  assert.equal(boxAllowOf({ AGENTRUN_BOX_ALLOW: " NONE " }), "none");
+  assert.deepEqual(boxAllowOf({ AGENTRUN_BOX_ALLOW: "PyPI.org, *.pythonhosted.org,,pypi.org" }), ["pypi.org", "*.pythonhosted.org"]);
+  const hundred = Array.from({ length: 100 }, (_, i) => `h${i}.example.com`);
+  assert.deepEqual(boxAllowOf({ AGENTRUN_BOX_ALLOW: hundred.join(",") }), hundred);
+});
+
+test("an AGENTRUN_BOX_ALLOW that is not a list of host names refuses the start, saying what it takes, before the server takes its data directory", async (t) => {
+  withEnv(t, {}, ["AGENTRUN_BOX_ALLOW"]);
+  const refused = async (value) => {
+    process.env.AGENTRUN_BOX_ALLOW = value;
+    const data = join(await scratch(t), "agents");
+    try {
+      const started = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
+      await started.close();
+      return `started with AGENTRUN_BOX_ALLOW=${value}`;
+    } catch (error) {
+      assert.equal(existsSync(join(data, SERVER_LOCK)), false, "refused before the server lock");
+      return error.message;
+    } finally {
+      delete process.env.AGENTRUN_BOX_ALLOW;
+    }
+  };
+  const takes = "AGENTRUN_BOX_ALLOW is a comma list of host names (such as pypi.org or *.pythonhosted.org), or none for no network";
+  assert.equal(await refused("*"), `${takes}: "*" is not a host name (a box never reaches every host)`);
+  assert.equal(await refused("pypi.org,*"), `${takes}: "*" is not a host name (a box never reaches every host)`);
+  const ranges = ["10.0.0.0/8", "169.254.169.254"]; // key-gate: denylist addresses the setting refuses
+  for (const bad of [...ranges, "::1", "pypi.org:443", "https://pypi.org", "pypi", "*.org.*", "a b.com"]) assert.equal(await refused(`github.com,${bad}`), `${takes}: ${JSON.stringify(bad)} is not a host name`);
+  assert.equal(await refused(", ,"), `${takes}; it is ", ,"`);
+  assert.equal(await refused(Array.from({ length: 101 }, (_, i) => `h${i}.example.com`).join(",")), "AGENTRUN_BOX_ALLOW names 101 hosts; it takes at most 100");
+});
+
+test("a remote box found at its run's next call: one with no network is kept when a list is asked; one with a list is destroyed and made again when none is", async (t) => {
+  const { ensureRemoteBox, BOX_SYNC_FILE } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  const made = [];
+  const destroyed = [];
+  let found;
+  const box = (id, network) => ({ id, facts: () => ({ provider: "fake", network }), destroy: async () => {
+    destroyed.push(id);
+    if (found?.id === id) found = undefined;
+    return { ok: true, value: undefined };
+  } });
+  const boxes = {
+    list: async () => ({ ok: true, value: found ? [{ id: found.id, labels: {} }] : [] }),
+    attach: async (id) => ({ ok: true, value: found && found.id === id ? found : undefined }),
+    create: async (spec) => {
+      made.push(spec.network);
+      found = box(`made-${made.length}`, spec.network === "none" ? "none" : "allowlist");
+      await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: found.id, mark: { entries: [] } }));
+      return { ok: true, value: found };
+    },
+  };
+  // Kept: the box is more closed than asked, and holds the run's files.
+  found = box("closed", "none");
+  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "closed", mark: { entries: [] } }));
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, ["pypi.org"]), { id: "closed", made: false });
+  assert.deepEqual([made, destroyed], [[], []]);
+  // Destroyed: a list when none is asked, and an open or unknown network whatever is asked.
+  found = box("listed", "allowlist");
+  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "listed", mark: { entries: [] } }));
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, "none"), { id: "made-1", made: true });
+  assert.deepEqual([made, destroyed], [["none"], ["listed"]]);
+  found = box("open", "open");
+  await writeFile(join(runDir, BOX_SYNC_FILE), JSON.stringify({ box: "open", mark: { entries: [] } }));
+  assert.deepEqual(await ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, ["pypi.org"]), { id: "made-2", made: true });
+  assert.deepEqual([made, destroyed], [["none", { allow: ["pypi.org"] }], ["listed", "open"]]);
+});
+
+test("a remote box's refused host list is said as it is refused, before the closed box is made: a closed box that then fails still leaves it said", async (t) => {
+  const { ensureRemoteBox } = await import("../dist/run-box.js");
+  const runDir = await scratch(t);
+  const asked = [];
+  const said = [];
+  const boxes = {
+    list: async () => ({ ok: true, value: [] }),
+    attach: async () => ({ ok: true, value: undefined }),
+    create: async (spec) => {
+      asked.push(spec.network);
+      const error = spec.network === "none" ? { code: "capacity", message: "no room for a box" } : { code: "unsupported", message: "Daytona did not keep this sandbox's domain list" };
+      return { ok: false, error };
+    },
+  };
+  await assert.rejects(ensureRemoteBox(boxes, { id: "r", dir: runDir }, BACKGROUND_CONTEXT, undefined, ["pypi.org"], (code) => said.push(code)), /could not be made: no room for a box/);
+  assert.deepEqual(asked, [{ allow: ["pypi.org"] }, "none"]);
+  assert.deepEqual(said, ["unsupported"]);
+});
+
 test("fake docker: read, write and edit run no docker command, on the work/ the box binds; bash runs one docker exec; a run with no bash makes no box", { skip: !writesHeld() && "needs held directory handles (/proc/self/fd)", timeout: 90_000 }, async (t) => {
   const docker = await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
