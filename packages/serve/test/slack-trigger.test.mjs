@@ -5,6 +5,9 @@
 // when the run asks or ends, tried again until Slack takes it.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { schemaProblems } from "./schema-support.mjs";
@@ -28,9 +31,9 @@ const envelope = (event, eventId) => ({ token: "not-a-secret", team_id: SLACK_TE
 const mention = (ts, text, extra = {}) => envelope({ type: "app_mention", text: `<@${SLACK_BOT_USER}> ${text}`, ts, ...extra }, `Ev${ts.replace(".", "")}`);
 const reply = (ts, thread, text, extra = {}) => envelope({ type: "message", channel_type: "channel", text, ts, thread_ts: thread, parent_user_id: PERSON, ...extra }, `Ev${ts.replace(".", "")}m`);
 
-async function slackServer(t, extra = {}) {
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
-  const slack = await fakeSlack(t);
+async function slackServer(t, extra = {}, slack) {
+  if (!slack) withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
+  slack ??= await fakeSlack(t);
   const server = await serve(t, { slackApiUrl: slack.url, publicUrl: PUBLIC, webhookRetryMs: [50, 50, 50], ...extra });
   /** A POST to /v2/hooks/slack, with no token: its status and body. */
   const hook = async (body, options) => {
@@ -96,6 +99,7 @@ test("a mention in a listed channel starts one run for its thread, deduped acros
     reply("1767225610.000200", "1767225600.000100", "Done.", { user: SLACK_BOT_USER, bot_id: SLACK_BOT_ID }),
     reply("1767225611.000200", "1767225600.000100", "a report", { subtype: "bot_message", bot_id: "B0OTHERBOT1", user: undefined }),
     mention("1767225612.000300", "hello", { channel: "C0EXAMPLE2" }),
+    mention("1767225612.000301", "hello from a shared channel", { user_team: "T0OTHER001" }),
     envelope({ type: "message", channel_type: "channel", text: "no one is asked", ts: "1767225613.000400" }, "EvPLAIN0001"),
   ]) assert.deepEqual(await hook(ignored), { status: 200, body: { ok: "ignored" } }, JSON.stringify(ignored.event));
   assert.equal((await api("GET", "/agents/helper/runs")).body.runs.length, 1, "one run");
@@ -151,4 +155,30 @@ test("a Slack trigger is refused a channel another Slack trigger lists (409 nami
     const bad = await api("POST", "/triggers", { name: "four", source: { kind: "slack", channels }, target });
     assert.deepEqual([bad.status, bad.body.error.fields.map((f) => f.field)], [422, ["source.channels"]], JSON.stringify(channels));
   }
+});
+
+test("a restart keeps each thread's run and each line still to post: a reply after it reaches the same run, and a line Slack had refused is posted once", { timeout: 180_000 }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "slack-restart-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const first = await slackServer(t, { data, webhookRetryMs: [3_000, 50] });
+  assert.equal((await first.api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
+  await made(first.api, "helper");
+  const { body } = await first.api("POST", "/triggers", { name: "help desk", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "helper", input: { content: "Say hello." }, max_cost_usd: 0.5 } });
+  // The end's line is refused once, and its next try is 3 s away when the server goes.
+  first.slack.answers.push({ status: 500, body: { ok: false, error: "internal_error" } });
+  assert.equal((await first.hook(mention("1767227000.000100", "say hello"))).body.ok, "received");
+  const [started] = await firings(first.api, body.id, 1);
+  await follow(first.api, started.run_id, ["completed"]);
+  await until(() => first.slack.posts.length === 1, "the first try");
+  await first.close();
+  const second = await slackServer(t, { data, webhookRetryMs: [50] }, first.slack);
+  await until(() => first.slack.posts.length >= 2, "the line tried again after the restart");
+  await sleep(300);
+  assert.deepEqual(first.slack.posts.map((p) => p.body.text), [`Done: <${PUBLIC}/#/runs/${started.run_id}|open the run>`, `Done: <${PUBLIC}/#/runs/${started.run_id}|open the run>`], "posted once, after one refusal");
+  assert.equal((await second.hook(reply("1767227060.000200", "1767227000.000100", "and once more"))).body.ok, "received");
+  const [sent] = await firings(second.api, body.id, 2);
+  assert.deepEqual([sent.status, sent.run_id], ["sent", started.run_id], "the thread's run, after the restart");
+  await follow(second.api, started.run_id, ["completed"]);
+  await until(() => first.slack.posts.length === 3, "the follow-up's end posted");
 });
