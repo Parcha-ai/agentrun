@@ -13,8 +13,10 @@ export const RELEASE_ATTEMPTS = 6;
 export const CONFIRM_POLLS = 5;
 
 type Move = { state: LeaseState; resourceId?: string; reason?: ReleaseReason; at: string; notice?: "kept" | "lost"; handoff?: string };
-type ReleaseInput = { row: InventoryRow; notBefore?: number };
-type ReleaseState = { phase: "release"; attempt: number } | { phase: "confirm"; attempt: number; ids: string[]; polls: number };
+/** `found`: the ids an earlier attempt (or a task this one succeeds) released under the row's tag, kept until the release
+ *  is billed: a provider's tag lookup lists running sessions only, so a later attempt no longer finds one it stopped. */
+type ReleaseInput = { row: InventoryRow; notBefore?: number; found?: string[] };
+type ReleaseState = { phase: "release"; attempt: number; found?: string[] } | { phase: "confirm"; attempt: number; ids: string[]; polls: number };
 type ReleaseRuntime = TaskRuntime<ReleaseInput, ReleaseState, { released: number }, object>;
 export type HandoffInput = { row: InventoryRow; requestId: string; interactionId: string; completionCondition: string };
 type HandoffResult = { outcome: HandoffOutcome };
@@ -109,17 +111,19 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     const spent = record && record.resourceId !== null ? meter(record.spent, at, true).spent : record?.spent;
     if (record && spent) await emit(cid, config?.label ?? "", { ...record, state: "released", endedAt: record.endedAt ?? at, spent }, "released");
   }
-  /** The row stays in the inventory until a run open's reconcile sees nothing under its tag running. */
-  async function retry(runtime: ReleaseRuntime, row: InventoryRow, attempt: number, context: Context): Promise<void> {
+  const union = (...lists: (readonly string[] | null | undefined)[]) => [...new Set(lists.flatMap((ids) => ids ?? []))];
+  /** The row stays in the inventory until a run open's reconcile sees nothing under its tag running. `found` goes on to
+   *  the next attempt, and bills a lost one. */
+  async function retry(runtime: ReleaseRuntime, row: InventoryRow, attempt: number, context: Context, found: string[]): Promise<void> {
     if (attempt + 1 >= RELEASE_ATTEMPTS) {
       await runtime.commit(async (tx) => {
-        await move(tx, row, { state: "lost", reason: "lost", at: iso(runtime.now()) });
+        await move(tx, row, { state: "lost", reason: "lost", at: iso(runtime.now()), ...foundId(row, found) });
         return { status: "terminal", outcome: { status: "failed", error: { code: "release_failed", message: `${row.tag}: not released after ${RELEASE_ATTEMPTS} attempts` } } };
       }, context);
       return;
     }
     await runtime.sleep(runtime.now() + backoffMs(attempt), context);
-    await runtime.commit(() => ({ status: "running", checkpoint: { phase: "release", attempt: attempt + 1 } }), context);
+    await runtime.commit(() => ({ status: "running", checkpoint: { phase: "release", attempt: attempt + 1, ...(found.length ? { found } : {}) } }), context);
   }
 
   const ReleaseTask = defineTask<ReleaseInput, ReleaseState, { released: number }, object>({
@@ -130,9 +134,12 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       release: async (task, runtime, context) => {
         const { row, notBefore } = task.input;
         const { attempt } = task.state.checkpoint;
+        const found = union(task.input.found, task.state.checkpoint.found);
         if (attempt === 0 && notBefore && runtime.now() < notBefore) await runtime.sleep(notBefore, context);
-        const ids = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal), null);
-        if (!ids) return retry(runtime, row, attempt, context);
+        const released = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal), null);
+        if (!released) return retry(runtime, row, attempt, context, found);
+        // Confirmed together: what this attempt released and what earlier ones did.
+        const ids = union(found, released);
         await runtime.commit(() => ({ status: "running", checkpoint: { phase: "confirm", attempt, ids, polls: 0 } }), context);
       },
       confirm: async (task, runtime, context) => {
@@ -144,7 +151,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
           await runtime.commit(() => ({ status: "running", checkpoint: { phase: "confirm", attempt, ids, polls: polls + 1 } }), context);
           return;
         }
-        if (running) return retry(runtime, row, attempt, context);
+        if (running) return retry(runtime, row, attempt, context, ids);
         // The host hears the release before the task's last commit, so at least once, with the bill that commit
         // records.
         const at = iso(runtime.now());
@@ -159,12 +166,14 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     // to a successor task in the same commit.
     abort: async (task, runtime, context) => {
       const { row, notBefore } = task.input;
+      const checkpoint = task.state.checkpoint;
+      const found = union(task.input.found, checkpoint.phase === "confirm" ? checkpoint.ids : checkpoint.found);
       let stopped: string[] | null = null;
       // Before the create deadline nothing found is proof of nothing: the successor keeps the delayed lookup.
       if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedIds(provider, row, context.abortSignal)).catch(() => null);
       await runtime.commit(async (tx) => {
-        if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()), ...foundId(row, stopped) });
-        else await tx.createTask(ReleaseTask, task.input, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });
+        if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()), ...foundId(row, union(found, stopped)) });
+        else await tx.createTask(ReleaseTask, { ...task.input, ...(found.length ? { found } : {}) }, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });
         return { status: "terminal", outcome: { status: "aborted", reason: stopped ? "released by the abort handler" : "release handed to a successor task" } };
       }, context);
     },

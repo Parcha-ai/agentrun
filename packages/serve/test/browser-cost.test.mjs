@@ -61,8 +61,8 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   const sessions = async () => (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
   if (end === "idle") for (let i = 0; i < 200 && (await sessions())[0]?.state !== "released"; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
   else await browser.release(root, "close", ctx);
-  // `pump`: the mock clock moves on 2 s every 5 ms of real time, for the release task's backoffs to pass.
-  const pumping = pump ? setInterval(() => t.mock.timers.tick(2_000), 5) : undefined;
+  // `pump`: the mock clock moves on 2 s (or `pump` ms) every 5 ms of real time, for the release task's backoffs to pass.
+  const pumping = pump ? setInterval(() => t.mock.timers.tick(pump === true ? 2_000 : pump), 5) : undefined;
   await browser.drain(harness, ctx).finally(() => clearInterval(pumping));
   seen("released", spent);
   const [record] = await sessions();
@@ -147,6 +147,18 @@ test("capped, a create whose answer is lost and whose session no lookup finds ye
   assert.deepEqual([record.state, record.spent.final], ["released", true]);
   assert.deepEqual(booked.map((row) => row.seconds), [60], "found by its tag and billed its minimum");
   assert.equal(paidHolds(), 0, "let go once billed");
+});
+
+test("capped, a session found by its tag stays billed when its release retries: the next attempt's lookup no longer finds the stopped session", { timeout: 60_000 }, async (t) => {
+  const { CONFIRM_POLLS } = await import("@parcha/pi-browser/durable");
+  const cap = 0.1;
+  // The create's answer is lost and its first lookup fails: the session is left to a release after the create deadline.
+  // That release finds it by its tag and stops it, but its confirm gets no answer through every poll, so the release is
+  // tried again, and the provider's tag lookup no longer lists the stopped session. The clock moves as real time does.
+  const { record, booked } = await run(t, { reads: 1, cap, pump: 5, options: { createDeadlineMs: 50 }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); backend.fail("status", CONFIRM_POLLS); } });
+  assert.deepEqual([record.state, record.spent.final], ["released", true]);
+  assert.deepEqual(booked.map((row) => [row.seconds, row.usd]), [[60, 0.002]], "one charge, its minimum at list price");
+  assert.equal(paidHolds(), 0, "its hold let go once billed");
 });
 
 test("a charge joins the run's spend and moves its holds only once the commit that books it is in: one that fails leaves neither", async (t) => {
