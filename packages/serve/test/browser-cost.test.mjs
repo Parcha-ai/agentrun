@@ -222,6 +222,25 @@ test("a charge joins the run's spend and moves its holds only once the commit th
   assert.deepEqual([Math.round(spent * 1e12) / 1e12, paidHolds()], [0.002, 0]);
 });
 
+test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  let spent = 0;
+  useSpend({ cap: 1, spent: () => spent, add: (usd) => void (spent += usd) });
+  t.after(() => useSpend(undefined));
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  spend.watch(harness);
+  const base = paidHolds();
+  spend.carry("ar-run-2", 600);
+  assert.ok(Math.abs(paidHolds() - base - 0.02) < 1e-12, "10 minutes at $0.12 an hour, held");
+  spend.carry("ar-run-3", 300);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-2", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base - 0.01) < 1e-12, "booked: that session's carried time goes, another's stays");
+  assert.equal(Math.round(spent * 1e12) / 1e12, 0.02);
+});
+
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {
   assert.deepEqual(BROWSER_PRICES, { browserbase: { usdPerHour: 0.12, minimumS: 60 }, kernel: { usdPerHour: 0.06, minimumS: 0 }, cdp: { usdPerHour: 0, minimumS: 0 } });
   assert.deepEqual(browserPrice("kernel", {}), { usdPerHour: 0.06, minimumS: 0 });

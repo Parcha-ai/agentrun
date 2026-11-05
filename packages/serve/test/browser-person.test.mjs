@@ -75,6 +75,7 @@ function fakeClock() {
   let next = 1;
   const due = new Map();
   return {
+    now: () => now,
     timers: { set: (run, ms) => { const id = next++; due.set(id, { at: now + ms, run }); return id; }, clear: (id) => void due.delete(id) },
     async tick(ms) {
       now += ms;
@@ -199,4 +200,35 @@ test("an ask whose waiting row has not come yet is not shown, though an earlier 
   assert.equal(askShown(root, rows), undefined, "its own row is not in yet");
   rows.push({ kind: "waiting", session: tag });
   assert.equal(askShown(root, rows)?.id, second.interactionId);
+});
+
+test("take-over time counts: what the person used stays held until a charge books it, so take-overs given back with no browser call between them meet the cap", async (t) => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const { browserSpend } = await import("../dist/browser-cost.js");
+  const { paidHolds, useSpend } = await import("../dist/cap.js");
+  // $0.12 an hour under a $0.05 cap: each take-over holds 15 minutes ($0.03) up front.
+  let spent = 0;
+  useSpend({ cap: 0.05, spent: () => spent, add: (usd) => void (spent += usd ?? 0) });
+  t.after(() => useSpend(undefined));
+  const base = paidHolds();
+  const spend = browserSpend("browserbase", { usdPerHour: 0.12, minimumS: 60 }, 180, async () => undefined);
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const gates = createDrivingGates({ timers: clock.timers });
+  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, personTime: spend.personTime, carry: spend.carry, note: async () => {}, pollMs: 60_000 });
+  t.after(() => person.close());
+  const tag = "ar-run-12-1";
+  gates(tag).setPresent(true);
+  const taken = [];
+  for (let round = 0; round < 5; round += 1) {
+    const take = await person.take(tag);
+    if ("refused" in take) { taken.push(take.refused); break; }
+    gates(tag).take((why) => take.end(why));
+    for (let minute = 0; minute < 10; minute += 1) { gates(tag).input(); await clock.tick(60_000); }
+    gates(tag).give();
+    taken.push("held");
+  }
+  assert.deepEqual(taken.slice(0, 2), ["held", "held"]);
+  assert.match(taken[2] ?? "", /^spend_cap_reached: Not sent: the run has spent \$0 and holds \$0\.04 for calls still answering of its \$0\.05 cap, and taking over the browser could cost up to \$0\.03 /, "the third is refused: the 20 minutes used are held");
+  assert.ok(Math.abs(paidHolds() - base - 0.04) < 1e-9, `held: ${paidHolds() - base}`);
 });

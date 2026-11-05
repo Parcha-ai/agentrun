@@ -222,6 +222,11 @@ export function personHands(options: {
   pollMs?: number;
   /** For tests: the timer functions the person's time is held again by. */
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
+  /** For tests: the clock the person's time is measured by. */
+  now?: () => number;
+  /** The person's time on a session that just ended, `seconds` of it, to hold until a charge books it (browser-cost.ts
+   *  carry): the up-front holds go as it ends, the time it took stays counted. */
+  carry?(tag: string, seconds: number): void;
 }) {
   const holdMs = options.holdMs ?? PERSON_HOLD_MS;
   const timers = options.timers ?? { set: (run: () => void, ms: number) => setTimeout(run, ms).unref(), clear: (handle: unknown) => clearTimeout(handle as NodeJS.Timeout) };
@@ -234,7 +239,8 @@ export function personHands(options: {
    *  dropped when the last of them is over: a take then an ask, or an ask then a take, holds it once. `ready` settles when
    *  the first hold is taken, or refused. While anyone needs it, it is held again each holdMs (a take-over kept alive by
    *  input has no end of its own): with no room, a take-over gives the browser back (`cap`, in the cap's words). */
-  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string };
+  type Ledger = { holds: Array<{ drop(): void }>; users: Set<string>; ready: Promise<{ refused: string } | undefined>; timer?: unknown; refused?: string; since: number };
+  const now = options.now ?? Date.now;
   const ledgers = new Map<string, Ledger>();
   /** `user`'s share of session `tag`'s person time: held now when nobody holds it (`what` names it in the cap's words). */
   const acquire = async (tag: string, user: string, what: string): Promise<{ refused: string } | undefined> => {
@@ -251,7 +257,7 @@ export function personHands(options: {
         known.users.add(user);
         return undefined;
       }
-      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined) };
+      const ledger: Ledger = { holds: [], users: new Set([user]), ready: Promise.resolve(undefined), since: now() };
       ledger.ready = options.personTime(what, holdMs / 1000).then(
         (hold) => {
           if (!("refused" in hold)) {
@@ -294,6 +300,8 @@ export function personHands(options: {
     if (!ledger || !ledger.users.delete(user) || ledger.users.size) return;
     ledgers.delete(tag);
     if (ledger.timer !== undefined) timers.clear(ledger.timer);
+    // The time the person had is spent at the provider: it stays held until booked, before what was held up front goes.
+    if (ledger.holds.length) options.carry?.(tag, (now() - ledger.since) / 1000);
     for (const hold of ledger.holds) hold.drop();
   };
 

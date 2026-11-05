@@ -252,6 +252,7 @@ const browserTool: ToolEntry = {
       root: host.where.root,
       gates,
       personTime: (what, seconds) => spend.personTime(what, seconds),
+      carry: (tag, seconds) => spend.carry(tag, seconds),
       note: async (kind, data) => void (await opened?.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), context)),
       holdMs: windows.holdMs,
     });

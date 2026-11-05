@@ -69,6 +69,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   const stretchS = price.minimumS + idleS + RELEASE_ALLOWANCE_S;
   const stretch = usdOf(stretchS);
   const sessions = new Map<string, Open>();
+  /** A person's time on a session that has ended but is not booked yet (personTime's holds are dropped as it ends), held
+   *  at its price until the session's next charge books it, or the session leaves the inventory. */
+  const carried = new Map<string, Hold[]>();
+  const dropCarried = (tag: string) => { for (const hold of carried.get(tag) ?? []) hold.drop(); carried.delete(tag); };
   /** Each call under way, by its id: its conversation and its hold. */
   const calls = new Map<string, { cid: number; hold: Hold }>();
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
@@ -89,6 +93,8 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     const usd = data.usd ?? 0;
     const session = sessions.get(data.tag);
     addSpend(data.usd);
+    // Its charge books the session's time since its last one, a person's included: what was carried for it goes.
+    dropCarried(data.tag);
     if (data.final) {
       // A session the provider ended before its first charge has no reserve: its release comes out of its call's hold.
       take(session?.reserve ?? [...calls.values()].find((c) => c.cid === data.conversation)?.hold, usd);
@@ -129,6 +135,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  ends it. */
   function tracked(rows: Readonly<Record<string, Row>>): void {
     for (const [tag, open] of sessions) if (!Object.hasOwn(rows, tag)) (open.reserve.drop(), sessions.delete(tag));
+    for (const tag of [...carried.keys()]) if (!Object.hasOwn(rows, tag)) dropCarried(tag);
     for (const row of Object.values(rows)) {
       if (rate === 0 || row.state !== "releasing" || row.resourceId !== null || sessions.has(row.tag)) continue;
       const usd = usdOf(CREATE_DEADLINE_S + stretchS);
@@ -198,5 +205,14 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     return "refused" in paid ? { refused: paid.refused } : paid.result;
   }
 
-  return { onCharge, watch, reopened, capped, personTime, stretch };
+  /** The person's time on session `tag` that just ended (`seconds` of it), held at the provider's price until the session's
+   *  next charge books it: the time is spent at the provider, so it is held, never refused. A free or unpriced provider's
+   *  holds nothing (an unpriced one under a cap was refused before any of it started). */
+  function carry(tag: string, seconds: number): void {
+    if (!rate || !(seconds > 0)) return;
+    const hold = keepHold(Math.ceil(Math.round(usdOf(seconds) * 1e12) / 1e6) / 1e6);
+    carried.set(tag, [...(carried.get(tag) ?? []), hold]);
+  }
+
+  return { onCharge, watch, reopened, capped, personTime, carry, stretch };
 }
