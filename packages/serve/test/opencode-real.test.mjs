@@ -162,19 +162,37 @@ const isFree = (port) => new Promise((resolve) => {
  *  listen(0) is in that range: on a busy machine (CI's test runs side by side) another test's listen(0) or connection
  *  could be handed it in the moment between one drive's OpenCode and the next, and the next would fail to bind it
  *  ("OpenCode exited before it listened", ServeError: F36, twice on CI). */
-async function freePort() {
-  let low = 32768;
-  try {
-    low = Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || low;
-  } catch { /* no such file off Linux: the default */ }
-  const from = 20000;
-  const to = Math.max(from + 1000, Math.min(low, 32768));
+async function freePort(low = ephemeralLow()) {
+  // Every candidate is strictly below `low` (and below Linux's default start): from 20000, or from 1,000 below `low` when
+  // the range starts lower, never into the privileged ports. A host whose range leaves none fails, never takes one in it.
+  const to = Math.min(low, 32768);
+  const from = Math.max(1024, Math.min(20000, to - 1000));
+  if (to <= from) throw new Error(`no port below the ephemeral range: it starts at ${low}`);
   for (let tries = 0; tries < 200; tries++) {
     const port = from + Math.floor(Math.random() * (to - from));
     if (await isFree(port)) return port;
   }
-  throw new Error(`no free port in ${from}-${to - 1}`);
+  throw new Error(`no free port below the ephemeral range: none in ${from}-${to - 1} (it starts at ${low})`);
 }
+
+/** The first port of this host's ephemeral range: Linux's ip_local_port_range, read now, or its default off Linux. */
+function ephemeralLow() {
+  try {
+    return Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || 32768;
+  } catch {
+    return 32768;
+  }
+}
+
+test("the drives' port is below the host's ephemeral range wherever it starts: under a range from 20000 every pick is below 20000, and a range that leaves no port below it fails by name", async () => {
+  for (let i = 0; i < 20; i++) {
+    const port = await freePort(20000);
+    assert.ok(port >= 1024 && port < 20000, `below a range from 20000: ${port}`);
+  }
+  const low = ephemeralLow();
+  assert.ok((await freePort()) < low, `below this host's range, from ${low}`);
+  await assert.rejects(freePort(1024), /^Error: no port below the ephemeral range: it starts at 1024$/);
+});
 
 test("twenty follow-ups on the pinned OpenCode, every drive's process on the SAME port (as where 4096 is free: OpenCode takes it each time): every event stream opens at the first try", { skip, timeout: 600_000 }, async (t) => {
   // The pinned binary, started by the adapter's stand-in hook on one port for every drive: each new process listens where
