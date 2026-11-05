@@ -89,8 +89,9 @@ const SCRIPT = [
   // Signal $2 to process $1's group; on a tty process, to its terminal's processes instead, as a terminal delivers it:
   // INT to the foreground group alone (Ctrl-C), TERM and KILL to the command's group and the foreground group (script
   // would turn INT into TERM, and a script signalled itself exits 0): script then exits with the code its command ended
-  // with. Before script has its command, script itself.
-  'hit() { g=$(cat "$d/$1/pid" 2>/dev/null); [ -n "$g" ] || return 1; k=; f=; if [ -f "$d/$1/tty" ]; then k=$(kids "$g"); f=$(fgs "$g"); fi; if [ -z "$k" ]; then kill -"$2" -"$g" 2>/dev/null; return 0; fi; if [ "$2" = INT ] && [ -n "$f" ]; then t=$f; else t="$k $f"; fi; for p in $t; do kill -"$2" -"$p" 2>/dev/null; done; }',
+  // with. Before script has its command, script itself. Each group is signalled once (the command's and the foreground
+  // group are often one), and a send that finds its group already gone is no failure: only a missing group is.
+  'hit() { g=$(cat "$d/$1/pid" 2>/dev/null); [ -n "$g" ] || return 1; k=; f=; if [ -f "$d/$1/tty" ]; then k=$(kids "$g"); f=$(fgs "$g"); fi; if [ -z "$k" ]; then kill -"$2" -"$g" 2>/dev/null; return 0; fi; if [ "$2" = INT ] && [ -n "$f" ]; then t=$f; else t="$k $f"; fi; for p in $(printf \'%s\\n\' $t | sort -u); do kill -"$2" -"$p" 2>/dev/null; done; return 0; }',
   'case $op in',
   'start)',
   '  if [ "$5" = 1 ] && ! command -v script >/dev/null 2>&1; then echo noscript; exit 0; fi',
