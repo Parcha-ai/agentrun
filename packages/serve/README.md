@@ -398,10 +398,11 @@ since nothing binds `work/` there):
   `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
 - A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
   and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
-  open, and makes every later Daytona box that way until it starts again. The log says so once
-  (`event=box_network box=daytona network=none refused=<code>`), and capabilities show the box's `network` as `none`
-  with the reason. A box the server finds with no network is kept; one with a list when the setting is `none` is
-  destroyed and made again. A changed list applies to the boxes made after the start that reads it.
+  open, and makes every later Daytona box that way until it starts again. The log says so once, with Daytona's own
+  words (`event=box_network box=daytona network=none refused=<code> message="…"`), and capabilities show the box's
+  `network` as `none` with its `network_reason`. A box the server finds is kept when it has no network, or the list the
+  setting names now (the same hosts, in any order, as Daytona reads them back); any other (a wider or narrower list, a
+  list when the setting is `none`) is destroyed and made again, so a changed list holds for a run's box after a restart.
 - A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
   organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
   gets no Daytona box unless that policy blocks it.
@@ -991,6 +992,36 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 410 turned off sends nothing, a test or a redelivery included (`409 webhook_off`), until a `PUT` sets it again.
 `DELETE /v2/settings/webhook` removes the webhook and drops its pending messages.
 
+## Schedules
+
+A schedule starts an agent's runs with no one there. `POST /v2/triggers` with a `source` and a `target`:
+
+```json
+{ "name": "nightly triage",
+  "source": { "kind": "schedule", "cron": "30 1 * * *", "timezone": "America/Los_Angeles" },
+  "target": { "kind": "start_run", "agent_id": "triage", "input": { "content": "Triage last night's issues." },
+              "max_cost_usd": 2 } }
+```
+
+A source is a cron line of five fields in an IANA zone (default UTC), `{at}` for one time (the trigger turns itself off
+after it fires), or `{every_s, start_at?}` for every N seconds, from 60 to a year and a day, on the grid from `start_at`. A time a clock
+change repeats fires once, at its first pass; one it skips fires at the first time after the gap. Each next time is
+reckoned from the last nominal one, so a timer that wakes late does not drift. `max_cost_usd` is required: every run a
+trigger starts is capped, and a workflow agent is refused, since a workflow run's spend is not capped here. Each run's
+input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
+trigger and the firing.
+
+A firing starts its run once. Its key comes from the trigger and its nominal time, it is recorded `due` in
+`DIR/triggers.json` (written whole and synced) before its run starts, and the run is started under that key, so a firing
+a restart drives again finds its run. A firing's key stays bound to that run: when the server stopped while setting the
+run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
+again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
+is `skipped`, with why; a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+one `missed` firing with their count, and the schedule goes on from now. `PATCH /v2/triggers/{id}` changes it, and
+`{enabled: false}` pauses it: the time it was off is skipped, not caught up. `POST /v2/triggers/{id}/fire` runs it now,
+once per `Idempotency-Key` (required): the same key within `limits.idempotency_ttl_s` answers its firing, after the
+firing has left the history too, and later it is a new firing that a run the key started still answers. `GET /v2/triggers/{id}/firings` lists its last 200 firings.
+
 ## What it serves
 
 | Route | Here |
@@ -1021,6 +1052,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
+| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings` | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
@@ -1660,14 +1692,37 @@ Under a cap, whatever cannot be priced is refused, never passed as $0, and the r
   after a cut, at the worst case the cap held, as pi does.
 
 A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
-word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
-calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
-(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
-usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
-output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
-went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
-response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
-request cut by a crash (its process gone mid-request).
+word we read; never more than it was held. That is its input bound and each byte of content it streamed (its text,
+thinking and tool calls on pi; on `claude-agent`, `codex` and `opencode`, the text, reasoning and tool-argument deltas
+the response sent, never the provider's framing around them, which runs to about 12 bytes a character on the Responses
+API and 24 on the Messages API) as a token, plus 1,024 tokens of output (`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most
+the worst case the cap held for it. The cut stream's own usage is never read: it is not what the provider billed (the
+Responses API reports none until the end, and Anthropic's output count comes at the end). The 1,024 tokens are a stated
+bound, as the native search allowance is: a provider that went on producing for longer after the stop could bill past
+what is counted. A request that ended on an error after its response began (an overload part way, a reset), or a summary
+that failed, still counts at its worst case, and so does a request cut by a crash (its process gone mid-request). A
+request stopped before the provider's first header counts its input and the 1,024 tokens, on every harness.
+
+Reasoning the provider never streams counts too. A model whose reasoning streams only as a summary (the Responses API's
+reasoning; Claude 4-class thinking, and redacted thinking) or not at all is billed for far more than the summary's
+bytes, so a stopped request that reasons also counts the part of its reasoning budget that did not stream: input +
+streamed + 1,024 + max(0, reasoning budget - reasoning streamed), never more than the hold. Reasoning streamed is its
+thinking's bytes on pi, and on `claude-agent`, `codex` and `opencode` the bytes of the reasoning events the response
+sent (a thinking delta, a reasoning summary delta); answer text never stands in for it. The budget is its effort's or thinking
+level's (minimal 1,024, low 2,048, medium 8,192, high 16,384; on Anthropic's API, the `budget_tokens` it was sent with).
+A Claude model whose thinking is adaptive (pi-ai sends every current one `thinking: {type: "adaptive"}`, no budget) thinks
+within its output limit as it sees fit, so on pi it counts that limit less 1,024 tokens, as `claude-agent` counts
+`max_tokens`, and is sent the limit it is held at. With no effort or level given, on an API whose model then reasons at
+its own default (OpenAI's), it counts its whole output limit, the conservative side; with thinking off on Anthropic's
+API, none, unless the model thinks adaptively at any level (pi-ai's models with mid-conversation effort). On
+`claude-agent`, every request that thinks counts its budget, since Claude 4-class models stream only a summary of their
+thinking; thinking that streamed is subtracted, so a stop after a budget's worth of visible thinking counts nothing on
+top. The figure is an estimate: an effort's budget is not a limit the provider keeps, so a request can reason past it.
+It is bounded by the request's hold, and its real usage replaces it when that comes.
+
+So on a model whose thinking is adaptive (every current Claude model, on pi and on `claude-agent`), a stopped request
+counts up to its hold: the provider is given no thinking budget, and what streamed says nothing of the thinking billed.
+Under a cap with little left beside that hold, the request after the stop can be refused.
 
 On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
 of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the

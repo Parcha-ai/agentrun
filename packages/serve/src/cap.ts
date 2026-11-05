@@ -92,6 +92,13 @@ export function streamedBytes(message: { content?: unknown } | undefined): numbe
   }
   return bytes;
 }
+/** What of a model answer's reasoning streamed, in bytes (streamedBytes' unit): its thinking blocks. */
+export function reasoningBytes(message: { content?: unknown } | undefined): number {
+  const blocks = Array.isArray(message?.content) ? (message.content as Array<Record<string, unknown> | null>) : [];
+  let bytes = 0;
+  for (const block of blocks) if (typeof block?.thinking === "string") bytes += Buffer.byteLength(block.thinking, "utf8");
+  return bytes;
+}
 /** A request's figure if it is stopped before its end, given the answer it had streamed. */
 export type Stopped = (message: { content?: unknown }) => number;
 /** What a request stopped before its end counts at: its input and `streamed` tokens plus STOP_ALLOWANCE_TOKENS of output,
@@ -653,14 +660,33 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // context leaves, and on an API whose thinking takes a budget adds the budget to it.
     const transcript = context as unknown as Parameters<typeof simple.clampMaxTokensToContext>[1];
     const thinking = simpleCall && model.reasoning && options?.reasoning ? (options.reasoning as Parameters<typeof simple.thinkingBudgetForLevel>[0]) : undefined;
-    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api);
+    // Adaptive thinking (pi-ai's current Claude models on Anthropic's API) takes no budget: pi-ai sends the request's
+    // maxTokens as is, and the model thinks within them as it sees fit: at any level, none included, on a model with
+    // mid-conversation effort, else when given a level.
+    const compat = model.api === "anthropic-messages" && model.reasoning ? model.compat as { forceAdaptiveThinking?: boolean; supportsMidConvoEffort?: boolean } | undefined : undefined;
+    const adaptive = compat?.supportsMidConvoEffort === true || (compat?.forceAdaptiveThinking === true && thinking !== undefined);
+    const budgeted = thinking !== undefined && BUDGET_APIS.has(model.api) && !adaptive;
     const base = simple.clampMaxTokensToContext(model, transcript, options?.maxTokens ?? ceilingTokens(model));
     const asked = Math.min(ceiling, budgeted ? simple.clampMaxTokensToContext(model, transcript, simple.adjustMaxTokensForThinking(base, ceilingTokens(model), thinking, options?.thinkingBudgets).maxTokens) : base);
     const least = Math.min(leastOutput(model, thinking, (level) => simple.thinkingBudgetForLevel(level as never, options?.thinkingBudgets)), asked);
     const most = mostOutput(cost, least, asked, left);
     if (most === undefined) return { why: capRefusal(cap, spentUsd, holding, name, cost(least)), figures: { spentUsd: spentUsd + holding, needsUsd: cost(least) } };
-    // Stopped before its end, at most the output it was sent with: what it streamed and the allowance, within its worst case.
-    const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message));
+    // The reasoning a stop leaves unseen: a model's reasoning streams as a summary or not at all (the Responses API; Claude
+    // 4-class thinking), so a request that reasons counts its level's budget (the budget it was sent with, on a budget
+    // API), or its whole limit when it gives no level and its API reasons by default; none on a budget API with thinking
+    // off, or on a model that does not reason. Adaptive thinking is bounded only by the limit, so it counts the limit
+    // less the answer's 1,024 tokens. An estimate, as levels are not limits the provider keeps: within the hold.
+    const hiddenOf = (limit: number): number => {
+      if (adaptive) return Math.max(0, limit - ANSWER_TOKENS_LEAST);
+      if (!model.reasoning || (thinking as string | undefined) === "off") return 0;
+      if (thinking === undefined) return BUDGET_APIS.has(model.api) ? 0 : limit;
+      const budget = simple.thinkingBudgetForLevel(thinking, options?.thinkingBudgets);
+      return budgeted ? Math.max(0, Math.min(budget, limit - ANSWER_TOKENS_LEAST)) : budget;
+    };
+    // Stopped before its end, at most the output it was sent with: what it streamed, the part of its reasoning budget that
+    // did not stream (max(0, budget - the reasoning streamed), so thinking that streamed is not counted twice), and the
+    // allowance, within its worst case.
+    const stoppedAt = (limit: number): Stopped => (message) => stoppedFigure(cost, limit, cost(limit), streamedBytes(message) + Math.max(0, hiddenOf(limit) - reasoningBytes(message)));
     if (most === asked) return { worst: cost(asked), stopped: stoppedAt(asked) };
     // Limited: sent with `most` tokens at most, thinking included. On a budget API the budget is squeezed first, keeping
     // the answer's 1,024, and maxTokens is what is left of `most` beside it, so pi-ai's sum is `most`.
