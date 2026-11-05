@@ -162,10 +162,14 @@ export function adapterRun(
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
     // at): the worst case the cap holds for it, which the runner records, and counts it at if its cost never comes in.
     const limit = answer?.outputTokensMax;
-    const hold = cap?.worstOf?.({ ...request, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
+    const admitted = { ...request, ...(limit === undefined ? {} : { outputTokensMax: limit }) };
+    const hold = cap?.worstOf?.(admitted);
     inFlight.admitted(hold);
     if (hold === undefined && limit === undefined) return undefined;
-    return { ...(hold === undefined ? {} : { holdUsd: hold }), ...(limit === undefined ? {} : { outputTokensMax: limit }) };
+    // Stopped part way by its client, it counts by what streamed (cap.ts stoppedOf), never more than its hold (the runner).
+    const stoppedOf = cap?.stoppedOf;
+    const stopped = hold !== undefined && stoppedOf ? { stoppedUsd: (streamed: number) => stoppedOf(admitted, streamed) ?? hold } : {};
+    return { ...(hold === undefined ? {} : { holdUsd: hold }), ...(limit === undefined ? {} : { outputTokensMax: limit }), ...stopped };
   };
   /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
    *  cancel that lands between them still keeps the request from leaving. */

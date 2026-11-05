@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { cost, markdown } from "./format";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { clock, cost, markdown, runLabel, when } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
 
@@ -126,5 +126,30 @@ describe("a cost known so far (so_far_usd, unpriced)", () => {
     expect(html).toContain("so far $0.0123");
     expect(html).toContain("1 not priced");
     expect(html).not.toContain("Unknown");
+  });
+});
+
+// Times read in the viewer's own zone: the browser's, never UTC. A run that started at 20:50:47Z reads 4:50 PM in
+// Puerto Rico (UTC-4) and 5:50 AM the next day in Tokyo (UTC+9).
+describe("when and clock, in the viewer's zone", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+  const AT = "2026-11-04T20:50:47Z";
+  it("reads a time in Puerto Rico's zone there", () => {
+    vi.stubEnv("TZ", "America/Puerto_Rico");
+    expect(when(AT)).toBe("Nov 4, 4:50 PM");
+    expect(clock(AT)).toBe("04:50 PM");
+  });
+  it("reads the same instant in Tokyo's zone there, on the next day", () => {
+    vi.stubEnv("TZ", "Asia/Tokyo");
+    expect(when(AT)).toBe("Nov 5, 5:50 AM");
+    expect(clock(AT)).toBe("05:50 AM");
+  });
+});
+
+// One short label for a run everywhere: the id's random tail, so runs started in the same second differ.
+describe("runLabel", () => {
+  it("is the last 8 characters of the id, different for two UUIDv7s of the same millisecond", () => {
+    expect(runLabel("01a1a869-ce4e-7cf5-abf8-c5407893934a")).toBe("7893934a");
+    expect(runLabel("01a1a869-ce4e-7d11-9a02-3f6b0e21d7c5")).toBe("0e21d7c5");
   });
 });
