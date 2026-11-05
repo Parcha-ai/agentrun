@@ -635,3 +635,70 @@ test("a crash after a long prompt was placed, before OpenCode recorded it: the r
   const sent = await recovered("s-lost-long", long);
   assert.match(sent, /reply with MARKER-AFTER-1500\./, "the long lost prompt's end reaches the model");
 });
+
+// A provider that stops an answer on its content filter (an OpenAI Responses stream that ends `response.incomplete` with
+// `incomplete_details.reason: "content_filter"`), as codex's and claude-agent's do (#1600): the session's model proxy
+// reads the stop in the answer it passes and the drive ends the turn at once, failed with the kernel's content-filter
+// text, so OpenCode never asks for the refused answer again. Through OpenAI's API (each event named on its own `event:`
+// line) and through a gateway that sends each event as its data alone (LiteLLM).
+const FILTERED = "content_filter: the model provider stopped this answer";
+const filterUsage = { input_tokens: 12, output_tokens: 0 };
+const filterRequest = { kind: "agent", label: "filtered", system: [], user: "What is 2 plus 2?", schema: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } }, tools: [] };
+/** `text` in pieces of at most 4 KiB, then `end`, each event named on its own line (`named`) or its data alone. */
+const filterStream = (text, end, named) => {
+  const pieces = text ? text.match(/[\s\S]{1,4096}/g) : [""];
+  const events = [...pieces.map((delta) => ({ type: "response.output_text.delta", item_id: "m_0", output_index: 0, content_index: 0, delta })), end];
+  return `${events.map((e) => `${named ? `event: ${e.type}\n` : ""}data: ${JSON.stringify(e)}\n\n`).join("")}data: [DONE]\n\n`;
+};
+/** The adapter of `adapter()` on a provider that answers every request with `text` then `end`; `sent` lists the requests. */
+function filteringAdapter(end, sent, text = "", named = true) {
+  const dir = scratch();
+  const trace = join(dir, "trace.jsonl");
+  writeFileSync(trace, "");
+  const fetch = async (url) => {
+    sent.push(String(url));
+    return new Response(filterStream(text, end, named), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  return openCodeAdapter({
+    model: "gpt-test",
+    provider: { origin: "https://provider.invalid", credential: () => "provider-secret" },
+    price: (_model, usage) => (usage.input + usage.output + usage.cacheRead) / 1e6,
+    sessionsDir: join(dir, "sessions"),
+    standIn: { command: process.execPath, args: [FAKE], env: { FAKE_OPENCODE_TRACE: trace } },
+    fetch,
+  });
+}
+/** The node's outcome on that provider: its error, or what it delivered. */
+const filteredOutcome = (end, sent, text, named, maxTurns = 3) =>
+  createHarnessRunner(filteringAdapter(end, sent, text, named), { store: memorySessionStore(), tools: [], maxTurns })(filterRequest).then((record) => ({ delivered: record }), (error) => error);
+const longEnd = () => ({ type: "response.incomplete", response: { id: "resp_1", object: "response", status: "incomplete", incomplete_details: { reason: "content_filter" }, output: [{ type: "reasoning", id: "rs_1", encrypted_content: "e".repeat(100 * 1024) }], usage: filterUsage } });
+
+test("opencode: a provider that stops the answer on its content filter (response.incomplete, reason content_filter) ends the turn at once: failed with the content-filter text, after one request", { timeout: 60_000 }, async () => {
+  const sent = [];
+  const outcome = await filteredOutcome({ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "content_filter" }, usage: filterUsage } }, sent, "", true);
+  assert.deepEqual([outcome?.message, sent.filter((url) => url.endsWith("/responses")).length], [FILTERED, 1], `failed with the content-filter text, after one request: ${JSON.stringify(outcome?.message ?? outcome)}`);
+});
+
+test("opencode: a long answer whose final event is longer than the model proxy keeps of it (encrypted reasoning past 64 KiB), the stop early in it: the turn still ends at once, after one request", { timeout: 60_000 }, async () => {
+  const sent = [];
+  const outcome = await filteredOutcome(longEnd(), sent, "w".repeat(70 * 1024), true);
+  assert.deepEqual([outcome?.message, sent.filter((url) => url.endsWith("/responses")).length], [FILTERED, 1], `failed with the content-filter text, after one request: ${JSON.stringify(outcome?.message ?? outcome)}`);
+});
+
+test("opencode: the same long answer through a gateway that sends each event as its data alone (no event: lines, as LiteLLM does): the turn still ends at once, after one request", { timeout: 60_000 }, async () => {
+  const sent = [];
+  const outcome = await filteredOutcome(longEnd(), sent, "w".repeat(70 * 1024), false);
+  assert.deepEqual([outcome?.message, sent.filter((url) => url.endsWith("/responses")).length], [FILTERED, 1], `failed with the content-filter text, after one request: ${JSON.stringify(outcome?.message ?? outcome)}`);
+});
+
+test("opencode: a short answer the provider stops on its content filter, through a gateway that sends each event as its data alone: the turn ends at once, after one request", { timeout: 60_000 }, async () => {
+  const sent = [];
+  const outcome = await filteredOutcome({ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "content_filter" }, usage: filterUsage } }, sent, "", false);
+  assert.deepEqual([outcome?.message, sent.filter((url) => url.endsWith("/responses")).length], [FILTERED, 1], `failed with the content-filter text, after one request: ${JSON.stringify(outcome?.message ?? outcome)}`);
+});
+
+test("opencode, a guard: an answer cut at its output limit (response.incomplete, reason max_output_tokens) is no content-filter stop", { timeout: 60_000 }, async () => {
+  const sent = [];
+  const outcome = await filteredOutcome({ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: filterUsage } }, sent, "", true, 2);
+  assert.notEqual(outcome?.message, FILTERED, "not read as a content-filter stop");
+});
