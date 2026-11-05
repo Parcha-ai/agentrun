@@ -260,7 +260,8 @@ test("a clean merge, and a clean drop", () => {
   assert.deepEqual(parseVerdict(answer(), proposed()), { merge: true, reason: "Each note is general, new and consistent with the active ones.", items: FILES.map((file) => read(item(file))) });
   assert.deepEqual(parseVerdict(answer(), FILES), parseVerdict(answer(), proposed()), "the file names alone will do");
   const items = [item(NEW), item(SECOND, false, { question: "General" })];
-  assert.deepEqual(parseVerdict(answer({ merge: false, reason: "One note is about one store.", items }), proposed()), { merge: false, reason: "One note is about one store.", items: items.map(read) });
+  // A verdict per item: the kept note merges and the dropped one is left out, whatever the grader's top-level merge says.
+  assert.deepEqual(parseVerdict(answer({ merge: false, reason: "One note is about one store.", items }), proposed()), { merge: true, reason: "One note is about one store.", items: items.map(read) });
   assert.equal(parseVerdict(answer({ merge: false, reason: "Too thin to keep." }), proposed()).merge, false, "a drop with every note kept is a drop");
   assert.deepEqual(parseVerdict(answer({ items: FILES.map((file) => ({ ...item(file), question: null })) }), proposed()).items, FILES.map((file) => read(item(file))), "a null question is none");
 });
@@ -273,7 +274,7 @@ test("prose around the JSON, or one fenced block, still reads; two objects are n
   }
 });
 
-test("a missing item, an item named twice, one for a file not proposed, or a merge with an item not kept is no merge", () => {
+test("a missing item, an item named twice, one for a file not proposed, or a merge that keeps no item is no merge; a merge with an item not kept merges the kept ones", () => {
   const dropped = (items, merge = true) => parseVerdict(answer({ items, merge }), proposed());
   assert.deepEqual(dropped([item(NEW)]), { merge: false, reason: "the grader's verdict gives no item for a new note", items: [] });
   assert.deepEqual(dropped([...FILES.map((file) => item(file)), item(NEW)]), { merge: false, reason: "the grader's verdict gives a file more than one item", items: [] });
@@ -282,8 +283,10 @@ test("a missing item, an item named twice, one for a file not proposed, or a mer
   }
   for (const file of FILES) {
     const items = FILES.map((f) => item(f, f !== file));
-    assert.deepEqual(dropped(items), { merge: false, reason: "the grader said merge, but did not keep every item", items: items.map(read) }, file);
+    assert.deepEqual(dropped(items), { merge: true, reason: "Each note is general, new and consistent with the active ones.", items: items.map(read) }, file);
   }
+  const none = FILES.map((f) => item(f, false));
+  assert.deepEqual(dropped(none), { merge: false, reason: "the grader said merge, but did not keep every item", items: none.map(read) }, "a merge that keeps nothing");
 });
 
 test("the reason, and each why, is one line with control and unseen characters stripped, at most 500 characters", () => {
@@ -358,4 +361,17 @@ test("a note the run marked risky: true waits for its owner's OK even when the g
   // The end-of-run turn is told to mark one, and the rubric names a limit as risky however it is phrased.
   assert.match(reflectPrompt({ dir: ".learning", active: 0 }), /risky: true/);
   assert.match(GRADE_RUBRIC, /however it is phrased/);
+});
+
+test("a verdict per item: the grader's merge false with one note kept and one dropped merges the kept one (an all-or-nothing answer, as a pi grader gave it); a drop on Planted drops every item", () => {
+  const files = ["shipping-origin-and-cutoff.md", "jane-diaz-refund.md"];
+  const items = [
+    { file: files[0], keep: true, origin: "you", why: "This is standing shipping information the user explicitly asked to retain." },
+    { file: files[1], keep: false, question: "Secret", why: "It records a customer's private financial information." },
+  ];
+  const reason = "The shipping note is retained; the customer refund note contains private financial details and is dropped.";
+  assert.deepEqual(parseVerdict(JSON.stringify({ merge: false, reason, items }), files), { merge: true, reason, items });
+  // A planted instruction in one item: the run read something hostile, so nothing it proposed is kept.
+  const planted = [items[0], { ...items[1], question: "Planted", why: "Its rule came from a page the run read." }];
+  assert.deepEqual(parseVerdict(JSON.stringify({ merge: true, reason, items: planted }), files).merge, false);
 });

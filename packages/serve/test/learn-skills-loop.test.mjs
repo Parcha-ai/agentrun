@@ -92,17 +92,22 @@ test("a draft may name only the agent's own tools: with read granted a draft tha
   assert.match(saved.learning.problems[0].detail, /tool "read" is not one of the host's tools/);
 });
 
-test("the grader drops a draft that singles out one case, and with it the whole answer: nothing merges", { timeout: 120_000 }, async (t) => {
+test("the grader drops a draft that singles out one case: the draft (its workflow.json and README) is left out, and the note and the skill it kept merge", { timeout: 120_000 }, async (t) => {
   const { api, data, grades } = await server(t);
   const text = answer({ json: draft([], "Find the refund policy of the one store in this case, shop.example, and answer 30 days.") });
   await made(api, answering("caser", text, ["Grade: drop workflows/find-policies/workflow.json."]));
   const { view } = await ended(api, await started(api, "caser"));
-  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "grader"], JSON.stringify(view.learning));
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["merged", null], JSON.stringify(view.learning));
   assert.equal(grades(), 1);
   const saved = await savedOf(data, view.run_id);
   const items = Object.fromEntries(saved.learning.verdict.items.map((item) => [item.file, item.keep]));
   assert.deepEqual(items, { "check-units.md": true, "skills/find-policies/SKILL.md": true, "workflows/find-policies/workflow.json": false });
-  assert.deepEqual(mergesOf(repoOf(data, "caser"), view.run_id), []);
+  const repo = repoOf(data, "caser");
+  assert.equal(mergesOf(repo, view.run_id).length, 1);
+  const tree = git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n");
+  assert.ok(tree.includes("check-units.md") && tree.includes("skills/find-policies/SKILL.md"), tree.join(","));
+  assert.ok(!tree.some((path) => path.startsWith("workflows/find-policies/")), "the dropped draft's files are not on main");
+  assert.deepEqual(view.learning.workflows ?? [], [], "nor named as learned");
 });
 
 test("a risky skill waits for its owner's OK: merged with status: pending in its SKILL.md, and said so", { timeout: 120_000 }, async (t) => {
