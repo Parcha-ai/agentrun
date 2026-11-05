@@ -271,7 +271,8 @@ test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks
     assert.equal(resumeRows(rows).length, 1, `${at}: one message resumed it`);
     ownRowsSay(rows, run.callId, run.decision === "allow" ? "Allowed: its result is in the message that resumed the run" : "Not run: you declined it", at);
     assert.equal(view.pending, null);
-    assert.equal(final, run.harness === "pi" ? `Saw: ${message}` : "Fetched once.", `${at}: the model took it as the call's answer`);
+    // The model read the resume (the server's row shows its text as a phase's, its links' fragments scrubbed).
+    assert.equal(run.harness === "pi" ? final.split("\n")[0] : final, run.harness === "pi" ? `Saw: ${message.split("\n")[0]}` : "Fetched once.", `${at}: the model took it as the call's answer`);
   }
   assert.deepEqual(await dialled(), [PAGE, PAGE, PAGE], "each allowed call ran once, no denied one ran");
 });
