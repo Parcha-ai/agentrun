@@ -85,7 +85,9 @@ function carrying(): (state: SessionState, data: SubmissionData) => string | und
   let waiting: string[] = [];
   return (state, data) => {
     if (data.kind === "withdraw") {
-      const target = data.carry && data.target && state.withdrawn.has(data.target) ? own.get(data.target) : undefined;
+      // A withdraw that landed (its target unplaced), or one of a placed target its CLI was never sent (`unsent`).
+      const landed = data.target !== undefined && (state.withdrawn.has(data.target) || (data.unsent === true && state.placed.has(data.target)));
+      const target = data.carry && landed ? own.get(data.target!) : undefined;
       if (target && (target.kind === "prompt" || target.kind === "followUp")) {
         waiting.push(...(carried.get(data.target!) ?? []), ...(target.text ? [target.text] : []));
         carried.delete(data.target!);
