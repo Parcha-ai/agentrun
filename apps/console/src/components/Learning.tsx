@@ -12,6 +12,7 @@ import {
   APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
   counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
+import { placeOf } from "@/lib/place";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
@@ -138,7 +139,8 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
         <section className="border border-warning/50" aria-label="Waiting for your OK">
           <h2 className="caps flex items-baseline gap-2 border-b border-warning/50 px-4 py-3 text-[12px] font-semibold">Waiting for your OK<span className="font-mono font-normal text-muted-foreground">{waiting.length}</span></h2>
           <p className="px-4 pt-3 text-[13px] text-muted-foreground">{WAITS_WHY}</p>
-          <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>
+          {/* Only off the sandbox: an agent its definition places in a box runs no bash on the host. */}
+          {placeOf(agent.definition.place)?.mode !== "sandbox" && <p className="px-4 pt-1 text-[13px] text-muted-foreground">{HOST_RUNS}</p>}
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
