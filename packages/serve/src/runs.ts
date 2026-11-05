@@ -2178,12 +2178,14 @@ export class Runs {
     // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
     // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
     // nothing else is sent, so no second turn races the parked call.
-    if (run.kind === "agentic") {
+    if (run.kind === "agentic" && waitingApproval(run)) {
+      await this.personsTurn(run);
+      // Read again after that wait, with nothing awaited from here to the decline's own write: an answer, a stop or a
+      // cancel that landed meanwhile stands (the first answer wins, and a stop's withdrawal is never replaced), and the
+      // message is then a message, under the run's state now. What waits now, unanswered, is what it declines.
       const waiting = waitingApproval(run);
-      if (waiting) {
-        await this.personsTurn(run);
-        return this.declineBy(run, waiting, content);
-      }
+      if (waiting && !run.cancel && !run.stopping) return this.declineBy(run, waiting, content);
+      if (run.cancel) throw this.finished(run);
     }
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
