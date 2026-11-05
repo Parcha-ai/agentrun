@@ -20,10 +20,11 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { trackHistory } from "@/lib/back";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
-import { hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
+import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
@@ -173,6 +174,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [needsProblem, setNeedsProblem] = useState<string | null>(null);
   const [ownRun, setOwnRun] = useState<boolean | null>(null);
   const [needsTry, setNeedsTry] = useState(0);
+  // Whether the runs asking a person have been read at least once: until then the Needs input tile's count is unknown,
+  // never the empty list a failed first read leaves (a later failure keeps the last list, and its count).
+  const [askingRead, setAskingRead] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -212,6 +216,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     return () => { live = false; };
   }, [v2]);
   useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  // Each history entry the console moves through is numbered, so a page's back arrow knows whether it came from one (lib/back).
+  useEffect(() => trackHistory(), []);
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
   // earlier read (two saves in a row) never puts back what an earlier save left.
   const capsAsked = useRef(0);
@@ -302,7 +308,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     let live = true;
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
-    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
+    // An agent picked: its own latest runs, as every figure below the picker follows it.
+    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
       .then(([s, r]) => {
         if (!live) return;
         setMission(missionFrom(s, r.runs));
@@ -326,9 +333,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         if (!live) return;
         const day = Date.now() - 86_400_000;
         setNeedsProblem(mergeNeeds(null, reads).problem);
+        if (reads[0]?.status === "fulfilled") setAskingRead(true);
         setNeeds((prev) => {
           const { needs: next } = mergeNeeds(prev, reads);
-          return { asking: next.asking.filter((r) => r.pending), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
+          return { asking: next.asking.filter(asksPerson), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
         });
       });
     // Never two reads at once: the next starts 10 s after the last has settled, so an older one can't land last.
@@ -424,6 +432,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
+                asking={needs && askingRead ? needs.asking.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
