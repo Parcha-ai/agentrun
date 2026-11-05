@@ -260,3 +260,24 @@ test("tty: a tty process sits on a /dev/pts terminal, a plain one has none; a pr
   for (const id of ["1", "3", "4"]) assert.ok(existsSync(join(work, "background", id, "tty")), `${id} is marked tty`);
   assert.equal(existsSync(join(work, "background", "2", "tty")), false);
 });
+
+test("tty: INT is Ctrl-C to the terminal's foreground job, so an interactive shell's command stops and the shell runs on", { timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: "bash_background", args: { command: "bash --norc --noprofile -i", tty: true } },
+    wait(1),
+    { tool: "bash_input", args: { id: "1", text: "sleep 60\n" } },
+    wait(1),
+    { tool: "bash_signal", args: { id: "1", signal: "INT" } },
+    { tool: "bash_input", args: { id: "1", text: "echo back $?\n" } },
+    wait(1),
+    { tool: "bash_output", args: { id: "1" } },
+    { tool: "bash_input", args: { id: "1", text: "exit\n" } },
+  ];
+  const started = Date.now();
+  const { said } = await boxedRun(t, plan);
+  assert.deepEqual(said.map((a) => [a.tool, a.error]), plan.map((step) => [step.tool, false]), JSON.stringify(said));
+  assert.match(said[4].text, /^Sent INT to background process 1: it is running\./);
+  // The shell got its prompt back: sleep ended by Ctrl-C (130), well before its 60 s.
+  assert.match(said[7].text, /back 130/);
+  assert.ok(Date.now() - started < 50_000, "sleep 60 did not run out");
+});

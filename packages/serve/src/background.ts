@@ -83,10 +83,14 @@ const SCRIPT = [
   'size() { echo $(($(wc -c < "$d/$1/output.log" 2>/dev/null || echo 0))); }',
   // A tty process's command runs in the pty's own session, below script: its group is its own pid, script's child.
   `kids() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ p = $1; sub(/^[0-9]+ \\(.*\\) /, ""); if ($2 == g) print p }'; }`,
-  // Signal $2 to process $1's group; on a tty process, to its terminal's processes instead, as Ctrl-C reaches a
-  // terminal's program (script would turn INT into TERM, and a script signalled itself exits 0): script then exits with
-  // the code its command ended with. Before script has its command, script itself.
-  'hit() { g=$(cat "$d/$1/pid" 2>/dev/null); [ -n "$g" ] || return 1; k=; [ -f "$d/$1/tty" ] && k=$(kids "$g"); if [ -n "$k" ]; then for p in $k; do kill -"$2" -"$p" 2>/dev/null; done; else kill -"$2" -"$g" 2>/dev/null; fi; }',
+  // And the terminal's foreground group, as the command's process reads it (its tpgid): an interactive shell's running
+  // job is a group of its own, which Ctrl-C reaches and the shell's own group does not.
+  `fgs() { cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($2 == g && $6 > 0) print $6 }'; }`,
+  // Signal $2 to process $1's group; on a tty process, to its terminal's processes instead, as a terminal delivers it:
+  // INT to the foreground group alone (Ctrl-C), TERM and KILL to the command's group and the foreground group (script
+  // would turn INT into TERM, and a script signalled itself exits 0): script then exits with the code its command ended
+  // with. Before script has its command, script itself.
+  'hit() { g=$(cat "$d/$1/pid" 2>/dev/null); [ -n "$g" ] || return 1; k=; f=; if [ -f "$d/$1/tty" ]; then k=$(kids "$g"); f=$(fgs "$g"); fi; if [ -z "$k" ]; then kill -"$2" -"$g" 2>/dev/null; return 0; fi; if [ "$2" = INT ] && [ -n "$f" ]; then t=$f; else t="$k $f"; fi; for p in $t; do kill -"$2" -"$p" 2>/dev/null; done; }',
   'case $op in',
   'start)',
   '  if [ "$5" = 1 ] && ! command -v script >/dev/null 2>&1; then echo noscript; exit 0; fi',
@@ -212,7 +216,7 @@ const bashBackground = defineTool({
   description: `Start a shell command in the background in the run's box, from its work/, and answer at once with its id. Each call is a fresh shell (bash, else sh). The command runs until it and every child it left in its process group (a server started with &) have exited, bash_signal ends it, or the run ends, which ends it. Its stdout and stderr go together to work/background/<id>/output.log, which the run's files keep: the first ${MIB} MiB of them, later output dropped while it runs on. Its stdin is a pipe that bash_input writes; tty: true gives it a terminal instead. At most ${BACKGROUND_MAX} run at once in a run's box. Read its output with bash_output, list them with bash_list.`,
   parameters: schema({
     command: { type: "string", minLength: 1, description: "The command, as you would give bash." },
-    tty: { type: "boolean", description: "Run it on a terminal (a pty, through script in the box), for a program that needs one: a prompt, a REPL, a progress display. Its log then holds what the terminal shows (your input echoed, lines ending in \\r\\n); bash_input types into the terminal, and bash_signal INT is Ctrl-C." },
+    tty: { type: "boolean", description: "Run it on a terminal (a pty, through script in the box), for a program that needs one: a prompt, a REPL, a progress display. Its log then holds what the terminal shows (your input echoed, lines ending in \\r\\n); bash_input types into the terminal, and bash_signal INT is Ctrl-C to its foreground job." },
   }, ["command"]),
   execute: async (args, api, context) => {
     const command = String((args as { command?: unknown }).command ?? "");
