@@ -154,6 +154,11 @@ export default function reply(context, faux) {
     if (results === 0) return faux.message([faux.thinking(`I hold ${key} now.`), faux.text(`The key is ${Buffer.from(key).toString("base64")}.`), faux.toolCall("read", { path: `notes/${key}.txt` })], { stopReason: "toolUse" });
     return faux.message(`Done with ${key}.`);
   }
+  // Runs monid's /person/enrich (priced at once), then /slow (held until stopped, or cut by a crash), then answers.
+  if (first.includes("Run monid's /person/enrich, then its slow endpoint.")) {
+    const steps = [["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }], ["monid_run", { provider: "faux", endpoint: "/slow", input: {} }]];
+    return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message("Ran.");
+  }
   // Runs monid's /person/enrich with no inspect first (held at the run allowance): one call in the first turn, then, in
   // each turn after it (a raised cap's follow-up), one more call, or two with "twice"; then answers with the last result.
   if (first.includes("Run monid's /person/enrich, called again after a raise")) {

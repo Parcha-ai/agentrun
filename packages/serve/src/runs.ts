@@ -524,6 +524,10 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
  *  charge here. */
 export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string): number | null =>
   rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage || (tool !== undefined && row.tool_name !== tool) ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
+/** What a run's paid tools are known to have charged (`tool`'s alone, when given; every other tool's with `others`): each
+ *  charge's line that names its cost, a charge of unknown cost adding nothing. */
+export const knownToolCostOf = (rows: readonly TimelineEvent[], tool?: string, others = false): number =>
+  rows.reduce((sum, row) => (row.kind !== "phase" || !row.usage || typeof row.usage.usd !== "number" || (tool !== undefined && (others ? row.tool_name === tool : row.tool_name !== tool)) ? sum : sum + row.usage.usd), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
@@ -896,6 +900,8 @@ export class Runs {
   /** A test's seam (startServe's `beforeReopenLaunch`): awaited by a reopen after the run reads open again and before its
    *  launch, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
+  /** A test's seam (startServe's `onRunLoad`): told each run read in from its store, its timeline with it. */
+  onRunLoad?: (runId: string) => void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam (startServe's `beforeMetaSave`): awaited before a run's serve.json is written; one that throws fails
@@ -936,6 +942,7 @@ export class Runs {
   }
 
   private async load(row: RunRow): Promise<Run> {
+    this.onRunLoad?.(row.id);
     const dir = join(this.options.agents.dir, "runs", row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     const trigger = triggerOf(stored);
