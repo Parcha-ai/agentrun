@@ -170,6 +170,19 @@ export default function reply(context, faux) {
     const steps = [["monid_discover", { query: "enrich a person" }], ["monid_inspect", { provider: "faux", endpoint: "/person/enrich" }], ["monid_run", { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }]];
     return results < steps.length ? faux.message(faux.toolCall(...steps[results]), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
+  // Uses the skill that fits, as a run told of its skills on demand does: reads the SKILL.md whose path its system prompt
+  // names, then answers with the skill's FORMAT-LINE as the file has it. A prompt that already holds the skill's text says
+  // BODY-INLINED; one that names no skill's file says so.
+  if (first.startsWith("Use the skill that fits:")) {
+    const sectionText = (part) => (typeof part === "string" ? part : Array.isArray(part) ? part.map((p) => (typeof p?.text === "string" ? p.text : "")).join("") : "");
+    const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {}).map(sectionText)])].join("\n");
+    if (/^FORMAT-LINE:/m.test(system)) return faux.message("BODY-INLINED");
+    if (!answered) {
+      const path = /\((\.agents\/skills\/[^)\s]+\/SKILL\.md)\)/.exec(system)?.[1];
+      return path ? faux.message(faux.toolCall("read", { path }), { stopReason: "toolUse" }) : faux.message("NO SKILL LISTED");
+    }
+    return faux.message(/^FORMAT-LINE:.*$/m.exec(textOf(context.messages.at(-1)))?.[0] ?? "NO FORMAT IN THE FILE");
+  }
   // Reads each path its first message lists with read, one per turn, then says so; "once <file> exists" holds the first
   // read until the test has made that file (and planted what the reads need).
   const reads = /^Read these paths(?: once (\S+) exists)?: (.*)$/s.exec(first);

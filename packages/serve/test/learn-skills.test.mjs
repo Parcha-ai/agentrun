@@ -252,3 +252,14 @@ test("a skill is laid with name and description alone in its front matter, whate
   assert.equal(laid, "---\nname: find-policies\ndescription: Find a store's refund and shipping policies\n---\n1. Collect the tickets.\n");
   assert.equal(servedSkill(skill({ description: "Use when: a case asks" })).split("\n")[2], 'description: "Use when: a case asks"');
 });
+
+test("a learned skill's description that wraps onto an indented line is served whole, on one line", () => {
+  const served = servedSkill("---\nname: find-policies\ndescription: Find refund policies\n  and shipping policies\n---\nDo the job.\n");
+  assert.equal(served.split("\n")[2], "description: Find refund policies and shipping policies");
+  assert.equal(servedSkill(served), served);
+});
+
+test("a skill whose plain name is followed by an indented comment keeps its name: the comment is no part of it", () => {
+  const served = servedSkill("---\nname: find-policies\n  # a helper\ndescription: Find refund policies\n---\nDo the job.\n");
+  assert.equal(served.split("\n")[1], "name: find-policies");
+});
