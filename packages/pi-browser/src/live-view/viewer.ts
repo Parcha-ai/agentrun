@@ -48,6 +48,7 @@ body { display: flex; flex-direction: column; }
 #drive { min-width: 9em; text-align: right; color: #aaa; }
 #drive.agent { color: #f0b429; }
 #drive.person { color: #6cc070; }
+.view-only #screen { cursor: not-allowed; }
 #notice { padding: 6px 10px; background: #5a3b00; color: #ffe2a8; }
 #notice.fatal { background: #5a1a1a; color: #ffc4c4; }
 #stage { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: auto; }
@@ -88,7 +89,7 @@ const js = `"use strict";
   var shownUrl = null;
   // A page that gives no picture (a tab opened in the background, which Chrome does not paint) leaves the canvas as it was: after a while the viewer says so, and input still works.
   function expectPicture() { drewSince = false; stillEl.hidden = true; clearTimeout(stillTimer); stillTimer = setTimeout(function () { if (!drewSince && !fatal) stillEl.hidden = false; }, 2500); }
-  function gotPicture() { drewSince = true; clearTimeout(stillTimer); stillEl.hidden = true; }
+  function gotPicture() { drewSince = true; clearTimeout(stillTimer); stillEl.hidden = true; if (noPage) { noPage = false; say(""); } }
   var fatal = false;
 
   function say(text, isFatal) {
@@ -99,7 +100,7 @@ const js = `"use strict";
   }
   function setDrive(state) {
     drive.className = state === "agent" || state === "person" ? state : "";
-    drive.textContent = state === "agent" ? "the agent is acting" : state === "person" ? "you are driving" : "";
+    drive.textContent = readOnly ? "view only" : state === "agent" ? "the agent is acting" : state === "person" ? "you are driving" : "";
   }
 
   if (!token) { fatal = true; say("This link has no token. Open the live view from the link the host gave you.", true); return; }
@@ -114,7 +115,16 @@ const js = `"use strict";
 
   // Input before the host's ready is refused out loud and never queued: a keystroke replayed into a page the person has since lost sight of is worse than one that was not sent. A hover is not worth a notice.
   function stillConnecting() { if (ready || fatal || closed) return false; say(WAITING); return true; }
+  // A view-only viewer sends nothing but its hello: the server drops any input anyway (held read_only).
+  var readOnly = false;
+  var noPage = false;
+  var NO_PAGE = "No page yet: the browser has not opened a page. It shows here once it does.";
+  function viewOnly() {
+    document.body.classList.add("view-only");
+    ["back", "reload", "url"].forEach(function (id) { $(id).disabled = true; });
+  }
   function send(message) {
+    if (readOnly) return;
     if (!ready) { if (!(message.type === "mouse" && message.action === "move")) stillConnecting(); return; }
     if (ws.readyState === 1) ws.send(JSON.stringify(message));
   }
@@ -160,7 +170,7 @@ const js = `"use strict";
   $("dialog-accept").addEventListener("click", function () { answer(true); });
   $("dialog-dismiss").addEventListener("click", function () { answer(false); });
 
-  var HELD = { agent_acting: "The agent is acting, so that input was held. Try again in a moment.", no_page: "There is no page to drive yet.", bad_message: "That input was not understood." };
+  var HELD = { agent_acting: "The agent is acting, so that input was held. Try again in a moment.", no_page: "There is no page to drive yet.", bad_message: "That input was not understood.", read_only: "This view is view-only: your input is not sent." };
   var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this session.", released: "This session has been released.", bad_message: "The host did not understand this viewer." };
   ws.onmessage = function (event) {
     if (typeof event.data !== "string") {
@@ -171,9 +181,10 @@ const js = `"use strict";
     }
     var m;
     try { m = JSON.parse(event.data); } catch (e) { return; }
-    if (m.type === "ready") { ready = true; setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
+    if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; if (readOnly) viewOnly(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
+    else if (m.type === "no_page") { noPage = true; stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }
     else if (m.type === "status") { setDrive(m.drive); if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
-    else if (m.type === "page") { document.title = m.title ? m.title + " - Live view" : "Live view"; if (document.activeElement !== urlBox) urlBox.value = m.url; if (m.url !== shownUrl) { shownUrl = m.url; expectPicture(); } }
+    else if (m.type === "page") { if (noPage) { noPage = false; say(""); } document.title = m.title ? m.title + " - Live view" : "Live view"; if (document.activeElement !== urlBox) urlBox.value = m.url; if (m.url !== shownUrl) { shownUrl = m.url; expectPicture(); } }
     else if (m.type === "dialog") showDialog(m);
     else if (m.type === "dialog_closed") hideDialog();
     else if (m.type === "held") say(HELD[m.reason] || "That input was held.");

@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-browser
+kind: feature
+---
+The owner watches a run's browser live from the console, read-only. `GET /v2/runs/{id}/browser` answers `{state: "live", viewer}` while the run's browser session is open (`viewer`, a link on this server with its token in the fragment), `{state: "none"}` when it has a browser with no session open, and `{state: "off", reason}` when it has none (no `browser` tool, or its browser resolves unavailable here); it takes the owner's password session in the console, never a token (`403`). Capabilities say so: `features.browser_live: {read_only: true}`.
+- The view is pi-browser's own viewer for every vendor, served by the run's process on a loopback port of its own: the vendors' own live-view links never leave that process. The process hands each session's viewer to the server in one file in the run's directory, outside `work/` (`browser-live.json`, 0600, replaced whole), which goes when the session ends; the token dies with the session, and the old link opens nothing.
+- The viewer's page and WebSocket are proxied under `/v2/runs/{id}/browser/live/` to that run's port alone: the page under `frame-ancestors 'self'` (the console keeps `'none'` everywhere else), the WebSocket from this server's own origin with the owner's session only. One viewer at a time (`viewer_in_use`).
+- The token is in no record, timeline row, run view, run file, home, log or the model's context.
+- `@parcha/pi-browser`'s live view takes `readOnly`: every input, navigation and dialog answer is dropped on the server (`held read_only`), `ready` says `readOnly: true`, and a watching viewer keeps no session open. A browser with no page yet (Kernel's headless one starts with none) tells the viewer `no_page`, and the page says "No page yet" until one opens.

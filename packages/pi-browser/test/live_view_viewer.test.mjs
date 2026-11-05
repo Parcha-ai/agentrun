@@ -507,3 +507,36 @@ test("once the connection has closed, input leaves the disconnect notice alone: 
     assert.equal(after.hidden, false);
   }
 });
+
+test("a view-only viewer: ready with readOnly shows 'view only', turns its controls off and sends nothing but its hello; no_page says 'No page yet' until a page or a frame comes", { skip: NO_CHROME, timeout: 100_000 }, async (t) => {
+  const TOKEN = randomBytes(32).toString("base64url");
+  const web = await viewerServer(TOKEN);
+  const root = await mkdtemp(path.join(tmpdir(), "lv-viewer-"));
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
+  let ref = null;
+  const tabs = [];
+  t.after(async () => { for (const tab of tabs) tab.close(); if (ref) await within(20_000, provider.release(ref)); await within(5_000, web.close()); await within(5_000, rm(root, { recursive: true, force: true })); }, { timeout: 40_000 });
+  ref = await within(60_000, provider.create({ tag: "lv-viewer-ro", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal));
+  assert.ok(ref, "the browser started");
+  const attached = await within(30_000, provider.attach(ref));
+  const viewer = await openTab(attached.sdkCdpUrl, `${web.base}/v/${web.id}#t=${TOKEN}`);
+  tabs.push(viewer);
+  assert.ok(await until(() => web.received.length >= 1), "the viewer spoke");
+  web.send({ type: "ready", drive: "idle", readOnly: true });
+  const state = () => viewer.evaluate(`({ drive: document.getElementById("drive").textContent, url: document.getElementById("url").disabled, back: document.getElementById("back").disabled, notice: document.getElementById("notice").hidden ? "" : document.getElementById("notice").textContent })`);
+  assert.ok(await until(async () => (await state()).drive === "view only"), "it says view only");
+  assert.deepEqual([(await state()).url, (await state()).back], [true, true], "its address bar and buttons are off");
+  web.send({ type: "no_page" });
+  assert.ok(await until(async () => /No page yet/.test((await state()).notice)), "no page yet");
+  // Nothing the person does is sent: a key, a click, the address bar.
+  await viewer.evaluate(`document.getElementById("sink").focus()`);
+  await viewer.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", text: "a", windowsVirtualKeyCode: 65 });
+  await viewer.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65 });
+  const box = await viewer.evaluate(`(() => { const r = document.getElementById("screen").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await viewer.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  await viewer.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  await settle(300);
+  assert.deepEqual(web.received, [{ type: "hello", token: TOKEN }], "the hello alone");
+  web.send({ type: "page", url: "https://example.com/", title: "Example" });
+  assert.ok(await until(async () => (await state()).notice === ""), "a page clears it");
+});

@@ -20,6 +20,7 @@ import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
 import type { RunTrigger } from "./triggers.js";
 import { hostMemory, memoryFull, neverFits, runMibOf, runsMemoryMib } from "./host.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
+import { dropHandover } from "./browser-live.js";
 import { FOLLOW_UP_OPEN_ENV, LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_DOOR_TOKEN, RUN_LAUNCHING, RUN_META, runDoorToken, SETUP_LOST, writeWhole } from "./files.js";
 import { type DaytonaApi, KEPT_AUTOSTOP_MINUTES, keepWhenIdle, wakeBoxes } from "./daytona-api.js";
 import { type Learning, LEARNING_LABEL, type LearningMode, type LearningReason, type LearningState, shortOf } from "./learning.js";
@@ -816,6 +817,8 @@ export class Runs {
         run.finishing = "cancelled";
       }
       const adopted = record && this.doorOf(record) ? record : null;
+      // A process an earlier server started that is gone took its browser's view with it.
+      if (!adopted) void dropHandover(dir).catch(() => undefined);
       if (adopted) {
         // A server that died between saving a stop and its abort reaching the run leaves the turn working.
         run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
@@ -939,6 +942,13 @@ export class Runs {
   /** A live process: the child this server started, or one an earlier server started that still serves the run. */
   private live(run: Run): boolean {
     return Boolean(run.child || run.orphan);
+  }
+
+  /** Whether run `id` has a process serving it now: the child this server started, or an adopted one that is alive. A
+   *  run's live browser view is that process's alone (browser-live.ts). */
+  hasProcess(id: string): boolean {
+    const run = this.runs.get(id);
+    return Boolean(run && ((run.child && run.child.exitCode === null && run.child.signalCode === null) || (run.orphan && alive(run.orphan))));
   }
 
   /** How an agentic run ends: over its cap, or as the turn of the person's newest message ended (turns.ts), once every
@@ -1134,6 +1144,7 @@ export class Runs {
         }
         clearInterval(timer);
         run.orphan = undefined;
+        void dropHandover(run.dir).catch(() => undefined);
         void this.settle(run, null, !alive(pid) && !RELEASED.has(String(now?.status)));
       });
     }, 500);
@@ -1667,6 +1678,9 @@ export class Runs {
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
+      // Its live browser view went with it, however it ended (browser-live.ts): a process killed before it let its
+      // sessions go leaves its hand-over behind, naming a port another listener may take.
+      void dropHandover(run.dir).catch(() => undefined);
       this.reportedBack(run);
       void this.settle(run, code, true);
     });
