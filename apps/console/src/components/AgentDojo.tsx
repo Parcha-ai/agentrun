@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUpRight, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { DojoIcon } from "./DojoIcon";
 import { Button } from "./ui/button";
 import { Chip } from "./ui/chip";
 import { ProblemCard } from "./Problem";
@@ -115,7 +116,7 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
   return <section className="flex min-h-full flex-col">
     <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5">
-      <Sparkles className="size-4" aria-hidden /><h1 className="caps text-[13px] font-semibold">Agent Dojo</h1>
+      <DojoIcon className="shrink-0" /><h1 className="caps text-[13px] font-semibold">Agent Dojo</h1>
       <Button className="ml-auto" size="icon" aria-label="Refresh Agent Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
     </header>
     <div className="mx-auto w-full max-w-[1440px] space-y-7 p-5 md:p-8">

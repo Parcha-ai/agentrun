@@ -1,6 +1,7 @@
-import { Brain, ChevronDown, Code, Hammer, History, LayoutGrid, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
+import { Brain, ChevronDown, Code, Hammer, History, LayoutGrid, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
+import { DojoIcon } from "@/components/DojoIcon";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
@@ -72,7 +73,7 @@ export function Shell({ active, settings = false, building = false, onBuild, onN
                 <button type="button" className={navStyle(active === "runs", true)} aria-current={active === "runs" ? "page" : undefined} onClick={() => navigate("runs")}><History className="size-3.5 shrink-0" aria-hidden />Runs</button>
               </div>
             </div>
-            <button type="button" className={navStyle(active === "dojo")} aria-current={active === "dojo" ? "page" : undefined} onClick={() => navigate("dojo")}><Sparkles className="size-4 shrink-0" aria-hidden />Agent Dojo</button>
+            <button type="button" className={navStyle(active === "dojo")} aria-current={active === "dojo" ? "page" : undefined} onClick={() => navigate("dojo")}><DojoIcon size={16} className="shrink-0" />Agent Dojo</button>
           </div>
           {settings && <div data-sidebar-account className="mt-auto border-t pb-2 pt-3">
             <button type="button" className={navStyle(active === "settings")} aria-current={active === "settings" ? "page" : undefined} onClick={() => navigate("settings")}><Settings className="size-4 shrink-0" aria-hidden />Settings</button>
