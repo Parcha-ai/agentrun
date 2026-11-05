@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="800" viewBox="0 0 720 800" role="img" aria-labelledby="title desc">
+<title id="title">AgentRun layers</title>
+<desc id="desc">Your harness sits inside the kernel, the kernel inside the meta harness, and around them the layers: browser, integrations and tools, sandbox, workspace, self-learning, triggers, spend and analytics, console and API.</desc>
+<rect x="0.75" y="0.75" width="718.5" height="798.5" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+<g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#111827">
+<text x="24" y="38" font-size="20" font-weight="700">Bring your harness. AgentRun gives it every layer.</text>
+
+<rect x="24" y="62" width="672" height="692" fill="#f8fafc" stroke="#374151" stroke-width="1.5"/>
+<text x="40" y="86" font-size="12" font-weight="700" fill="#4b5563" letter-spacing="1">THE LAYERS</text>
+
+<rect x="40" y="98" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="114" y="124" font-size="14" font-weight="700" text-anchor="middle">Browser</text>
+<text x="114" y="144" font-size="11" fill="#4b5563" text-anchor="middle">stays signed in</text>
+
+<rect x="204" y="98" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="278" y="124" font-size="14" font-weight="700" text-anchor="middle">Integrations</text>
+<text x="278" y="144" font-size="11" fill="#4b5563" text-anchor="middle">tools, MCP, one gate</text>
+
+<rect x="368" y="98" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="442" y="124" font-size="14" font-weight="700" text-anchor="middle">Sandbox</text>
+<text x="442" y="144" font-size="11" fill="#4b5563" text-anchor="middle">Docker, Daytona, Modal</text>
+
+<rect x="532" y="98" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="606" y="124" font-size="14" font-weight="700" text-anchor="middle">Workspace</text>
+<text x="606" y="144" font-size="11" fill="#4b5563" text-anchor="middle">a disk you own</text>
+
+<rect x="40" y="186" width="640" height="450" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
+<text x="56" y="210" font-size="12" font-weight="700" fill="#6d28d9" letter-spacing="1">META HARNESS</text>
+<text x="56" y="232" font-size="14" font-weight="700">The one loop AgentRun runs around any harness</text>
+<text x="56" y="252" font-size="12" fill="#4b5563">durable journal · tool bridge and gate · model proxy and spend cap</text>
+<text x="56" y="270" font-size="12" fill="#4b5563">stop and resume · crash recovery · the end-of-run learning turn</text>
+
+<rect x="64" y="290" width="592" height="326" fill="#ffffff" stroke="#6d28d9" stroke-width="2"/>
+<text x="80" y="314" font-size="12" font-weight="700" fill="#6d28d9" letter-spacing="1">KERNEL</text>
+<text x="80" y="336" font-size="14" font-weight="700">One adapter shape per harness</text>
+<text x="80" y="356" font-size="12" fill="#4b5563">A small driver says how to launch it, talk to it and read its record.</text>
+<text x="80" y="374" font-size="12" fill="#4b5563">The kernel does the rest, once, for every harness.</text>
+
+<rect x="88" y="392" width="128" height="60" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="152" y="417" font-size="14" font-weight="700" text-anchor="middle">pi</text>
+<text x="152" y="437" font-size="12" fill="#4b5563" text-anchor="middle">the default</text>
+
+<rect x="228" y="392" width="128" height="60" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="292" y="417" font-size="14" font-weight="700" text-anchor="middle">Claude Code</text>
+<text x="292" y="437" font-size="12" fill="#4b5563" text-anchor="middle">Claude Agent SDK</text>
+
+<rect x="368" y="392" width="128" height="60" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="432" y="417" font-size="14" font-weight="700" text-anchor="middle">Codex</text>
+<text x="432" y="437" font-size="12" fill="#4b5563" text-anchor="middle">app-server</text>
+
+<rect x="508" y="392" width="128" height="60" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="572" y="417" font-size="14" font-weight="700" text-anchor="middle">OpenCode</text>
+<text x="572" y="437" font-size="12" fill="#4b5563" text-anchor="middle">serve mode</text>
+
+<rect x="88" y="470" width="548" height="58" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="362" y="494" font-size="14" font-weight="700" text-anchor="middle">Workflow harness: no agent at all</text>
+<text x="362" y="514" font-size="12" fill="#4b5563" text-anchor="middle">typed steps, Jev decisions, a graded result</text>
+
+<rect x="88" y="546" width="548" height="52" fill="#ffffff" stroke="#374151" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="362" y="568" font-size="14" font-weight="700" text-anchor="middle">Any CLI with a driver</text>
+<text x="362" y="587" font-size="12" fill="#4b5563" text-anchor="middle">one shared ACP driver covers most of them</text>
+
+<rect x="40" y="664" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="114" y="690" font-size="14" font-weight="700" text-anchor="middle">Self-learning</text>
+<text x="114" y="710" font-size="11" fill="#4b5563" text-anchor="middle">notes, skills, workflows</text>
+
+<rect x="204" y="664" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="278" y="690" font-size="14" font-weight="700" text-anchor="middle">Triggers</text>
+<text x="278" y="710" font-size="11" fill="#4b5563" text-anchor="middle">schedules, webhooks</text>
+
+<rect x="368" y="664" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="442" y="690" font-size="13" font-weight="700" text-anchor="middle">Spend and analytics</text>
+<text x="442" y="710" font-size="11" fill="#4b5563" text-anchor="middle">a cap no request crosses</text>
+
+<rect x="532" y="664" width="148" height="64" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="606" y="690" font-size="14" font-weight="700" text-anchor="middle">Console and API</text>
+<text x="606" y="710" font-size="11" fill="#4b5563" text-anchor="middle">/v2, MCP, coding agents</text>
+
+<line x1="40" y1="776" x2="72" y2="776" stroke="#374151" stroke-width="1.5"/>
+<text x="80" y="780" font-size="12" fill="#4b5563">ships today</text>
+<line x1="170" y1="776" x2="202" y2="776" stroke="#374151" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="210" y="780" font-size="12" fill="#4b5563">planned</text>
+</g>
+</svg>

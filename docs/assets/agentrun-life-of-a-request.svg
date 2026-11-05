@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1190" viewBox="0 0 720 1190" role="img" aria-labelledby="title desc">
+<title id="title">The life of a request in AgentRun</title>
+<desc id="desc">A run starts from the API or console, the server sets it up, the agent loop runs on its harness, every model request goes through the proxy and the cap, every tool call through the gate, the tool runs in a sandbox or at a vendor, everything lands on the disk, the control plane reads the records, the run ends with a learning turn, a grader decides, and the next run starts from what was learned.</desc>
+<defs>
+<marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+<path d="M0 0 L8 4 L0 8 z" fill="#374151"/>
+</marker>
+<marker id="arrow-accent" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+<path d="M0 0 L8 4 L0 8 z" fill="#6d28d9"/>
+</marker>
+</defs>
+<rect x="0.75" y="0.75" width="718.5" height="1188.5" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+<g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#111827">
+<text x="24" y="38" font-size="20" font-weight="700">The life of a request</text>
+
+<rect x="32" y="70" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="94" font-size="14" font-weight="700">1 · A run starts</text>
+<text x="48" y="114" font-size="12" fill="#4b5563">You, the API, a schedule or a signed webhook:</text>
+<text x="48" y="129" font-size="12" fill="#4b5563">POST /v2/agents/{id}/runs, with an input and a cap.</text>
+<line x1="268" y1="136" x2="268" y2="154" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="156" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="180" font-size="14" font-weight="700">2 · The server sets it up</text>
+<text x="48" y="200" font-size="12" fill="#4b5563">Pins the agent's revision, makes the run's folder, copies uploads in,</text>
+<text x="48" y="215" font-size="12" fill="#4b5563">starts the run's own process. No queue to lose it in.</text>
+<line x1="268" y1="222" x2="268" y2="240" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="242" width="472" height="66" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
+<text x="48" y="266" font-size="14" font-weight="700">3 · The agent loop runs on its harness</text>
+<text x="48" y="286" font-size="12" fill="#4b5563">pi, Claude Code, Codex or OpenCode, under the kernel.</text>
+<text x="48" y="301" font-size="12" fill="#4b5563">A workflow runs its typed steps instead, with no agent turn.</text>
+<line x1="268" y1="308" x2="268" y2="326" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="328" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="352" font-size="14" font-weight="700">4 · Every model request goes through the proxy</text>
+<text x="48" y="372" font-size="12" fill="#4b5563">Priced before it is sent. Spent, plus in flight, plus this one</text>
+<text x="48" y="387" font-size="12" fill="#4b5563">must fit the cap, or it is not sent and the run pauses.</text>
+<line x1="268" y1="394" x2="268" y2="412" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="414" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="438" font-size="14" font-weight="700">5 · Every tool call goes through the gate</text>
+<text x="48" y="458" font-size="12" fill="#4b5563">Allow, ask or deny. An ask parks the run until you answer.</text>
+<text x="48" y="473" font-size="12" fill="#4b5563">A paid call is held before it runs. Unknown cost is refused, never $0.</text>
+<line x1="268" y1="480" x2="268" y2="498" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="500" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="524" font-size="14" font-weight="700">6 · The tool runs where it belongs</text>
+<text x="48" y="544" font-size="12" fill="#4b5563">A shell in the run's sandbox box. A browser session at its vendor.</text>
+<text x="48" y="559" font-size="12" fill="#4b5563">Web search and fetch, a paid API, a learned workflow. No key inside.</text>
+<line x1="268" y1="566" x2="268" y2="584" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="586" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="610" font-size="14" font-weight="700">7 · Everything lands on the disk</text>
+<text x="48" y="630" font-size="12" fill="#4b5563">Files in the run's folder. Each turn, tool call and cost</text>
+<text x="48" y="645" font-size="12" fill="#4b5563">as a row in the run's journal, run.sqlite, before the next step.</text>
+<line x1="268" y1="652" x2="268" y2="670" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="672" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="696" font-size="14" font-weight="700">8 · The control plane reads the records</text>
+<text x="48" y="716" font-size="12" fill="#4b5563">Timeline, cost, files, Mission Control and analytics, in the console</text>
+<text x="48" y="731" font-size="12" fill="#4b5563">and the API, from the run's own store. A restart loses nothing.</text>
+<line x1="268" y1="738" x2="268" y2="756" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="758" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="782" font-size="14" font-weight="700">9 · The run ends with one more turn</text>
+<text x="48" y="802" font-size="12" fill="#4b5563">The agent looks back over the run and proposes notes, skills</text>
+<text x="48" y="817" font-size="12" fill="#4b5563">and a workflow draft, under the run's own cap.</text>
+<line x1="268" y1="824" x2="268" y2="842" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="844" width="472" height="66" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
+<text x="48" y="868" font-size="14" font-weight="700">10 · One grader decides</text>
+<text x="48" y="888" font-size="12" fill="#4b5563">Kept items merge as one commit into the agent's learning repo.</text>
+<text x="48" y="903" font-size="12" fill="#4b5563">A risky rule waits for your OK, whatever the grader said.</text>
+<line x1="268" y1="910" x2="268" y2="928" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="32" y="930" width="472" height="66" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="48" y="954" font-size="14" font-weight="700">11 · The next run starts from what was learned</text>
+<text x="48" y="974" font-size="12" fill="#4b5563">On any harness. A learned skill loads like one you wrote;</text>
+<text x="48" y="989" font-size="12" fill="#4b5563">a learned workflow runs as one tool.</text>
+
+<rect x="520" y="140" width="176" height="868" fill="#f8fafc" stroke="#374151" stroke-width="1.5"/>
+<text x="608" y="166" font-size="12" font-weight="700" fill="#4b5563" text-anchor="middle" letter-spacing="1">YOUR DISK</text>
+
+<rect x="532" y="176" width="152" height="38" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="608" y="194" font-size="12" font-weight="700" text-anchor="middle">agent.sqlite</text>
+<text x="608" y="208" font-size="11" fill="#4b5563" text-anchor="middle">agent, revisions, runs</text>
+<line x1="504" y1="189" x2="530" y2="189" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<text x="608" y="592" font-size="11" fill="#4b5563" text-anchor="middle">runs/&lt;run&gt;/</text>
+<rect x="532" y="600" width="152" height="38" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="608" y="618" font-size="12" font-weight="700" text-anchor="middle">run.sqlite</text>
+<text x="608" y="632" font-size="11" fill="#4b5563" text-anchor="middle">the run's journal</text>
+<line x1="504" y1="619" x2="530" y2="619" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="532" y="646" width="152" height="38" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="608" y="664" font-size="12" font-weight="700" text-anchor="middle">work/</text>
+<text x="608" y="678" font-size="11" fill="#4b5563" text-anchor="middle">the run's files</text>
+
+<line x1="530" y1="705" x2="506" y2="705" stroke="#6d28d9" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+<text x="608" y="709" font-size="11" fill="#6d28d9" text-anchor="middle">read, never streamed</text>
+
+<rect x="532" y="858" width="152" height="38" fill="#ffffff" stroke="#374151" stroke-width="1.5"/>
+<text x="608" y="876" font-size="12" font-weight="700" text-anchor="middle">learning/</text>
+<text x="608" y="890" font-size="11" fill="#4b5563" text-anchor="middle">notes, skills, workflows</text>
+<line x1="504" y1="877" x2="530" y2="877" stroke="#374151" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="530" y1="963" x2="506" y2="963" stroke="#6d28d9" stroke-width="1.5" marker-end="url(#arrow-accent)"/>
+<text x="608" y="967" font-size="11" fill="#6d28d9" text-anchor="middle">seeds the next run</text>
+
+<text x="32" y="1040" font-size="12" font-weight="700">Ships today</text>
+<text x="32" y="1058" font-size="12" fill="#4b5563">Steps 1 to 11 on one server, with a Docker, Daytona or Modal box for step 6. A live run's</text>
+<text x="32" y="1074" font-size="12" fill="#4b5563">timeline comes from its process over loopback; once it ends, and after any restart, the</text>
+<text x="32" y="1090" font-size="12" fill="#4b5563">server reads the run's store.</text>
+<text x="32" y="1118" font-size="12" font-weight="700">Planned</text>
+<text x="32" y="1136" font-size="12" fill="#4b5563">A disk per agent that you own. A sandbox mounts its run folder; the control plane reads</text>
+<text x="32" y="1152" font-size="12" fill="#4b5563">run.sqlite straight from the disk, live. No streaming between the control plane and the</text>
+<text x="32" y="1168" font-size="12" fill="#4b5563">data plane.</text>
+</g>
+</svg>
