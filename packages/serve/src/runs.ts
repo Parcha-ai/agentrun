@@ -672,6 +672,8 @@ export class Runs {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam (startServe's `messageOrigin`): the origin a message sent through the messages route carries. */
+  messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
 
   private get store() {
     return this.options.agents.store;
@@ -2035,7 +2037,7 @@ export class Runs {
     run.submitted++;
     this.refresh(run);
     try {
-      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId);
+      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, this.messageOrigin?.(run.id, content));
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);
