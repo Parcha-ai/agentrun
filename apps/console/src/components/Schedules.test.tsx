@@ -111,6 +111,14 @@ describe("the schedules list", () => {
     await t.click(/^New schedule$/);
     expect(t.went).toEqual(["#/schedules/new"]);
   });
+  it("says a schedule that turned itself off, and why, apart from one a person paused", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const t = await open(server({ triggers: [off] }).v2, {});
+    const row = t.host.querySelector("[data-schedule]")!;
+    expect(row.textContent).toContain("Turned off");
+    expect(row.textContent).toContain("Turned off after 5 failures in a row.");
+    expect(row.textContent).not.toContain("Paused");
+  });
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
     expect(t.text()).toContain("No schedules yet.");
@@ -217,6 +225,26 @@ describe("one schedule", () => {
     expect(t.text()).toContain("next Nov 5, 1:30 AM");
     expect(t.host.querySelector("[data-firing]")?.textContent).toContain("Nov 4, 1:30 AM");
     expect(t.text()).not.toContain("UTC");
+  });
+  it("says why it turned itself off, and Resume turns it on again by enabled alone", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const { v2, calls } = server({ triggers: [off] });
+    const t = await open(v2, { schedule: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off after 5 failures in a row. Resume turns it on again.");
+    await t.click(/^Resume$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ enabled: true }]);
+  });
+  it("says a source that can't be read", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } };
+    const t = await open(server({ triggers: [off] }).v2, { schedule: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off: its source can't be read (unknown time zone Mars/Base). Edit its when, then Resume.");
+  });
+  it("marks a firing that caught up a time missed while the server was down", async () => {
+    const firings = { trg_1: [firing({ key: "f1", status: "started", run_id: "r1", catch_up: true }), firing({ key: "f0", status: "started", run_id: "r0" })] };
+    const t = await open(server({ firings }).v2, { schedule: "trg_1" });
+    const rows = [...t.host.querySelectorAll("[data-firing]")];
+    expect(rows[0].textContent).toContain("On schedule, caught up late");
+    expect(rows[1].textContent).not.toContain("caught up");
   });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();

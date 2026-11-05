@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, capWords, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
+import { bodyOf, capWords, disabledWords, type Draft, draftOf, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
 import type { Firing, Trigger } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -23,6 +23,18 @@ describe("a schedule's when, in words", () => {
     vi.stubEnv("TZ", "UTC");
     expect(whenWords({ kind: "schedule", every_s: 300, start_at: "2026-11-04T00:00:00Z" })).toBe("Every 5 minutes");
     expect([60, 90, 3600, 7200, 5400, 86400].map(span)).toEqual(["minute", "90 seconds", "hour", "2 hours", "90 minutes", "24 hours"]);
+  });
+});
+
+// The server turns a schedule off itself after a failure streak, or when its source no longer reads (serve's
+// trigger.disabled): the schedule says why, not just that it is off.
+describe("why a schedule turned itself off", () => {
+  it("says the failure streak, or that its source can't be read; nothing for one a person paused", () => {
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } }))).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 0, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } }))).toBe("Turned off after failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } }))).toBe("Turned off: its source can't be read (unknown time zone Mars/Base).");
+    expect(disabledWords(trigger({ enabled: false, disabled: null }))).toBeNull();
+    expect(disabledWords(trigger({ enabled: false }))).toBeNull();
   });
 });
 
