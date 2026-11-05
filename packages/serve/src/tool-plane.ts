@@ -146,6 +146,8 @@ const isVendor = (name: unknown): name is BrowserVendor => name === "browserbase
 const browserKeysOf = (env: NodeJS.ProcessEnv): Record<BrowserVendor, boolean> => ({ browserbase: BROWSER_KEYS.browserbase.every((name) => Boolean(env[name])), kernel: BROWSER_KEYS.kernel.every((name) => Boolean(env[name])) });
 /** A vendor picked whose keys the server does not hold: unavailable, never the other vendor. */
 const noBrowserKey = (vendor: BrowserVendor): Resolution => `unavailable: ${vendor} picked, no ${BROWSER_KEYS[vendor].join(" and ")}`;
+/** The keys a browser that resolves to `resolution` runs on: its vendor's (BROWSER_KEYS), none for no vendor. */
+export const browserNeeds = (resolution: string | undefined): readonly string[] => (isVendor(resolution) ? BROWSER_KEYS[resolution] : []);
 /** `auto` where the server holds neither vendor's keys. */
 export const NO_BROWSER_KEY: Resolution = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
 /** `chrome` picked: a Chrome on the server's own host, refused by name until a server can set one up. */

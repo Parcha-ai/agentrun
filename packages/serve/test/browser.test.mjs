@@ -27,7 +27,7 @@ test("capabilities list browser with the variables it is missing (names only), a
   // Half of Browserbase's keys and none of Kernel's: no vendor runs, and the reason names each one's variables.
   const reason = "no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
   const { summary: _, why: __, ...listed } = caps.tools.find((tool) => tool.name === "browser");
-  assert.deepEqual(listed, { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], providers: ["auto", "browserbase", "kernel", "chrome"], provider: "auto", default_provider: "auto", resolves: { pi: `unavailable: ${reason}`, "claude-agent": `unavailable: ${reason}`, codex: `unavailable: ${reason}` }, key: "browserbase" });
+  assert.deepEqual(listed, { name: "browser", nodes: true, calls: false, available: false, reason, harnesses: ["pi"], providers: ["auto", "browserbase", "kernel", "chrome"], provider: "auto", default_provider: "auto", resolves: { pi: `unavailable: ${reason}`, "claude-agent": `unavailable: ${reason}`, codex: `unavailable: ${reason}`, opencode: `unavailable: ${reason}` }, key: "browserbase" });
   assert.ok(caps.workflows.node_tools.includes("browser"));
   assert.ok(!JSON.stringify(caps).includes("fake-project"), "no value of a variable is shown");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);

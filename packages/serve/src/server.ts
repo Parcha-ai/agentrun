@@ -605,10 +605,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const toolKeys = new ToolKeys(data, withSecrets(base, "own"), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
-  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase };
+  const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase, kernel: options.fauxKernel };
   const checkFetch = async (id: string): Promise<typeof fetch | undefined> => {
     if (!options.faux) return fetch;
-    const fake = id === "kernel" ? options.fauxKernel : fakes[id];
+    const fake = fakes[id];
     return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : undefined;
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
@@ -754,9 +754,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
   // Under faux, a key the server starts with is checked only against a check's own fake (fauxBrowserbase,
-  // fauxMonidCheck): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
+  // fauxMonidCheck, fauxKernel): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
   // is not checked.
-  const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck };
+  const checkFakes: Record<string, string | undefined> = { browserbase: options.fauxBrowserbase, monid: options.fauxMonidCheck, kernel: options.fauxKernel };
   const startFetch = async (id: string): Promise<typeof fetch | null> => {
     if (!options.faux) return fetch;
     const fake = checkFakes[id];

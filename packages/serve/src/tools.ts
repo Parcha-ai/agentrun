@@ -21,7 +21,7 @@ import { bookedIn, booking, type Ledger } from "./paid-calls.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
@@ -335,7 +335,10 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const boxless = entry.sandboxOnly ? noBox : undefined;
-    const refusal = entry.needs.map((name) => (Object.hasOwn(refused, name) ? refused[name] : undefined)).find((why) => why !== undefined);
+    // The browser needs the keys of the vendor it resolves to: one refused at the start leaves it unavailable, never on the
+    // other vendor, as a refused Parallel key never moves web_search elsewhere.
+    const needs = name === "browser" ? [...new Set(Object.values(plane ?? {}).flatMap(browserNeeds))] : entry.needs;
+    const refusal = needs.map((name) => (Object.hasOwn(refused, name) ? refused[name] : undefined)).find((why) => why !== undefined);
     const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined && refusal === undefined;
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.

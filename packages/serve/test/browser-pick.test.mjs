@@ -17,6 +17,7 @@ import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_KERNEL = new URL("./fixtures/faux-kernel-check.mjs", import.meta.url).pathname;
+const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG"];
 const BB = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
 const KERNEL = { KERNEL_API_KEY: "fake-test-key" };
@@ -145,6 +146,29 @@ test("pick the browser through the API: a Kernel key saved and checked, Kernel p
   const refused = await api("POST", "/agents/kern/runs", { input: { content: "Browse the example page." } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
   assert.match(refused.body.error.message, /The tool browser does not run here on pi: a local Chrome is not set up on this server\./);
+});
+
+/** The browser in capabilities once the start's check of `id`'s key has answered (at most 10 s). */
+async function checkedBrowser(api, id) {
+  for (const until = Date.now() + 10_000; ;) {
+    const row = (await api("GET", "/settings/tool-keys")).body.keys.find((key) => key.id === id);
+    if (row.check !== null || Date.now() > until) return (await api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "browser");
+    await new Promise((go) => setTimeout(go, 50));
+  }
+}
+
+test("a vendor's key the server starts with and the vendor refuses leaves the browser unavailable, saying so; auto stays on that vendor, never the other, as a refused Parallel key never moves web_search", async (t) => {
+  // Browserbase's refused, Kernel's good: auto still resolves to Browserbase, and reads unavailable for its refused key.
+  withEnv(t, { BROWSERBASE_API_KEY: WRONG, BROWSERBASE_PROJECT_ID: "proj-1", KERNEL_API_KEY: KERNEL_KEY }, KEYS);
+  const first = await serve(t, { fauxBrowserbase: FAUX_BROWSERBASE, fauxKernel: FAUX_KERNEL });
+  const bb = await checkedBrowser(first.api, "browserbase");
+  assert.deepEqual([bb.available, bb.resolves.pi, bb.reason], [false, "browserbase", "Browserbase refused BROWSERBASE_API_KEY (401: Unauthorized) when this server started: set the right one where AgentRun starts, then restart it"]);
+  // Kernel picked, its key refused at the start: unavailable, in Kernel's words.
+  withEnv(t, { KERNEL_API_KEY: WRONG }, KEYS);
+  const second = await serve(t, { fauxBrowserbase: FAUX_BROWSERBASE, fauxKernel: FAUX_KERNEL });
+  assert.equal((await second.api("PUT", "/settings/tools", { browser: { provider: "kernel" } })).status, 200);
+  const kernel = await checkedBrowser(second.api, "kernel");
+  assert.deepEqual([kernel.available, kernel.resolves.pi, kernel.reason], [false, "kernel", "Kernel refused KERNEL_API_KEY (401: Invalid API key) when this server started: set the right one where AgentRun starts, then restart it"]);
 });
 
 test("a run made before the browser was pickable keeps Browserbase when it is launched again, though the server now picks Kernel", { timeout: 90_000 }, async (t) => {
