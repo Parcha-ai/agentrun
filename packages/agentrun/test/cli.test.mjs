@@ -459,3 +459,18 @@ test("a .server.json whose base_url is not a string or whose pid is not a positi
     assert.ok(!read.err.includes("fake-record-contents") && !read.err.includes("TypeError"), read.err);
   }
 });
+
+test("a config.json whose base_url or api_key is not a string is refused, exit 4, its contents never printed", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t);
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  const config = join(dir, ".config", "agentrun", "config.json");
+  for (const fields of [{ base_url: 42, api_key: "fake-test-key" }, { base_url: { fake: "fake-config-contents" }, api_key: "fake-test-key" }, { base_url: null, api_key: "fake-test-key" }, { base_url: server.base, api_key: 42 }, { base_url: server.base, api_key: ["fake-config-contents"] }, { base_url: server.base, api_key: null }]) {
+    writeFileSync(config, JSON.stringify(fields), { mode: 0o600 });
+    const read = await run(env, ["agents", "list"]);
+    assert.equal(read.code, 4, `${JSON.stringify(fields)}: ${read.err}`);
+    assert.match(read.err, new RegExp(`^${config.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+    assert.ok(!read.err.includes("fake-config-contents") && !read.err.includes("fake-test-key") && !read.err.includes("TypeError"), read.err);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+});

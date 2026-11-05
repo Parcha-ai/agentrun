@@ -130,6 +130,9 @@ function targetOf(values, env) {
   const data = resolve(values.data ?? join(homedir(), ".agentrun"));
   const configFile = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "config.json");
   const config = readJson(configFile, privateFile(configFile)) ?? {};
+  if (["base_url", "api_key"].some((field) => config[field] !== undefined && typeof config[field] !== "string")) {
+    throw new Exit(4, `${configFile} is not a CLI config (base_url and api_key, when there, are strings); refusing it.`);
+  }
   const recordFile = join(data, ".server.json");
   const record = readJson(recordFile, privateFile(recordFile));
   if (record !== undefined && (typeof record?.base_url !== "string" || !Number.isInteger(record.pid) || record.pid <= 0)) {
