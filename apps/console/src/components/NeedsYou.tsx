@@ -86,6 +86,8 @@ export function RaiseCap({ cap, suggested, paused, onRaise }: { cap: number; sug
         <Button type="submit" size="sm" variant="solid" disabled={busy || !named}>{busy ? "Raising" : paused ? "Raise the cap and continue" : "Raise the cap"}</Button>
       </div>
       {suggested !== null && <p className="mt-2 text-[12px] text-muted-foreground">The server's suggestion; change it before you raise, if you like.</p>}
+      {/* A prefilled figure reads like a price: it is the most the run may spend, not what it is charged. */}
+      <p className="mt-2 text-[12px] text-muted-foreground">A cap is a ceiling: the run is charged only for what it uses.</p>
       {refused && <p className="mt-2 text-[13px] text-destructive-text" role="alert">{refused}</p>}
       {note && <p className="mt-2 text-[13px] text-muted-foreground" role="status">{note}</p>}
     </form>
