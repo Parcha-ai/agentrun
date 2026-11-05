@@ -816,7 +816,9 @@ picks which one a run gets, never the model.
   its sessions save what changed (Browserbase `persist`, Kernel `save_changes`). A run of the same agent started while
   another holds it starts signed in and saves nothing. The lease ends when its run ends (completed, failed or
   cancelled) or lets go cleanly to wait for its person. A run whose process went, or a server restart, keeps it with
-  the run for its relaunch, since a session it opened before may still write back at the vendor. One that names a run
+  the run for its relaunch, since a session it opened before may still write back at the vendor, but for no longer than
+  such a session can live (pi-browser's session timeout, 30 minutes) while its process stays gone: a run that waits on
+  its person after its process died, or is never opened again, lets the others save after that. One that names a run
   that ended while the server was down counts as let go. A V1 limit: the lease goes to the first run of the agent to
   start with the browser in its tools, whether or not it opens a browser, and stays with it until it ends, so a long
   run that never browses keeps the others of that agent from saving meanwhile.

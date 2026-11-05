@@ -37,7 +37,13 @@ export type SignInView = { key: string; provider: Vendor; state: "ready" | "held
 /** The vendor's side: make an agent's object (its pointer), and delete one. */
 export type Vendors = { create(vendor: Vendor): Promise<string>; remove(vendor: Vendor, ref: string): Promise<void> };
 
-type Entry = { key: string; provider: Vendor; ref: string; verified_at: string | null; held_by: string | null };
+/** `gone_at`: when the holder's process was last found gone, while it holds the lease (markGone). */
+type Entry = { key: string; provider: Vendor; ref: string; verified_at: string | null; held_by: string | null; gone_at?: string | null };
+
+/** How long a lease outlives its holder's process: pi-browser's default session timeout (DEFAULT_BROWSER_POLICY's
+ *  sessionTimeoutS, 1800 s), which every session a run opens is created under, so none it opened before its process
+ *  went can still write back after it. A holder that comes back (its relaunch) holds the lease again from then on. */
+export const GONE_LEASE_MS = 1_800_000;
 type Stored = { format: typeof FORMAT; sign_ins: Entry[] };
 
 /** The vendor a run's browser resolves to (its plane's `browser`) keeps a sign-in for: Browserbase's and Kernel's; local
@@ -54,8 +60,12 @@ export class SignIns {
   /** One read-modify-write at a time per agent; an agent's queue goes once it is empty. */
   private readonly chains = new Map<string, Promise<unknown>>();
 
-  /** `holds(run)`: whether that run has not ended, so a lease it names still holds. */
-  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>) {}
+  private readonly now: () => number;
+
+  /** `holds(run)`: whether that run has not ended, so a lease it names still holds; `now`, the clock (tests'). */
+  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>, options: { now?: () => number } = {}) {
+    this.now = options.now ?? Date.now;
+  }
 
   /** Whether sign-ins are kept here: never without a seal key, never in the clear. */
   get available(): boolean {
@@ -87,9 +97,12 @@ export class SignIns {
     return serialBy(this.chains, agentId, work);
   }
 
-  /** Whether `entry`'s lease still holds: it names a run, and that run has not ended. */
+  /** Whether `entry`'s lease still holds: it names a run that has not ended, and whose process, if found gone, went
+   *  less than GONE_LEASE_MS ago (a run that waits on its person with no process is never let go otherwise). */
   private async held(entry: Entry): Promise<boolean> {
-    return entry.held_by !== null && (await this.holds(entry.held_by).catch(() => true));
+    if (entry.held_by === null) return false;
+    if (entry.gone_at && this.now() - Date.parse(entry.gone_at) >= GONE_LEASE_MS) return false;
+    return this.holds(entry.held_by).catch(() => true);
   }
 
   /** `entry`'s pointer, opened under this server's seal key; undefined when it does not open (none now, or another). */
@@ -136,7 +149,7 @@ export class SignIns {
         entries.push(entry);
       }
       const save = entry.held_by === runId || !(await this.held(entry));
-      if (save) entry.held_by = runId;
+      if (save) Object.assign(entry, { held_by: runId, gone_at: null });
       try {
         await this.write(agentId, entries);
       } catch (error) {
@@ -145,6 +158,17 @@ export class SignIns {
         throw error;
       }
       return { provider: vendor, ref, save };
+    });
+  }
+
+  /** Run `runId`'s process was found gone: a lease it holds counts from now, while it does not come back (held). */
+  markGone(agentId: string, runId: string): Promise<void> {
+    return this.locked(agentId, async () => {
+      const entries = await this.read(agentId);
+      const mine = entries.filter((entry) => entry.held_by === runId && !entry.gone_at);
+      if (!mine.length) return;
+      for (const entry of mine) entry.gone_at = new Date(this.now()).toISOString();
+      await this.write(agentId, entries);
     });
   }
 
@@ -157,7 +181,7 @@ export class SignIns {
       const entries = await this.read(agentId);
       const mine = entries.filter((entry) => entry.held_by === runId);
       if (mine.length) {
-        for (const entry of mine) Object.assign(entry, { held_by: null }, saved && !Number.isNaN(Date.parse(saved)) ? { verified_at: new Date(saved).toISOString() } : {});
+        for (const entry of mine) Object.assign(entry, { held_by: null, gone_at: null }, saved && !Number.isNaN(Date.parse(saved)) ? { verified_at: new Date(saved).toISOString() } : {});
         await this.write(agentId, entries);
       }
       await rm(marker, { force: true });

@@ -1672,6 +1672,8 @@ export class Runs {
     const pid = holderPid(record);
     // A process that is gone serves no door, whatever its last heartbeat says.
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
+    // Its sign-in's save lease stays with it (below), but no longer than a session it opened could outlive its process.
+    if (gone) await this.options.signIns?.markGone(run.agentId, run.id).catch((error: Error) => warn(run.id, `its sign-in's lease is not marked: ${error.message}`));
     // Its metrics are this settle's read, or none: never an earlier end's.
     run.metrics = undefined;
     if (released || gone) await this.storeWhenFree(run, true);

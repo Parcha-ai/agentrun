@@ -10,7 +10,7 @@ import { chmod, cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
-import { SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
+import { GONE_LEASE_MS, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
@@ -275,6 +275,29 @@ test("a run's save lease outlives its process until the run ends: a server that 
   await server.close();
   const view = await new SignIns(server.data, seal, {}, async () => true).view("alpha");
   assert.deepEqual(view.map((s) => [s.state, s.held_by]), [["held", started.body.run_id]]);
+  const [entry] = JSON.parse(await readFile(join(homeOf(server.data, "alpha"), "sign-ins", "sign-ins.json"), "utf8")).sign_ins;
+  assert.ok(Date.parse(entry.gone_at) > 0, "its process found gone, from when");
+});
+
+test("a lease whose holder's process is gone lasts no longer than a session it opened could: then another run takes it; a holder that comes back holds it again", async (t) => {
+  const { DEFAULT_BROWSER_POLICY } = await import("@parcha/pi-browser");
+  assert.equal(GONE_LEASE_MS, DEFAULT_BROWSER_POLICY.sessionTimeoutS * 1000, "pi-browser's session timeout");
+  let now = Date.parse("2026-11-05T00:00:00.000Z");
+  const data = await scratch(t);
+  const made = [];
+  const store = new SignIns(data, randomBytes(32), { create: async () => (made.push(`ctx-${made.length + 1}`), made.at(-1)) }, async () => true, { now: () => now });
+  await store.forRun("alpha", "run-1", "browserbase");
+  await store.markGone("alpha", "run-1");
+  now += GONE_LEASE_MS - 1000;
+  assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, false, "a session it opened may still write back");
+  now += 1000;
+  assert.equal((await store.view("alpha"))[0].state, "ready");
+  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
+  // run-3's process goes and comes back (its relaunch): the lease is its again, with no clock on it.
+  await store.markGone("alpha", "run-3");
+  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
+  now += 2 * GONE_LEASE_MS;
+  assert.deepEqual((await store.view("alpha")).map((s) => [s.state, s.held_by]), [["held", "run-3"]]);
 });
 
 test("a pointer that does not open under this server's seal key reads unreadable, never ready: no run starts from it and none is made in its place until it is forgotten", async (t) => {
