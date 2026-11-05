@@ -16,7 +16,8 @@ const NIGHTLY: Trigger = {
   last_firing: { key: "fir_a", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "skipped", at: "2026-11-04T09:30:01Z", run_id: null, reason: "The last run is still working.", error: null },
 };
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_x", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "started", at: "2026-11-04T09:30:01Z", run_id: null, reason: null, error: null, ...over });
-const AGENTS = [
+type AgentFixture = { agent_id: string; kind: string; definition: { name: string; max_cost_usd?: number }; archived_at: null };
+const AGENTS: AgentFixture[] = [
   { agent_id: "triage", kind: "agentic", definition: { name: "Triage" }, archived_at: null },
   { agent_id: "flow", kind: "workflow", definition: { name: "Refund flow" }, archived_at: null },
   // An agent with a default cap per run (definition.max_cost_usd): a schedule on it may leave its own cap out.
@@ -31,7 +32,7 @@ const refuse = (fields: { field: string; reason: string; message: string }[]) =>
  *  now answers once `release` is called (so a second click lands while the first is out). While `hold.on`, a read of a
  *  schedule or its firings answers as things stood when it was asked, but only once `releaseHeld` is called: a late,
  *  stale background read. */
-function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>, write }: { triggers?: Trigger[]; firings?: Record<string, Firing[]>; write?: (call: Call) => Response | undefined } = {}) {
+function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>, write, agents = AGENTS }: { triggers?: Trigger[]; firings?: Record<string, Firing[]>; write?: (call: Call) => Response | undefined; agents?: typeof AGENTS } = {}) {
   const calls: Call[] = [];
   let release: () => void = () => {};
   const hold = { on: false };
@@ -41,9 +42,9 @@ function server({ triggers = [NIGHTLY], firings = {} as Record<string, Firing[]>
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, key: new Headers(init?.headers).get("idempotency-key") };
     calls.push(call);
     const m = /^\/v2\/triggers\/([^/]+)(\/fire|\/firings)?$/.exec(call.path);
-    if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
+    if (call.path === "/v2/agents") return json(200, { agents, next_cursor: null });
     const agentRead = /^\/v2\/agents\/([^/]+)$/.exec(call.path);
-    if (agentRead) { const a = AGENTS.find((x) => x.agent_id === decodeURIComponent(agentRead[1])); return a ? json(200, a) : json(404, { error: { code: "not_found", message: "no agent", retryable: false } }); }
+    if (agentRead) { const a = agents.find((x) => x.agent_id === decodeURIComponent(agentRead[1])); return a ? json(200, a) : json(404, { error: { code: "not_found", message: "no agent", retryable: false } }); }
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
     if (call.path === "/v2/triggers" && call.method === "POST") {
       const answer = write?.(call);
@@ -193,6 +194,20 @@ describe("a new schedule", () => {
     await t.choose("every");
     expect(t.text()).toContain("At least 2 minutes.");
   });
+  // Before an agent is picked the cap's rule depends on it: the hint says so, and a cap that may be left empty shows no
+  // amount to copy. The cron line says what every minute is.
+  it("says the cap's rule before an agent is picked, offers no amount where the cap is optional, and shows every minute in cron", async () => {
+    const t = await open(server().v2, { schedule: null });
+    const cap = () => t.host.querySelector('[name="maxCost"]') as HTMLInputElement;
+    expect(t.text()).toContain("Required unless the agent has a default cap per run.");
+    expect(t.text()).toContain("* * * * * = every minute");
+    await t.set("agent", "triage");
+    expect(t.text()).toContain("Required: each run this schedule starts stops at this spend.");
+    expect(cap().placeholder).toBe("2");
+    await t.set("agent", "story");
+    expect(t.text()).toContain("Uses the agent's default ($0.50) if empty.");
+    expect(cap().placeholder).toBe("");
+  });
   // The server takes no cap when the agent has a default (each firing uses the agent's): the field is optional then.
   it("leaves the cap out on an agent with a default cap, and says the default under the field", async () => {
     const { v2, calls } = server();
@@ -308,6 +323,22 @@ describe("one schedule", () => {
     const t = await open(server({ triggers: [own] }).v2, { schedule: "trg_1" });
     expect(t.text()).toContain("Agent's default ($0.50)");
     expect(t.text()).not.toContain("undefined");
+  });
+  // The agent's default is read again with the schedule, so a change made elsewhere shows; and an amount read for one
+  // agent never stays on the page for another whose read failed.
+  it("reads the agent's default again while open, and drops an amount that belonged to another agent", async () => {
+    const agents = AGENTS.map((a) => ({ ...a, definition: { ...a.definition } }));
+    const own: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "story", input: { content: "Say hello." } } };
+    const triggers = [own];
+    const t = await open(server({ triggers, agents }).v2, { schedule: "trg_1" }, undefined, 30);
+    expect(t.text()).toContain("Agent's default ($0.50)");
+    (agents.find((a) => a.agent_id === "story")!.definition as { max_cost_usd?: number }).max_cost_usd = 0.75;
+    for (let i = 0; i < 20 && !t.text().includes("($0.75)"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(t.text()).toContain("Agent's default ($0.75)");
+    triggers[0] = { ...own, target: { kind: "start_run", agent_id: "gone", input: { content: "Say hello." } } };
+    for (let i = 0; i < 20 && t.text().includes("($0.75)"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(t.text()).toContain("Agent's default");
+    expect(t.text()).not.toContain("($0.75)");
   });
   it("says a trigger this page does not show is not a schedule that starts runs, with nothing to change it", async () => {
     const hook = { ...NIGHTLY, id: "trg_hook", name: "on push", source: { kind: "webhook" } } as unknown as Trigger;
