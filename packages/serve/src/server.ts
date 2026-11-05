@@ -1318,12 +1318,19 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (!(at >= from && at < to)) continue;
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
+      // A run whose cost is unknown still spent what is known of it (its so_far_usd: each priced charge, browser time
+      // and paid tools included): that is in the total and its lines, and the run is counted unpriced, so a total is
+      // never below a line of its own and reads as the lower bound unpriced_runs says it is.
+      const unknownOne = usd === null ? (live ?? (await runs.get(row.id))) : null;
+      const soFar = unknownOne ? (runs.cost(unknownOne).so_far_usd ?? 0) : 0;
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
       const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
+      // The known part of a line whose run's cost is unknown: what the run spent so far beside its known other lines.
+      const knownTokens = meters && tokens === null ? Math.max(0, soFar - (meters.browser.usd ?? 0) - (meters.others ?? 0)) : 0;
       // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
       const browser = meters ? meters.browser.usd : 0;
       const tools = meters?.others;
@@ -1333,11 +1340,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // never passes as $0.
       for (const [name, part] of parts) {
         const line = lines.get(name) ?? lines.set(name, { usd: 0, unpriced: 0 }).get(name)!;
-        if (part === null) line.unpriced++;
-        else line.usd += part;
+        if (part !== null) line.usd += part;
+        else {
+          line.unpriced++;
+          // Its known dollars: the whole of what it spent so far on a line of its own (by agent, by day), else the part
+          // beside its known meters on tokens.
+          line.usd += meters ? (name === key ? knownTokens : 0) : soFar;
+        }
       }
       if (usd === null) total.unpriced++;
-      else total.usd += usd;
+      total.usd += usd ?? soFar;
     }
     // What learning spent on this server, outside any run (usage.ts): each run's grade, on the day its learning ended.
     for (const entry of (await outcomes(data)).values()) {
