@@ -183,7 +183,8 @@ const js = `"use strict";
     try { m = JSON.parse(event.data); } catch (e) { return; }
     if (m.type === "ready") { ready = true; readOnly = m.readOnly === true; if (readOnly) viewOnly(); setDrive(m.drive); say(""); focusScreen(); expectPicture(); }
     else if (m.type === "no_page") { noPage = true; stillEl.hidden = true; clearTimeout(stillTimer); say(NO_PAGE); }
-    else if (m.type === "status") { setDrive(m.drive); if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
+    // "No page yet" stays until a page or a frame comes: who drives meanwhile changes nothing on a browser with no page.
+    else if (m.type === "status") { setDrive(m.drive); if (noPage) return; if (m.drive !== "agent") say(""); else say("The agent is acting. Your input is held until it is done."); }
     else if (m.type === "page") { if (noPage) { noPage = false; say(""); } document.title = m.title ? m.title + " - Live view" : "Live view"; if (document.activeElement !== urlBox) urlBox.value = m.url; if (m.url !== shownUrl) { shownUrl = m.url; expectPicture(); } }
     else if (m.type === "dialog") showDialog(m);
     else if (m.type === "dialog_closed") hideDialog();

@@ -528,6 +528,11 @@ test("a view-only viewer: ready with readOnly shows 'view only', turns its contr
   assert.deepEqual([(await state()).url, (await state()).back], [true, true], "its address bar and buttons are off");
   web.send({ type: "no_page" });
   assert.ok(await until(async () => /No page yet/.test((await state()).notice)), "no page yet");
+  // The agent acting and done in the meantime leaves it: only a page or a frame clears it.
+  web.send({ type: "status", drive: "agent" });
+  web.send({ type: "status", drive: "idle" });
+  await settle(200);
+  assert.match((await state()).notice, /No page yet/, "status messages leave 'No page yet' up");
   // Nothing the person does is sent: a key, a click, the address bar.
   await viewer.evaluate(`document.getElementById("sink").focus()`);
   await viewer.send("Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", text: "a", windowsVirtualKeyCode: 65 });
