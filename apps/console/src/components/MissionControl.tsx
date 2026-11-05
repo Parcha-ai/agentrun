@@ -82,9 +82,9 @@ export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore,
         <div className="space-y-3">
           {view.activityComplete !== true && <p className="text-[12px] text-muted-foreground">Partial activity: showing loaded runs. Open a state below to see more.</p>}
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-            <Activity title="Active work" runs={active} filters={[["queued", "Queued"], ["working", "Working"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} />
-            <Activity title="Needs attention" runs={attention} filters={[["input_required", "Needs input"], ["paused", "Paused"], ["completed", "Completed"], ["failed", "Failed / escalated"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} />
-            <Activity title="Failed runs" runs={failed} filters={[["failed", "View runs"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} />
+            <Activity title="Active work" runs={active} filters={[["queued", "Queued"], ["working", "Working"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} agent={scope?.agent} />
+            <Activity title="Needs attention" runs={attention} filters={[["input_required", "Needs input"], ["paused", "Paused"], ["completed", "Completed"], ["failed", "Failed / escalated"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} agent={scope?.agent} />
+            <Activity title="Failed runs" runs={failed} filters={[["failed", "View runs"]]} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} agent={scope?.agent} />
           </div>
         </div>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
@@ -108,8 +108,8 @@ export function MissionControl({ view, error, onRetry, scope, onRefresh, onMore,
   );
 }
 
-function Activity({ title, runs, filters, names, now, snapshot, filesSupported }: { title: string; runs: Run[]; filters: [Run["status"], string][]; names: Map<string, string>; now: number; snapshot: string; filesSupported: boolean }) {
-  return <section className="min-w-0 border" aria-label={title}><div className="space-y-2 border-b px-4 py-3"><h2 className="caps text-[12px] font-semibold">{title}</h2><nav aria-label={`${title} states`} className="flex flex-wrap gap-x-3 gap-y-1">{filters.map(([status, label]) => <a key={status} href={`#/runs?status=${status}`} className="text-[12px] underline">{label}</a>)}</nav></div>
+function Activity({ title, runs, filters, names, now, snapshot, filesSupported, agent }: { title: string; runs: Run[]; filters: [Run["status"], string][]; names: Map<string, string>; now: number; snapshot: string; filesSupported: boolean; agent?: string | null }) {
+  return <section className="min-w-0 border" aria-label={title}><div className="space-y-2 border-b px-4 py-3"><h2 className="caps text-[12px] font-semibold">{title}</h2><nav aria-label={`${title} states`} className="flex flex-wrap gap-x-3 gap-y-1">{filters.map(([status, label]) => <a key={status} href={`#/runs?status=${status}${agent ? `&agent=${encodeURIComponent(agent)}` : ""}`} className="text-[12px] underline">{label}</a>)}</nav></div>
     {runs.length ? <ActivityRows runs={runs} names={names} now={now} snapshot={snapshot} filesSupported={filesSupported} /> : <p className="px-4 py-6 text-[13px] text-muted-foreground">No matching runs in the loaded activity.</p>}
   </section>;
 }

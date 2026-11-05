@@ -341,4 +341,14 @@ describe("MissionControl, the counts as links and the latest runs in full", () =
     expect(fresh).not.toContain("Needs input");
     expect(fresh).not.toContain("Recent runs");
   });
+  it("keeps the selected agent in every activity state link", () => {
+    const page = new DOMParser().parseFromString(render(view, { ...scope, agent: "agent /?" }), "text/html");
+    const links = [...page.querySelectorAll('section nav a')].filter((a) => a.getAttribute("href")?.startsWith("#/runs?status="));
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      const params = new URLSearchParams(link.getAttribute("href")!.split("?")[1]);
+      expect(params.get("agent")).toBe("agent /?");
+    }
+  });
+
 });

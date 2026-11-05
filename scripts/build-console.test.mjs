@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { buildConsole, consoleDepsInstalled, consoleInputsHash, consoleIsCurrent, HASH_FILE, stampConsole } from './build-console.mjs';
+import { buildConsole, installConsoleDependencies, consoleDepsInstalled, consoleInputsHash, consoleIsCurrent, HASH_FILE, stampConsole } from './build-console.mjs';
 
 /** A repository with a console's inputs, and an npm that records what it was asked and builds as the console's own
  *  build does: dist/index.html, then the stamp. */
@@ -36,6 +36,17 @@ test('a fresh checkout installs and builds the console; built again from the sam
   assert.deepEqual(r.asked, ['ci --ignore-scripts --no-audit --no-fund', 'run build']);
   assert.equal(r.build(), 'current');
   assert.deepEqual(r.asked, ['ci --ignore-scripts --no-audit --no-fund', 'run build'], 'nothing asked of npm the second time');
+});
+
+test('a restored current build installs its missing console dependencies without rebuilding', (t) => {
+  const r = repo(t);
+  r.build();
+  r.asked.length = 0;
+  rmSync(join(r.root, 'apps/console/node_modules'), { recursive: true });
+  const run = (args) => r.asked.push(args.join(' '));
+  installConsoleDependencies(r.root, { run });
+  assert.deepEqual(r.asked, ['ci --ignore-scripts --no-audit --no-fund']);
+  assert.equal(consoleIsCurrent(r.root), true);
 });
 
 test('a changed source rebuilds; a file touched but unchanged does not; a changed lockfile installs again first', (t) => {

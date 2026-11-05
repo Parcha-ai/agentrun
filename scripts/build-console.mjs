@@ -63,12 +63,17 @@ export function consoleDepsInstalled(root) {
   }
 }
 
+/** Install the console's locked dependencies even when its build output was restored separately. */
+export function installConsoleDependencies(root, { run = npm } = {}) {
+  if (!consoleDepsInstalled(root)) run(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], join(root, 'apps', 'console'));
+}
+
 /** Builds the console unless it is current: `npm ci` first when its dependencies are not the lockfile's, then its own
  *  `npm run build`, which stamps the hash. `run` runs npm (tests pass their own). */
 export function buildConsole(root, { run = npm, log = (line) => console.log(line) } = {}) {
   if (consoleIsCurrent(root)) { log('The console is current (apps/console/dist matches its sources): not built again.'); return 'current'; }
   const app = join(root, 'apps', 'console');
-  if (!consoleDepsInstalled(root)) run(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], app);
+  installConsoleDependencies(root, { run });
   run(['run', 'build'], app);
   if (!consoleIsCurrent(root)) throw new Error('apps/console built, but its dist does not record the inputs it was built from');
   return 'built';
@@ -76,6 +81,7 @@ export function buildConsole(root, { run = npm, log = (line) => console.log(line
 
 if (isMain(import.meta)) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  if (process.argv.includes('--stamp')) stampConsole(root);
+  if (process.argv.includes('--dependencies')) installConsoleDependencies(root);
+  else if (process.argv.includes('--stamp')) stampConsole(root);
   else buildConsole(root);
 }
