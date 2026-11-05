@@ -29,6 +29,8 @@ const PROXY = "http://127.0.0.1:3128";
 const PROXY_ENV = { HTTP_PROXY: PROXY, HTTPS_PROXY: PROXY, http_proxy: PROXY, https_proxy: PROXY, NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1" };
 const ALLOW_HINT = "use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW";
 const MAC = { faux: PROBE, fauxPlatform: "darwin" };
+/** colima's OperatingSystem is its VM's distro; detection keys on Name, not on this. */
+const COLIMA_OS = "Debian GNU/Linux 12 (bookworm)";
 
 /** A fake docker first on PATH answering docker info as `runtime`, with the proxy's fake network, and `marks` made. */
 async function fakeDocker(t, runtime, marks = {}, vars = {}) {
@@ -109,12 +111,14 @@ test("which Docker in a VM gets a box's network on a Mac, by docker info's own s
   // Each runtime's own strings (fixtures/fake-docker.mjs RUNTIMES, from their users' pasted docker info).
   assert.deepEqual(as("Docker Desktop", "docker-desktop"), { runtime: "Docker Desktop" });
   assert.deepEqual(as("OrbStack", "orbstack", "6.13.7-orbstack-00283-g9d1400e7e9c6"), { runtime: "OrbStack" });
-  assert.deepEqual(as("Ubuntu 24.04.2 LTS", "colima", "6.8.0-64-generic"), { runtime: "colima" });
-  assert.deepEqual(as("Ubuntu 24.04 LTS", "colima-work", "6.8.0-39-generic"), { runtime: "colima" }, "a colima profile's VM is colima-<profile>");
+  assert.deepEqual(as(COLIMA_OS, "colima", "6.8.0-64-generic"), { runtime: "colima" });
+  assert.deepEqual(as(COLIMA_OS, "colima-work", "6.8.0-39-generic"), { runtime: "colima" }, "a colima profile's VM is colima-<profile>");
+  // colima's OperatingSystem is not read: two distros, one Name, one answer.
+  assert.deepEqual(as("Alpine Linux v3.23", "colima", "6.8.0-64-generic"), as(COLIMA_OS, "colima", "6.8.0-64-generic"));
   // Known by name, but on this machine's own kernel: no VM in between.
   assert.equal(as("Docker Desktop", "docker-desktop", "24.6.0").reason, "this Docker (Docker Desktop) runs on this machine's own kernel, not in a VM this server knows, so its boxes get no network");
   // Runtimes this server does not know, and a colima whose host name was changed: offline, naming what was seen.
-  for (const [os, name, kernel] of [["Alpine Linux v3.23", "lima-rancher-desktop", "6.6.119-0-virt"], ["fedora", "localhost.localdomain", "6.7.4-200.fc39.aarch64"], ["Ubuntu 24.04.2 LTS", "my-vm", "6.8.0-64-generic"], ["docker desktop", "docker-desktop", "6.10.14-linuxkit"]]) {
+  for (const [os, name, kernel] of [["Alpine Linux v3.23", "lima-rancher-desktop", "6.6.119-0-virt"], ["fedora", "localhost.localdomain", "6.7.4-200.fc39.aarch64"], [COLIMA_OS, "my-vm", "6.8.0-64-generic"], ["docker desktop", "docker-desktop", "6.10.14-linuxkit"]]) {
     assert.equal(as(os, name, kernel).reason, `this Docker (${os.trim()}) runs in a VM this server does not know (its kernel is ${JSON.stringify(kernel)}, its name ${JSON.stringify(name)}), so its boxes get no network: on a Mac, a box's network goes on only for Docker Desktop, OrbStack or colima`, name);
   }
   assert.equal(as("Docker Desktop", "docker-desktop", "10.0 20348", "windows").reason, `this Docker (Docker Desktop) runs "windows" containers, not Linux ones, so its boxes get no network`);

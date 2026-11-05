@@ -37,7 +37,8 @@ import { join } from "node:path";
 export const RUNTIMES = {
   "docker-desktop": { OSType: "linux", KernelVersion: "6.10.14-linuxkit", DockerRootDir: "/var/lib/docker", OperatingSystem: "Docker Desktop", Name: "docker-desktop" },
   orbstack: { OSType: "linux", KernelVersion: "6.13.7-orbstack-00283-g9d1400e7e9c6", DockerRootDir: "/var/lib/docker", OperatingSystem: "OrbStack", Name: "orbstack" },
-  colima: { OSType: "linux", KernelVersion: "6.8.0-64-generic", DockerRootDir: "/var/lib/docker", OperatingSystem: "Ubuntu 24.04.2 LTS", Name: "colima" },
+  // colima's OperatingSystem is its VM's distro; detection keys on Name, not on this.
+  colima: { OSType: "linux", KernelVersion: "6.8.0-64-generic", DockerRootDir: "/var/lib/docker", OperatingSystem: "Debian GNU/Linux 12 (bookworm)", Name: "colima" },
   "rancher-desktop": { OSType: "linux", KernelVersion: "6.6.119-0-virt", DockerRootDir: "/var/lib/docker", OperatingSystem: "Alpine Linux v3.23", Name: "lima-rancher-desktop" },
 };
 
