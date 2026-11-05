@@ -29,6 +29,14 @@ export interface ToolImage {
  */
 export const HOST_RESULT_MAX_CHARS = 120_000;
 
+/**
+ * The error a turn ends with when its provider stopped the answer on its content filter (Anthropic's `refusal` stop, an
+ * OpenAI answer `incomplete` for `content_filter`): a harness's model proxy reads the stop in the answer it passes
+ * (`ProviderPolicy.filtered`) and the harness halts the turn with this text at once, so its CLI never asks for the refused
+ * answer again. A host reads a run's end by it (agentrun-serve's `moderated`).
+ */
+export const CONTENT_FILTERED = "content_filter: the model provider stopped this answer";
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;
@@ -115,6 +123,9 @@ export interface ModelUsage {
    *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
    *  them only if its response had begun. */
   providerIds?: Record<string, string>;
+  /** A response its client stopped part way, its cost unknown, with the bytes of it the client was sent (the model
+   *  proxy's `stoppedAfterBytes`): the host counts it by what streamed (`Admission.stoppedUsd`), never more than its hold. */
+  stoppedAfterBytes?: number;
 }
 
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be

@@ -5,7 +5,7 @@
 // search (hosted-search.ts); (3) for web_search, Parallel where the server holds its key (env or saved, which then bills
 // it); (4) the kernel's keyless fallback: web_fetch's guarded direct fetch, and web_search on Exa's public keyless MCP
 // endpoint (exa-keyless.ts). On claude-agent `auto` skips (2): Claude's own search is an explicit pick, `native`. Codex's
-// own search on codex, Parallel or keyless Exa behind a gateway or under a spend cap;
+// own search on codex, Parallel or keyless Exa behind a gateway, on OpenRouter or under a spend cap;
 // `off` turns web_search off. web_search's default, `auto`, is that order; a pick of `native` is native only,
 // unavailable where there is none, never Exa. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
@@ -19,7 +19,7 @@ import type { InputIssue } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { savedIn } from "./secrets.js";
-import { hostModel } from "./model.js";
+import { hostModel, viaOpenRouter } from "./model.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -73,6 +73,8 @@ export type ResolveInput = {
   parallelKeyFrom?: "server" | "saved";
   /** The run has a spend cap: Codex's own search sends a request with no input bound, which a cap cannot admit. */
   capped?: boolean;
+  /** The harness's model requests go through OpenRouter (model.ts' viaOpenRouter), where its own search does not run. */
+  openRouter?: boolean;
 };
 
 /** Why claude-agent has no native search under a spend cap, and what works there instead. */
@@ -83,14 +85,18 @@ const CLAUDE_CAPPED = "claude-agent under a spend cap: Claude's own search has p
 function noNative(input: ResolveInput): { id: string; why: string } | undefined {
   // Native, where there is one. Claude's model goes to Anthropic's Messages API (or its own ANTHROPIC_BASE_URL), never
   // through the other harnesses' gateway; Codex's own search goes to OpenAI with its request, except behind a gateway
-  // (no known hosted search) or under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
+  // (no known hosted search), on OpenRouter (which runs neither harness's own search, nor counts its searches) or
+  // under a spend cap (its request has no input bound, which a cap cannot admit); pi asks
   // Anthropic's or OpenAI's. Under a spend cap Claude's own search is not offered either: each search has a per-use fee
   // the cap cannot reserve yet (its request's bound holds the pages' input tokens, not the fees). Where there is none,
   // `native` is unavailable, and `auto` goes to Parallel on the server's key (its fee booked and held by a cap, paid-calls.ts),
   // else to keyless Exa.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
+  if ((input.harness === "claude-agent" || input.harness === "codex") && input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${input.harness === "codex" ? "Codex" : "Claude"}'s own search is not run, and its searches are not counted to price` };
   if (input.harness === "claude-agent") return input.capped ? { id: CLAUDE_CAPPED, why: "under a spend cap Claude's own search is not offered, since a cap cannot reserve its per-use fees yet" } : undefined;
   if (input.harness === "codex") return input.gateway ? { id: "codex behind a gateway", why: "behind a gateway Codex has no own search" } : input.capped ? { id: "codex under a spend cap", why: "under a spend cap Codex's own search is not offered, since its request has no input bound" } : undefined;
+  // OpenCode has none: its model requests carry no provider-hosted tool (its proxy policy refuses one).
+  if (input.harness === "opencode") return { id: "opencode, whose model requests carry no provider-hosted tool", why: "OpenCode's model requests carry no provider-hosted tool" };
   if (input.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${input.harness} has no hosted search` };
   if (vendor && HOSTED_SEARCH_PROVIDERS.includes(vendor)) return undefined;
   return input.model ? { id: input.model, why: `${input.model} has no hosted search here` } : { id: "a model with none named", why: "no model is named, so there is no hosted search" };
@@ -140,7 +146,7 @@ export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, 
     const input = { ...served(env), ...picked(name, settings, overrides) };
     const each = HARNESSES.map((harness) => {
       const on = model ?? hostModel(env, "default", harness);
-      return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness })] as const;
+      return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness, openRouter: viaOpenRouter(env, harness, on) })] as const;
     });
     return [name, { resolves: Object.fromEntries(each.map(([harness, said]) => [harness, said.resolves])), why: Object.fromEntries(each.map(([harness, said]) => [harness, said.why])) }];
   })) as Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }>;
@@ -171,7 +177,7 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   const plane: Plane = {};
   const granted = tooling.tools.map(capabilityOf);
   for (const name of PICKABLE) {
-    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, capped, ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
+    if (granted.includes(name)) plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: viaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...picked(name, settings, tooling.overrides) });
   }
   if (plane.web_search === "native" && harness === DEFAULT_HARNESS && model) plane.model = model;
   return plane;

@@ -77,11 +77,11 @@ async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
-/** codex's model and pi-ai's catalog that prices it, where codex reaches OpenAI only through OpenRouter (codexModel: no
+/** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
  *  OpenAI key needed); anywhere else, the run's usual models (runModels). */
-async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
-  if (env[FAUX_HARNESS_ENV] || !openRouterOnly("codex", env)) return runModels(env, ref, ["default"], "codex");
-  const choice = await codexModel(env, ref);
+async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harness: "codex" | "opencode" = "codex") {
+  if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
+  const choice = await codexModel(env, ref, harness);
   if ("why" in choice) throw new Error(choice.why);
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
@@ -106,7 +106,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
   // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && revision.body.harness === "codex" ? await codexModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -129,8 +129,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // installed first so it comes before every other extension's and the instructions.
   if (revision.kind === "agentic") registry.install(EnvironmentLine);
   registry.install(coding.extension);
-  // What the run's agent learned goes into its instructions, the one path for every harness (learning.ts).
-  const learned = revision.kind === "agentic" ? await withLearned(where.root, revision.body.instructions) : "";
+  // What the run's agent learned goes into its instructions, and the skills it wrote join the revision's, the one path for
+  // every harness (learning.ts).
+  const learned = revision.kind === "agentic" ? await withLearned(where.root, where.work, revision.body.instructions, Object.keys(revision.body.skills)) : { instructions: "", skills: [] };
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
   // (effort-guidance.ts). None without an effort.
   const guidance = effortGuidance(process.env[EFFORT_ENV]);
@@ -139,7 +140,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // claude-agent loads the skills its adapter takes itself (its Skill tool), and its prompt keeps only the ones it would
     // refuse; codex's prompt, and a faux harness's, keep every skill (skills.ts).
     const check = harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeSkillCheck() : undefined;
-    const { system: instructions, native } = await systemOf(learned, Object.keys(revision.body.skills), where.work, check);
+    const { system: instructions, native } = await systemOf(learned.instructions, learned.skills, where.work, check);
     // The session's system prompt starts with the line, made as this process opens it: a run resumed on a later day is
     // opened with that day.
     const spec = { key: `run:${run.id}`, label: run.agent, system: [environmentLine(), instructions, guidance].filter((text): text is string => Boolean(text)), context: "fresh" as const, thinking: thinkingFor(harness, thinkingLevel) };
@@ -196,7 +197,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = [await promptOf(learned, Object.keys(revision.body.skills), where.work), guidance].filter(Boolean).join("\n\n");
+    const instructions = [await promptOf(learned.instructions, learned.skills, where.work), guidance].filter(Boolean).join("\n\n");
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => (settleIn(rootRecordOf(durable.harness)), marked.open(durable)) } as unknown as AppOptions;
   }
   const input = isObject(meta?.input) ? meta.input : {};

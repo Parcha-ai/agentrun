@@ -17,6 +17,8 @@ export const RUN_LAUNCHING = "launching";
 /** Set in a run's process environment when the server opens the run for a person's follow-up to a run whose turn had
  *  ended (it answered, or the person stopped it): that open resumes no cut work, so it writes no "resumed" row (app.ts). */
 export const FOLLOW_UP_OPEN_ENV = "AGENTRUN_FOLLOW_UP_OPEN";
+/** The server's API token (`ar_local_...`), in the data directory, made at its first start when it is given none. */
+export const TOKEN_FILE = ".token";
 /** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
 export const DOOR_TOKEN_FILE = ".door-token";
 /** A run's own door token, in its directory, made at its first launch and handed to its process alone (its
@@ -35,6 +37,8 @@ export function runDoorToken(dir: string): string | undefined {
 }
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
+/** Why a run fails that the store has running with no serve.json: its server went down before it set the run up. */
+export const SETUP_LOST = "server_lost_at_setup";
 
 /** The server's data directory when none is given (`--data`): `agentrun/agents` under XDG_DATA_HOME, or ~/.local/share.
  *  The server, its import and reset-password default to it. `npx @parcha/agentrun` keeps its own, ~/.agentrun, and

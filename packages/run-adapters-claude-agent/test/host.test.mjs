@@ -225,6 +225,46 @@ test('a recorded real answer, streamed and whole, is booked with its input, outp
   assert.equal(booked[1].usd, priced('', { input: 11, output: 15, cacheRead: 3842, cacheWrite: 0 }), 'the cache read is priced at its own rate');
 });
 
+test("a stream its client stops part way is booked unknown, with the bytes it was sent, so the host counts it by what streamed; one the provider breaks off part way says no such thing", async () => {
+  // The first piece of a real answer reaches the client; then the provider holds the stream open (still producing) until
+  // the client leaves, or fails it (a reset part way).
+  const first = RECORDED_STREAM.split('event: content_block_stop')[0];
+  const streaming = (end) => async (_url, init) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(first));
+      if (end === 'break') setTimeout(() => controller.error(new Error('connection reset')), 50);
+      else init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  const booked = [];
+  for (const end of ['stop', 'break']) {
+    let report;
+    const done = new Promise((resolve) => (report = resolve));
+    const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: priced, hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { booked.push(u); report(); } }, fetch: streaming(end) }, 'session-key');
+    try {
+      await new Promise((resolve) => {
+        const req = request(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' } }, (res) => {
+          let read = 0;
+          res.on('data', (chunk) => {
+            read += chunk.length;
+            // The harness stops: it leaves once the first piece has come.
+            if (end === 'stop' && read >= Buffer.byteLength(first)) { req.destroy(); resolve(); }
+          });
+          res.on('error', resolve);
+          res.on('close', resolve);
+        });
+        req.on('error', resolve);
+        req.end(JSON.stringify(body({ stream: true })));
+      });
+      await done;
+    } finally {
+      await proxy.close();
+    }
+  }
+  assert.deepEqual([booked[0].usd, booked[0].stoppedAfterBytes], [null, Buffer.byteLength(first)], 'stopped by its client: unknown, with what it was sent');
+  assert.deepEqual([booked[1].usd, booked[1].stoppedAfterBytes], [null, undefined], 'broken off by the provider: unknown, at its hold as before');
+});
+
 test('usage that cannot be read stays unknown, never zero: no stop, no usage, a usage without counts, an answer that is not JSON', () => {
   const stopless = RECORDED_STREAM.split('event: message_stop')[0];
   assert.equal(policy.usageOf(stopless), undefined);

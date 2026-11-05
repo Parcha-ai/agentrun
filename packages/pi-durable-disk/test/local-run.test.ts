@@ -36,10 +36,26 @@ function rootPids(): number[] {
   });
 }
 
-/** A long-lived root-owned process this (unprivileged) user may not signal, with its start; undefined if none. */
+/** Whether pid 2 is the kernel's thread creator (kthreadd): PF_KTHREAD (0x00200000) in its /proc stat flags. In a pid
+ *  namespace (a container) pid 2 is an ordinary process, or none. */
+function kthreadd(): boolean {
+  try {
+    const stat = readFileSync("/proc/2/stat", "utf8");
+    return (Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[6]) & 0x00200000) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A root-owned process this (unprivileged) user may not signal and that outlives the test, with its start; undefined if
+ * none. On Linux it is kthreadd, which lives as long as the kernel: any other root process may end while the test runs,
+ * and a reap that finds its stand-in gone lets the open through. Elsewhere (macOS, a container) it is the lowest-pid root
+ * process.
+ */
 function rootProcess(): { pid: number; start: number } | undefined {
   const look = processTable().snapshot();
-  for (const pid of rootPids()) {
+  for (const pid of process.platform === "linux" && kthreadd() ? [2] : rootPids()) {
     const info = look.info(pid);
     if (info !== undefined) return { pid, start: info.start };
   }
