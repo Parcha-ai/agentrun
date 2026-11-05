@@ -466,8 +466,9 @@ export class Triggers {
   /** A Slack message the server checked (slack.ts): in a thread this trigger started, a message to that thread's run;
    *  else, when it mentions the app, a new thread and its run. Keyed by the message itself (its team, channel and ts),
    *  so Slack's retries and the same message told as both app_mention and message are one firing. Recorded due, with
-   *  its thread, in one write, and driven after the answer. Undefined: nothing to act on (no trigger lists the channel,
-   *  or a message in no thread of one that mentions no one). */
+   *  its thread, in one write, and driven after the answer in its trigger's turn; refused (429) while the trigger holds
+   *  DUE_KEPT firings due, as an event is. Undefined: nothing to act on (no trigger lists the channel, or a message in no
+   *  thread of one that mentions no one). */
   receiveSlack(message: SlackMessage): { created: boolean; firing: ReturnType<typeof firingView> } | undefined {
     const trigger = this.readable().find((t) => t.enabled && t.source.kind === "slack" && t.source.channels.includes(message.channel));
     if (!trigger) return undefined;
@@ -481,6 +482,7 @@ export class Triggers {
     const held = trigger.threads?.[thread];
     const reply = held !== undefined && kept(held);
     if (!reply && !message.mention) return undefined;
+    this.roomFor(trigger);
     const firing: Firing = { key, by: "slack", nominal_at: second(now), status: "due", at: iso(now), payload: cut(message.text), thread, user: message.user, ...(reply ? { reply: true } : {}) };
     this.commit(() => {
       this.record(trigger, firing);
@@ -489,7 +491,7 @@ export class Triggers {
       // Threads untouched for THREAD_KEPT_MS go, and the oldest past SLACK_THREADS_KEPT: a reply to one is ignored then.
       trigger.threads = Object.fromEntries(Object.entries(threads).filter(([, t]) => kept(t)).sort(([, a], [, b]) => a.last_at.localeCompare(b.last_at)).slice(-SLACK_THREADS_KEPT));
     });
-    void this.drive(trigger.id, key);
+    void this.inTurn(trigger.id, key);
     return { created: true, firing: firingView(firing) };
   }
 
@@ -840,7 +842,7 @@ export class Triggers {
     const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && !untold.has(f) && over-- > 0) : [];
     for (const f of gone) if (unmarked(f)) this.deps.say({ condition: "trigger_notice_dropped", trigger: trigger.id, firing: f.key });
     trigger.firings = trigger.firings.filter((f) => !gone.includes(f));
-    const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
+    const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook" || f.by === "slack")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
     if (kept.length) trigger.kept_firings = kept;
     else delete trigger.kept_firings;
   }

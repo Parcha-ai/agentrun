@@ -1141,8 +1141,8 @@ run that has none fails), and a firing never answers a run that waits on its per
 cap): it is `skipped`, "The run is waiting on a person.", and the run still waits. The firing's key is the message's id in the run's store, which takes
 one message per id; a firing driven again after a restart first looks for it there, so it sends the message once and
 never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
-5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
-with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+5 s), and a trigger holds at most 20 firings due: past them a webhook event, a Slack message and a run now answer `429
+rate_limited` with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
 
 ### Slack triggers
 
@@ -1167,7 +1167,8 @@ run: a steer, a follow-up that opens a completed run again, or the answer to the
 whatever another thread's run is doing. The request is answered at once, inside Slack's 3 seconds, once its firing is
 recorded; the run starts, or the message goes, after. A firing's key is the Slack message itself (its workspace, channel
 and `ts`), so Slack's retries (`x-slack-retry-num`) and the same message told both as `app_mention` and as `message`
-are one firing, never dropped and never done twice. A message from a bot, this app's own posts included, from a person of
+are one firing, never dropped and never done twice, kept for the key's day after it leaves the history; firings run in
+the trigger's turn, one after another, as a webhook event's do. A message from a bot, this app's own posts included, from a person of
 another workspace in a shared channel, an edit, a direct message, and a message in no thread the trigger started that
 mentions no one, are answered `200` and ignored. The agent gets the trigger's input, then the message, cut at 16 KiB,
 inside `<trigger-payload source="slack" user="U..." channel="C..." untrusted>...</trigger-payload>`; a reply is that

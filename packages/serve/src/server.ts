@@ -1042,7 +1042,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
    *  url_verification is answered with its challenge, and a message a Slack trigger acts on is recorded, in one write,
    *  and answered at once, inside Slack's 3 s; its run starts after. Everything else verified is answered 200 and
    *  ignored, so Slack never counts a failure for it, and a retry (x-slack-retry-num) is the same message, deduped by
-   *  its key, never dropped. A write that fails is 503, which Slack tries again. */
+   *  its key, never dropped. A write that fails is 503, and a trigger holding 20 firings due 429: Slack tries either again. */
   async function slackHook(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await bytesOf(req, HOOK_MAX_BODY);
     const own = slack!.checker();
