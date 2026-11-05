@@ -40,7 +40,7 @@ export const KEY_CHECKS: Record<string, (key: string, env: NodeJS.ProcessEnv) =>
   // session (https://docs.browserbase.com/reference/api/list-projects, https://docs.browserbase.com/account/billing/plans).
   browserbase: (key, env) => ({ url: `${base(env.BROWSERBASE_BASE_URL, "https://api.browserbase.com")}/v1/projects`, headers: { "x-bb-api-key": key } }),
   // A list of the key's browser sessions, one at most: Kernel bills a browser's running time, and this starts none
-  // (https://www.kernel.sh/docs/api-reference/browsers/list-browsers, https://www.kernel.sh/docs/info/pricing).
+  // (https://www.kernel.sh/docs/api-reference/browsers/list-browser-sessions, https://www.kernel.sh/docs/info/pricing).
   kernel: (key, env) => ({ url: `${base(env.KERNEL_BASE_URL, "https://api.onkernel.com")}/browsers?limit=1`, headers: { authorization: `Bearer ${key}` } }),
   // A list of the account's models: TypeSafe prices a System One request's input tokens
   // (https://docs.typesafe.ai/api/list-models, https://docs.typesafe.ai/models).
