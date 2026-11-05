@@ -733,7 +733,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (image) imageLog(image.state());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  triggerSecrets = new TriggerSecrets(data, env);
+  triggerSecrets = new TriggerSecrets(data, env, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)));
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   stops.push(() => webhooks.close());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
@@ -829,7 +829,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     async message(target, input, key) {
       const run = await needRun(target.run_id);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
-      if (await runs.tookMessage(run, key)) return;
+      // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
+      if (await runs.tookMessage(run, key).catch((error: unknown) => { throw storeBusy(error) ? homeBusy() : error; })) return;
       await runs.message(run, String(input.content), key);
     },
     secrets: { mint: (id) => triggerSecrets!.mint(id), remove: (id) => triggerSecrets!.remove(id) },

@@ -50,6 +50,8 @@ const WRITE_RETRY_MS = 5_000;
 /** Node fires a longer timeout at once: a far next time is reached in steps of at most this. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const MAX_NAME = 200;
+/** The most firings kept past the history for their key's day: a bound on the file, at a sender's heaviest day. */
+const KEPT_FIRINGS = 10_000;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
 const LOST_AT_SETUP = "The server stopped while setting up the run.";
 
@@ -89,8 +91,10 @@ type Trigger = {
   /** The latest run its firings started, kept here and not only in the history, which drops its oldest firings: overlap
    *  reads it. */
   last_run_id?: string;
-  /** Run now's firings that left the history, kept for their key's day (IDEMPOTENCY_TTL_S) so a retry answers its
-   *  firing, never fires again. */
+  /** Firings keyed by a caller's id (run now's Idempotency-Key, a webhook's webhook-id) that left the history, kept for
+   *  their key's day (IDEMPOTENCY_TTL_S), so a sender's retry answers its firing and never fires again. Read from
+   *  `run_now_kept` in a file an earlier build wrote. */
+  kept_firings?: Firing[];
   run_now_kept?: Firing[];
   catchup_window_s?: number; failures_in_a_row?: number;
   /** Why it is off, when a failure streak turned it off; null once it is on again. */
@@ -268,7 +272,8 @@ function wellFormed(t: unknown): t is Trigger {
   const aimed = isObject(target) && isObject(target.input) && (target.kind === "message_run" ? typeof target.run_id === "string" : target.kind === "start_run" && typeof target.agent_id === "string" && typeof target.max_cost_usd === "number");
   if (!timed || !aimed) return false;
   const firing = (f: unknown) => isObject(f) && typeof f.key === "string" && (FIRING_STATUSES as readonly unknown[]).includes(f.status) && (f.by === "schedule" || f.by === "manual" || f.by === "webhook") && instantOf(f.nominal_at) !== undefined && typeof f.at === "string";
-  return Array.isArray(t.firings) && t.firings.every(firing) && (t.run_now_kept === undefined || (Array.isArray(t.run_now_kept) && t.run_now_kept.every(firing)));
+  const list = (value: unknown) => value === undefined || (Array.isArray(value) && value.every(firing));
+  return Array.isArray(t.firings) && t.firings.every(firing) && list(t.kept_firings) && list(t.run_now_kept);
 }
 
 export class Triggers {
@@ -300,6 +305,10 @@ export class Triggers {
       const bad = doc.triggers.findIndex((t) => !wellFormed(t));
       if (bad >= 0) throw new Error(`its trigger at ${bad} is not one this server reads`);
       this.triggers = doc.triggers as Trigger[];
+      for (const t of this.triggers) {
+        if (t.run_now_kept) t.kept_firings = [...(t.kept_firings ?? []), ...t.run_now_kept];
+        delete t.run_now_kept;
+      }
     } catch (error) {
       this.unreadable = (error as Error).message;
     }
@@ -373,7 +382,7 @@ export class Triggers {
   receive(id: string, webhookId: string, payload: string): { created: boolean; firing: ReturnType<typeof firingView> } {
     const trigger = this.need(id);
     const key = firingKey("webhook", id, webhookId);
-    const known = trigger.firings.find((f) => f.key === key);
+    const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
     const now = this.clock.now();
     const firing: Firing = { key, by: "webhook", nominal_at: second(now), status: "due", at: iso(now), payload: cut(payload) };
@@ -419,7 +428,7 @@ export class Triggers {
   async fire(id: string, idempotencyKey: string): Promise<{ created: boolean; firing: ReturnType<typeof firingView> }> {
     const trigger = this.need(id);
     const key = firingKey("manual", id, idempotencyKey);
-    const known = trigger.firings.find((f) => f.key === key) ?? trigger.run_now_kept?.find((f) => f.key === key && this.inDay(f));
+    const known = this.known(trigger, key);
     if (known) return { created: false, firing: firingView(known) };
     const now = this.clock.now();
     const firing: Firing = { key, by: "manual", nominal_at: second(now), status: "due", at: iso(now) };
@@ -631,9 +640,14 @@ export class Triggers {
     let over = trigger.firings.length - HISTORY_KEPT;
     const gone = over > 0 ? trigger.firings.filter((f) => f.status !== "due" && over-- > 0) : [];
     trigger.firings = trigger.firings.filter((f) => !gone.includes(f));
-    const kept = [...(trigger.run_now_kept ?? []), ...gone.filter((f) => f.by === "manual")].filter((f) => this.inDay(f));
-    if (kept.length) trigger.run_now_kept = kept;
-    else delete trigger.run_now_kept;
+    const kept = [...(trigger.kept_firings ?? []), ...gone.filter((f) => f.by === "manual" || f.by === "webhook")].filter((f) => this.inDay(f)).slice(-KEPT_FIRINGS);
+    if (kept.length) trigger.kept_firings = kept;
+    else delete trigger.kept_firings;
+  }
+
+  /** The firing `key` names, in the history or kept for its key's day after it left. */
+  private known(trigger: Trigger, key: string): Firing | undefined {
+    return trigger.firings.find((f) => f.key === key) ?? trigger.kept_firings?.find((f) => f.key === key && this.inDay(f));
   }
 
   /** Whether a firing is within its key's day, as an Idempotency-Key answers. */
@@ -687,7 +701,7 @@ export class Triggers {
   }
 
   private view(trigger: Trigger) {
-    const { firings, run_now_kept: _, ...rest } = trigger;
+    const { firings, kept_firings: _, ...rest } = trigger;
     return { ...rest, last_run_id: trigger.last_run_id ?? null, ...settled(trigger), last_firing: firings.length ? firingView(firings.at(-1)!) : null };
   }
 }

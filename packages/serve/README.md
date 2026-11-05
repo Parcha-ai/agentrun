@@ -1042,10 +1042,13 @@ answer the same `401`, so no trigger id can be found by asking; a body past 256 
 The secret, `whsec_` and 32 random bytes in base64, is made with the trigger and shown in the `201` once; no `GET`
 shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-secrets.json`, so with no seal key no webhook
 trigger is made (`409 no_sealing_key`). `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one
-signs nothing from then on. An import cuts these secrets out of what it keeps, and no learning text shows one.
+signs nothing from then on. An import cuts these secrets out of what it keeps, and no learning text shows one. A
+`trigger-secrets.json` that does not read is never written over: until it is fixed or moved away, no webhook trigger is
+made or rotated (`409 store_unreadable`) and none fires.
 
 The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
-after; the same `webhook-id` again answers `200` with that firing and starts nothing. The agent gets the trigger's input,
+after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that
+firing and starts nothing. The agent gets the trigger's input,
 then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
 sender wrote is data, not an instruction.
 

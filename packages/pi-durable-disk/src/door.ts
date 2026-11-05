@@ -8,6 +8,7 @@ import type { ConversationId, Cursor, Tx, UserInput } from "@earendil-works/pi-d
 import type { Context } from "@earendil-works/chord";
 import { processTable } from "./process-table.ts";
 import type { DurableRun } from "./run.ts";
+import { doorKey } from "./door-key.ts";
 
 export type DoorStatus = "ADMITTED" | "ACCEPTED" | "REJECTED_BUSY" | "FAILED" | "UNKNOWN";
 
@@ -66,8 +67,8 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMEOUT>
   return Promise.race([promise, new Promise<typeof TIMEOUT>((resolve) => (timer = setTimeout(() => resolve(TIMEOUT), ms).unref()))]).finally(() => clearTimeout(timer));
 }
 
-// 0: the admission; 1: the outcome; 2: the late outcome of an UNKNOWN. A requestId has no space, so no key collides.
-const key = (requestId: string, n: 0 | 1 | 2) => (n === 0 ? `door ${requestId}` : `door ${requestId} ${n}`);
+// 0: the admission; 1: the outcome; 2: the late outcome of an UNKNOWN (door-key.ts).
+const key = doorKey;
 
 /** The record's current status: its last entry. */
 async function recordOf(tx: Tx, root: ConversationId, requestId: string): Promise<DoorRecord | undefined> {

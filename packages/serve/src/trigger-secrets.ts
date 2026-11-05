@@ -14,13 +14,20 @@ import { isObject } from "./validate.js";
 export const TRIGGER_SECRETS_FILE = "trigger-secrets.json";
 const aad = (triggerId: string) => `trigger-secret|${triggerId}`;
 
-/** The sealed secrets `file` keeps, by trigger id. */
-function sealedIn(file: string): Record<string, string> {
+/** The sealed secrets `file` keeps, by trigger id: none when there is no file, and why not when it does not read. */
+function sealedIn(file: string): { sealed: Record<string, string> } | { unreadable: string } {
+  let text: string;
   try {
-    const doc = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    return isObject(doc) && doc.v === 1 && isObject(doc.secrets) ? (Object.fromEntries(Object.entries(doc.secrets).filter(([, v]) => typeof v === "string")) as Record<string, string>) : {};
-  } catch {
-    return {};
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? { sealed: {} } : { unreadable: (error as Error).message };
+  }
+  try {
+    const doc = JSON.parse(text) as unknown;
+    if (!isObject(doc) || doc.v !== 1 || !isObject(doc.secrets) || !Object.values(doc.secrets).every((v) => typeof v === "string")) return { unreadable: "not a trigger secrets file of version 1" };
+    return { sealed: doc.secrets as Record<string, string> };
+  } catch (error) {
+    return { unreadable: (error as Error).message };
   }
 }
 
@@ -39,7 +46,8 @@ const opened = (key: Buffer, sealed: Record<string, string>): Record<string, str
  *  cuts out of everything it writes. */
 export function triggerSecretsIn(data: string, env: NodeJS.ProcessEnv): string[] {
   const key = sealKeyOf(env[SEAL_KEY_ENV]);
-  return key ? Object.values(opened(key, sealedIn(join(data, TRIGGER_SECRETS_FILE)))) : [];
+  const read = sealedIn(join(data, TRIGGER_SECRETS_FILE));
+  return key && "sealed" in read ? Object.values(opened(key, read.sealed)) : [];
 }
 
 export class TriggerSecrets {
@@ -47,12 +55,19 @@ export class TriggerSecrets {
   private readonly key: Buffer | undefined;
   /** Opened, by trigger id: read once at start, then kept with every write. */
   private secrets: Record<string, string>;
-  private sealed: Record<string, string>;
+  private sealed: Record<string, string> = {};
+  /** Why the file does not read: no secret is made or rotated, none signs, and the file is never written over. */
+  private readonly unreadable?: string;
 
-  constructor(data: string, env: NodeJS.ProcessEnv) {
+  constructor(data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}) {
     this.file = join(data, TRIGGER_SECRETS_FILE);
     this.key = sealKeyOf(env[SEAL_KEY_ENV]);
-    this.sealed = sealedIn(this.file);
+    const read = sealedIn(this.file);
+    if ("sealed" in read) this.sealed = read.sealed;
+    else {
+      this.unreadable = read.unreadable;
+      say({ condition: "trigger_secrets_unreadable", file: this.file, error: read.unreadable });
+    }
     this.secrets = this.key ? opened(this.key, this.sealed) : {};
   }
 
@@ -62,6 +77,7 @@ export class TriggerSecrets {
 
   /** A new secret for `triggerId`, written sealed before it is answered: its only showing. */
   mint(triggerId: string): string {
+    if (this.unreadable) throw new ApiError("store_unreadable", `${TRIGGER_SECRETS_FILE} in the data directory does not read (${this.unreadable}); it is never written over, so no webhook trigger's secret is made or rotated. Fix it or move it away, then restart.`);
     if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no webhook trigger's secret: it never keeps one in the clear.`);
     const secret = `whsec_${randomBytes(32).toString("base64")}`;
     this.write({ ...this.sealed, [triggerId]: seal(this.key, Buffer.from(secret, "utf8"), aad(triggerId)).toString("base64") });
@@ -73,8 +89,9 @@ export class TriggerSecrets {
     return this.secrets[triggerId];
   }
 
+  /** A deleted trigger's secret goes; with the file unreadable it stays in it, unread, as the file is never written over. */
   remove(triggerId: string): void {
-    if (!(triggerId in this.sealed)) return;
+    if (this.unreadable || !(triggerId in this.sealed)) return;
     const { [triggerId]: _, ...rest } = this.sealed;
     this.write(rest);
     delete this.secrets[triggerId];

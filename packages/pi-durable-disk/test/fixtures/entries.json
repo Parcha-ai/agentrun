@@ -38,6 +38,7 @@
       "daytonaUsdPerSecond",
       "deleteRunTree",
       "dockerHost",
+      "doorKey",
       "drain",
       "ensureRunning",
       "fork",
