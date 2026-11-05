@@ -815,8 +815,10 @@ The owner watches a run's browser live from the console, read-only: the same vie
 a screencast of the page the agent is on), never the vendors' own live-view links, which stay in the run's process. As a
 session opens, the run's process serves its viewer on a loopback port of its own and hands it to the server in one file in
 the run's directory, outside `work/` (`browser-live.json`, 0600), which goes when the session ends. `GET /v2/runs/{id}/browser`
-answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server with its token in the fragment), else
-`{state: "none"}`. It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
+answers `{state: "live", viewer}` while a session is open (`viewer`, a link on this server with its token in the fragment),
+`{state: "none"}` when the run has a browser but no session is open, and `{state: "off", reason}` when it has none: its agent
+has no `browser` tool, or its browser resolves unavailable here (the tool plane's words, `a local Chrome is not set up on this
+server`, `kernel picked, no KERNEL_API_KEY`). It takes the owner's password session in the console: a token, which a run's process, an MCP client or a
 script may hold, is `403`. The viewer's page and its WebSocket are under `/v2/runs/{id}/browser/live/`, proxied to that run's
 port alone: the page is framed by this server's own origin alone (`frame-ancestors 'self'`, the console's `'none'` everywhere
 else), and the WebSocket is taken only from this server's own origin with the owner's session. One viewer at a time: a second is
@@ -1106,7 +1108,7 @@ firing has left the history too, and later it is a new firing that a run the key
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
-| `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
+| `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings` | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |

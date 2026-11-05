@@ -5,7 +5,7 @@
 // never reaches the browser; a second viewer is refused; the token is in no record, row, view, file list or log; and it
 // dies with its session. On fakes: no network, no key.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -142,4 +142,33 @@ test("the viewer's token and its file are in no record, row, view, file list, ho
 test("capabilities say the owner may watch a run's browser, read-only", async (t) => {
   const { api } = await serve(t);
   assert.deepEqual((await api("GET", "/capabilities")).body.features.browser_live, { read_only: true });
+});
+
+test("the route says whether a run has a browser at all: off with why when its agent has none or its browser resolves unavailable, none when it has one with no session open", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_LOG: join(await scratch(t), "browser.jsonl") }, KEYS);
+  const first = await serve(t, { accounts: true, openSetup: true, console: await builtConsole(t), fauxBrowser: FAUX_BROWSER });
+  const own = (server) => ({ ...json, origin: `http://127.0.0.1:${server.port}` });
+  const made = await call(first.port, { method: "POST", path: "/v2/setup", headers: own(first), body: { password: PASSWORD } });
+  assert.equal(made.status, 201, made.text);
+  const browserOfRun = (server, cookie, runId) => call(server.port, { path: `/v2/runs/${runId}/browser`, headers: { cookie } });
+  const ran = async (id, tools, content) => {
+    assert.equal((await first.api("POST", "/agents", { definition: { id, name: id, instructions: "Answer.", tools } })).status, 201);
+    const started = await first.api("POST", `/agents/${id}/runs`, { input: { content } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await follow(first.api, started.body.run_id, ["completed"]);
+    return started.body.run_id;
+  };
+  const plain = await ran("plain", ["read"], "hi");
+  const browsed = await ran("browse", ["browser"], "Browse the example page.");
+  assert.deepEqual((await browserOfRun(first, cookieOf(made), plain)).json, { state: "off", reason: "this run's agent has no browser tool" });
+  assert.deepEqual((await browserOfRun(first, cookieOf(made), browsed)).json, { state: "none" }, "a browser, its session released with the run");
+  await first.close();
+  // Its browser resolving unavailable at the next start (its vendor's key gone): off, in the plane's words.
+  const file = join(first.data, "runs", browsed, "serve.json");
+  const meta = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, JSON.stringify({ ...meta, tool_plane: { ...meta.tool_plane, browser: "kernel" } }));
+  const again = await serve(t, { data: first.data, accounts: true, fauxBrowser: FAUX_BROWSER });
+  const signed = await call(again.port, { method: "POST", path: "/v2/auth/sign-in", headers: own(again), body: { password: PASSWORD } });
+  assert.equal(signed.status, 200, signed.text);
+  assert.deepEqual((await browserOfRun(again, cookieOf(signed), browsed)).json, { state: "off", reason: "kernel picked, no KERNEL_API_KEY" });
 });
