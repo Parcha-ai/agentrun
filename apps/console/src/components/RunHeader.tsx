@@ -98,7 +98,8 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       </div>
       {raisable && raising && (
         <div className="mt-3 max-w-xl">
-          <RaiseCap cap={cap!} suggested={suggestedCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
+          {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
+          <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
         </div>
       )}
     </header>
