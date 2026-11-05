@@ -404,11 +404,23 @@ test("through the API: a capped run whose next browser call would pass its cap i
   // session's $0.009 reserve, past $0.02.
   const started = await api("POST", "/agents/capped/runs", { input: { content: "Browse the example page 3 times." }, max_cost_usd: 0.02 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  await follow(api, started.body.run_id, ["completed", "failed"]);
+  // Refused for room, the run pauses at its cap (paid-pause.test.mjs), in the call's words: no answer echoes them now.
+  await follow(api, started.body.run_id, ["input_required", "completed", "failed"]);
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
-  assert.match(view.result?.final_answer ?? "", /spend_cap_reached: Not sent: the run has spent \$[\d.]+( and holds \$[\d.]+ for calls still answering)? of its \$0\.02 cap, and this browser call could cost up to \$0\.018\d* \(.*\)\. Raise the cap to at least \$0\.03 to run it\./);
-  const booked = toolCosts(data, started.body.run_id);
-  assert.ok(booked.length >= 1 && booked.every((row) => row.tool === "browser"));
+  assert.deepEqual([view.status, view.state, view.pending?.kind], ["input_required", "waiting", "budget"], JSON.stringify(view));
+  assert.match(view.pending.said, /^Not sent: the run has spent \$[\d.]+( and holds \$[\d.]+ for calls still answering)? of its \$0\.02 cap, and this browser call could cost up to \$0\.018\d* \(.*\)\. Raise the cap to at least \$0\.03 to run it\.$/);
+  // Paused, its process lets go of the browser session as it lets go of the run: the release's booking lands then, not
+  // at the pause, and the store is that process's until it has. Read until it is in, up to 30 s.
+  let booked = [];
+  for (const deadline = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    try {
+      booked = toolCosts(data, started.body.run_id);
+    } catch (error) {
+      if (!/database is locked/.test(error.message)) throw error;
+    }
+    if (pico(booked.reduce((sum, row) => sum + row.usd, 0)) >= 0.002 || Date.now() > deadline) break;
+  }
+  assert.ok(booked.length >= 1 && booked.every((row) => row.tool === "browser"), JSON.stringify(booked));
   assert.equal(pico(booked.reduce((sum, row) => sum + row.usd, 0)), 0.002, "one session, released at its one-minute minimum");
   assert.ok(view.cost.usd <= 0.02, `the run's cost ${view.cost.usd} is within its cap`);
 });

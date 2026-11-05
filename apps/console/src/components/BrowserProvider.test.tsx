@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
-import { PerHarness, ToolTable } from "./ToolSettings";
+import { PerHarness, ToolTable, toolRows } from "./ToolSettings";
 import type { Agent, AgentFields } from "@/lib/agentForm";
 import { providerHelp, providerLabel, toolChoices } from "@/lib/toolSettings";
 
@@ -48,7 +48,7 @@ describe("Settings → Tools, the browser row", () => {
   function table() {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(ToolTable, { label: "This server's tool providers", rows: choices, settings: {}, fallbackOf: (t) => t.default_provider, resolvesOf: (t) => createElement(PerHarness, { choice: t }), issues: {}, onChange: () => {} })));
+    act(() => root!.render(createElement(ToolTable, { label: "This server's tool providers", rows: toolRows(choices, []), settings: {}, fallbackOf: (t) => t.default_provider, resolvesOf: (t) => createElement(PerHarness, { choice: t }), issues: {}, onEdit: () => {} })));
     const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`tr[data-tool="${tool}"]`)!;
     return { row, options: (tool: string) => [...row(tool).querySelectorAll("option")].map((o) => o.textContent) };
   }
