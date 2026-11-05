@@ -40,7 +40,9 @@ function rowOf(receipt: DecisionReceipt, exchange: DecisionExchange, key: string
     request_sha256: receipt.request_sha256,
     request_bytes: Buffer.byteLength(JSON.stringify({ state: exchange.request.state, questions: exchange.request.questions })),
     model: receipt.model, questions: receipt.questions, answers: receipt.answers, rule: receipt.rule, action: receipt.action,
-    usage: receipt.usage, cost_usd: receipt.cost_usd, latency_ms: receipt.latency_ms, ...(receipt.error !== undefined ? { error: receipt.error } : {}),
+    usage: receipt.usage, cost_usd: receipt.cost_usd, latency_ms: receipt.latency_ms,
+    // An error the receipt kept cut says so, and the row keeps saying it: a host holds its tail back (serve graph-served.ts).
+    ...(receipt.error !== undefined ? { error: receipt.error, ...(receipt.error_truncated === true ? { error_truncated: true } : {}) } : {}),
     status: receipt.status, ...kept(receipt),
     decision_id: receipt.id, request: receipt.request, state_sha256: receipt.state_sha256, run_key: key,
   };
