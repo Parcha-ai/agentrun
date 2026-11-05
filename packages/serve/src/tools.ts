@@ -193,7 +193,7 @@ const browserTool: ToolEntry = {
           provider: refused ? undefined : vendor === "kernel" ? (await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }) : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }),
           driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
         };
-    // The owner's live view (browser-live.ts): pi-browser's own viewer, read-only, on a 127.0.0.1 port of this process's,
+    // The owner's live view (browser-live.ts): pi-browser's own viewer, read-only, on a loopback port of this process's,
     // over every provider, on the same person/model registry as the toolset; framed by the console's own origin alone.
     const gates = createDrivingGates();
     const view = createLiveView({ hostOrigin: "'self'", gates, readOnly: true });

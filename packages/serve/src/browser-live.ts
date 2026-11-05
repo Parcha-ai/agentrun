@@ -1,5 +1,5 @@
 // The owner watches a run's browser live. The run's process serves pi-browser's own viewer (createLiveView, read-only) on
-// an ephemeral 127.0.0.1 port of its own, for every provider: the vendors' own live-view URLs never leave that process.
+// an ephemeral loopback port of its own, for every provider: the vendors' own live-view URLs never leave that process.
 // As each session launches, the process hands its viewer to the server in one file in the run's directory, outside work/
 // (BROWSER_LIVE_FILE, 0600, written whole and renamed into place): the port, the viewer's path id, its token and the
 // session's tag. The file goes when the session is released, and the token dies with it (pi-browser kills it then).
@@ -21,12 +21,14 @@ export const BROWSER_LIVE_FILE = "browser-live.json";
 /** What the run's process hands the server for its newest session's viewer. */
 export type LiveHandover = { port: number; id: string; token: string; tag: string };
 
+/** Where the run's own viewer listens: its process's loopback address alone. */
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the run process viewer listens on
 /** pi-browser's viewer path id and token. */
 const VIEWER_ID = /^[A-Za-z0-9_-]{22}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const TAG = /^[A-Za-z0-9._:-]{1,200}$/;
 
-/** The viewer `fullscreen` URL pi-browser's live view gives (http://127.0.0.1:PORT/v/<id>#t=<token>) for session `tag`, as
+/** The viewer `fullscreen` URL pi-browser's live view gives (an http URL on the loopback address, /v/<id>#t=<token>) for session `tag`, as
  *  a hand-over; undefined for any other shape (a vendor's own URL never is one). */
 export function handoverOf(fullscreen: string, tag: string): LiveHandover | undefined {
   let url: URL;
@@ -38,8 +40,7 @@ export function handoverOf(fullscreen: string, tag: string): LiveHandover | unde
   const id = /^\/v\/([^/]+)$/.exec(url.pathname)?.[1];
   const token = new URLSearchParams(url.hash.slice(1)).get("t") ?? "";
   const port = Number(url.port);
-  // key-gate: loopback-rule the run's own live view listens on its loopback
-  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !Number.isInteger(port) || port < 1 || port > 65_535 || !id || !VIEWER_ID.test(id) || !TOKEN.test(token) || !TAG.test(tag)) return undefined;
+  if (url.protocol !== "http:" || url.hostname !== LOOPBACK || !Number.isInteger(port) || port < 1 || port > 65_535 || !id || !VIEWER_ID.test(id) || !TOKEN.test(token) || !TAG.test(tag)) return undefined;
   return { port, id, token, tag };
 }
 
@@ -82,8 +83,7 @@ export const viewerLink = (runId: string, handover: LiveHandover): string => `/v
  *  process's port answers nothing, or another listener's 404. */
 export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boolean> {
   return new Promise((resolve) => {
-    // key-gate: loopback-rule the run's own live view listens on its loopback
-    const req = httpRequest({ host: "127.0.0.1", port: handover.port, method: "HEAD", path: `/v/${handover.id}`, timeout: ms }, (res) => {
+    const req = httpRequest({ host: LOOPBACK, port: handover.port, method: "HEAD", path: `/v/${handover.id}`, timeout: ms }, (res) => {
       res.resume();
       resolve(res.statusCode === 200);
     });
@@ -102,8 +102,7 @@ export const liveRest = (rest: string): boolean => LIVE_REST.test(rest);
 
 export function proxyLiveHttp(req: IncomingMessage, res: ServerResponse, handover: LiveHandover, rest: string): Promise<void> {
   return new Promise((resolve) => {
-    // key-gate: loopback-rule the run's own live view listens on its loopback
-    const upstream = httpRequest({ host: "127.0.0.1", port: handover.port, method: req.method === "HEAD" ? "HEAD" : "GET", path: rest, headers: { host: `127.0.0.1:${handover.port}` }, timeout: 10_000 }, (answer) => {
+    const upstream = httpRequest({ host: LOOPBACK, port: handover.port, method: req.method === "HEAD" ? "HEAD" : "GET", path: rest, headers: { host: `${LOOPBACK}:${handover.port}` }, timeout: 10_000 }, (answer) => {
       const type = String(answer.headers["content-type"] ?? "text/plain");
       res.writeHead(answer.statusCode ?? 502, { "content-type": type, "content-security-policy": LIVE_CSP, "referrer-policy": "no-referrer", "cache-control": "no-store", "x-content-type-options": "nosniff" });
       answer.pipe(res);
@@ -128,14 +127,13 @@ export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buf
   const key = String(req.headers["sec-websocket-key"] ?? "");
   const version = String(req.headers["sec-websocket-version"] ?? "");
   if (!/^[A-Za-z0-9+/]{22}==$/.test(key) || version !== "13") return void socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-  // key-gate: loopback-rule the run's own live view listens on its loopback
-  const upstream = connect({ host: "127.0.0.1", port: handover.port });
+  const upstream = connect({ host: LOOPBACK, port: handover.port });
   const end = () => {
     socket.destroy();
     upstream.destroy();
   };
   upstream.once("connect", () => {
-    const own = `127.0.0.1:${handover.port}`;
+    const own = `${LOOPBACK}:${handover.port}`;
     upstream.write(`GET ${rest} HTTP/1.1\r\nHost: ${own}\r\nOrigin: http://${own}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     if (head.length) upstream.write(head);
     upstream.pipe(socket).pipe(upstream);
