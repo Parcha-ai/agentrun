@@ -21,10 +21,11 @@ export function runLines(run: { usd: number | null; soFar: number; key: string; 
   // Its known dollars when unknown: the whole of what it spent so far on a line of its own (by agent, by day), else its
   // meter's own known dollars.
   const lines = parts.map(([name, part]) => (part !== null ? { name, usd: part, unpriced: false } : { name, unpriced: true, usd: meters ? knownOn(name) : soFar }));
-  // What it spent so far beyond every line (an ended workflow's other conversations and its decisions' receipts, which its
-  // root store does not hold) goes on its first unpriced line, already a lower bound, so the lines sum to what it spent.
+  // What it spent so far beyond every line (an ended workflow's other conversations' model requests and its decisions'
+  // receipts, which its root store does not hold) is model and decision spend: on tokens, the meter of all but paid tools
+  // and browser time, never on tools or browser_time; so the lines sum to what it spent.
   const beyond = usd === null && meters ? soFar - lines.reduce((sum, line) => sum + line.usd, 0) : 0;
-  const first = beyond > 0 ? lines.find((line) => line.unpriced) : undefined;
-  if (first) first.usd += beyond;
+  const rest = beyond > 0 ? lines.find((line) => line.name === key) : undefined;
+  if (rest) rest.usd += beyond;
   return lines;
 }
