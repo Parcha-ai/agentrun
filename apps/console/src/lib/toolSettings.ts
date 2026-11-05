@@ -1,7 +1,7 @@
 import type { Permission, ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
-export const HARNESS_ORDER = ["pi", "claude-agent", "codex"] as const;
+export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
 
 /** A capability with a provider choice (`capabilities.tools`, providers/1): the providers offered, the built-in default
  *  first; the server's pick (`provider`); the built-in default; what it resolves to on each harness under the server's

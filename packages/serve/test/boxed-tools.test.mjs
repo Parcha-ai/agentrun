@@ -87,7 +87,7 @@ async function noSecretIn(text, server) {
 test("demo (pi): in a Docker place bash runs in the run's box, and read, write and edit on this machine's work/ that the box binds; bash's out.txt shows in the run's files; the box's environment is the fixed one, with no key or token", { timeout: 120_000 }, async (t) => {
   const server = await boxed(t);
   const { api, data } = server;
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true, state: "ready", reason: "a faux box (tests)" });
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "docker"), { id: "docker", available: true, state: "ready", reason: "a faux box (tests)", network: "none", network_reason: "a faux box (tests)" });
   const made = await api("POST", "/agents", { definition: { id: "boxed", name: "boxed", instructions: "Probe.", place: SANDBOX, tools: ["read", "write", "edit", "bash"] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings, []);

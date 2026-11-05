@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Composer } from "@/components/Composer";
-import { NeedsYou } from "@/components/NeedsYou";
+import { BudgetPaused, NeedsYou } from "@/components/NeedsYou";
 import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
@@ -66,7 +66,10 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff }: RunDetailProps) {
-  const view = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
+  const budget = run.pending?.kind === "budget" ? run.pending : null;
+  const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review);
+  const view = budget ? { ...state, canMessage: false, messageMode: null } : state;
   const [tab, setTab] = useState<Tab>(initial ?? (graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   // A tool call waiting on the owner's approval takes the question's place: an earlier question, answered, may still be
@@ -124,13 +127,13 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           )}
           {!approval && refused && <p className="border border-destructive/50 px-4 py-2.5 font-mono text-[12px] text-destructive-text" role="alert">Your answer wasn't taken: {refused}</p>}
           {approval ? <ApprovalCard key={approval.id} pending={approval} onAnswer={(decision, note) => approve(approval.id, decision, note)} />
-            : view.needsYou && <NeedsYou waiting={waiting} />}
-          {tab === "report" && <RunResult run={run} rows={rows} />}
+            : view.needsYou && (budget ? <BudgetPaused pending={budget} /> : <NeedsYou waiting={waiting} />)}
+          {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} />}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
-          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou ? waiting?.id : undefined)} />}
+          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} />}
         </div>
@@ -139,7 +142,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : undefined} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
     </div>
   );
 }

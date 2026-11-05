@@ -131,6 +131,17 @@ export function unitsOf(suites, timings, { typecheck = [] } = {}) {
 const COMMAND_SECONDS = 2;
 const groupSeconds = (group) => (group.count ? COMMAND_SECONDS + Math.max(group.max, group.sum / Math.min(group.parallelism, group.count)) : 0);
 
+/**
+ * The ::warning line for a shard that ran more than a quarter and more than a minute over its model, else undefined. Its
+ * weights are CI's own times, and a file that grows (release-preflight.test.mjs went 152 s to 257 s in a day) makes its
+ * shard the run's slowest while the plan still reads balanced; the warning says so in the run that shows it. A minute
+ * is a hosted runner's noise; a faster runner (Blacksmith, in the merge queue) is never a drift.
+ */
+export function timingDrift(name, modelled, seconds) {
+  if (seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;
+  return `::warning title=ci-timings.json is stale::${name} ran ${seconds} s, modelled ${modelled} s: refresh scripts/ci-timings.json from CI's job logs (node scripts/ci-timings.mjs <job log>...), and split a test file that alone is near a shard's time`;
+}
+
 /** The modelled seconds of a set of units: per suite, its longest unit or its total over its parallelism, whichever is more. */
 export function modelSeconds(units) {
   const groups = new Map();

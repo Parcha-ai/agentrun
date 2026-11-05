@@ -149,7 +149,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   assert.deepEqual([put.body["monid.run"], put.body.web_fetch.permission, put.body.read, put.body["mcp:srv/*"], put.body["mcp:srv/echo"]], [{ permission: "allow" }, "ask", { permission: "deny" }, { permission: "deny" }, { permission: "allow" }]);
   const after = byName((await api("GET", "/capabilities")).body.tools);
   assert.deepEqual([after["monid.run"].permission, after["monid.run"].default_permission, after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["allow", "ask", "ask", "allow", "deny"]);
-  assert.deepEqual(after.web_search.resolves, { pi: "native", "claude-agent": "exa-keyless", codex: after.web_search.resolves.codex }, "web_search allowed: as before");
+  // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Exa.
+  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "exa-keyless" }, "web_search allowed: as before");
 
   const made = await api("POST", "/agents", agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -167,7 +168,9 @@ test("capabilities and an agent's tools show each tool's permission, its default
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, fields], JSON.stringify(body));
   }
   assert.equal((await api("PUT", "/settings/tools", { web_search: { permission: "deny" } })).status, 200);
-  assert.deepEqual(byName((await api("GET", "/capabilities")).body.tools).web_search.resolves, { pi: "unavailable: denied", "claude-agent": "unavailable: denied", codex: "unavailable: denied" }, "no provider is asked");
+  const denied = byName((await api("GET", "/capabilities")).body.tools).web_search.resolves;
+  assert.ok(["pi", "claude-agent", "codex"].every((harness) => harness in denied), "every harness is shown");
+  assert.deepEqual(denied, Object.fromEntries(Object.keys(denied).map((harness) => [harness, "unavailable: denied"])), "no provider is asked, on any harness");
 });
 
 test("web_fetch set to ask on pi, claude-agent and codex at once: each run parks with its pending approval; answered more than a minute later by the owner's session, allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, async (t) => {
@@ -295,6 +298,63 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   const started = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
   assert.equal(started.status, 202, "ask does not apply to a call node: the author's own step runs");
   await follow(api, started.body.run_id, ["completed"], { deadlineMs: 30_000 });
+});
+
+/** The first web_fetch result of run `runId`, once it has one. */
+async function firstFetch(api, runId) {
+  for (let i = 0; ; i++) {
+    const row = ((await api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).find((r) => r.kind === "tool_result" && r.tool_name === "web_fetch" && r.tool_status !== null);
+    if (row) return row;
+    assert.ok(i < 600, "the run made no first call");
+    await sleep(100);
+  }
+}
+
+test("a deny lifted mid-run is lifted at the next call: a run launched with web_fetch denied runs its next call once the setting reads allow, and parks it once it reads ask, which an allow runs once", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  const go = await scratch(t);
+  for (const [lifted, url] of [["allow", PAGE], ["ask", `${PAGE}notes.txt`]]) {
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+    const file = join(go, lifted);
+    const ask = `Fetch ${url} again once ${file} exists.`;
+    assert.equal((await api("POST", "/agents", agent(`lifted-${lifted}`, { harness: "pi", instructions: ask, tools: ["web_fetch"] }))).status, 201);
+    const runId = (await api("POST", `/agents/lifted-${lifted}/runs`, { input: { content: ask } })).body.run_id;
+    const first = await firstFetch(api, runId);
+    assert.deepEqual([first.tool_status, first.tool_result_preview], ["failed", deniedText("web_fetch")], `${lifted}: launched denied`);
+    assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: lifted } })).status, 200);
+    await writeFile(file, "");
+    if (lifted === "ask") {
+      const { view } = await parked(api, runId);
+      assert.deepEqual([view.pending?.kind, view.pending?.tool], ["approval", "web_fetch"], "ask: the next call parks");
+      assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);
+    }
+    const { rows } = await resumed(api, runId);
+    const results = rows.filter((row) => row.kind === "tool_result" && row.tool_name === "web_fetch");
+    assert.ok(!results.slice(1).some((row) => row.tool_status === "failed"), `${lifted}: the next call ran, ${JSON.stringify(results.map((row) => [row.tool_status, row.tool_result_preview]))}`);
+    assert.deepEqual((await dialled()).filter((dial) => dial === url), [url], `${lifted}: dialled once`);
+  }
+});
+
+test("a workflow's call node calling fetch_page, web_fetch's legacy name, is held to web_fetch's permission: set to deny, its run is refused before it starts", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, GATE);
+  const flow = {
+    v: 2, name: "read-site-legacy",
+    schemas: {
+      In: { type: "object", required: ["website"], properties: { website: { type: "string" } } },
+      Page: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Page", path: "home" },
+    root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "fetch_page", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
+  };
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
+  const saved = await api("POST", "/agents", { definition: { id: "legacy", name: "legacy", workflow: flow, tools: ["fetch_page"] } });
+  assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls fetch_page (web_fetch), which is set to deny on this server."]]);
+  const refused = await api("POST", "/agents/legacy/runs", { input: { website: PAGE } });
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
 });
 
 const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools.`;

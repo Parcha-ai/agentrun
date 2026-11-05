@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
-import { LAUNCH_LOST } from "./files.js";
+import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
@@ -15,6 +15,7 @@ import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
+import { FIRING_STATUSES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, PERMISSIONS } from "./tool-gate.js";
 import { LEGACY_NAMES, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
@@ -179,7 +180,8 @@ const TOOL_KEYS_VIEW = closed({
       },
       check: {
         oneOf: [
-          closed({ state: { const: "accepted" }, at: { type: "string", format: "date-time", description: "When it was saved and checked." } }),
+          closed({ state: { const: "accepted" }, at: { type: "string", format: "date-time", description: "When it was saved and checked; the server's own key, when the server started and checked it." } }),
+          closed({ state: { const: "refused" }, reason: { type: "string", description: "The server's own key only (a saved one the provider refuses is never kept): who refused which key, in the provider's first sentence (never any of the key), and what to do. The tools that need it read unavailable in capabilities, with the same words." }, at: { type: "string", format: "date-time", description: "When the server started and checked it." } }),
           {
             type: "object", additionalProperties: false, required: ["state", "reason"],
             properties: {
@@ -190,7 +192,7 @@ const TOOL_KEYS_VIEW = closed({
           },
           { type: "null" },
         ],
-        description: "Whether the key (its first field) was checked against its provider when it was saved here, with one call that costs nothing: `accepted`, or `not_checked` and why; a key the provider refuses is never saved (PUT's 422). Null when the key is not stored here: not set, or set by the server, whose own key is not checked here.",
+        description: "Whether the key (its first field) was checked against its provider, with one call that costs nothing: a key stored here when it was saved (`accepted`, or `not_checked` and why; a key the provider refuses is never saved, PUT's 422), a tool's key the server is started with once as it starts (`accepted`, `not_checked`, or `refused`). Null when the key is not set, or is the server's and its check has not answered yet.",
       },
     }),
   },
@@ -470,6 +472,60 @@ const RUN_NOTES: Record<string, Json> = {
 };
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
 const closedWith = (properties: Record<string, Json>, optional: Record<string, Json>) => ({ ...closed(properties), properties: { ...properties, ...optional } });
+/** trigger/1: schedules that start an agent's capped runs (triggers.ts). */
+const TRIGGER_MARK = { "x-agentrun-serve": "trigger/1" };
+const DATE_TIME = { type: "string", format: "date-time" };
+const TRIGGER_SOURCE = {
+  oneOf: [
+    closedWith({ kind: { const: "schedule" }, cron: { type: "string", description: "Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap." } }, { timezone: { type: "string", default: "UTC", description: "The IANA zone the cron line is read in." } }),
+    closed({ kind: { const: "schedule" }, at: { ...DATE_TIME, description: "Once, at this time (to the second, in the future); the trigger turns itself off after." } }),
+    closedWith({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
+  ],
+  description: `When it fires: a cron line in a zone, one time, or every N seconds (${MIN_EVERY_S} or more). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+};
+const TRIGGER_TARGET = closedWith(
+  {
+    kind: { const: "start_run" },
+    agent_id: { type: "string", description: "The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here." },
+    input: { type: "object", description: "The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone." },
+    max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap, required: every run a trigger starts is capped." },
+  },
+  { effort: { $ref: "#/components/schemas/Effort" } },
+);
+const TRIGGER_FIRING = closedWith(
+  {
+    key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
+    by: { enum: ["schedule", "manual"] },
+    nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
+    status: { enum: [...FIRING_STATUSES], description: "`due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`. `missed`: times not fired while the server was down or its timer late, `count` of them from `nominal_at` on." },
+    at: { ...DATE_TIME, description: "When it was recorded." },
+    run_id: { type: ["string", "null"] },
+    reason: { type: ["string", "null"] },
+    error: { oneOf: [closed({ code: { type: "string" }, message: { type: "string" } }), { type: "null" }] },
+  },
+  { count: { type: "integer", minimum: 1 }, attempts: { type: "integer", minimum: 0 }, retry_at: DATE_TIME },
+);
+const TRIGGER = closed({
+  id: { type: "string" },
+  name: { type: "string", maxLength: 200 },
+  enabled: { type: "boolean" },
+  source: TRIGGER_SOURCE,
+  target: TRIGGER_TARGET,
+  overlap: { enum: [...OVERLAP], description: "What a firing does while the trigger's last run is active: `skip`, recorded as a skipped firing." },
+  next_at: { type: ["string", "null"], format: "date-time", description: "When it fires next; null while it is off." },
+  last_run_id: { type: ["string", "null"], description: "The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts." },
+  created_at: DATE_TIME,
+  updated_at: DATE_TIME,
+  last_firing: { oneOf: [TRIGGER_FIRING, { type: "null" }] },
+});
+const TRIGGER_WRITE = {
+  name: { type: "string", minLength: 1, maxLength: 200, description: "Default the trigger's id." },
+  enabled: { type: "boolean", default: true, description: "Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up." },
+  source: TRIGGER_SOURCE,
+  target: TRIGGER_TARGET,
+};
+const TRIGGER_ID = { name: "trigger_id", in: "path", required: true, schema: { type: "string" } };
+const TRIGGER_ERRORS = "409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.";
 const RUN_LEARNING = {
   oneOf: [
     closedWith({
@@ -933,7 +989,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveWebhook", tags: ["local"], summary: "Set the webhook's URL",
-      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`approval\` for a tool call that waits for a person's approval, \`stopped\` for a stopped turn) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, status, title, url}\`, \`url\` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
+      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`approval\` for a tool call that waits for a person's approval, \`stopped\` for a stopped turn, \`budget\` for a run paused at its spend cap) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, status, title, url}\`, \`url\` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.`,
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2048 } } } } } },
       responses: {
         "201": json(closed({ ...WEBHOOK_SET_FIELDS, secret: WEBHOOK_SECRET }), "Set, with its secret, shown this once."),
@@ -961,6 +1017,61 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "listWebhookDeliveries", tags: ["local"], summary: `The last ${ATTEMPTS_KEPT} attempts, newest first`,
       responses: { "200": json(closed({ attempts: { type: "array", items: WEBHOOK_ATTEMPT } }), "Each attempt."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "webhook/1",
+    },
+  },
+  "/triggers": {
+    get: {
+      operationId: "listTriggers", tags: ["local"], summary: "The triggers: schedules that start an agent's capped runs",
+      description: TRIGGER_ERRORS,
+      responses: { "200": json(closed({ triggers: { type: "array", items: TRIGGER } }), "Each trigger, oldest first, with its last firing."), ...errors(401, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    post: {
+      operationId: "createTrigger", tags: ["local"], summary: "Make a trigger: a schedule that starts a run of an agent, capped",
+      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\`, as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last ${HISTORY_KEPT} firings are kept. 422 for a source other than a schedule, a target with no max_cost_usd, or an agent that is a workflow or does not take the input.`,
+      parameters: [ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["source", "target"], properties: TRIGGER_WRITE } } } },
+      responses: { "201": json(TRIGGER, "Made."), ...errors(400, 401, 409, 415, 422, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+  },
+  "/triggers/{trigger_id}": {
+    get: {
+      operationId: "getTrigger", tags: ["local"], summary: "One trigger",
+      parameters: [TRIGGER_ID],
+      responses: { "200": json(TRIGGER, "The trigger."), ...errors(401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    patch: {
+      operationId: "updateTrigger", tags: ["local"], summary: "Change a trigger, or turn it off and on",
+      description: "Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.",
+      parameters: [TRIGGER_ID],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: TRIGGER_WRITE } } } },
+      responses: { "200": json(TRIGGER, "Changed."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    delete: {
+      operationId: "deleteTrigger", tags: ["local"], summary: "Delete a trigger and its firings; the runs it started stay",
+      parameters: [TRIGGER_ID],
+      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+  },
+  "/triggers/{trigger_id}/fire": {
+    post: {
+      operationId: "fireTrigger", tags: ["local"], summary: "Run it now: one firing per Idempotency-Key",
+      description: "A firing now, on or off, under the same overlap rule as a scheduled one; it is driven before the answer. The same key again answers its firing as it stands (200, `Idempotent-Replayed: true`), and starts no second run, for `limits.idempotency_ttl_s` after it fired, even once the firing has left the history; past that it is a new firing, which a run the key started still answers. A firing never moves `last_run_id` back to an older run. 400 with no Idempotency-Key.",
+      parameters: [TRIGGER_ID, { name: "Idempotency-Key", in: "header", required: true, description: "Required here: a retry with the same key fires once.", schema: { type: "string", minLength: 1, maxLength: 255 } }],
+      responses: { "202": json(TRIGGER_FIRING, "Fired: its run started, or why not."), "200": json(TRIGGER_FIRING, "This key's firing, as it stands."), ...errors(400, 401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+  },
+  "/triggers/{trigger_id}/firings": {
+    get: {
+      operationId: "listTriggerFirings", tags: ["local"], summary: `The trigger's last ${HISTORY_KEPT} firings, newest first`,
+      parameters: [TRIGGER_ID],
+      responses: { "200": json(closed({ firings: { type: "array", items: TRIGGER_FIRING } }), "Each firing."), ...errors(401, 404, 409, 429, 500) },
+      ...TRIGGER_MARK,
     },
   },
   "/settings/webhook/deliveries/{webhook_id}/redeliver": {
@@ -1047,6 +1158,19 @@ const PENDING: Json = {
       description: "A tool call set to ask waits for the owner's approval (status input_required, state waiting): POST /runs/{run_id}/approvals/{id} answers it.",
       "x-agentrun-serve": "approvals/1",
     },
+    {
+      type: "object", additionalProperties: false, required: ["kind", "cap_usd", "said", "at"],
+      properties: {
+        kind: { const: "budget" },
+        cap_usd: { type: "number", exclusiveMinimum: 0, description: "The run's cap (`max_cost_usd`)." },
+        spent_usd: { type: "number", minimum: 0, description: "What the cap counted as taken when it refused: spent, and held for requests still answering. Absent for a refusal written before the figures were kept." },
+        needs_usd: { type: "number", minimum: 0, description: "The least the refused request needs. A cap above `spent_usd` + `needs_usd` sends it. Absent with `spent_usd`." },
+        said: { type: "string", description: "The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters." },
+        at: { type: "string", format: "date-time", description: "When the request was refused." },
+      },
+      description: "A run paused at its spend cap (status input_required, state waiting): what is left of the cap cannot buy its next request's least, which was not sent. A message is 409 budget_reached until the cap is raised. Only a refusal for room pauses a run; one no cap fixes (an unknown spend, a model with no price or no output ceiling, an input not measured) still ends it failed, spend_cap_reached.",
+      "x-agentrun-serve": "cappause/1",
+    },
     { type: "null" },
   ],
   description: "What the run waits on, told apart by kind; null when it waits on nothing. A run read from its stored row alone has ended, so null.",
@@ -1093,6 +1217,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
+    trigger: {
+      oneOf: [closed({ id: { type: "string", description: "The trigger (GET /triggers/{trigger_id}); it may have been deleted since." }, firing_key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing that started it." } }), { type: "null" }],
+      description: "The trigger that started the run, and its firing; null for a run a caller started.",
+      ...TRIGGER_MARK,
+    },
   },
   InputIssue: { code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" } },
   RunSummary: {
@@ -1114,8 +1243,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   RunError: {
     details: {
       type: "object", additionalProperties: false, required: ["reason"],
-      properties: { reason: { enum: [LAUNCH_LOST] } },
-      description: `Why the run failed, when its code alone does not say: \`${LAUNCH_LOST}\`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again.`,
+      properties: { reason: { enum: [LAUNCH_LOST, SETUP_LOST] } },
+      description: `Why the run failed, when its code alone does not say: \`${LAUNCH_LOST}\`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again; \`${SETUP_LOST}\`, the server went down after the run was made and before it was set up, so it never started.`,
       "x-agentrun-serve": "launch/1",
     },
   },
@@ -1174,7 +1303,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
         default: { enum: [...PLACE_MODES], description: "The mode a revision that names no place runs in here." },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string" }, network: { enum: [...BOX_NETWORKS], description: "What an available Daytona box reaches: `allowlist`, the hosts in `allow` (Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. `none` with a `reason` when Daytona could not keep a list here (a tier that takes none); without one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable, or what a preparing one waits for." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list.", "x-agentrun-serve": "place/2" } } } },
       },
       description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
@@ -1285,6 +1414,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { enum: ["sealed", "unavailable"] } },
       description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
       "x-agentrun-serve": "webhook/1",
+    },
+    triggers: {
+      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, overlap: { type: "array", items: { enum: [...OVERLAP] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" } }),
+      description: "/triggers: schedules that start an agent's capped runs: the source and target kinds this server takes, what a firing does while the last run is active, the shortest interval, and how many firings each trigger keeps.",
+      ...TRIGGER_MARK,
     },
   },
   "Features/agents": { revisions: { type: "boolean", description: "`GET /agents/{agent_id}/revisions` and `POST /agents/{agent_id}/current`.", "x-agentrun-serve": "serve/1" } },
@@ -1413,6 +1547,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;
   cancel["x-agentrun-serve-changed"] = { description: "turnend/1" };
   changed.push("POST /runs/{run_id}/cancel");
+  // A run create's key is kept with its run in the agent store (its origin), so it replays that run past the key's day.
+  const createRun = (doc.paths["/agents/{agent_id}/runs"] as Json).post as Json;
+  createRun.description = `${String(createRun.description).trimEnd()}\nHere a create's \`Idempotency-Key\` is also kept with the run it started, written in the agent store with the run itself: the same key and body replays that run, as it reads now, for as long as the run exists (after any restart, and past \`limits.idempotency_ttl_s\`, which bounds the other creates' keys); another body under the key is \`409 idempotency_mismatch\`.\n`;
+  createRun["x-agentrun-serve-changed"] = { description: "runorigin/1" };
+  changed.push("POST /agents/{agent_id}/runs");
   // models/2: capabilities' `models.source` takes on the values this server answers with that the contract's enum (managed,
   // chatgpt, env, faux) lacks, `gateway` and `providers`. A client that validates against the contract's enum refuses them,
   // so the widening is a mark of its own, each value listed, as RunStatus's `paused` is.
@@ -1458,8 +1597,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const own = Object.keys(ERROR_STATUS).filter((code) => Array.isArray(errorCode.enum) && !errorCode.enum.includes(code));
   if (own.length) {
     errorCode.enum = [...errorCode.enum!, ...own];
-    // The newest addition that widened it: a client that validates against learning/1 refuses auth_required.
-    errorCode["x-agentrun-serve"] = "mcpservers/1";
+    // The newest addition that widened it: a client that validates against mcpservers/1 refuses budget_reached.
+    errorCode["x-agentrun-serve"] = "cappause/1";
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;

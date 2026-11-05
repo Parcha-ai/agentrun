@@ -18,11 +18,12 @@ const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathnam
 const FAUX = { fauxHarness: fixture("faux-harness.mjs"), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxUpstream: fixture("faux-upstream.mjs"), fauxExa: fixture("faux-exa.mjs") };
 const PAGE = "http://public.example/";
 const ANTHROPIC_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
-const NATIVE = { pi: "native", "claude-agent": "native", codex: "native" };
+// OpenCode has no native search: picked, it is unavailable there; on auto it takes the server's Parallel key.
+const NATIVE = { pi: "native", "claude-agent": "native", codex: "native", opencode: "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool" };
 /** On auto: native on pi (a direct Anthropic model) and codex; on claude-agent, whose own search is an explicit pick, the
  *  server's Parallel key. */
-const AUTO_KEYED = { pi: "native", "claude-agent": "parallel", codex: "native" };
-const each = (value) => ({ pi: value, "claude-agent": value, codex: value });
+const AUTO_KEYED = { pi: "native", "claude-agent": "parallel", codex: "native", opencode: "parallel" };
+const each = (value) => ({ pi: value, "claude-agent": value, codex: value, opencode: value });
 
 /** The environment of test `t` (model keys only, unless `extra` says more), and the lines each fake files. */
 async function setting(t, extra = {}) {

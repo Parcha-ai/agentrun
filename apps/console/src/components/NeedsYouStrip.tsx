@@ -6,7 +6,8 @@ import { ago, choicesOf, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
-import type { PendingApproval, Run } from "@/lib/v2";
+import { pausedWords } from "@/components/NeedsYou";
+import type { BudgetPending, PendingApproval, Run } from "@/lib/v2";
 
 export type NeedsYouProps = {
   /** Runs waiting on a person's answer (`input_required`, with their `pending`: a question, or a tool call's approval). */
@@ -70,7 +71,7 @@ export function NeedsYouStrip({ asking, failed, live, agentName, onAnswer, onApp
         <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {asking.map((r) => r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
-            : <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
+            : <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : r.pending?.kind === "budget" ? (r.pending.at ?? "") : ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
         </ul>
       )}
       {groups.length > 0 && (
@@ -104,6 +105,26 @@ function Approval({ run, pending, agentName, at, onApprove }: { run: Run; pendin
   );
 }
 
+function Question(props: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
+  // A run paused at its spend cap is no question: it says why, and takes no answer until its cap is raised.
+  return props.run.pending?.kind === "budget" ? <Paused run={props.run} pending={props.run.pending} agentName={props.agentName} /> : <Asked {...props} />;
+}
+
+function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending; agentName: string }) {
+  return (
+    <li data-run={run.run_id} className="min-w-0 border border-warning/50 bg-warning/5 p-4">
+      <p className="flex min-w-0 items-center gap-2 text-[13px]">
+        <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden />
+        <span className="shrink-0 font-mono text-[12px]">{agentName}</span>
+        <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{run.title}</a>
+      </p>
+      <p className="caps mt-2 text-[11px] text-warning-text">{pausedWords(pending)}</p>
+      {typeof pending.said === "string" && <p className="mt-1 text-[15px] leading-snug">{pending.said}</p>}
+      <p className="mt-3 font-mono text-[12px] text-muted-foreground"><a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
+    </li>
+  );
+}
+
 /** A waiting run's line: its agent, its title (a link to the run) and when it asked. */
 function Head({ run, agentName, since }: { run: Run; agentName: string; since?: string }) {
   return (
@@ -116,7 +137,7 @@ function Head({ run, agentName, since }: { run: Run; agentName: string; since?: 
   );
 }
 
-function Question({ run, agentName, at, onAnswer }: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
+function Asked({ run, agentName, at, onAnswer }: { run: Run; agentName: string; at: number; onAnswer: NeedsYouProps["onAnswer"] }) {
   const pending = run.pending?.kind === "question" ? run.pending : null;
   const question = pending?.question ?? "";
   const choices = choicesOf(question);

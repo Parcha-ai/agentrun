@@ -1,7 +1,7 @@
 // A run's effort adds a short note on how to work, right after the agent's instructions, and the run's first model
-// request carries it: on pi (its gateway client), on claude-agent (the pinned Agent SDK and Claude CLI) and on codex (the
-// pinned Codex), each against a loopback gateway that records every request (fixtures/faux-gateway.mjs). A run with no
-// effort gets none of the three notes. No key, no network.
+// request carries it: on pi (its gateway client), on claude-agent (the pinned Agent SDK and Claude CLI), on codex (the
+// pinned Codex) and on opencode (the pinned OpenCode), each against a loopback gateway that records every request
+// (fixtures/faux-gateway.mjs). A run with no effort gets none of the three notes. No key, no network.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
@@ -85,4 +85,13 @@ test("claude-agent, on its pinned CLI: each effort's note follows the instructio
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("claude-effort", { harness: "claude-agent", instructions: INSTRUCTIONS }))).status, 201);
   assert.deepEqual(await firstRequests(api, gateway, "claude-effort", 120_000), WANTED);
+});
+
+// opencode on its pinned binary, through its proxy: the note is in OpenCode's own system prompt, its agent's prompt.
+test("opencode, on its pinned binary: each effort's note follows the instructions in the run's first model request, and a run with no effort has none", { timeout: 400_000, skip: noSetpriv }, async (t) => {
+  const gateway = await gatewayFor(t);
+  withEnv(t, { AGENT_MODEL_BASE_URL: gateway.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  assert.equal((await api("POST", "/agents", agent("opencode-effort", { harness: "opencode", instructions: INSTRUCTIONS }))).status, 201);
+  assert.deepEqual(await firstRequests(api, gateway, "opencode-effort", 90_000), WANTED);
 });

@@ -613,7 +613,11 @@ export class LearningRuns {
       await this.kernel.save(run);
       const { reflectPrompt } = await import("./learn/index.js");
       const tools = await this.draftTools(run);
-      // The one call that sends the end-of-run turn, with its origin.
+      // The one call that sends the end-of-run turn, with its origin. Only while the run is finishing with no outcome yet,
+      // read in the same tick the origin's write starts in (toLiveDoor writes it before its first await): a message
+      // waits while the run is finishing (runs.ts message), so a write starts only before that wait ends. One whose
+      // process went while this turn was made ready has its outcome already: it is asked nothing.
+      if (!run.finishing || run.outcome) return;
       await this.kernel.toLiveDoor(run, "/submit", { requestId: reflectId(run.id), content: reflectPrompt({ dir: LEARNED_DIR, active: Object.keys(seed.notes).length, tools }), whenBusy: "followUp" }, REFLECT_ORIGIN);
       end = await this.reflectEnd(run, Date.parse(reflect.deadline));
     } catch (error) {

@@ -41,7 +41,7 @@ export const TOOL_KEYS = [
   // Jev's decision provider (decisions.ts' `jev`), on TypeSafe's key: a workflow's judges, as Parallel's key unlocks its.
   { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
   // A model provider's key (model.ts' MODEL_KEYS, which give each its default model): every run gets it, as the
-  // launcher's model keys reach every run. Its harnesses are pi and the harness that is the provider's own.
+  // launcher's model keys reach every run. Its harnesses are pi and those that talk to the provider's API (MODEL_KEYS).
   ...MODEL_KEYS.map(({ id, label, field, harnesses }) => ({ id, kind: "model" as const, label, fields: [field] as const, unlocks: [] as const, harnesses })),
 ] as const;
 const FIELDS: readonly string[] = TOOL_KEYS.flatMap((row) => row.fields);
@@ -82,6 +82,10 @@ type Opened = { value: string } | { unreadable: Unreadable };
 /** The file's entries: each field's sealed value by name, and each key's check by id. */
 type Kept = { fields: Record<string, unknown>; checks: Record<string, KeyCheck> };
 
+/** The check of a key the server was started with (ToolKeys.checkServer): a KeyCheck, or refused by its provider, why in
+ *  plain words. Held in memory only, for this start. */
+export type StartCheck = KeyCheck | { state: "refused"; reason: string; at: string };
+
 /** The check a key kept before this server checked keys reads as: none was made. */
 const UNCHECKED: KeyCheck = { state: "not_checked", reason: "Saved before this server checked keys; save it again to check it" };
 /** A check as the file keeps it, else undefined. */
@@ -104,6 +108,8 @@ export class ToolKeys {
   private readonly key: Buffer | undefined;
   private readonly sealCheck: string | undefined;
   private said = "";
+  /** The checks of the keys the server was started with, by key id, each once it answered (checkServer). */
+  private readonly started: Record<string, StartCheck> = {};
 
   /** `env` is what the server is started with (withSecrets' `"own"`, never a saved key, or each would read as the
    *  server's and could not be deleted): a field it sets is the server's, and wins. `say` takes a log line's fields. */
@@ -174,7 +180,7 @@ export class ToolKeys {
         if (opened) again.push({ name, why: opened.unreadable });
         return { name, set: false, source: null, ...(opened ? { stored_unreadable: true as const } : {}) };
       });
-      const check = fields[0].source === "stored" && kept !== "unreadable" ? (kept.checks[row.id] ?? UNCHECKED) : null;
+      const check = fields[0].source === "stored" && kept !== "unreadable" ? (kept.checks[row.id] ?? UNCHECKED) : fields[0].source === "server" ? (this.started[row.id] ?? null) : null;
       return { id: row.id, kind: row.kind, label: row.label, ...rowUnlocks(row, tools, providers, offers), fields, check };
     });
     // A file that does not read as a whole names no field: which it held is unknown.
@@ -184,6 +190,42 @@ export class ToolKeys {
     if (reenter && said !== this.said) this.say({ condition: reenter.reason, file: this.file, fields: reenter.fields.join(",") || "unknown" });
     this.said = said;
     return { keys, reenter };
+  }
+
+  /** Each tool key the server is started with (a `tool` row whose key, its first field, the server sets), checked against
+   *  its provider once, as a saved one is (key-check.ts), through the fetch `fetchFor` gives for the row (null: not
+   *  checked, its check stays null); all at once, none holding up another or the start. `answered` is called as each
+   *  answers, unless `stop` (the server closing) came first. A fetch that cannot be made (a fake that does not load)
+   *  reads as not checked, saying so; this never rejects. A model key is not checked here: a run on a refused one fails
+   *  at its first request, saying so. */
+  async checkServer(fetchFor: (id: string) => Promise<typeof fetch | null>, stop: AbortSignal, answered: () => void): Promise<void> {
+    await Promise.all(TOOL_KEYS.filter((row) => row.kind === "tool" && this.env[row.fields[0]]).map(async (row) => {
+      const name = row.fields[0];
+      let fetcher: typeof fetch | null;
+      try {
+        fetcher = await fetchFor(row.id);
+      } catch (error) {
+        if (stop.aborted) return;
+        const why = (error as NodeJS.ErrnoException)?.code ?? (error as Error)?.name ?? "an error";
+        this.started[row.id] = { state: "not_checked", reason: `${row.label}'s key could not be checked: its check did not start (${why})`, at: new Date().toISOString() };
+        answered();
+        return;
+      }
+      if (!fetcher) return;
+      const outcome = await checkKey(row, this.env[name] as string, this.env, fetcher, undefined, stop, name).catch(() => undefined);
+      if (!outcome || stop.aborted) return;
+      this.started[row.id] = outcome.state === "refused" ? { state: "refused", reason: `${outcome.message} when this server started: set the right one where AgentRun starts, then restart it`, at: new Date().toISOString() } : outcome;
+      answered();
+    }));
+  }
+
+  /** The variables of the keys the server was started with that their provider refused at the start, each with why
+   *  (capabilities' tools that need one read unavailable: tools.ts toolsView). */
+  refused(): Record<string, string> {
+    return Object.fromEntries(TOOL_KEYS.flatMap((row) => {
+      const check = this.started[row.id];
+      return check?.state === "refused" ? [[row.fields[0], check.reason] as const] : [];
+    }));
   }
 
   /** A PUT's check, before save(): the key it sends (its row's first field; Browserbase's project id is no key) checked

@@ -34,7 +34,7 @@ import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-du
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { hostTools, type ToolResults } from "./host-tools.js";
 import { endsTurn, type Park, type ParkedCall, type Resume, type RunGate } from "./tool-gate.js";
-import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, useSpend } from "./cap.js";
+import { CAP_REFUSED_FIELD, type CapGuard, capToolSpend, holdsInFlight, type RefusalFigures, useSpend } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { handsParallel, planeOf } from "./tool-plane.js";
 import { parallelOf } from "./web-fetch.js";
@@ -150,6 +150,8 @@ export function adapterRun(
   // That `refused` is the cap's, not the cancel's: its error entry gets a start mark of its own first, as pi's does, so the
   // run's usage counts no request for it.
   let capRefused = false;
+  // A refusal for room's figures, for its start mark (cap.ts RefusalFigures).
+  let refusedFigures: RefusalFigures | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
   // What the run's paid tools charged, in earlier processes (read at the open) and this one: null once one is unknown.
   let charged: number | null = 0;
@@ -162,6 +164,7 @@ export function adapterRun(
     if (answer && "refuse" in answer) {
       refused = answer.refuse;
       capRefused = !byCancel;
+      refusedFigures = !byCancel && "needsUsd" in answer && typeof answer.needsUsd === "number" && typeof answer.spentUsd === "number" ? { spentUsd: answer.spentUsd, needsUsd: answer.needsUsd } : undefined;
       return answer;
     }
     // Admitted, limited to the output what is left of the cap buys (which the runner hands the model proxy, and holds it
@@ -440,6 +443,8 @@ export function adapterRun(
           const why = refused ?? halted?.message ?? (failed === undefined || parked !== undefined ? undefined : `${harness}: ${failed}`);
           if (parked !== undefined && why === undefined) status = "interrupted";
           const unsent = refused !== undefined && capRefused;
+          const figures = unsent ? refusedFigures : undefined;
+          refusedFigures = undefined;
           refused = undefined;
           capRefused = false;
           const pending = open.size > 0;
@@ -450,7 +455,7 @@ export function adapterRun(
           await flush(true, cut ? undefined : async (tx) => {
             if (why !== undefined) {
               // A refusal of the cap's: a start mark of its own first, as pi's is, so the run's usage counts no request for it.
-              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true } });
+              if (unsent) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { [CAP_REFUSED_FIELD]: true, ...(figures ? { spentUsd: figures.spentUsd, needsUsd: figures.needsUsd } : {}) } });
               await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, undefined, "", [], why) as never] });
             }
             const data: TurnEndData = {
