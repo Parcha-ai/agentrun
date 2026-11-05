@@ -2,6 +2,7 @@
 // title that quotes one is redacted with the run's redactor before the row is cut, and an error stored cut (at 2000, or
 // marked error_truncated) has its tail held back, where a key the stored cut split would sit.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { decisionRows } from "../dist/decision-rows.js";
 import { flowAgent, follow, serve, withEnv } from "./support.mjs";
@@ -67,4 +68,32 @@ test("a run whose Parallel judge cites a source titled with the key it was sent:
   assert.ok(decision, JSON.stringify(rows.map((row) => row.kind)));
   assert.match(decision.text ?? "", /Acme, filed under/, decision.text);
   assert.ok(!holdsRun(JSON.stringify(rows)), JSON.stringify([decision.summary, decision.text]));
+});
+
+test("a key saved after a workflow run (no learning) ended, whose value its decision row quotes: the next Timeline read shows no part of it", { timeout: 60_000 }, async (t) => {
+  // Not held while the run ran; saved after it ended. No 8 characters of it are in a row's own words or in KEY.
+  const later = ["later", "saved", "qponmlkjih"].join("-");
+  withEnv(t, { PARALLEL_API_KEY: KEY, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_CITATION_ALSO: later }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "MONID_API_KEY"]);
+  const { api } = await serve(t, { fauxJev: FAUX_ECHO, fauxParallel: FAUX_ECHO });
+  const flow = {
+    v: 2, name: "echoed-later",
+    schemas: {
+      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Coi: { type: "object", required: ["coi"], properties: { coi: { type: "boolean", description: "Is this a certificate of incorporation?" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Coi", path: "coi" },
+    root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi", provider: "parallel" }] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("echoed-later", flow))).status, 201);
+  const started = await api("POST", "/agents/echoed-later/runs", { input: { question: "Acme's filing" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 50_000 });
+  const before = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows.find((row) => row.kind === "decision");
+  assert.ok(before?.text?.includes(later), `not held yet, so shown: ${before?.text}`);
+  const saved = await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: later } });
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  const rows = (await api("GET", `/runs/${started.body.run_id}/timeline`)).body.rows;
+  const shown = JSON.stringify(rows);
+  for (let i = 0; i + 8 <= later.length; i++) assert.ok(!shown.includes(later.slice(i, i + 8)), `the row still holds ${later.slice(i, i + 8)}: ${JSON.stringify(rows.find((row) => row.kind === "decision"))}`);
 });
