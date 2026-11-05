@@ -227,3 +227,13 @@ test("a paused run's pending suggests a raise, spent + 10 × the refused request
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.cost.cap_usd, said(rows)], ["completed", null, 2, ["Write one.md", CONTINUE("$2")]], JSON.stringify(run));
 });
+
+test("the suggested raise is a whole dollar, always above the cap, and a float just past a dollar stays that dollar", async () => {
+  const { suggestedCap } = await import("../dist/runs.js");
+  assert.equal(typeof suggestedCap, "function", "runs.js offers suggestedCap");
+  assert.equal(suggestedCap(0.05, 0, 0.1024), 2);
+  assert.equal(suggestedCap(0.5, 0.4, 0.2), 3, "$0.40 + $2.00, up to $3");
+  assert.equal(suggestedCap(2, 0.1, 0.1), 3, "$1.10 is up to $2, not above the $2 cap: the next dollar");
+  assert.equal(suggestedCap(2.5, 0, 0), 3, "nothing needed: the next dollar above the cap");
+  assert.equal(suggestedCap(0.05, 0.2, 0.28), 3, "0.2 + 10 × 0.28 is 3.0000000000000004 in a float: $3, not $4");
+});
