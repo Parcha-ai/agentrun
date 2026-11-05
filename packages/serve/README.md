@@ -790,7 +790,36 @@ run's process over its pipe, as the rest do. A session's custody (its lease, its
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
-the sessions it still holds are released at their vendor.
+the sessions it still holds are released at their vendor. An agent's browser stays signed in from one run to the next
+([saved sign-ins](#saved-sign-ins)).
+
+### Saved sign-ins
+
+Sign in once in one of an agent's runs (for now, through the run's browser while it runs), and every later run of that
+agent starts from that signed-in browser. Sign-ins are kept per agent, never shared between agents, and the server
+picks which one a run gets, never the model.
+
+- **Where the cookies are.** At the browser's vendor: a Browserbase context, or a Kernel profile named
+  `agentrun-<home key>-default` (Kernel's names are shared across its account, so the agent's home key is in it). This
+  server keeps only a pointer per agent and vendor, sealed under the seal key (`AGENTRUN_SEAL_KEY`) and bound to its
+  agent, in `<data>/homes/<key>/sign-ins/sign-ins.json`. With no seal key nothing is kept and runs start signed out;
+  capabilities say `sign_ins: true` only with a seal key and a browser vendor here. A local Chrome keeps none: its
+  cookies would sit on this server's disk.
+- **How a run gets it.** Before a run with the `browser` tool is launched, the server makes the agent's context at
+  Browserbase if it has none (`POST /v1/contexts`, which opens no session; Browserbase bills sessions, not contexts),
+  and hands the run's process the pointer over its pipe, with its secrets, never in its environment. The run's process
+  never gets the seal key. Every session the run opens uses that profile, by the name `default`; the model never sees
+  the pointer. A vendor that does not answer leaves that run's browser signed out, said in the server's log.
+- **One run saves at a time.** The first run of an agent to start with the browser holds the sign-in's save lease, and
+  its sessions save what changed (Browserbase `persist`, Kernel `save_changes`). A run of the same agent started while
+  another holds it starts signed in and saves nothing. The lease ends when its run's process goes or the run ends
+  (completed, failed or cancelled); one that names a run that ended while the server was down counts as let go.
+- **What you see.** `GET /v2/agents/{id}` lists `sign_ins`: `{key: "default", provider, state, held_by, verified_at}`,
+  `held` with the run's id while a run holds the lease, else `ready`; `verified_at` is when a saving session last ended.
+  Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
+  then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
+  pointer goes all the same. It is `409 sign_in_held` while a run holds the lease. Archiving an agent keeps its
+  sign-ins; this server has no route that deletes an agent.
 
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
@@ -1013,6 +1042,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
+| `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what it waits on, by `kind`, such as `{kind: "question", question, asked_at}` for a question it asked a person; else null) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
@@ -1035,8 +1065,7 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the feature, and
-capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
-browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
+capabilities declare each one false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
 
 ## Uploads
@@ -1098,11 +1127,12 @@ at once, the last wins. A body over `capabilities.home.max_file_bytes` (`limits.
 `DELETE` removes a file (`204`; `404` when it is not there) and leaves an emptied directory in place. Paths are checked
 as a run's are, a write goes at most 16 directories deep (as deep as the list goes), and a link anywhere on the way is
 never followed: a read is `404`, a write or a delete
-`403 system_file_forbidden`. `learning/` is the server's alone: the list shows it as one entry,
-`{"path": "learning", "host_owned": true}`, with none of its notes, and a `GET`, `PUT` or `DELETE` at or under it,
-however the path is spelled (`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`). A read's
-refusal names the learning API (`/v2/agents/{id}/learning`) on a server that has that route, and on one that does not
-says `the server keeps learning/ for itself; this server has no learning API yet`. A host-owned name is matched by its
+`403 system_file_forbidden`. `learning/` and `sign-ins/` (the agent's [saved sign-ins](#saved-sign-ins)) are the
+server's alone (`capabilities.home.host_owned`): the list shows each as one entry, `{"path": "learning", "host_owned":
+true}`, with none of what is in it, and a `GET`, `PUT` or `DELETE` at or under one, however the path is spelled
+(`./Learning/x`), is `403 system_file_forbidden` (`details.reason` `host_owned`). A read's refusal names where to read
+it instead: the learning API (`/v2/agents/{id}/learning`) on a server that has that route (on one that does not, `the
+server keeps learning/ for itself; this server has no learning API yet`), and `/v2/agents/{id}` for `sign-ins/`. A host-owned name is matched by its
 first segment folded (compatibility form, any case, no combining marks) and, where that segment and `learning/` are both
 on disk, by identity (the same
 device and inode), so a disk that takes another spelling for one name is refused the same way. A path takes only plain
@@ -1703,7 +1733,7 @@ export default function reply(context, faux) {
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
 the `browser` tool's `{ provider, driver }` in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
-vendor the run's plane names: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
+vendor the run's plane names and the saved sign-in the run was handed: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
 through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
 
@@ -1735,7 +1765,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase or Kernel, not on this machine: a page the model opens is reached from that
   vendor's network, so what the model may reach there is the operator's choice of vendor, keys and project. Its downloads and uploads stay
-  in the run's `work/`.
+  in the run's `work/`. An agent's saved sign-in stays at the vendor; this server keeps a sealed pointer to it, which a
+  run's process gets over its pipe and its tools and model never see. Anyone holding the vendor's key can open that
+  context or profile there.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
   another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.

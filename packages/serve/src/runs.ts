@@ -40,7 +40,8 @@ import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
 import { firstMessage } from "./run-manifest.js";
 import { REFLECT_REQUEST, Turns } from "./turns.js";
-import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, handoverSignIn, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
+import type { HandedSignIn, SignIns } from "./sign-ins.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
@@ -248,6 +249,8 @@ export type Run = {
   decisionCost?: number | null;
   /** The same decisions, apart: the sum of the costs that are known, and how many are not. */
   decisionsPriced?: { known: number; unpriced: number };
+  /** The saved sign-in its next launch hands its browser (pinSignIn), never kept on disk by the run. */
+  signIn?: HandedSignIn;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
    *  when they cannot be read: its timeline's usage row then reads unknown. */
   decisions?: Record<string, unknown>[] | null;
@@ -476,7 +479,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode };
+export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -1384,7 +1387,13 @@ export class Runs {
         // restart on a smaller one) is not started: said, never tried.
         const never = fresh ? undefined : neverFits(run.harness, this.memory);
         if (never) throw new ApiError("agent_not_runnable", never, { details: { unbound: [], missing: {}, harness: run.harness } });
-        if (!fresh) this.launch(run), (launched = true);
+        // Its sign-in pinned only for a launch: a run whose process still serves keeps the one it was handed.
+        if (!fresh) {
+          await this.pinSignIn(run);
+          if (run.outcome || run.finishing || run.cancel || this.live(run)) continue;
+          this.launch(run);
+          launched = true;
+        }
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
@@ -1455,6 +1464,22 @@ export class Runs {
     this.needs.set(run.revision, await needsOf(revision));
   }
 
+  /** The saved sign-in the run's browser starts from (sign-ins.ts), resolved before each launch: made at the vendor when
+   *  its agent has none, and leased to this run to save unless another run of the agent holds the lease. One that cannot
+   *  be had (the vendor not answering, a seal key changed) leaves its browser signed out, said in its log. */
+  private async pinSignIn(run: Run): Promise<void> {
+    // Its browser as this launch will find it (launch: a vendor whose key is gone since is unavailable, and gets none).
+    const browser = run.meta.tool_plane && recheckPlane(run.meta.tool_plane, withSecrets(process.env, "all", this.options.storedKeys)).browser;
+    const signIns = this.options.signIns;
+    run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
+  }
+
+  /** Lets go of the save lease the run holds on its agent's sign-in, if any. */
+  private async releaseSignIn(run: Run): Promise<void> {
+    run.signIn = undefined;
+    await this.options.signIns?.release(run.agentId, run.id, run.dir).catch((error: Error) => warn(run.id, `its sign-in's save lease is not let go: ${error.message}`));
+  }
+
   private launch(run: Run, followUp = run.followUpOpen === true): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing || run.preparing) return;
     // Taken by this launch only: a later launch (a relaunch after its process went) opens the run as any other.
@@ -1467,7 +1492,8 @@ export class Runs {
     const served = withSecrets(process.env, "all", this.options.storedKeys);
     const needs = this.needs.get(run.revision);
     const handed = needs ? keysFor(needs, served) : NO_TOOL_KEYS;
-    const secrets = handover(handed, this.options.storedKeys);
+    // And its saved sign-in, on the same pipe after them (pinSignIn): a pointer its browser opens, never in its environment.
+    const secrets = run.signIn ? Buffer.concat([handover(handed, this.options.storedKeys), handoverSignIn(run.signIn)]) : handover(handed, this.options.storedKeys);
     // What it was handed, for the check of what its end-of-run turn writes (learning-run.ts).
     this.learning.onLaunch(run, handed);
     // And for what its errors show (refusedValues): each value handed, kept past a key's rotation.
@@ -1476,6 +1502,7 @@ export class Runs {
       const value = secret(name, this.options.storedKeys);
       if (value && value.length >= MIN_SECRET) run.handed.add(value);
     }
+    if (run.signIn && run.signIn.ref.length >= MIN_SECRET) run.handed.add(run.signIn.ref);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       // The run's box's network, as the server resolved it: never the setting itself, which the run's process ignores.
@@ -1637,6 +1664,8 @@ export class Runs {
     const pid = holderPid(record);
     // A process that is gone serves no door, whatever its last heartbeat says.
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
+    // Its process gone, its sign-in's save lease goes with it: a launch again takes it again, if no other run has.
+    if (gone) await this.releaseSignIn(run);
     // Its metrics are this settle's read, or none: never an earlier end's.
     run.metrics = undefined;
     if (released || gone) await this.storeWhenFree(run, true);
@@ -1676,6 +1705,7 @@ export class Runs {
       const never = neverFits(run.harness, this.memory);
       if (!never && run.relaunches < MAX_RELAUNCHES) {
         await this.pinNeeds(run);
+        await this.pinSignIn(run);
         return this.relaunch(run);
       }
       run.error = { code: "run_failed", message: never ?? `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
@@ -1717,6 +1747,8 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
+    // Ended, it saves to its agent's sign-in no more.
+    await this.releaseSignIn(run);
     // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
     // A remote box's last pull lands first: the end is not recorded until its files are in work/.
     await this.dropBox(run, true);
@@ -1939,6 +1971,7 @@ export class Runs {
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, harnessOfBody(revision.body), tooling, revision);
     // Before the run is known here, so nothing launches it first.
     await this.pinNeeds(run, revision);
+    await this.pinSignIn(run);
     this.runs.set(run.id, run);
     // A seed that failed is a learning row from the start, and its learning's end is in the ledger.
     this.show(run);
@@ -2091,6 +2124,7 @@ export class Runs {
       run.relaunches = 0;
       // A run that learns finds its agent's notes in its work again (learning-run.ts).
       await this.learning.onReopen(run);
+      await this.pinSignIn(run);
       await this.beforeReopenLaunch?.(run.id);
       this.refresh(run);
       // Opened for the follow-up: the run had answered, so its open resumes nothing.

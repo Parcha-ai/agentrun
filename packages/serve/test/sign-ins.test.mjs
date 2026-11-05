@@ -1,0 +1,254 @@
+// An agent's browser stays signed in: the cookies stay at the browser's vendor (a Browserbase context, a Kernel profile),
+// this server keeps one sealed pointer per agent and vendor in the agent's home, and a run's process gets the pointer
+// over its secrets' pipe, never its environment. The first run of an agent to start with the browser holds the save
+// lease; one started meanwhile starts signed in and saves nothing; the lease ends with its run. GET /agents/{id} lists
+// the sign-ins, never a pointer; DELETE forgets one at the vendor and here, refused while held. No network: the
+// vendors are the tests' fakes.
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { test } from "node:test";
+import { homeKey, homeOf } from "../dist/files.js";
+import { kernelProfile, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
+import { keptContexts, keptProfile } from "../dist/tools.js";
+import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
+import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+
+const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
+const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG"];
+
+/** A store over `data` with fake vendors: each made object named in turn, each removal recorded (or refused). */
+function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRemove = false } = {}) {
+  const made = [];
+  const removed = [];
+  const vendors = {
+    create: async (vendor, home) => (vendor === "kernel" ? kernelProfile(home) : (made.push(`ctx-${made.length + 1}-${home}`), made.at(-1))),
+    remove: async (vendor, ref) => {
+      if (refuseRemove) throw new Error(`${vendor} answered 500`);
+      removed.push([vendor, ref]);
+    },
+  };
+  return { store: new SignIns(data, key, vendors, async (run) => running.has(run)), made, removed, running, key };
+}
+
+test("a pointer is sealed at rest, bound to its agent, and opens again for that agent alone; the view never holds it", async (t) => {
+  const data = await scratch(t);
+  const { store, made, key } = fakeStore(data);
+  const first = await store.forRun("alpha", "run-1", "browserbase");
+  assert.deepEqual(first, { provider: "browserbase", ref: made[0], save: true });
+  const file = join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json");
+  const text = await readFile(file, "utf8");
+  assert.ok(!text.includes(made[0]), "sealed on disk");
+  assert.equal(JSON.parse(text).format, "sign-ins/1");
+  // Opened again, under the same seal key, by another store: the same pointer, nothing made.
+  const again = new SignIns(data, key, { create: async () => assert.fail("made again") }, async () => false);
+  assert.equal((await again.forRun("alpha", "run-2", "browserbase")).ref, made[0]);
+  assert.equal(made.length, 1);
+  // Copied into another agent's home, it does not open there.
+  await mkdir(join(homeOf(data, "beta"), "sign-ins"), { recursive: true });
+  await cp(file, join(homeOf(data, "beta"), "sign-ins", "sign-ins.json"));
+  await assert.rejects(again.forRun("beta", "run-3", "browserbase"));
+  // Nor under another seal key.
+  await assert.rejects(new SignIns(data, randomBytes(32), { create: async () => "x" }, async () => false).forRun("alpha", "run-4", "browserbase"));
+  const view = await store.view("alpha");
+  assert.deepEqual(view, [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: null }], "run-2's lease: run-2 is not running");
+  assert.ok(!JSON.stringify(view).includes(made[0]));
+  // With no seal key nothing is kept, never in the clear.
+  const none = new SignIns(data, undefined, { create: async () => assert.fail("made with no seal key") }, async () => false);
+  assert.equal(none.available, false);
+  assert.equal(await none.forRun("gamma", "run-5", "browserbase"), undefined);
+});
+
+test("the save lease: the first run takes it, a run started while it holds gets the same sign-in with save false, and it ends with its run (released, or its run ended without a release)", async (t) => {
+  const data = await scratch(t);
+  const { store, made, running } = fakeStore(data);
+  running.add("run-1");
+  const one = await store.forRun("alpha", "run-1", "browserbase");
+  running.add("run-2");
+  const two = await store.forRun("alpha", "run-2", "browserbase");
+  assert.deepEqual([one.save, two.save, two.ref], [true, false, one.ref], "the second starts signed in and saves nothing");
+  assert.deepEqual(await store.view("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: null }]);
+  // The holder launched again (its process went and came back) keeps saving.
+  assert.equal((await store.forRun("alpha", "run-1", "browserbase")).save, true);
+  // A release by a run that holds nothing changes nothing.
+  const dir2 = await scratch(t);
+  await store.release("alpha", "run-2", dir2);
+  assert.equal((await store.view("alpha"))[0].held_by, "run-1");
+  // The holder's release, after a session that saved: ready, verified at that time.
+  const dir1 = await scratch(t);
+  await writeFile(join(dir1, SIGN_IN_SAVED), "2026-11-05T01:02:03.000Z");
+  await store.release("alpha", "run-1", dir1);
+  assert.deepEqual(await store.view("alpha"), [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: "2026-11-05T01:02:03.000Z" }]);
+  await assert.rejects(readFile(join(dir1, SIGN_IN_SAVED)), "the mark is taken");
+  // A lease whose run ended with no release (a server that went down first) is stale: the next run takes it.
+  running.add("run-3");
+  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
+  running.delete("run-3");
+  assert.equal((await store.view("alpha"))[0].state, "ready");
+  assert.equal((await store.forRun("alpha", "run-4", "browserbase")).save, true);
+  // Kernel: its own sign-in beside Browserbase's, a profile named by the agent's home key, with no vendor call.
+  const kernel = await store.forRun("alpha", "run-4", "kernel");
+  assert.deepEqual(kernel, { provider: "kernel", ref: `agentrun-${homeKey("alpha")}-default`, save: true });
+  assert.equal(made.length, 1);
+  assert.deepEqual((await store.view("alpha")).map((s) => s.provider), ["browserbase", "kernel"]);
+});
+
+test("local Chrome keeps no saved sign-in, refused by name; an unavailable browser has none", async (t) => {
+  const { store } = fakeStore(await scratch(t));
+  for (const name of ["chrome", "cdp"]) {
+    assert.throws(() => vendorOf(name), /a local Chrome keeps no saved sign-in: its cookies would sit on this server's disk/);
+    await assert.rejects(store.forRun("alpha", "run-1", name), /local Chrome keeps no saved sign-in/);
+  }
+  assert.equal(await store.forRun("alpha", "run-1", "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID"), undefined);
+  assert.deepEqual(await store.view("alpha"), []);
+});
+
+test("forget: refused while held, then deleted at the vendor and here; a vendor that refuses is said, and the pointer goes all the same", async (t) => {
+  const data = await scratch(t);
+  const { store, removed, running } = fakeStore(data);
+  running.add("run-1");
+  const { ref } = await store.forRun("alpha", "run-1", "browserbase");
+  await assert.rejects(store.forget("alpha", "default"), (error) => error.code === "sign_in_held" && error.extra.details.held_by === "run-1");
+  running.delete("run-1");
+  assert.deepEqual(await store.forget("alpha", "default"), { key: "default", removed: [{ provider: "browserbase", at_vendor: "deleted" }] });
+  assert.deepEqual(removed, [["browserbase", ref]]);
+  assert.deepEqual(await store.view("alpha"), []);
+  await assert.rejects(store.forget("alpha", "default"), (error) => error.code === "not_found");
+  const refusing = fakeStore(await scratch(t), { refuseRemove: true });
+  await refusing.store.forRun("beta", "run-2", "kernel");
+  const answer = await refusing.store.forget("beta", "default");
+  assert.deepEqual(answer.removed, [{ provider: "kernel", at_vendor: "not_deleted", message: "Not deleted at kernel: kernel answered 500. This server no longer points to it." }]);
+  assert.deepEqual(await refusing.store.view("beta"), []);
+});
+
+test("the vendors' calls: Browserbase's context made with the project and deleted by id; Kernel's profile named, never made here, deleted by name", async () => {
+  const asked = [];
+  const fake = async (url, init) => (asked.push([init.method, String(url), init.headers, init.body ?? null]), init.method === "POST" ? Response.json({ id: "ctx-9" }) : new Response(null, { status: 404 }));
+  const env = { BROWSERBASE_API_KEY: "bb-key", BROWSERBASE_PROJECT_ID: "proj-1", KERNEL_API_KEY: "k-key" };
+  const vendors = vendorsOver(() => env, async () => fake);
+  assert.equal(await vendors.create("browserbase", "alpha-0123"), "ctx-9");
+  assert.equal(await vendors.create("kernel", "alpha-0123"), "agentrun-alpha-0123-default");
+  await vendors.remove("browserbase", "ctx-9");
+  await vendors.remove("kernel", "agentrun-alpha-0123-default");
+  assert.deepEqual(asked.map(([method, url, headers, body]) => [method, url, headers["x-bb-api-key"] ?? headers.authorization, body]), [
+    ["POST", "https://api.browserbase.com/v1/contexts", "bb-key", JSON.stringify({ projectId: "proj-1" })],
+    ["DELETE", "https://api.browserbase.com/v1/contexts/ctx-9", "bb-key", null],
+    ["DELETE", "https://api.onkernel.com/profiles/agentrun-alpha-0123-default", "Bearer k-key", null],
+  ], "a 404 on delete is gone already");
+  await assert.rejects(vendorsOver(() => env, async () => undefined).create("browserbase", "a"), /no browserbase to call/);
+});
+
+test("in the run: Browserbase opens the agent's context as the profile `default` and never makes one; Kernel's create is asked for the agent's profile by its name at Kernel", async () => {
+  const store = keptContexts("ctx-7");
+  assert.equal(await store.resolve("acct|profile:default", () => assert.fail("made")), "ctx-7");
+  await assert.rejects(store.resolve("acct|profile:other", () => "made"), /no saved sign-in/);
+  await assert.rejects(keptContexts(undefined).resolve("acct|profile:default", () => "made"), /no saved sign-in/);
+  const asked = [];
+  const kernel = keptProfile({ name: "kernel", create: async (spec) => asked.push(spec.profile ?? null) }, "agentrun-alpha-0123-default");
+  await kernel.create({ profile: { name: "default", save: false } });
+  await kernel.create({});
+  assert.deepEqual(asked, [{ name: "agentrun-alpha-0123-default", save: false }, null]);
+  assert.equal(kernel.name, "kernel");
+});
+
+/** Polls `read` until `ok` holds of what it answers, for at most 20 s. */
+async function until(read, ok) {
+  for (const end = Date.now() + 20_000; ;) {
+    const value = await read();
+    if (ok(value)) return value;
+    assert.ok(Date.now() < end, `never: ${JSON.stringify(value)}`);
+    await new Promise((go) => setTimeout(go, 100));
+  }
+}
+
+test("through the API: an agent's first run holds the sign-in and saves; one started meanwhile starts from it and saves nothing; later runs start from it; another agent never sees it; forget is refused while held, then deletes it", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.equal(caps.features.sign_ins, true);
+  assert.deepEqual(caps.home.host_owned, ["learning", "sign-ins"]);
+  for (const id of ["alpha", "beta"]) assert.equal((await api("POST", "/agents", agent(id, { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  assert.deepEqual((await api("GET", "/agents/alpha")).body.sign_ins, []);
+  const made = bbCalls.length;
+  const lines = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const start = async (id, content) => {
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    return started.body.run_id;
+  };
+  const signIns = async (id) => (await api("GET", `/agents/${id}`)).body.sign_ins;
+
+  // alpha's first run holds the lease from its start, and its session saves; it waits on a file, its browser open.
+  const gate = join(dir, "gate");
+  const first = await start("alpha", `Browse the example page once ${gate} exists.`);
+  assert.deepEqual(await signIns("alpha"), [{ key: "default", provider: "browserbase", state: "held", held_by: first, verified_at: null }]);
+  const opened = await until(lines, (ops) => ops.some((op) => op.op === "profile"));
+  const handed = opened.find((op) => op.op === "sign-in");
+  assert.deepEqual([handed.provider, handed.save, handed.ref_in_env], ["browserbase", true, false], "over its pipe, never in its environment");
+  assert.deepEqual(opened.filter((op) => op.op === "profile"), [{ op: "profile", name: "default", save: true }], "the profile asked for by its name here, never the context");
+  const forgetHeld = await api("DELETE", "/agents/alpha/sign-ins/default");
+  assert.deepEqual([forgetHeld.status, forgetHeld.body.error.code, forgetHeld.body.error.details.held_by], [409, "sign_in_held", first]);
+
+  // A second run of alpha meanwhile: the same sign-in, saving nothing.
+  const before = opened.length;
+  const second = await start("alpha", "Browse the example page.");
+  await follow(api, second, ["completed"]);
+  const during = (await lines()).slice(before);
+  assert.deepEqual(during.filter((op) => op.op === "sign-in").map((op) => [op.ref, op.save, op.ref_in_env]), [[handed.ref, false, false]]);
+  assert.deepEqual(during.filter((op) => op.op === "profile"), [{ op: "profile", name: "default", save: false }]);
+  assert.equal((await signIns("alpha"))[0].held_by, first, "still the first run's");
+
+  // The first run ends: the lease with it, and the sign-in verified when its saving session let go.
+  await writeFile(gate, "");
+  const { rows } = await follow(api, first, ["completed"], { deadlineMs: 60_000 });
+  assert.ok(rows.some((row) => JSON.stringify(row).includes("snapshot")), "it browsed");
+  for (const shown of [rows, (await api("GET", `/runs/${first}`)).body, await readFile(join(data, "runs", first, "serve.json"), "utf8")]) assert.ok(!JSON.stringify(shown).includes(handed.ref), "no pointer in its timeline, its view or its record");
+  const ready = await until(() => signIns("alpha"), (list) => list[0]?.state === "ready");
+  assert.equal(ready[0].held_by, null);
+  assert.ok(Date.parse(ready[0].verified_at) > 0, JSON.stringify(ready));
+
+  // alpha's next run starts from the same context and holds the lease now; beta gets a context of its own.
+  const mark = (await lines()).length;
+  await follow(api, await start("alpha", "Browse the example page."), ["completed"]);
+  const third = (await lines()).slice(mark).filter((op) => op.op === "sign-in");
+  assert.deepEqual(third.map((op) => [op.ref, op.save]), [[handed.ref, true]]);
+  const betaMark = (await lines()).length;
+  await follow(api, await start("beta", "Browse the example page."), ["completed"]);
+  const beta = (await lines()).slice(betaMark).filter((op) => op.op === "sign-in");
+  assert.equal(beta.length, 1);
+  assert.notEqual(beta[0].ref, handed.ref, "beta never gets alpha's");
+  assert.equal(beta[0].save, true);
+  const contextsMade = bbCalls.slice(made).filter((call) => call.method === "POST" && call.path === "/v1/contexts");
+  assert.deepEqual(contextsMade.map((call) => [call.authorized, call.body]), [[true, { projectId: "proj-1" }], [true, { projectId: "proj-1" }]], "one context per agent, made once");
+
+  // Never a pointer through the API: not in the agent, nor through the home's files, nor in the clear on disk.
+  for (const id of ["alpha", "beta"]) {
+    const body = JSON.stringify((await api("GET", `/agents/${id}`)).body);
+    assert.ok(!body.includes(handed.ref) && !body.includes(beta[0].ref), body);
+    assert.ok(!JSON.stringify((await api("GET", "/agents")).body).includes(handed.ref));
+    const listed = (await api("GET", `/agents/${id}/home/files`)).body.files;
+    assert.deepEqual(listed.filter((file) => file.host_owned).map((file) => file.path), ["sign-ins"]);
+    const read = await api("GET", `/agents/${id}/home/files/sign-ins/sign-ins.json`);
+    assert.deepEqual([read.status, read.body.error.details.reason], [403, "host_owned"]);
+    assert.match(read.body.error.message, new RegExp(`read it through /v2/agents/${id}$`));
+    const written = await api("PUT", `/agents/${id}/home/files/sign-ins/sign-ins.json`, { format: "sign-ins/1", sign_ins: [] });
+    assert.equal(written.status, 403);
+  }
+  const onDisk = await readFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), "utf8");
+  assert.ok(!onDisk.includes(handed.ref));
+
+  // Forgotten: the context deleted at Browserbase, the pointer gone, beta's kept.
+  assert.ok(contexts.has(handed.ref));
+  const forgot = await api("DELETE", "/agents/alpha/sign-ins/default");
+  assert.deepEqual([forgot.status, forgot.body], [200, { key: "default", removed: [{ provider: "browserbase", at_vendor: "deleted" }] }]);
+  assert.ok(bbCalls.some((call) => call.method === "DELETE" && call.path === `/v1/contexts/${handed.ref}` && call.authorized));
+  assert.ok(!contexts.has(handed.ref) && contexts.has(beta[0].ref));
+  assert.deepEqual(await signIns("alpha"), []);
+  assert.equal((await signIns("beta")).length, 1);
+  assert.equal((await api("DELETE", "/agents/alpha/sign-ins/default")).status, 404);
+  assert.equal((await api("DELETE", "/agents/nobody/sign-ins/default")).status, 404);
+});

@@ -10,5 +10,7 @@ export default async function fakeKernel(url, init = {}) {
   calls.push({ method: init.method ?? "GET", path: pathname, search, authorized });
   const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   if (!authorized) return json(401, { code: "unauthorized", message: "Invalid API key." });
+  // A profile deleted, as forgetting an agent's saved sign-in asks (sign-ins.ts): Kernel answers 204, and 404 for none.
+  if (pathname.startsWith("/profiles/") && init.method === "DELETE") return new Response(null, { status: 204 });
   return pathname === "/browsers" ? json(200, []) : json(404, { code: "not_found", message: "Not found." });
 }
