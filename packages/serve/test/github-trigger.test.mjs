@@ -362,6 +362,9 @@ test("a token GitHub refuses during a slow comment never brings back settings de
   await slow(44, 2, async () => assert.equal((await api("PUT", "/settings/github", { ...settings, webhook_secret: "not-a-secret-webhook-new" })).status, 200));
   assert.equal((await api("GET", "/settings/github")).body.disabled, null, "the new settings stay on");
   assert.deepEqual((await hook(commented(45, `@${HANDLE} say hello`), { secret: "not-a-secret-webhook-new" })).body, { ok: "received" });
+  // Its run ends before the server closes, so nothing is still writing when the data directory goes.
+  const [last] = await firings(api, body.id, 3);
+  await follow(api, last.run_id, ["completed"]);
 });
 
 test("a run a mention opened again, which ended again while its server went down before that end's notice was kept, has that end posted once by the next server", { timeout: 240_000 }, async (t) => {
