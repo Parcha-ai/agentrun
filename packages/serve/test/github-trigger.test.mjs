@@ -430,3 +430,21 @@ test("a comment GitHub took, whose removal from the outbox failed to write, is n
   await sleep(1_500);
   assert.equal(first.github.comments.length, posted, "nothing posted again");
 });
+
+test("a run a GitHub mention started that parks on a tool call's approval has its issue told to approve it in the console, naming the tool (read from the run's view: the notice names none); no comment approves it", { timeout: 180_000 }, async (t) => {
+  const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
+  withEnv(t, { FAUX_WEB_LOG: join(await mkdtemp(join(tmpdir(), "github-gate-")), "dialled.txt") });
+  const { api, hook, github } = await gitHubServer(t, { faux: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true });
+  assert.equal((await api("PUT", "/settings/github", settings)).status, 200);
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  await made(api, "fetcher", { instructions: "Fetch http://public.example/ once.", tools: ["web_fetch"] });
+  const { body } = await api("POST", "/triggers", { name: "fetches", source: { kind: "github", repos: [REPO.full_name] }, target: { kind: "start_run", agent_id: "fetcher", input: { content: "Fetch http://public.example/ once." }, max_cost_usd: 0.5 } });
+  assert.deepEqual((await hook(commented(51, `@${HANDLE} fetch it`))).body, { ok: "received" });
+  const [started] = await firings(api, body.id, 1);
+  await follow(api, started.run_id, ["input_required"], { deadlineMs: 55_000 });
+  const view = (await api("GET", `/runs/${started.run_id}`)).body;
+  assert.deepEqual([view.pending?.kind, view.pending?.tool], ["approval", "web_fetch"]);
+  const waiting = await until(() => github.comments.find((c) => c.body.startsWith("Waiting")), "the waiting comment posted");
+  assert.deepEqual([waiting.number, waiting.body], [51, `Waiting for your approval of \`web_fetch\`: approve in the console: ${runLink(started.run_id)}.`]);
+  assert.equal((await api("POST", `/runs/${started.run_id}/cancel`)).status, 202);
+});
