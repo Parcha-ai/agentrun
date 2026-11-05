@@ -482,6 +482,33 @@ since nothing binds `work/` there):
   what only it holds stays.
 - The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/run/agentrun/run/work`.
 
+### A run in the VM box
+
+With the VM box listed in `AGENTRUN_BOXES` (its id is under [Boxes](#boxes)), its token set and its SDK installed, a run
+whose place is the VM box gets one VM sandbox, made on its first `read`, `write`, `edit` or `bash` call. It works like a
+[Daytona box](#a-run-in-a-daytona-box): the same tools, path rules, environment and labels, and its `read`, `write` and
+`edit` run in the sandbox too. What differs:
+
+- The token and the SDK's client are this server's alone. The server makes the sandbox, copies `work/` into it at
+  `/run/agentrun/run/work`, copies what changed back at each turn's end and once more before the run's end is recorded,
+  and ends it after that last copy, at the run's end, a cancel included, and at an archive. The copy rules (no link,
+  nothing outside `work/`, a file this server changed stays as it has it) are Daytona's.
+- The run's process holds no token. Its calls to its sandbox go through the server's box relay, on loopback, with that
+  run's own door token. The relay makes only the calls a run's tools make of their own sandbox, with the server's
+  client: finding it, reading its state and tags, and starting a program in it with that program's input, output and
+  exit. It refuses everything else: a create, a listing, an end, a tag change, or another run's sandbox or program.
+- It has no network, whatever `AGENTRUN_BOX_ALLOW` names. The provider takes a domain list when a sandbox is made, but
+  its SDK cannot read a sandbox's list back, so this server cannot check that a box holds the list it asked for (as it
+  does for Daytona). Each box is made with its network blocked, never with the provider's open default. Capabilities
+  show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
+- A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
+  with the run's `work/`. The call that met the gone box fails, saying so.
+- Each VM box reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
+  the Docker box's defaults, asked of the provider as the sandbox's CPU and memory. `AGENTRUN_BOX_CPUS` and
+  `AGENTRUN_BOX_MEMORY` change both boxes alike (such as `AGENTRUN_BOX_CPUS=1 AGENTRUN_BOX_MEMORY=1g`). The provider has
+  no process limit, so `AGENTRUN_BOX_PIDS` does not apply. Its lifetime is 24 hours, as every box's is.
+- A start copies back, then ends, the sandbox of every run that has ended or is archived.
+
 ### The box's image
 
 A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
@@ -525,8 +552,8 @@ inside the image itself (bwrap, on Linux) comes in a later release.
 
 ### Boxes
 
-A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes
-([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
+A box is a machine apart from this one where a run's tools run. Runs execute in `docker` and `daytona` boxes and in the
+VM box ([place](#place)); the others are set up and probed, and say runs in them are not available yet. `AGENTRUN_BOXES` lists the boxes to set up, as a comma list of the ids below
 (`AGENTRUN_BOXES=docker,daytona`). The server never probes a box the list does not name, and a name that is no box
 refuses the start. At start the server probes each listed box once. The probes run at once, each within 5 s. Then one
 log line says what the server found:
@@ -559,7 +586,7 @@ provider's answer.
   The probe makes one authenticated read, of a box that does not exist. If Daytona refuses the key, the box is unavailable.
 - `modal`: needs `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and the SDK, which the host installs (`npm install modal`).
   Its sandboxes live in the app that `AGENTRUN_BOX_APP` names (default `agentrun`). The probe checks that the SDK loads
-  and the token is set. It asks nothing of the provider.
+  and the token is set. It asks nothing of the provider. Runs execute in it: [a run in the VM box](#a-run-in-the-vm-box).
 - `bwrap` is not in this release yet.
 
 The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.

@@ -20,9 +20,10 @@ const BOXES = BOX_IDS.join(", ");
 const DOCKER_PLACE = '"place": {"mode": "sandbox", "box": "docker"}';
 const ENABLE_DOCKER = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 const DAEMON = "docker version failed (exit 1): start Docker, or add this server's user to the docker group, then restart this server";
-// Runs execute in docker and daytona: a server with neither names both, each with its setting.
+// Runs execute in docker, the VM box and daytona: a server with none names each, with its setting.
 const ENABLE_DAYTONA = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona";
-const NO_BOX = `no box is set up on this server: docker is unavailable (${ENABLE_DOCKER}); daytona is unavailable (${ENABLE_DAYTONA})`;
+const ENABLE_VM = `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM}`;
+const NO_BOX = `no box is set up on this server: docker is unavailable (${ENABLE_DOCKER}); ${VM} is unavailable (${ENABLE_VM}); daytona is unavailable (${ENABLE_DAYTONA})`;
 
 /** A fake `docker` first on PATH whose every call fails, as a CLI with no daemon answering does. */
 async function failingDocker(t) {
@@ -144,7 +145,8 @@ test("docker enabled with no daemon answering: its reason says to start Docker o
   const { places, tools } = (await api("GET", "/capabilities")).body;
   assert.deepEqual(places.boxes.find((box) => box.id === "docker"), { id: "docker", available: false, state: "unavailable", reason: DAEMON });
   const DAYTONA_TOO = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona";
-  assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); daytona is unavailable (${DAYTONA_TOO})`);
+  const VM_TOO = `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`;
+  assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); ${VM} is unavailable (${VM_TOO}); daytona is unavailable (${DAYTONA_TOO})`);
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   const said = `This agent's place is sandbox on docker, and this server cannot run it there: ${DAEMON}.`;
@@ -153,14 +155,14 @@ test("docker enabled with no daemon answering: its reason says to start Docker o
   assert.equal(run.body.error.message, said);
   assert.ok(!/[?.!]\.$/.test(run.body.error.message) && !run.body.error.message.includes("?"), run.body.error.message);
 
-  assert.equal(server.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${DAEMON}. daytona: ${DAYTONA_TOO}.`);
+  assert.equal(server.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${DAEMON}. ${VM}: ${VM_TOO}. daytona: ${DAYTONA_TOO}.`);
   const lines = banner({ url: server.url, baseUrl: server.baseUrl, data: server.data, token: server.token, source: "file", boxes: server.boxesLine });
   assert.equal(lines.at(-1), server.boxesLine, "the banner's last line");
 });
 
 test("the banner says in words which boxes are ready: none with nothing enabled, naming the setting; docker when the faux box stands in for it", async (t) => {
   const none = await serve(t);
-  assert.equal(none.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${ENABLE_DOCKER}. daytona: ${ENABLE_DAYTONA}.`);
+  assert.equal(none.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${ENABLE_DOCKER}. ${VM}: ${ENABLE_VM}. daytona: ${ENABLE_DAYTONA}.`);
   const faux = await serve(t, { faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname, fauxBox: new URL("./fixtures/faux-box.mjs", import.meta.url).pathname });
   assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes have no network: a faux box (tests).");
   const bash = (await faux.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "bash");
@@ -174,7 +176,7 @@ test("the banner's words for each mix of boxes: ready, preparing (a box whose im
   assert.equal(boxesLine([docker, ...rest], new Set(["docker"])), "Boxes: docker is ready, so sandbox agents run their tools there.");
   assert.equal(boxesLine([docker, ...rest], new Set(["docker", "daytona"])), "Boxes: docker is ready, so sandbox agents run their tools there. daytona: needs DAYTONA_API_KEY.", "a listed box that is not ready says why");
   assert.equal(boxesLine([{ ...docker, state: "preparing", reason: "pulling debian:bookworm-slim" }, ...rest], new Set(["docker"])), "Boxes: docker is preparing (pulling debian:bookworm-slim).");
-  assert.equal(boxesLine([off("docker", "no docker command on this server's PATH: install Docker, then restart this server"), ...rest], new Set(["docker"])), "Boxes: none is ready, so sandbox agents do not run here. docker: no docker command on this server's PATH: install Docker, then restart this server. daytona: needs DAYTONA_API_KEY.");
+  assert.equal(boxesLine([off("docker", "no docker command on this server's PATH: install Docker, then restart this server"), ...rest], new Set(["docker"])), `Boxes: none is ready, so sandbox agents do not run here. docker: no docker command on this server's PATH: install Docker, then restart this server. ${VM}: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}. daytona: needs DAYTONA_API_KEY.`);
 });
 
 test("a read under learning/ names the learning route only where this server has it, and never one that answers 404", async (t) => {
