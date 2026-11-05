@@ -25,6 +25,7 @@ import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@
 import type { DurableRun } from "@parcha/pi-durable-disk";
 import { ATTEMPTS, type Attempt, attemptLost, CAP_REFUSED_FIELD, END_NOT_WRITTEN, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, type RefusalFigures, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
+import { isConnectCode, isGatewayTimeout } from "@parcha/agentrun-kernel";
 
 
 /** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
@@ -86,23 +87,41 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     const attempts = record[ATTEMPTS] as Attempt[] | null;
     return piEnded(message, false, attempts ?? undefined).end === "lost";
   };
-  /** `options` whose fetch, before each attempt after one that was lost (attemptLost: sent, then reset; a gateway's
-   *  timeout; an answer pi-ai tries again), first writes the request's end mark at its hold (`lost`), once: whatever its
-   *  retry answers, the provider can have billed the lost attempt, and the mark is in the store before pi's entry for the
-   *  answer can be, so a later process reads the hold this one books, with no window between them. `options` as given
-   *  on a request the cap does not watch. */
+  /** `options` whose fetch writes the request's end mark at its hold (`lost`), once, the moment an attempt is known lost:
+   *  a rejection once it could have left (any code but a connect one, and not the run's own stop) or a gateway's timeout
+   *  (504, 524), as that attempt's fetch ends; an answer pi-ai then tries again (a 2xx that was not the last), before the
+   *  next attempt is sent, since only the retry says so. Whatever follows (a retry's answer, a stop while pi-ai waits to
+   *  retry, an error), the provider can have billed the lost attempt, and the mark is in the store before pi's entry for
+   *  the request can be, so a later process reads the hold this one books, with no window between them. `options` as
+   *  given on a request the cap does not watch. */
   const watchingLost = <O>(options: O, markLost: () => Promise<void>): O => {
     const record = options as (Record<symbol, unknown> & { fetch?: typeof fetch }) | undefined;
     const attempts = record && ATTEMPTS in record ? (record[ATTEMPTS] as Attempt[] | null) : null;
     if (!attempts || typeof record?.[HELD_USD] !== "number" || typeof record.fetch !== "function") return options;
     const inner = record.fetch;
     let marked = false;
+    const markOnce = async () => {
+      if (marked) return;
+      marked = true;
+      await markLost().catch(() => undefined);
+    };
+    /** Whether the attempt the fetch just recorded is lost as it ends, whatever comes after it. */
+    const lostNow = () => {
+      const last = attempts.at(-1);
+      return last !== undefined && ("code" in last ? !last.aborted && !isConnectCode(last.code) : isGatewayTimeout(last.status));
+    };
     return { ...record, fetch: (async (input, init) => {
-      if (!marked && attempts.some((attempt) => attemptLost(attempt, false))) {
-        marked = true;
-        await markLost().catch(() => undefined);
+      // An answer pi-ai tries again: lost, as the retry shows.
+      if (attempts.some((attempt) => attemptLost(attempt, false))) await markOnce();
+      let response: Response;
+      try {
+        response = await inner(input, init);
+      } catch (error) {
+        if (lostNow()) await markOnce();
+        throw error;
       }
-      return inner(input, init);
+      if (lostNow()) await markOnce();
+      return response;
     }) as typeof fetch } as O;
   };
   const stoppedOf = (options: unknown, message: AssistantMessage): Record<string, number> => {
