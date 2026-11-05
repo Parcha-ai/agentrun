@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPage, type ScheduleView } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
+import { pick, picker } from "@/test/picker";
 
 // Schedules (serve's trigger/1): the list, the form that makes or edits one with the server's 422 under the field it
 // names, and one schedule's page: pause, resume, edit, delete, run now (once per click), and its firings.
@@ -91,11 +92,14 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, min
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
-  const field = (name: string) => host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+  const field = (name: string) => host.querySelector(`[name="${name}"]`) as HTMLInputElement | HTMLTextAreaElement;
+  // The agent and the every's unit are pickers (picked by their names); every other field is typed into.
+  const PICKERS: Record<string, string> = { agent: "Agent", everyUnit: "Unit" };
   const set = async (name: string, value: string) => {
+    if (PICKERS[name]) return pick(picker(host, PICKERS[name])!, value);
     const el = field(name);
-    const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })); });
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
   };
   const choose = async (kind: string) => { await act(async () => { (host.querySelector(`input[name="kind"][value="${kind}"]`) as HTMLInputElement).click(); }); };
   const issue = (field: string) => host.querySelector(`[data-issue="${field}"]`)?.textContent ?? null;

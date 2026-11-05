@@ -8,6 +8,7 @@ import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import { runLabel } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
+import { pick } from "@/test/picker";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -172,9 +173,9 @@ describe("App, Settings", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(App)));
     const wait = async (ok: () => boolean) => { const end = Date.now() + 3000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); };
-    const select = () => host.querySelector<HTMLSelectElement>('tr[data-tool="web_search"] select');
+    const select = () => host.querySelector<HTMLButtonElement>('tr[data-tool="web_search"] select');
     await wait(() => !!select());
-    const choose = async (p: string) => { await act(async () => { const s = select()!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, p); s.dispatchEvent(new Event("change", { bubbles: true })); }); };
+    const choose = async (p: string) => { await pick(select()!, p); };
     await choose("native");
     await choose("parallel");
     await wait(() => caps >= 3 && !!host.querySelector('tr[data-tool="web_search"]')?.textContent?.includes("Parallel"));
@@ -341,8 +342,8 @@ describe("App, archiving a run and filtering the runs list", () => {
     await wait(() => !!host.textContent?.includes("What is two and two?"), "the archived runs hold it");
     expect(location.hash).toBe("#/runs?archived=true");
     expect(host.querySelector("h1")?.textContent).toBe("Archived runs");
-    const select = host.querySelector("select[aria-label='Runs in one state']") as HTMLSelectElement;
-    await act(async () => { select.value = "failed"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const select = host.querySelector("button[aria-haspopup=listbox][aria-label='Runs in one state']") as HTMLButtonElement;
+    await pick(select, "failed");
     await wait(() => !!host.textContent?.includes("No run matches."), "no archived run failed");
     expect(location.hash).toBe("#/runs?status=failed&archived=true");
     expect(asked).toContain("GET /v2/runs?limit=50&status=failed&archived=true");

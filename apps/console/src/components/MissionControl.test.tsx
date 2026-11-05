@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
+import { pick } from "@/test/picker";
 
 const run = (id: string, status: Run["status"], state: Run["state"], title: string): Run => ({
   run_id: id, agent_id: "calc", agent_version: 1, revision: "r1", kind: "agentic", status, state, title, created_at: "2026-10-30T03:00:00Z",
@@ -177,8 +178,8 @@ describe("MissionControl's analytics", () => {
     await act(async () => { radio("7d").click(); });
     await act(async () => { radio("all").click(); });
     expect(onRange.mock.calls).toEqual([["7d"], ["all"]]);
-    const select = host.querySelector("select[aria-label='Agent']") as HTMLSelectElement;
-    await act(async () => { select.value = "calc"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const select = host.querySelector("button[aria-haspopup=listbox][aria-label='Agent']") as HTMLButtonElement;
+    await pick(select, "calc");
     expect(onAgent).toHaveBeenCalledWith("calc");
     act(() => root.unmount());
   });

@@ -7,6 +7,7 @@ import type { Agent } from "@/lib/agentForm";
 import { ClientError, type FieldIssue } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import type { Run, TimelinePage } from "@/lib/v2";
+import { optionsOf, pick, valueOf } from "@/test/picker";
 
 // An agent's own page: its current revision's settings in the header, its runs, and a workflow agent's graph, read-only.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -79,13 +80,14 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling?.textContent;
   const bar = () => host.querySelector('section[aria-label="Start a run"]');
   const input = () => bar()!.querySelector("textarea") as HTMLTextAreaElement;
-  const set = async (el: HTMLTextAreaElement | HTMLSelectElement, value: string) => {
+  const set = async (el: HTMLTextAreaElement | HTMLButtonElement, value: string) => {
+    if (el instanceof HTMLButtonElement) return pick(el, value);
     await act(async () => {
       Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
-      el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
     });
   };
-  const effort = () => bar()!.querySelector('select[aria-label="Effort"]') as HTMLSelectElement;
+  const effort = () => bar()!.querySelector('button[aria-haspopup=listbox][aria-label="Effort"]') as HTMLButtonElement;
   return { host, went, asked, followed, statsAsked, starts, click, button, tabs, fact, bar, input, set, effort };
 }
 
@@ -329,7 +331,7 @@ describe("AgentPage", () => {
 
   it("runs the agent from its page with the picked effort, never an output, and opens the run it started", async () => {
     const page = await open(agentFixture("invoice-checker"));
-    expect([...page.effort().options].map((o) => o.textContent)).toEqual(["default", ...efforts]);
+    expect((await optionsOf(page.effort())).map((o) => o.text)).toEqual(["default", ...efforts]);
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.set(page.effort(), "high");
     await page.click(/^Run$/);
@@ -340,7 +342,7 @@ describe("AgentPage", () => {
 
   it("sends no effort when the effort is default, so the server's own order applies", async () => {
     const page = await open(agentFixture("invoice-checker"));
-    expect(page.effort().value).toBe("");
+    expect(valueOf(page.effort())).toBe("");
     await page.set(page.input(), "Check invoice INV-1050.");
     await page.click(/^Run$/);
     expect(page.starts.map((s) => s.body)).toEqual([{ input: { content: "Check invoice INV-1050." } }]);

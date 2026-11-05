@@ -5,6 +5,7 @@ import { ToolsPage } from "./ToolsPage";
 import { ClientError } from "@/lib/client";
 import { type ToolChoice, toolChoices } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
+import { optionsOf, pick, valueOf } from "@/test/picker";
 
 // Settings → Tools: this server's provider for each capability that has a choice, from the server's lists (the default
 // first), a change saved at once, a pick unlike the default marked with a reset, and what each resolves to per harness.
@@ -40,9 +41,9 @@ async function open(start: ToolSettings = {}, refuse?: () => ClientError) {
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`tr[data-tool="${tool}"]`)!;
-  const select = (tool: string) => row(tool).querySelector("select")!;
+  const select = (tool: string) => row(tool).querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!;
   const choose = async (tool: string, provider: string) => {
-    await act(async () => { const s = select(tool); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, provider); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(select(tool), provider);
     await settle();
   };
   const reset = async (tool: string) => { await act(async () => { row(tool).querySelector<HTMLButtonElement>("button")!.click(); }); await settle(); };
@@ -53,10 +54,10 @@ describe("Settings → Tools", () => {
   it("lists each capability with a choice, its providers in the server's order, the default first and named so, the server's pick chosen", async () => {
     const page = await open({ web_search: { provider: "exa-keyless" } });
     expect([...page.host.querySelectorAll("tr[data-tool]")].map((r) => r.getAttribute("data-tool"))).toEqual(["web_search", "web_fetch"]);
-    expect([...page.select("web_search").options].map((o) => o.textContent)).toEqual(["auto (default)", "native", "Exa keyless", "Parallel", "off"]);
-    expect([...page.select("web_fetch").options].map((o) => o.textContent)).toEqual(["kernel fetch (default)", "Parallel"]);
-    expect(page.select("web_search").value).toBe("exa-keyless");
-    expect(page.select("web_fetch").value).toBe("kernel");
+    expect((await optionsOf(page.select("web_search"))).map((o) => o.text)).toEqual(["auto (default)", "native", "Exa keyless", "Parallel", "off"]);
+    expect((await optionsOf(page.select("web_fetch"))).map((o) => o.text)).toEqual(["kernel fetch (default)", "Parallel"]);
+    expect(valueOf(page.select("web_search"))).toBe("exa-keyless");
+    expect(valueOf(page.select("web_fetch"))).toBe("kernel");
     // What each resolves to, per harness.
     expect(page.row("web_search").textContent).toContain("pi: Exa keyless");
     expect(page.row("web_search").textContent).toContain("claude-agent: native");
@@ -78,7 +79,7 @@ describe("Settings → Tools", () => {
     await page.choose("web_fetch", "parallel");
     expect(page.puts).toEqual([{ web_search: { provider: "exa-keyless" }, web_fetch: { provider: "parallel" } }]);
     expect(page.reads()).toBe(1);
-    expect(page.select("web_fetch").value).toBe("parallel");
+    expect(valueOf(page.select("web_fetch"))).toBe("parallel");
     expect(page.row("web_fetch").hasAttribute("data-set")).toBe(true);
     // The capabilities read again say what the new pick resolves to.
     await page.choose("web_search", "parallel");
@@ -89,7 +90,7 @@ describe("Settings → Tools", () => {
     const page = await open();
     await page.choose("web_search", "off");
     expect(page.puts).toEqual([{ web_search: { provider: "off" } }]);
-    expect(page.select("web_search").value).toBe("off");
+    expect(valueOf(page.select("web_search"))).toBe("off");
     expect(page.row("web_search").hasAttribute("data-set")).toBe(true);
     expect(page.row("web_search").textContent).toContain(`pi: unavailable: ${OFF}`);
   });
@@ -98,7 +99,7 @@ describe("Settings → Tools", () => {
     const page = await open({ web_search: { provider: "exa-keyless" }, web_fetch: { provider: "parallel" } });
     await page.reset("web_search");
     expect(page.puts).toEqual([{ web_fetch: { provider: "parallel" } }]);
-    expect(page.select("web_search").value).toBe("auto");
+    expect(valueOf(page.select("web_search"))).toBe("auto");
     expect(page.row("web_search").hasAttribute("data-set")).toBe(false);
   });
 
@@ -106,7 +107,7 @@ describe("Settings → Tools", () => {
     const page = await open({}, () => Object.assign(new ClientError(422, "input_invalid", "invalid tool settings"), { fields: [{ field: "web_search.provider", reason: "not_offered", message: "not offered here" }] }));
     await page.choose("web_search", "native");
     expect(page.row("web_search").nextElementSibling?.textContent).toBe("not offered here");
-    expect(page.select("web_search").value).toBe("auto");
+    expect(valueOf(page.select("web_search"))).toBe("auto");
   });
 });
 
@@ -125,7 +126,7 @@ describe("Settings → Tools, capabilities older than the settings", () => {
     act(() => root!.render(createElement(ToolsPage, { v2: v2 as never, choices: stale, onSaved: () => {}, onOpen: () => { opened++; return new Promise<boolean>(() => {}); } } as never)));
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     const row = host.querySelector('tr[data-tool="web_search"]')!;
-    expect((row.querySelector("select") as HTMLSelectElement).value).toBe("off");
+    expect(valueOf(row.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!)).toBe("off");
     expect(row.textContent).not.toContain("pi: Exa keyless");
     expect(row.textContent).toContain("reading…");
     expect(opened).toBe(1);
@@ -186,13 +187,13 @@ describe("Settings → Tools, a Retry's read and a save", () => {
     const row = () => host.querySelector('tr[data-tool="web_search"]')!;
     await act(async () => { [...row().querySelectorAll("button")].find((b) => /Retry/.test(b.textContent ?? ""))!.click(); });
     // While that read is out, the person picks Parallel; the save lands.
-    await act(async () => { const s = row().querySelector("select")!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "parallel"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!, "parallel");
     await settle();
-    expect(row().querySelector("select")!.value).toBe("parallel");
+    expect(valueOf(row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!)).toBe("parallel");
     // The older read answers last.
     await act(async () => { release(); });
     await settle();
-    expect(row().querySelector("select")!.value).toBe("parallel");
+    expect(valueOf(row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!)).toBe("parallel");
   });
 });
 
@@ -224,7 +225,7 @@ describe("Settings → Tools, a settings read that fails once the page shows the
     const page = await shown();
     expect(page.reads()).toBe(2);
     expect(page.alert()?.textContent).toContain("The tool settings could not be read again: network: connection reset");
-    expect(page.row().querySelector("select")!.value).toBe("off");
+    expect(valueOf(page.row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!)).toBe("off");
     page.state.fail = false;
     await page.click(page.alert()!, /Try again/);
     expect(page.reads()).toBe(3);
@@ -233,17 +234,17 @@ describe("Settings → Tools, a settings read that fails once the page shows the
   it("a save while the settings can't be read saves nothing and says so, keeping the change; Try again saves it once a read lands, and the words go", async () => {
     const page = await shown();
     expect(page.alert()).toBeDefined();
-    await act(async () => { const s = page.row().querySelector("select")!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "parallel"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(page.row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!, "parallel");
     await page.settle();
     // A save is a read-modify-write of the whole map: with no map read now, an older one would drop a key set meanwhile.
     expect(page.puts).toEqual([]);
     const refused = [...page.host.querySelectorAll('[role="alert"]')].find((a) => /nothing was saved/.test(a.textContent ?? ""));
     expect(refused?.textContent).toContain("Couldn't read the current settings, so nothing was saved. Try again.");
-    expect(page.row().querySelector("select")!.value).toBe("parallel");
+    expect(valueOf(page.row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!)).toBe("parallel");
     page.state.fail = false;
     await page.click(refused!, /^Try again$/);
     expect(page.puts).toEqual([{ web_search: { provider: "parallel" } }]);
-    expect(page.row().querySelector("select")!.value).toBe("parallel");
+    expect(valueOf(page.row().querySelector<HTMLButtonElement>("button[aria-haspopup=listbox]")!)).toBe("parallel");
     expect(page.alert()).toBeUndefined();
     expect([...page.host.querySelectorAll('[role="alert"]')].some((a) => /nothing was saved/.test(a.textContent ?? ""))).toBe(false);
   });
