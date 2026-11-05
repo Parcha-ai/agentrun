@@ -16,6 +16,8 @@ import { git } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+/** The owner's sign-in phrase on a test server with accounts (no real secret). */
+const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const ASK = "Use the learned workflow answer on What is six times seven.";
 const DESCRIPTION = "Answers a question as a number; use when the person asks for the answer";
 /** A learned workflow's two files, as the merge keeps them: its workflow.json and its README.md (`extra` front matter). */
@@ -388,7 +390,7 @@ test("on codex, learned_workflow set to ask parks the run; the owner's allow run
   const server = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, accounts: true, openSetup: true });
   const { api, data } = server;
   const origin = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "the owner signs in with this phrase" } });
+  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
   const { runId } = await ran(api, data, "asked-flow", "codex", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }, ends: ["input_required", "completed", "failed"] });
