@@ -103,7 +103,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
         <span className="caps text-[11px] text-muted-foreground">Live API</span>
         <button type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-[11px] text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</button>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
+      {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="text-[14px] font-semibold">Request</span>
