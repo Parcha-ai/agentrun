@@ -61,10 +61,13 @@ export class SignIns {
   private readonly chains = new Map<string, Promise<unknown>>();
 
   private readonly now: () => number;
+  private readonly writeFile: (path: string, text: string) => Promise<unknown>;
 
-  /** `holds(run)`: whether that run has not ended, so a lease it names still holds; `now`, the clock (tests'). */
-  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>, options: { now?: () => number } = {}) {
+  /** `holds(run)`: whether that run has not ended, so a lease it names still holds; `now`, the clock, and `write`, the
+   *  durable write (writeDurable), the tests'. */
+  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>, options: { now?: () => number; write?: (path: string, text: string) => Promise<unknown> } = {}) {
     this.now = options.now ?? Date.now;
+    this.writeFile = options.write ?? writeDurable;
   }
 
   /** Whether sign-ins are kept here: never without a seal key, never in the clear. */
@@ -90,7 +93,7 @@ export class SignIns {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     if ((await lstat(dir)).isSymbolicLink()) throw new Error(`${SIGN_INS_DIR}/ is a link, which this server never follows`);
     // Synced before it answers: a pointer to a vendor object just made survives a crash of the machine.
-    await writeDurable(this.file(agentId), `${JSON.stringify({ format: FORMAT, sign_ins: entries } satisfies Stored)}\n`);
+    await this.writeFile(this.file(agentId), `${JSON.stringify({ format: FORMAT, sign_ins: entries } satisfies Stored)}\n`);
   }
 
   private locked<T>(agentId: string, work: () => Promise<T>): Promise<T> {
@@ -153,8 +156,11 @@ export class SignIns {
       try {
         await this.write(agentId, entries);
       } catch (error) {
-        // Never kept, so never forgotten: the object just made goes at the vendor now, as far as it answers.
-        if (made) await this.vendors.remove(vendor, ref).catch(() => undefined);
+        // Never kept, so never forgotten: the object just made goes at the vendor now, as far as it answers. Unless the
+        // write landed and only what follows it failed (the folder's sync): then the pointer is kept, and so is its object.
+        const sealed = entry.ref;
+        const kept = await this.read(agentId).then((now) => now.some((e) => e.ref === sealed), () => false);
+        if (made && !kept) await this.vendors.remove(vendor, ref).catch(() => undefined);
         throw error;
       }
       return { provider: vendor, ref, save };

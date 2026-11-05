@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { homeOf } from "../dist/files.js";
+import { homeOf, writeDurable } from "../dist/files.js";
 import { GONE_LEASE_MS, SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.js";
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
@@ -392,4 +392,16 @@ test("a vendor call that fails before an answer says only which vendor and the e
   const answer = await store.forget("alpha", "default");
   assert.deepEqual(answer.removed, [{ provider: "kernel", at_vendor: "not_deleted", message: "Not deleted at kernel: kernel unreachable (TypeError). This server no longer points to it." }]);
   assert.ok(!JSON.stringify(answer).includes(pointer));
+});
+
+test("a write that lands and then fails (the folder's sync) keeps both the pointer and the object it points to: the object is deleted at the vendor only when its pointer was not kept", async (t) => {
+  const data = await scratch(t);
+  const removed = [];
+  const vendors = { create: async () => "ctx-landed", remove: async (vendor, ref) => void removed.push(ref) };
+  const key = randomBytes(32);
+  const store = new SignIns(data, key, vendors, async () => false, { write: async (path, text) => { await writeDurable(path, text); throw new Error("the folder's sync failed"); } });
+  await assert.rejects(store.forRun("alpha", "run-1", "browserbase"), /sync failed/);
+  assert.deepEqual(removed, [], "its pointer is on disk");
+  const again = new SignIns(data, key, { create: async () => assert.fail("made again") }, async () => false);
+  assert.equal((await again.forRun("alpha", "run-2", "browserbase")).ref, "ctx-landed");
 });
