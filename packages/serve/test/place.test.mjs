@@ -173,7 +173,6 @@ test("capabilities lists the place modes, this host's default, and each box: non
   const { api } = await serve(t);
   const { places } = (await api("GET", "/capabilities")).body;
   assert.deepEqual(Object.keys(places), ["modes", "default", "boxes", "allow"]);
-  assert.deepEqual(places.allow, [], "no box with a network list");
   assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.equal(places.default, "runner");
   assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["bwrap", false], ["docker", false], ["modal", false], ["daytona", false]]);

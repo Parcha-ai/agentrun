@@ -72,7 +72,7 @@ const dockerOffer = async (api) => (await api("GET", "/capabilities")).body.plac
 /** A Docker box's network on this machine (box-network.test.mjs): the default list on Linux, with the fake's own kernel. */
 const DOCKER_NET = process.platform === "linux" ? { network: "allowlist" } : { network: "none", network_reason: "this server runs on macOS, where Docker runs in a VM that can't reach this server's egress proxy yet" };
 /** The banner's sentence for it. */
-const NET_SENTENCE = process.platform === "linux" ? " docker boxes reach pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com, github.com, and codeload.github.com through a proxy, and nothing else." : ` docker boxes have no network: ${DOCKER_NET.network_reason}.`;
+const NET_SENTENCE = process.platform === "linux" ? " docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com, github.com, and codeload.github.com." : ` docker boxes have no network: ${DOCKER_NET.network_reason}.`;
 /** The run's timeline as it is now, every page read. */
 async function rowsOf(api, runId) {
   const rows = new Map();
@@ -406,7 +406,7 @@ test("a Daytona box is the server's to make, and never waits on the Docker box's
   const { api, data } = await serve(t, { faux: PROBE });
   const offers = (await api("GET", "/capabilities")).body.places.boxes;
   assert.deepEqual(offers.find((b) => b.id === "docker"), { id: "docker", available: true, state: "preparing", reason: "building the box image (python, git, curl, node, npm, rg)", ...DOCKER_NET });
-  assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "none", network_reason: "a Daytona box has no network yet" });
+  assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
   const preparing = (rows) => rows.filter((r) => r.summary?.startsWith("Preparing the box image"));
   // A Daytona agent's run, while Docker's image is held: its box is made, and the run ends, with no row about any image.
   for (const [id, box] of [["remote", "daytona"], ["local", "docker"]]) {

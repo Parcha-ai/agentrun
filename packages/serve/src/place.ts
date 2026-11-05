@@ -41,7 +41,7 @@ export function noBoxReason(registry: readonly BoxOffer[]): string | undefined {
 /** The start banner's words on the boxes: which are ready for a sandbox agent's tools, which are still preparing (an
  *  available box whose `state` says so, with its reason: what it is pulling), then why each box is not that
  *  AGENTRUN_BOXES lists (`listed`), or, when none is ready or preparing, each box runs execute in, with what to do. */
-export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<BoxId>): string {
+export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<BoxId>, allow: readonly string[] | "none" = "none"): string {
   const boxes = boxAvailability(registry);
   const preparing = (box: BoxOffer) => (box as { state?: unknown }).state === "preparing";
   const ready = boxes.filter((box) => box.available && !preparing(box)).map((box) => box.id);
@@ -52,27 +52,24 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
   ];
   const none = !said.length;
   const why = boxes.filter((box) => !box.available && (listed.has(box.id) || (none && RUN_BOXES.includes(box.id))));
-  // What an available box's programs reach, as capabilities say (`network`, `places.allow`).
+  // What an available box's programs reach, as capabilities say (`network`, `network_reason`, `places.allow`).
+  const hosts = new Intl.ListFormat("en", { type: "conjunction" }).format(allow === "none" ? [] : allow);
   const reach = boxes.filter((box) => box.available && box.network).map((box) =>
-    box.network === "allowlist" ? sentence(`${box.id} boxes reach ${new Intl.ListFormat("en", { type: "conjunction" }).format(box.allow ?? [])} through a proxy, and nothing else`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
+    box.network === "allowlist" ? sentence(`${box.id} boxes reach only ${hosts}`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`))].join(" ");
 }
 
-/** `places` in capabilities: the modes a revision may name, this host's default, each box, and the hosts a box with a
- *  network list reaches (`allow`, else the list the box offers carry; empty when none has one). */
-export const placesOf = (registry: readonly BoxOffer[], allow?: readonly string[] | "none") => {
-  const boxes = boxAvailability(registry);
-  const listed = allow ?? boxes.find((box) => box.available && box.network === "allowlist")?.allow ?? "none";
-  return { modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxes.map(stated), allow: listed === "none" ? [] : [...listed] };
-};
+/** `places` in capabilities: the modes a revision may name, this host's default, each box, and the hosts a box whose
+ *  `network` is `allowlist` reaches (`allow`, run-box.ts boxAllowOf; empty for `none`). */
+export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none") => ({ modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] });
 /** A box with its state: what the server set (a Docker box whose image is coming is `preparing`), else `ready` when it
- *  is available and `unavailable` when not; and its network, `none` unless the server set it (an unavailable box has
- *  none, and no reason for it but its own). */
-const stated = ({ state, allow: _allow, network, network_reason, ...offer }: BoxOffer): BoxOffer => ({
+ *  is available and `unavailable` when not; and, on an available box, its network as the server set it, with
+ *  `network_reason` when it is none for a cause of its own. */
+const stated = ({ state, network, network_reason, ...offer }: BoxOffer): BoxOffer => ({
   ...offer,
   state: offer.available ? (state ?? "ready") : "unavailable",
-  network: offer.available ? (network ?? "none") : "none",
-  ...(offer.available && network !== "allowlist" && network_reason ? { network_reason } : {}),
+  ...(offer.available && network ? { network } : {}),
+  ...(offer.available && network === "none" && network_reason ? { network_reason } : {}),
 });
 
 /** A run's place: its revision's, else this host's default. */

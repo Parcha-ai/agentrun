@@ -187,7 +187,7 @@ export async function egressBlockedBy(env: NodeJS.ProcessEnv, options: { info?: 
 }
 
 /** What a server's Docker boxes reach, resolved once at its start (run-box.ts boxNetworkOf): the list, or none and why. */
-export type BoxNetwork = { allow: readonly string[] } | { allow: "none"; reason: string };
+export type DockerNetwork = { allow: readonly string[] } | { allow: "none"; reason: string };
 
 /** What the server hands a run's process: the list its box reaches, resolved (boxNetworkOf), or `none`. The run's
  *  process reads this, never AGENTRUN_BOX_ALLOW: unset, it is none. */

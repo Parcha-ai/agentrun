@@ -24,12 +24,12 @@ export type BoxId = (typeof BOX_IDS)[number];
 
 /** One box: whether this server has it, and why when not (or how it was checked). `state`, set where the server knows
  *  more than the probe did (box-image.ts): `preparing` is available, its image still coming. */
-/** A box as capabilities show it. `network`: whether its programs reach the server's host list (`allowlist`, the hosts
- *  in `allow`, which capabilities give once, as `places.allow`) or nothing (`none`, with `network_reason` when the box is
- *  available and cannot have the list). */
-export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetworkKind; network_reason?: string; allow?: readonly string[] };
-/** A box's network in capabilities. */
-export type BoxNetworkKind = "allowlist" | "none";
+/** A box as capabilities show it. `network`: what an available box reaches (BOX_NETWORKS), with `network_reason` when
+ *  it is available and has none for a cause of its own (a Docker in a VM, a daemon elsewhere). */
+export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetwork; network_reason?: string };
+/** What an available box reaches: the hosts of `places.allow` (`allowlist`), or nothing (`none`). */
+export const BOX_NETWORKS = ["allowlist", "none"] as const;
+export type BoxNetwork = (typeof BOX_NETWORKS)[number];
 /** A box's state in capabilities: ready, preparing (available; a run's first box waits for its image), or unavailable. */
 export const BOX_STATES = ["ready", "preparing", "unavailable"] as const;
 export type BoxState = (typeof BOX_STATES)[number];

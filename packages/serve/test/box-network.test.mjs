@@ -318,7 +318,7 @@ test("capabilities and the banner: on a Docker of this Linux machine's own, plac
   const { places, docker } = await dockerOf(server.api);
   assert.deepEqual(places.allow, DEFAULT);
   assert.deepEqual(docker, { id: "docker", available: true, state: "ready", network: "allowlist" });
-  assert.equal(server.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes reach pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com, github.com, and codeload.github.com through a proxy, and nothing else.");
+  assert.equal(server.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com, github.com, and codeload.github.com.");
 });
 
 test("a Docker in a VM (docker info names the runtime, on another kernel): docker's network is none with the reason naming it, in capabilities and the banner, and a run's box gets no proxy", { timeout: 120_000 }, async (t) => {

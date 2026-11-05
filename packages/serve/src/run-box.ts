@@ -21,7 +21,7 @@ import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context"
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProvider, BoxSpec } from "@parcha/pi-transport";
 import type { Manifest, PullReceipt } from "@parcha/pi-transport/sync";
-import { type BoxEgress, type BoxNetwork, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
+import { type BoxEgress, type DockerNetwork, egressBlockedBy, forwarderStart, hostEgress, PROXY_ENV, relayFailed, runBoxAllowOf } from "./box-egress.js";
 import { awaitImage, boxImageOf } from "./box-image.js";
 import { RELAYED_KEY, relayedBox, relayFetch } from "./box-relay.js";
 import { readJson, writeDurable } from "./files.js";
@@ -123,7 +123,7 @@ export function boxAllowOf(env: NodeJS.ProcessEnv): readonly string[] | "none" {
 /** What a server's Docker boxes reach, resolved once at its start: the setting's list (boxAllowOf) where egressBlockedBy
  *  (box-egress.ts) finds the daemon is this Linux machine's own, else none with the reason; `none` from the setting, with
  *  it as the reason. */
-export async function boxNetworkOf(env: NodeJS.ProcessEnv, options: Parameters<typeof egressBlockedBy>[1] = {}): Promise<BoxNetwork> {
+export async function boxNetworkOf(env: NodeJS.ProcessEnv, options: Parameters<typeof egressBlockedBy>[1] = {}): Promise<DockerNetwork> {
   const allow = boxAllowOf(env);
   if (allow === "none") return { allow: "none", reason: `${BOX_ALLOW_ENV} is none` };
   const blocked = await egressBlockedBy(env, options);
@@ -401,10 +401,16 @@ async function relayedRunBox(root: string, runDir: string, runId: string, contex
   return { box: attached.value, made: given.made };
 }
 
-/** The spec of a run's remote box: its work/ comes with its seed, never a mount. */
-const remoteSpec = (runId: string): BoxSpec => ({
-  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: "none", maxLifetimeMs: BOX_LIFETIME_MS,
+/** The spec of a run's remote box: its work/ comes with its seed, never a mount; its network the hosts `allow` names, or
+ *  none. */
+const remoteSpec = (runId: string, allow: readonly string[] | "none"): BoxSpec => ({
+  env: BOX_ENV, workspace: BOX_WORK, labels: { [RUN_LABEL]: runId, [KIND_LABEL]: "run" }, network: allow === "none" ? "none" : { allow }, maxLifetimeMs: BOX_LIFETIME_MS,
 });
+
+/** The refusals of a create with a host list that say the provider cannot keep one here, so a box with no network is made
+ *  in its place: Daytona did not keep the list (`unsupported`), or refused it (`invalid`, `unauthorized`: a tier that takes
+ *  none). Never a refusal a closed box would meet too, such as a timeout. */
+const NO_LIST: ReadonlySet<string> = new Set(["unsupported", "invalid", "unauthorized"]);
 
 type SyncMark = { box: string; mark: Manifest };
 const markOf = async (runDir: string): Promise<SyncMark | undefined> => {
@@ -414,26 +420,37 @@ const markOf = async (runDir: string): Promise<SyncMark | undefined> => {
 const keepMark = (runDir: string, mark: SyncMark) => writeDurable(join(runDir, BOX_SYNC_FILE), `${JSON.stringify(mark)}\n`);
 
 /** The server's side of a remote box: run `run`'s box, found by its label or made, with its work/ seeded once (its mark
- *  says so); its id, and whether it was made now. A found box whose network is not closed is destroyed and made again;
- *  a box whose seed fails is destroyed, and the call fails. */
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>): Promise<{ id: string; made: boolean }> {
+ *  says so); its id, and whether it was made now. A box is made with the host list `allow` names, or with no network when
+ *  it is `none`; a create the provider refuses for its list (NO_LIST) is said to `onNoList` at once, with its refusal's
+ *  code (so a closed box or a seed that then fails leaves it said), and made again with no network, never open. A found box whose network is more
+ *  than asked (open, unknown, or a list when `none` was asked) is destroyed and made again; one with no network is kept.
+ *  A box whose seed fails is destroyed, and the call fails. */
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>, allow: readonly string[] | "none" = "none", onNoList?: (code: string) => void): Promise<{ id: string; made: boolean }> {
+  let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
-  if (box && box.facts().network !== "none") {
+  const network = box?.facts().network;
+  if (box && network !== "none" && network !== asked) {
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
   }
   if (!box) {
-    const created = await boxes.create(remoteSpec(run.id), context);
+    let created = await boxes.create(remoteSpec(run.id, allow), context);
+    if (!created.ok && asked === "allowlist" && NO_LIST.has(created.error.code)) {
+      asked = "none";
+      onNoList?.(created.error.code);
+      await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
+      created = await boxes.create(remoteSpec(run.id, "none"), context);
+    }
     if (!created.ok) {
       await destroyRunBoxes(boxes, run.id, context).catch(() => undefined);
       throw new Error(`the run's box could not be made: ${created.error.message}`);
     }
     box = created.value;
     made = true;
-    if (box.facts().network !== "none") {
+    if (box.facts().network !== asked) {
       await box.destroy(context);
-      throw new Error("the run's box was made with its network open, so it is not used");
+      throw new Error(`the run's box was made with its network ${box.facts().network ?? "unknown"}, not ${asked === "none" ? "closed" : "its host list"}, so it is not used`);
     }
   }
   // A box found without its seed's mark was made by a server that went down before it seeded it: seeded now.

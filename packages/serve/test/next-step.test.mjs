@@ -109,10 +109,10 @@ test("a box this server does not enable names the setting that enables it: in ca
   const { api } = await serve(t);
   const { places, tools } = (await api("GET", "/capabilities")).body;
   assert.deepEqual(places.boxes, [
-    { id: "bwrap", available: false, state: "unavailable", network: "none", reason: "the bwrap box is not in this release yet: use the docker box" },
-    { id: "docker", available: false, state: "unavailable", network: "none", reason: ENABLE_DOCKER },
-    { id: VM, available: false, state: "unavailable", network: "none", reason: `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM}` },
-    { id: "daytona", available: false, state: "unavailable", network: "none", reason: "not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona" },
+    { id: "bwrap", available: false, state: "unavailable", reason: "the bwrap box is not in this release yet: use the docker box" },
+    { id: "docker", available: false, state: "unavailable", reason: ENABLE_DOCKER },
+    { id: VM, available: false, state: "unavailable", reason: `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM}` },
+    { id: "daytona", available: false, state: "unavailable", reason: "not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona" },
   ]);
   const bash = tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
@@ -142,7 +142,7 @@ test("docker enabled with no daemon answering: its reason says to start Docker o
   const server = await serve(t);
   const { api } = server;
   const { places, tools } = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(places.boxes.find((box) => box.id === "docker"), { id: "docker", available: false, state: "unavailable", network: "none", reason: DAEMON });
+  assert.deepEqual(places.boxes.find((box) => box.id === "docker"), { id: "docker", available: false, state: "unavailable", reason: DAEMON });
   const DAYTONA_TOO = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona";
   assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); daytona is unavailable (${DAYTONA_TOO})`);
 
