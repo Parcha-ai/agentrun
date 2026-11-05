@@ -52,7 +52,7 @@ export const forwarderStart = (socket: string = EGRESS_SOCKET): string[] => ["sh
   `log=$(mktemp); setsid ${forwarder(socket).join(" ")} </dev/null >/dev/null 2>"$log" &`,
   `i=0; while [ "$i" -lt ${RELAY_WAIT_TENTHS} ]; do listening && { rm -f "$log"; exit 0; }; i=$((i + 1)); sleep 0.1; done`,
   `head -c 300 "$log" >&2; rm -f "$log"; exit 124`,
-].join("; ")];
+].join("\n")];
 /** The timeline row of a box whose relay could not start, by the start's exit (forwarderStart): the box keeps no network. */
 export function relayFailed(code: number, said: string): string {
   if (code === 127) return "This box's image has no socat, so it has no network. Add socat to the image, or set AGENTRUN_BOX_ALLOW=none to silence this.";
@@ -94,37 +94,42 @@ async function ownParent(dir: string): Promise<void> {
  *  seam between the box's side, which is the same wherever the proxy runs (the mount, the relay, the proxy variables),
  *  and where the proxy runs. Today that is hostEgress: the run's own process, its socket's directory on this machine
  *  bound into the box. */
-export type BoxEgress = (runId: string) => Promise<{ mount: { source: string; target: typeof EGRESS_MOUNT; readOnly: true }; socket: string }>;
+export type BoxEgress = (runId: string) => Promise<{ mount: { source: string; target: typeof EGRESS_MOUNT; readOnly: true }; socket: string; fresh: boolean }>;
 
 /** The proxy in the run's process (hostEgress): for a Docker daemon on this Linux machine, which can reach a socket in a
  *  directory of this machine bound into a container. */
-export const hostEgress = (allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): BoxEgress => async (runId) => ({
-  mount: { source: await runProxy(runId, allow, env, log), target: EGRESS_MOUNT, readOnly: true },
-  socket: EGRESS_SOCKET,
-});
+export const hostEgress = (allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): BoxEgress => async (runId) => {
+  const { dir, fresh } = await runProxy(runId, allow, env, log);
+  return { mount: { source: dir, target: EGRESS_MOUNT, readOnly: true }, socket: EGRESS_SOCKET, fresh };
+};
 
-const started = new Map<string, Promise<EgressProxy>>();
+const started = new Map<string, Promise<{ proxy: EgressProxy; fresh: boolean }>>();
+const opened = new Set<string>();
 
-/** Run `runId`'s proxy in this process, with `allow`, started once: its directory, to bind into the box. Its decisions
- *  go to `log`. */
-async function runProxy(runId: string, allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<string> {
+/** Run `runId`'s proxy in this process, with `allow`, started once: its directory, to bind into the box, and whether that
+ *  directory was made now (`fresh`): a box bound to one an earlier process made, which the start's sweep took since, holds
+ *  the old directory, not this one. Its decisions go to `log`. */
+async function runProxy(runId: string, allow: readonly string[], env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<{ dir: string; fresh: boolean }> {
   const dir = egressDir(runId);
   let proxy = started.get(runId);
   if (!proxy) {
     proxy = (async () => {
       await ownParent(join(dir, ".."));
-      await mkdir(dir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+      const fresh = await mkdir(dir, { mode: 0o700 }).then(() => true, (error: NodeJS.ErrnoException) => {
         if (error.code !== "EEXIST") throw error;
+        return false;
       });
       const proxy = await startEgressProxy({ socketPath: join(dir, EGRESS_SOCKET), maxTunnels: MAX_TUNNELS, maxConnections: MAX_CONNECTIONS, log, allow: [...allow], allowHint: ALLOW_HINT, ...(await fauxSeams(env)) });
       log(`egress start allow=${allow.join(",")}`);
-      return proxy;
+      return { proxy, fresh };
     })();
     started.set(runId, proxy);
     proxy.catch(() => started.delete(runId));
   }
-  await proxy;
-  return dir;
+  // Fresh once: a later open in this process binds what the first one did.
+  const fresh = (await proxy).fresh && !opened.has(runId);
+  opened.add(runId);
+  return { dir, fresh };
 }
 
 type Seams = Pick<EgressProxyOptions, "lookup" | "dial">;

@@ -344,6 +344,9 @@ async function localRunBox(boxes: RunBoxes, run: { id: string; root: string; dir
   // A box a process before this one made with another network (none, or another list: the server's setting changed
   // since) is made again: its mounts and environment are fixed at its create. Its work/ is this machine's, bound.
   await destroyListed(boxes, { [RUN_LABEL]: run.id }, (labels) => labels[NET_LABEL] !== boxes.net, context);
+  // And so is one bound to a proxy directory this process had to make again (the start's sweep took the old one once its
+  // proxy was gone): the box's bind holds the old directory, which no proxy listens in.
+  if (egress?.fresh) await destroyListed(boxes, { [RUN_LABEL]: run.id }, () => true, context);
   const found = await attachRunBox(boxes, run.id, context);
   if (found) {
     if (egress) await startRelay(found, egress.socket, context, note);

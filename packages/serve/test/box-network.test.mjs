@@ -40,7 +40,7 @@ const FORWARDER_START = ["sh", "-c", [
   'log=$(mktemp); setsid socat TCP-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/run/agentrun/egress/egress.sock </dev/null >/dev/null 2>"$log" &',
   'i=0; while [ "$i" -lt 30 ]; do listening && { rm -f "$log"; exit 0; }; i=$((i + 1)); sleep 0.1; done',
   'head -c 300 "$log" >&2; rm -f "$log"; exit 124',
-].join("; ")];
+].join("\n")];
 const ALLOW_HINT = "use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW";
 const NO_SOCAT = "This box's image has no socat, so it has no network. Add socat to the image, or set AGENTRUN_BOX_ALLOW=none to silence this.";
 /** A run's proxy directory: short, under /tmp, by this user and the run's id. */
@@ -144,6 +144,9 @@ test("demo through the API, with a list: the run's box stays --network none and 
   assert.ok(flags(run, "--mount").includes(`type=bind,source=${dir},target=${EGRESS_MOUNT},readonly`), JSON.stringify(flags(run, "--mount")));
   await until(() => docker.relays().length === 1, "the box's relay");
   assert.deepEqual(docker.relays()[0].command, FORWARDER_START);
+  // The script parses as a shell reads it (the fake never runs it): `sh -n`.
+  const parsed = spawnSync("sh", ["-n", "-c", FORWARDER_START[2]], { encoding: "utf8" });
+  assert.equal(parsed.status, 0, parsed.stderr);
   // The proxy's directory and socket: this user's alone.
   const socket = join(dir, "egress.sock");
   assert.equal(statSync(dir).mode & 0o777, 0o700);
@@ -445,4 +448,37 @@ test("the start's sweep removes only dead proxy directories of this user's: one 
   const removed = await sweepEgressDirs(process.getuid());
   assert.ok(removed >= 2, `removed ${removed}`);
   assert.deepEqual([dead, live, fresh, empty].map((d) => existsSync(d)), [false, true, true, false], "dead and empty go; live and fresh stay");
+});
+
+test("the relay's start runs as a shell runs it: with no socat it exits 127, and with no setsid 126", async (t) => {
+  const { forwarderStart } = await import("../dist/box-egress.js");
+  const [, , script] = forwarderStart();
+  assert.equal(spawnSync("sh", ["-n", "-c", script]).status, 0, "it parses");
+  // Run it here with a PATH that has only what each case gives it: sh's own builtins, and stand-ins.
+  const bin = await scratch(t);
+  const run = (path) => spawnSync("/bin/sh", ["-c", script], { env: { PATH: path }, encoding: "utf8" }).status;
+  assert.equal(run(bin), 127, "no socat");
+  await writeFile(join(bin, "socat"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  assert.equal(run(bin), 126, "socat, no setsid");
+});
+
+test("a box bound to a proxy directory the start's sweep took (its run's process gone for a minute) is made again, not resumed with an empty directory", { skip: process.platform !== "linux" && "a box's network list needs a Docker daemon of this Linux machine's own", timeout: 120_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api, data } = await serve(t, { faux: PROBE, fauxEgress: FAKE_EGRESS });
+  const go = await holdFile(t);
+  const runId = await boxedRun(api, [{ wait: go.hold }, { tool: "bash", args: { command: "printf again > out.txt" } }]);
+  const work = join(realpathSync(data), "runs", runId, "work");
+  await until(() => existsSync(work), "the run's work/");
+  // The box an earlier process of the run made with this list, its proxy directory since swept (absent now).
+  const id = "f".repeat(64);
+  const net = createHash("sha256").update(DEFAULT.join(",")).digest("hex").slice(0, 16);
+  const labels = { "pi-transport.box": "1", "pi-transport.facts": JSON.stringify({ provider: "docker", workspace: "/run/agentrun/run/work", isolation: "container" }), "agentrun.run": runId, "agentrun.box": "run", "agentrun.net": net };
+  await rm(egressDir(runId), { recursive: true, force: true });
+  await mkdir(join(docker.state, "containers"), { recursive: true });
+  await writeFile(join(docker.state, "containers", `${id}.json`), JSON.stringify({ Id: id, State: { Running: true, ExitCode: 0 }, Config: { Labels: labels }, HostConfig: { NetworkMode: "none", CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"] }, env: ["LANG=C.UTF-8", "HOME=/tmp", ...Object.entries(PROXY_ENV).map(([k, v]) => `${k}=${v}`)], mounts: [{ source: work, target: "/run/agentrun/run/work" }, { source: egressDir(runId), target: EGRESS_MOUNT }], workdir: "/run/agentrun/run/work" }));
+  await go.release();
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.deepEqual(answers(data, runId).map((a) => [a.tool, a.error]), [["bash", false]]);
+  assert.ok(docker.removed().includes(id), "the box bound to the swept directory is ended");
+  assert.equal(docker.runs().length, 1, "and made again");
 });
