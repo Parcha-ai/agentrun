@@ -16,7 +16,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capModels, spentIn } from "../dist/cap.js";
-import { markRequests } from "../dist/request-start.js";
+import { END_MARK_WAIT_MS, markRequests } from "../dist/request-start.js";
 
 /** $1 a million output tokens, a ceiling of 1,000 and free input: each request is held at $0.001. */
 const MODEL = { id: "claude-x", name: "Claude X", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://api.anthropic.com", reasoning: false, input: ["text"], cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 1_000 };
@@ -277,4 +277,15 @@ test("a request the run stops while pi-ai waits to retry a lost attempt books it
   assert.equal(next?.leftUsd, 0.005, `booked at its $0.01 hold in this process: ${JSON.stringify(next)}`);
   // The store as the first request left it, before the next began: the hold its lost mark keeps.
   assert.equal(Math.round(spentIn(storeOf(t, [...marks.slice(0, upTo), { kind: "pi.assistant", model: [first] }])) * 1e9) / 1e9, 0.01, `a later process reads the hold too: ${JSON.stringify(marks.slice(0, upTo).map((m) => [m.kind, m.data]))}`);
+});
+
+test("a lost attempt's mark that the store takes 3 s to commit (behind a large entry on a slow disk) is in the store before the retry is sent: the retry's answer is kept, and a process that dies once it is in reads the hold; the store has 15 s", async (t) => {
+  const marks = [];
+  // The store takes 3 s for the end mark.
+  const run = await capped(marks, undefined, (entry) => (entry.kind === REQUEST_ENDED ? new Promise((resolve) => setTimeout(resolve, 3_000)) : undefined));
+  const first = await run.streamSimple(MODEL, context, options(scripted([STEPS.refused("ECONNRESET"), STEPS.ok]))).result();
+  assert.equal(first.stopReason, "stop", `the retry's answer is kept: ${first.errorMessage}`);
+  // What the store holds the moment pi has the answer: the lost mark, at the hold, never the answer's own usage alone.
+  assert.equal(spentIn(storeOf(t, [...marks, { kind: "pi.assistant", model: [first] }])), 0.001, "read again at its hold");
+  assert.equal(END_MARK_WAIT_MS, 15_000, "the store's bound for a mark that carries a hold");
 });
