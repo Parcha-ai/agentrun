@@ -173,3 +173,16 @@ test("a run reads its files when it has the read or the bash tool", () => {
   assert.equal(readsFiles(["web_fetch", "write"]), false);
   assert.equal(readsFiles([]), false);
 });
+
+test("on demand: a skill's description is read whole as YAML folds it: a plain one that wraps onto indented lines, and one written entirely on the next indented line", async (t) => {
+  const files = {
+    "wrapped/SKILL.md": "---\nname: wrapped\ndescription: Find refund policies\n  and shipping policies\n---\nThe body.\n",
+    "below/SKILL.md": "---\nname: below\ndescription:\n  Answer a question\n  about a store's returns\n---\nThe body.\n",
+    "folded/SKILL.md": "---\nname: folded\ndescription: >\n  Folded words\n  on two lines\n---\nThe body.\n",
+  };
+  const { work } = await workWith(t, files);
+  const listed = await promptOf("Answer.", Object.keys(files), work, { onDemand: true });
+  assert.match(listed, /- wrapped: Find refund policies and shipping policies \(/, listed);
+  assert.match(listed, /- below: Answer a question about a store's returns \(/, listed);
+  assert.match(listed, /- folded: Folded words on two lines \(/, listed);
+});
