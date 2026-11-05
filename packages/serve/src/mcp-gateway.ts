@@ -46,13 +46,13 @@ export const CONNECT_MS = 30_000;
 /** Each pinned server: its URL then, the granted tools as it listed them, and the prices its owner declared for them. */
 export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number> }>;
 /** The pipe's entry: each granted server's URL now, and its credential's headers when that URL is the pinned one. */
-export type McpCredentials = Record<string, { url: string; headers?: Record<string, string> }>;
+export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string }>;
 
 /** The servers saved on this server (mcp-servers.ts), as a launch reads them. */
 export interface McpServerSource {
   server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
-  /** The server's credential, opened now: its headers, or undefined when it has none or it does not open. */
-  headers(name: string): Record<string, string> | undefined;
+  /** The server's credential, opened now: its headers, why it does not open, or undefined when it has none. */
+  headers(name: string): Record<string, string> | { unopened: string } | undefined;
 }
 
 /** `mcp:<server>/<tool>` read, or undefined for a name that is not one. */
@@ -140,7 +140,7 @@ export function mcpCredentialsOf(pin: McpPin, source: McpServerSource): McpCrede
     const saved = source.server(name);
     if (!saved) continue;
     const headers = saved.url === pinned.url ? source.headers(name) : undefined;
-    out[name] = { url: saved.url, ...(headers ? { headers } : {}) };
+    out[name] = { url: saved.url, ...(headers && typeof headers.unopened === "string" ? { unopened: headers.unopened } : headers ? { headers: headers as Record<string, string> } : {}) };
   }
   return out;
 }
@@ -291,6 +291,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const now = credentials.get(server);
     if (!now) return `The MCP server ${server} is no longer saved on this server; nothing was sent.`;
     if (now.url !== pinned.url) return `The MCP server ${server}'s address changed since this run started; nothing was sent. Start a new run to use it at its new address.`;
+    // A credential that does not open is never a call without it.
+    if (now.unopened !== undefined) return `The MCP server ${server}'s credential can't be opened on this server (${now.unopened}); update it in Settings → MCP servers.`;
     return undefined;
   };
 

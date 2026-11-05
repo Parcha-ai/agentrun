@@ -139,12 +139,13 @@ export class McpServers {
   }
 
   /** The saved server's credential, opened, for a run's launch: its headers; undefined when it has none, or none that opens. */
-  headers(name: string): HeaderMap | undefined {
+  headers(name: string): HeaderMap | { unopened: string } | undefined {
     const servers = this.kept();
     const kept = servers === "unreadable" || !Object.hasOwn(servers, name) ? undefined : servers[name];
     if (!kept || kept.auth.type === "none") return undefined;
     const opened = this.open(name, kept);
-    return "headers" in opened ? opened.headers : undefined;
+    if ("headers" in opened) return opened.headers;
+    return { unopened: opened.unreadable === "seal_key_missing" ? `this server was handed no seal key, ${SEAL_KEY_ENV}` : "sealed under another seal key, or damaged" };
   }
 
   remove(name: string): void {

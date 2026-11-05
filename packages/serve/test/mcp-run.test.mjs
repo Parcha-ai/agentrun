@@ -319,7 +319,8 @@ test("pi: a saved credential that can't be opened refuses the call before anythi
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
   assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: The MCP server fake's credential can't be opened on this server (sealed under another seal key, or damaged); update it in Settings → MCP servers.");
-  assert.deepEqual(fake.log.slice(before), [], "nothing reached the server");
+  // A save's own preview may still be closing its exchange: what the run would send is a call or a handshake.
+  assert.deepEqual(fake.log.slice(before).filter((entry) => ["tools/call", "initialize", "server/discover"].includes(entry.method)), [], "nothing reached the server");
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: 'Call mcp__open__add with {"a":2,"b":3}' })).status, 202);
   await sleep(500);
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
