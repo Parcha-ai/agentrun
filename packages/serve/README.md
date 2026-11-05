@@ -453,7 +453,9 @@ whose place is the VM box gets one VM sandbox, made on its first `read`, `write`
   show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
 - A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
   with the run's `work/`. The call that met the gone box fails, saying so.
-- It takes the CPU and memory limits a Docker box takes (`AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`). The provider has
+- Each VM box reserves 2 CPUs and 4 GiB of memory by default, which the provider bills for while the box lives:
+  the Docker box's defaults, asked of the provider as the sandbox's CPU and memory. `AGENTRUN_BOX_CPUS` and
+  `AGENTRUN_BOX_MEMORY` change both boxes alike (such as `AGENTRUN_BOX_CPUS=1 AGENTRUN_BOX_MEMORY=1g`). The provider has
   no process limit, so `AGENTRUN_BOX_PIDS` does not apply. Its lifetime is 24 hours, as every box's is.
 - A start copies back, then ends, the sandbox of every run that has ended or is archived.
 

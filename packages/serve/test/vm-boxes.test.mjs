@@ -11,10 +11,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { VM_PROVIDER } from "../dist/boxes.js";
-import { BOX_RELAY_FILE } from "../dist/box-relay.js";
+import { BOX_RELAY_FILE, startBoxRelay } from "../dist/box-relay.js";
+import * as relayVm from "../dist/box-relay-vm.js";
 import { BOX_ENV } from "../dist/run-box.js";
-import { vm } from "./fixtures/fake-vm.mjs";
-import { follow, serve, withEnv } from "./support.mjs";
+import { ModalClient as FakeClient, vm } from "./fixtures/fake-vm.mjs";
+import { follow, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE_VM = new URL("./fixtures/fake-vm.mjs", import.meta.url).pathname;
@@ -206,6 +207,14 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   assert.equal(await (await call(b.run_id, `exec/${broken.exec}/stderr`)).text(), "");
   assert.equal(typeof (await (await call(b.run_id, `exec/${broken.exec}/wait`)).json()).code, "number", "its exit is read");
   await until(async () => (await call(b.run_id, `exec/${broken.exec}/stdin-close`)).status === 404, "the broken program let go");
+  // What the provider says in an error reaches the run's process cut of every value the server holds: the VM token too.
+  vm.failExec = new Error(`permission denied for token ${TOKENS[VM_PROVIDER.keys[1]]} (id ${TOKENS[VM_PROVIDER.keys[0]]})`);
+  const refusedStart = await call(b.run_id, `sandbox/${boxOf(b.run_id)}/exec`, { command: ["true"] });
+  vm.failExec = undefined;
+  const said = await refusedStart.text();
+  assert.equal(refusedStart.status, 502, said);
+  assert.match(said, /permission denied for token \[redacted\]/);
+  for (const value of Object.values(TOKENS)) assert.ok(!said.includes(value), "a held value in the provider's error reached the reply");
   // A program whose exit cannot be read (the provider lost it) is let go once that failure is answered and its output
   // replies ended.
   vm.failWait = true;
@@ -226,6 +235,36 @@ test("the relay takes a run's VM calls only for that run's own box, and never on
   await reader.cancel().catch(() => undefined);
   await until(async () => (await call(b.run_id, `exec/${exec}/stdin-close`)).status === 404, "the program let go");
   for (const run of [a, b]) assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
+
+test("the run's relay client waits on a program as long as it runs: its exit and its output have no clock of their own, where a client with one fails the call", { timeout: 60_000 }, async (t) => {
+  vm.reset();
+  t.after(() => vm.reset());
+  const root = await scratch(t);
+  const runDir = join(root, "runs", "r1");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "door-token"), "door-of-r1\n");
+  const client = new FakeClient({});
+  const box = await client.sandboxes.create({}, {}, { tags: { "agentrun.run": "r1" }, timeoutMs: 60_000 });
+  const relay = await startBoxRelay({ root, tokenOf: (id) => (id === "r1" ? "door-of-r1" : undefined), vm: relayVm.vmRelay(client), serves: () => true, ensure: async () => ({ id: box.sandboxId, made: false }) });
+  t.after(() => relay.close());
+  const read = async (stream) => {
+    let text = "";
+    for await (const chunk of stream) text += new TextDecoder().decode(chunk);
+    return text;
+  };
+  const run = async (sdk) => {
+    const sandbox = await sdk.sandboxes.fromId(box.sandboxId);
+    const program = await sandbox.exec(["sh", "-c", "echo a; sleep 2; echo b"], { mode: "binary" });
+    return Promise.all([read(program.stdout), read(program.stderr), program.wait()]);
+  };
+  // Node's fetch gives up after 300 s with no answer (headers) or no bytes (body): shrunk here to 1 s, the same failure.
+  const clocked = await run(relayVm.relayedVmSdk(root, runDir, "r1", { headersTimeout: 1000, bodyTimeout: 1000 })).catch((error) => error);
+  assert.ok(clocked instanceof Error, "a client with a clock fails a program that outlasts it");
+  assert.match(String(clocked.cause?.code ?? clocked.code), /^UND_ERR_(HEADERS|BODY)_TIMEOUT$/);
+  // The relay's own client has none: the program's caller bounds it.
+  assert.deepEqual({ ...relayVm.RELAY_AGENT_OPTIONS }, { headersTimeout: 0, bodyTimeout: 0 });
+  assert.deepEqual(await run(relayVm.relayedVmSdk(root, runDir, "r1")), ["a\nb\n", "", 0]);
 });
 
 // So the fixture's directory exists before any box writes its spool there.

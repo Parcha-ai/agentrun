@@ -741,7 +741,10 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // And the VM box's, the same way, with this server's SDK client: the relay's VM half makes a run's calls with it.
   const vmBoxes = boxes.provider(VM_PROVIDER.id);
   const vmClient = boxes.vmClient();
-  const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk) : undefined;
+  // What the provider says in an error is cut of every value this server holds (the VM token among them) before a run's
+  // process sees it.
+  const vmSecrets = () => [...learningSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
+  const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
   const vmLimits = (() => {
     const limits = boxLimitsOf(env);
     return { cpus: limits.cpus, memoryMb: memoryMbOf(limits.memory) };

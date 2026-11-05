@@ -9,7 +9,9 @@
 // streams are done.
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Agent } from "undici";
 import { relayAddress } from "./box-relay.js";
+import { redacted } from "./key-refusal.js";
 
 /** The label that names a box's run (run-box.ts RUN_LABEL), kept here so the run's process loads no more than it needs. */
 const RUN_LABEL = "agentrun.run";
@@ -49,10 +51,12 @@ export type VmSdk = { readonly sandboxes: { fromId(id: string): Promise<VmSandbo
 
 /** An SDK error as the relay answers it: its class's name and its gRPC code, which pi-transport's provider classifies by. */
 type Failure = { name: string; code?: number; message: string };
-const failureOf = (error: unknown): Failure => {
+/** Its message is the SDK's, which can quote anything: cut of every value the server holds, and of secret-shaped text,
+ *  by serve's one rule (key-refusal.ts redacted), before it goes to the run's process. */
+const failureOf = (error: unknown, secrets: readonly string[] = []): Failure => {
   const name = (error as { constructor?: { name?: string } } | null)?.constructor?.name ?? "Error";
   const code = (error as { code?: unknown } | null)?.code;
-  return { name, ...(typeof code === "number" ? { code } : {}), message: String((error as Error)?.message ?? error).slice(0, 300) };
+  return { name, ...(typeof code === "number" ? { code } : {}), message: redacted(String((error as Error)?.message ?? error), secrets).slice(0, 300) };
 };
 
 /** One output stream, read from the program as soon as it starts (the SDK's stream holds its output only while it is
@@ -100,7 +104,7 @@ type Held = { run: string; process: VmProcess; streams: Record<"stdout" | "stder
 /** The relay's handler of a run's VM calls, over the server's client `sdk`: `handle(runId, path, req, res)` answers the
  *  call at `path` (what follows `/runs/<id>/vm/`), the caller's token already checked. `drop(runId)` lets go of the run's
  *  programs (at its end). */
-export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void>; drop(runId: string): void } {
+export function vmRelay(sdk: VmSdk, secrets: () => readonly string[] = () => []): { handle(runId: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void>; drop(runId: string): void } {
   const known = new Map<string, { sandbox: VmSandbox; run: string | undefined }>();
   const execs = new Map<string, Held>();
   /** The programs each run is starting now: counted with those it holds, so starts at once cannot pass the limit. */
@@ -121,7 +125,7 @@ export function vmRelay(sdk: VmSdk): { handle(runId: string, path: string, req: 
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(body));
   };
-  const failed = (res: ServerResponse, error: unknown): void => void (res.headersSent ? res.destroy() : answer(res, 502, { failure: failureOf(error) }));
+  const failed = (res: ServerResponse, error: unknown): void => void (res.headersSent ? res.destroy() : answer(res, 502, { failure: failureOf(error, secrets()) }));
   const notThere = (res: ServerResponse) => answer(res, 404, { failure: { name: "NotFoundError", code: 5, message: "no such sandbox" } });
   const refused = (res: ServerResponse, path: string) => answer(res, 403, { message: `the box relay does not make ${path}: a run's process reaches only its own box's programs and files` });
   const forget = (id: string) => {
@@ -309,12 +313,21 @@ function errorOf(failure: Failure | undefined, fallback: string): Error {
   return Object.assign(new Named(failure?.message ?? fallback), typeof failure?.code === "number" ? { code: failure.code } : {});
 }
 
+/** How the run's process's relay client waits on the relay: never on a clock of its own. A program's exit (`wait`) and
+ *  its output streams take as long as the program runs, which its caller bounds (bash's timeout, and pi-transport's
+ *  backstop over it); Node's own fetch would give up after 300 s with no answer or no bytes, failing a longer command
+ *  as lost. */
+export const RELAY_AGENT_OPTIONS = Object.freeze({ headersTimeout: 0, bodyTimeout: 0 });
+
 /** The SDK client a run's process hands pi-transport's VM provider: each call it makes of a box goes to the relay in data
  *  root `root`, with the run's own door token. It finds a sandbox and runs programs in it; it makes, lists and ends none. */
-export function relayedVmSdk(root: string, runDir: string, runId: string) {
+export function relayedVmSdk(root: string, runDir: string, runId: string, agentOptions: { headersTimeout: number; bodyTimeout: number } = RELAY_AGENT_OPTIONS) {
+  // Its own dispatcher, with the waits above: made at its first call, kept for the process.
+  let opened: Promise<{ dispatcher: Agent; dial: typeof import("undici").fetch }> | undefined;
+  const open = () => (opened ??= import("undici").then(({ Agent, fetch }) => ({ dispatcher: new Agent(agentOptions), dial: fetch })));
   const call = async (path: string, body?: BodyInit, json = true): Promise<Response> => {
-    const { url, token } = await relayAddress(root, runDir);
-    return fetch(`${url}/runs/${encodeURIComponent(runId)}/vm/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, ...(json ? { "content-type": "application/json" } : { "content-type": "application/octet-stream" }) }, ...(body === undefined ? {} : { body }), redirect: "error" });
+    const [{ url, token }, { dispatcher, dial }] = await Promise.all([relayAddress(root, runDir), open()]);
+    return dial(`${url}/runs/${encodeURIComponent(runId)}/vm/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, ...(json ? { "content-type": "application/json" } : { "content-type": "application/octet-stream" }) }, ...(body === undefined ? {} : { body: body as never }), redirect: "error", dispatcher }) as unknown as Promise<Response>;
   };
   const result = async <T>(path: string, body?: unknown): Promise<T> => {
     const answer = await call(path, body === undefined ? undefined : JSON.stringify(body));
