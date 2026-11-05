@@ -166,6 +166,10 @@ test("the command passes its arguments through to the server, with its store (~/
   assert.equal(plain.out, "AgentRun is running at http://127.0.0.1:7399/\n");
   // A person reads how to stop it and where its data is; stdout stays the one line a script reads.
   assert.match(plain.err, new RegExp(`^Press Ctrl-C to stop it\\. Its data is in ${STORE(plain.home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.$`, "m"), plain.err);
+  // And where the API's bearer token is: the server's own line saying so stays out of this terminal.
+  assert.match(plain.err, new RegExp(`^The API token is in ${STORE(plain.home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.token\\.$`, "m"), plain.err);
+  const tokened = await throughStub(t, ["--no-open"], { AGENTRUN_TOKEN: "t".repeat(40) });
+  assert.match(tokened.err, /^The API token is the AGENTRUN_TOKEN this command was started with\.$/m, tokened.err);
   assert.equal(plain.code, 0, plain.err);
   const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "/srv/agents"]);
   assert.deepEqual(given.args, ["--data", "/srv/agents", "--port", "7400"], given.err);

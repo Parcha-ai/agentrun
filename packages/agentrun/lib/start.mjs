@@ -153,5 +153,7 @@ export async function main(argv, env = process.env) {
   // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
   // data is kept, which the next start opens again.
   console.error(`Press Ctrl-C to stop it. Its data is in ${dataDir}.`);
+  // And where the API's bearer token is: the server prints it on a line this terminal doesn't show.
+  console.error(env.AGENTRUN_TOKEN ? "The API token is the AGENTRUN_TOKEN this command was started with." : `The API token is in ${join(dataDir, ".token")}.`);
   return exited;
 }
