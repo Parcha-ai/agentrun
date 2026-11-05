@@ -75,6 +75,11 @@ export function script(spec) {
   const boxed = /^Box calls: (\[.*\])$/m.exec(text)?.[1];
   const work = `${process.env.AGENTRUN_TEST_DATA}/runs/${spec.key.slice("run:".length)}/work`;
   if (boxed) return [...JSON.parse(boxed.replaceAll("{work}", work)).map((step) => ({ ...step, usd: 0.001 })), { say: "Done in the box.", usd: 0.001 }];
+  // monid's run called, then called again (once a raised cap's follow-up opens the next turn), then the answer.
+  if (/Run monid's \/person\/enrich, called again after a raise\./.test(text)) {
+    const call = { call: "monid_run", args: { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, usd: 0.001 };
+    return [call, call, { say: "Ran.", usd: 0.001 }];
+  }
   // monid's run, called as a harness calls it: by its wire name.
   const endpoint = /Run monid's (\S+) on Ada\./.exec(text)?.[1];
   if (endpoint) return [{ call: "monid_run", args: { provider: "faux", endpoint, input: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
