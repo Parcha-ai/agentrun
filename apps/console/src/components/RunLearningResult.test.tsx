@@ -90,6 +90,23 @@ describe("run learning result", () => {
     expect(page.fact("Merge commit")).toBe("Not merged");
   });
 
+  it("shows a partial merge without implying that dropped or invalid items were kept", async () => {
+    const page = await open(vi.fn(async () => ({ ...RESULT,
+      detail: "Learned: Check totals. Not kept: One invoice is not a reusable rule.",
+      verdict: { ...RESULT.verdict!, items: [...RESULT.verdict!.items, { file: "one-invoice.md", keep: false, question: "General", why: "One invoice is not a reusable rule." }] },
+      problems: [{ rule: "note_description", path: "incomplete.md", detail: "The note has no description." }],
+    })));
+    await page.click("Learning");
+    const grader = page.host.querySelector('section[aria-label="Grader decision"]')!;
+    const decisions = [...grader.querySelectorAll("li")].map((item) => [item.querySelector("code")?.textContent, item.querySelector("span")?.textContent]);
+    expect(decisions).toEqual([["invoice.md", "Keep"], ["trusted.md", "Needs approval"], ["one-invoice.md", "Do not keep"]]);
+    expect(grader.textContent).toContain("Recommended keeping some changes.");
+    expect(page.host.textContent).toContain("Not kept: One invoice is not a reusable rule.");
+    expect(page.host.querySelector('section[aria-label="Learning validation"]')?.textContent).toContain("incomplete.md");
+    expect(page.host.textContent).toContain("These changes required approval when recorded.");
+    expect(page.fact("Merge commit")).toBe(RESULT.merged);
+  });
+
   it("does not show a learning tab or request for a run without learning", async () => {
     const page = await open(undefined, { ...run, learning: null });
     expect([...page.host.querySelectorAll('[role="tab"]')].map((t) => t.textContent)).not.toContain("Learning");

@@ -11,6 +11,7 @@ import type { Problem } from "@/lib/problem";
 import { RANGES, type StatsRange } from "@/lib/mission";
 import { elapsed } from "@/lib/runGraph";
 import { Brain, History, RadioTower } from "lucide-react";
+import { stoppedRun } from "@/lib/needs";
 
 /** The range and agent the page's analytics are asked for, and how to change them. */
 export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; onAgent?: (agent: string | null) => void; refreshing?: boolean };
@@ -30,10 +31,12 @@ function MissionFrame({ actions, children }: { actions?: React.ReactNode; childr
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  per agent, and the latest runs with their agent, duration and cost, with the runs' tokens, time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` sits above the data; it never replaces it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, startHere, actions }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; startHere?: React.ReactNode; actions?: React.ReactNode }) {
+export function MissionControl({ view, error, onRetry, scope, needsYou, asking, startHere, actions }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode }) {
   if (error) return <MissionFrame actions={actions}><ProblemCard problem={error} onRetry={onRetry} /></MissionFrame>;
   if (!view) return <MissionFrame actions={actions}><MissionSkeleton /></MissionFrame>;
   const name = (id: string) => view.perAgent.find((a) => a.agentId === id)?.name ?? id;
+  // An agent picked over the analytics: Runs per agent shows its row alone. The picker still offers every agent.
+  const perAgent = scope?.agent ? view.perAgent.filter((a) => a.agentId === scope.agent) : view.perAgent;
   // Each count links to its list, filtered to it; the active runs have no one list of their own. The cost is said once,
   // in the range's analytics below, never again here.
   const tiles: [string, string, string | undefined, string?, string?][] = [
@@ -42,7 +45,9 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
     // Running runs the server can't tell the state of are in no other count: said under Active, never dropped. Active
     // counts queued, working and paused runs, which no one list holds, so it links nowhere (Needs you lists the working).
     ["Active", String(view.runs.active), undefined, undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
-    ["Needs input", String(view.runs.needsInput), "#/runs?status=input_required", view.runs.needsInput ? "text-warning-text" : undefined],
+    // What Needs you lists, counted from the same runs (asksPerson): a stopped run asks nothing, so it is not counted (it
+    // shows in Recent runs as Stopped). Still being read: a dash. With no list beside it: the server's own count.
+    ["Needs input", asking === null ? "–" : String(asking ?? view.runs.needsInput), "#/runs?status=input_required", (asking ?? view.runs.needsInput) ? "text-warning-text" : undefined],
     // Escalated runs waiting for review are counted apart from the failed: said under Failed, never in it.
     ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],
   ];
@@ -67,8 +72,8 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <section className="min-w-0 overflow-hidden rounded-xl border bg-card">
             <h2 className="caps flex min-h-[52px] items-center gap-2 border-b px-5 py-3 text-[12px] font-semibold"><Brain className="size-4" aria-hidden />Runs per agent</h2>
-            {view.perAgent.length ? (
-              <ul>{view.perAgent.map((a) => (
+            {perAgent.length ? (
+              <ul>{perAgent.map((a) => (
                 <li key={a.agentId} className="border-b last:border-b-0"><a href={agentHash(a.agentId, "runs")} className="flex items-center justify-between gap-3 px-4 py-3 text-[14px] hover:bg-accent"><span className="min-w-0 truncate">{a.name}</span><span className="font-mono text-[13px] text-muted-foreground">{a.runs}</span></a></li>
               ))}</ul>
             ) : <p className="px-4 py-6 text-center font-mono text-[13px] text-muted-foreground">No agents yet.</p>}
@@ -80,7 +85,8 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, startHer
                 <li key={r.run_id} className="border-b last:border-b-0"><a href={`#/runs/${encodeURIComponent(r.run_id)}`} className="flex items-center gap-3 px-4 py-3 hover:bg-accent">
                   <StatusBadge run={r} />
                   {/* The run's title, then its chips (what it learned and used) right after it. */}
-                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{r.title}</span><LearningChips run={r} className="hidden sm:inline-flex" /></span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 truncate text-[14px]">{r.title}</span><LearningChips run={r} className="hidden sm:inline-flex" />
+                    {stoppedRun(r) && <span className="shrink-0 text-[12px] text-muted-foreground">send a message to continue</span>}</span>
                   <span className="hidden shrink-0 text-[13px] text-muted-foreground md:inline">{name(r.agent_id)}</span>
                   {r.ended_at && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline" title="How long it ran">{elapsed(Date.parse(r.ended_at) - Date.parse(r.created_at))}</span>}
                   {r.cost && (r.cost.usd !== null || soFar(r.cost)) && <span className="hidden font-mono text-[12px] text-muted-foreground sm:inline">{cost(r.cost)}</span>}

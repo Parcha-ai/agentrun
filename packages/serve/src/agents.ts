@@ -8,6 +8,7 @@ import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStor
 import { ApiError, invalid } from "./errors.js";
 import { DEFAULT_HARNESS, harnessOfBody } from "./harness.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
+import type { SignInView } from "./sign-ins.js";
 
 /** One agent as the routes show it: its row, its current revision and that revision's number (the oldest is 1). */
 export type AgentEntry = { agent: Agent; revision: Revision | null; version: number; revisions: number; runs: { count: number; live: number }; sizes: Map<string, number> };
@@ -108,7 +109,7 @@ export class Agents {
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
     const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
-    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning };
+    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}) };
   }
 
   /** `definition.version`, when given, is the number of the revision the request leaves current. */
@@ -125,10 +126,14 @@ export class Agents {
 
   /** A new agent and its first revision, current. A definition id already here is `409 agent_exists`. `check` sees the
    *  revision before anything is written, and may refuse it. */
-  async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>): Promise<AgentEntry> {
+  /** `fresh`: the place a new agent that names none is saved with, and the tools it gets when it names none (place.ts
+   *  newAgentPlace); an agentic definition alone takes them, and only where it leaves them out. */
+  async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }): Promise<AgentEntry> {
     const given = typeof definition.id === "string" ? definition.id : undefined;
     if (given !== undefined && (await this.request(() => this.store.readAgent(given)))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
-    const revision = this.revisionOf(definition, skills, note);
+    // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
+    const stamped = fresh && definition.place === undefined && !isObject(definition.workflow) ? { place: fresh.place, ...(definition.tools === undefined ? { tools: [...fresh.tools] } : {}) } : {};
+    const revision = this.revisionOf({ ...definition, ...stamped }, skills, note);
     this.checkVersion(definition, 1);
     await this.checked(revision);
     await check?.(revision);
@@ -176,12 +181,14 @@ export class Agents {
         const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
         files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
       }
-      // An edit that names no harness, place or learning switch keeps the agent's, as it keeps its skill files: absent
-      // here is unchanged, not the default.
+      // An edit that names no harness, place, learning switch or default cap keeps the agent's, as it keeps its skill
+      // files: absent here is unchanged, not the default.
       const harness = entry.revision?.body.harness;
       const place = entry.revision?.body.place;
       const learning = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.learning : undefined;
-      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}) }, files, note);
+      // And its default cap: leaving it out never removes a spend limit; only 0 clears it.
+      const cap = entry.revision?.kind === "agentic" && !isObject(definition.workflow) ? entry.revision.body.maxCostUsd : undefined;
+      const revision = this.revisionOf({ ...definition, ...(definition.harness === undefined && harness ? { harness } : {}), ...(definition.place === undefined && place ? { place } : {}), ...(definition.learning === undefined && learning !== undefined ? { learning } : {}), ...(definition.max_cost_usd === undefined && cap !== undefined ? { max_cost_usd: cap } : {}) }, files, note);
       await this.checked(revision);
       await check?.(revision);
       const base = entry.revision?.id ?? null;
@@ -273,13 +280,13 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as `POST /agents` takes one, numbered. */
 export function definitionOf(agent: Agent, revision: Revision, version: number): Json {
   const body = revision.kind === "agentic"
-    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}) }
+    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}) }
     : { workflow: revision.body.workflow };
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
 
-/** `Agent` as the contract shows it, with its current revision. */
-export function agentView(entry: AgentEntry) {
+/** `Agent` as the contract shows it, with its current revision and its saved sign-ins (sign-ins.ts view: never a ref). */
+export function agentView(entry: AgentEntry, signIns: readonly SignInView[] = []) {
   const { agent, revision } = entry;
   return {
     agent_id: agent.id,
@@ -289,7 +296,7 @@ export function agentView(entry: AgentEntry) {
     revisions: entry.revisions,
     source: null,
     skills: Object.entries(revision?.body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
-    sign_ins: [],
+    sign_ins: signIns,
     runs: entry.runs,
     region: "local",
     home_etag: etagOf(entry),

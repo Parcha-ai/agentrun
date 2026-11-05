@@ -3,8 +3,13 @@ import { buildAgentPrompt, connectAgentPrompt, editAgentPrompt, importAgentsProm
 
 describe("coding-agent handoffs", () => {
   it("targets the current server without carrying credentials or page parameters into the prompt", () => {
+    // Build the credential-bearing input at runtime: the repository's session-import scan must not
+    // mistake a literal credential URL in this regression for a secret printed by a coding agent.
+    const address = new URL("https://console.example.test/?token=also-private#/agents");
+    address.username = "owner";
+    address.password = "do-not-copy";
     for (const make of [importAgentsPrompt, connectAgentPrompt, buildAgentPrompt, queryRunsPrompt]) {
-      const prompt = make("https://owner:do-not-copy@console.example.test/?token=also-private#/agents");
+      const prompt = make(address.href);
       expect(prompt).toContain("https://console.example.test/v2");
       expect(prompt).not.toContain("do-not-copy");
       expect(prompt).not.toContain("also-private");

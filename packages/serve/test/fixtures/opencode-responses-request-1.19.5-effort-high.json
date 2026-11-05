@@ -1,0 +1,49 @@
+{
+  "model": "gpt-test",
+  "input": [
+    {
+      "role": "developer",
+      "content": "You answer.\nYou are powered by the model named gpt-test. The exact model ID is openai/gpt-test\nHere is some useful information about the environment you are running in:\n<env>\n  Working directory: /workspace\n  Workspace root folder: /\n  Is directory a git repo: no\n  Platform: linux\n  Today's date: Tue Nov 03 2026\n</env>"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Say ok."
+        }
+      ]
+    }
+  ],
+  "max_output_tokens": 32000,
+  "store": false,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "prompt_cache_key": "ses_e5d530e64ffeu4h3XwyiAaRrBQ",
+  "reasoning": {
+    "effort": "high"
+  },
+  "tools": [
+    {
+      "type": "function",
+      "name": "hands_read",
+      "description": "Read a file.",
+      "parameters": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "strict": false
+    }
+  ],
+  "tool_choice": "auto",
+  "stream": true
+}

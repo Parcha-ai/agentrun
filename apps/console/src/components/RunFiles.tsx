@@ -1,7 +1,7 @@
 import { Copy, Download, FileText, Folder, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { bytes, markdown, when } from "@/lib/format";
+import { bytes, markdown, openLinkedFile, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { RunFile } from "@/lib/v2";
 import { viewKind } from "@/lib/viewing";
@@ -50,8 +50,9 @@ export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: R
 
 /** The file viewer: the file's name, Copy, Download and its characters. Text and Markdown show here, Rendered (Markdown,
  *  sanitized) or Raw (the exact text, each line its own, in monospace): a Markdown file opens Rendered, any other text
- *  Raw, and the toggle switches either. Anything else is offered as a download only. */
-export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: string | null; onClose: () => void }) {
+ *  Raw, and the toggle switches either. Rendered, a link to another of the run's `files`, read from this file's folder,
+ *  opens that one with `onOpen`. Anything else is offered as a download only. */
+export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { file: RunFile; text: string | null; onClose: () => void; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
   const [copied, setCopied] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   // A native modal dialog: focus moves in and stays in, the page behind is inert, Escape closes it, and focus goes back
@@ -62,6 +63,8 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
     if (d && !d.open) d.showModal?.();
     return () => { d?.open && d.close(); opener?.focus?.(); };
   }, []);
+  // A link in a Markdown file can open another file in this viewer: Copied belongs to the file it was said of.
+  useEffect(() => setCopied(false), [file.path]);
   // The dimmed area around the file is the dialog itself (the file's panel sits inside it): a click that starts and ends
   // there closes it, as the console's other overlays do. One that starts or ends inside keeps it: a drag either way sends
   // its click to the dialog (the nearest element both ends are in), so where the press and the release were is checked.
@@ -69,6 +72,9 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
   const releasedOutside = useRef(false);
   const kind = viewKind(file);
   const [view, setView] = useState<View>(kind === "markdown" ? "rendered" : "raw");
+  // A link can move this viewer to another file: that file starts as its own kind does, not as the last one was left.
+  useEffect(() => setView(kind === "markdown" ? "rendered" : "raw"), [file.path]); // eslint-disable-line react-hooks/exhaustive-deps
+  const open = openLinkedFile((path) => { const f = files.find((x) => x.path === path); if (f) onOpen?.(f); });
   const download = () => {
     if (text === null) return;
     const url = URL.createObjectURL(new Blob([text], { type: file.content_type ?? "application/octet-stream" }));
@@ -94,7 +100,8 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
         <div className="min-h-0 flex-1 overflow-auto px-6 py-8 md:px-16">
           {text === null ? <p className="font-mono text-[13px] text-muted-foreground">Loading the file...</p>
             : kind === "download" ? <p className="font-mono text-[13px] text-muted-foreground">This file type is not shown here. Download it to open it.</p>
-            : view === "rendered" ? <article className="report mx-auto max-w-3xl" dangerouslySetInnerHTML={{ __html: markdown(text) }} />
+            : view === "rendered" ? <article className="report mx-auto max-w-3xl" onClick={open}
+                dangerouslySetInnerHTML={{ __html: markdown(text, onOpen && { paths: files.map((f) => f.path), from: file.path.split("/").slice(0, -1).join("/") }) }} />
             : <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.8]">{text}</pre>}
         </div>
         <footer className="border-t px-4 py-2 font-mono text-[11px] text-muted-foreground">File · {text === null ? "..." : `${text.length.toLocaleString("en-US")} characters`} · {file.content_type ?? "unknown type"}</footer>

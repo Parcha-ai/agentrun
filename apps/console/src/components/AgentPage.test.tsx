@@ -227,6 +227,24 @@ describe("AgentPage model, capabilities and supported tabs", () => {
     expect(page.fact("Model")?.title).toBe("agent-model/gpt-6-luna");
   });
 
+  it("shows each harness's gateway default without leaking the pi default into Claude", async () => {
+    const base = agentFixture("invoice-checker");
+    const models = { default: "agent-model/gpt-6-luna", source: "gateway", route_prefix: "agent-model" };
+    const harnesses = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
+    const codex = await open({ ...base, definition: { ...base.definition, harness: "codex" } }, { models, harnesses });
+    expect(codex.fact("Model")?.textContent).toBe("gpt-6-luna (default)");
+    expect(codex.fact("Model")?.title).toBe("agent-model/gpt-6-luna");
+    const claude = await open({ ...base, definition: { ...base.definition, harness: "claude-agent" } }, { models, harnesses });
+    expect(claude.fact("Model")?.textContent).toBe("none yet: add a model key in Settings → Model keys");
+  });
+
+  it("shows no fictional default for Claude when an older gateway only names its global model", async () => {
+    const base = agentFixture("invoice-checker");
+    const page = await open({ ...base, definition: { ...base.definition, harness: "claude-agent" } }, { models: { default: "agent-model/gpt-6-luna", source: "gateway", route_prefix: "agent-model" } });
+    expect(page.fact("Model")?.textContent).toBe("none yet: add a model key in Settings → Model keys");
+    expect(page.host.textContent).not.toContain("gpt-6-luna");
+  });
+
   it("uses the selected harness's default instead of the pi fallback", async () => {
     const base = agentFixture("invoice-checker");
     const page = await open({ ...base, definition: { ...base.definition, harness: "claude-agent" } }, { harnesses: [{ id: "pi", default_model: "pi-model" }, { id: "claude-agent", default_model: null }] });
@@ -259,10 +277,10 @@ describe("AgentPage model, capabilities and supported tabs", () => {
     expect(page.went).toEqual(["#/agents/invoice-checker/learning"]);
   });
 
-  it("opens Analytics from the page's one scoped stats read", async () => {
+  it("refreshes scoped analytics when the Analytics tab opens", async () => {
     const page = await open(agentFixture("invoice-checker"), { tab: "analytics" });
     expect(page.host.querySelector('[role="tabpanel"]')?.getAttribute("aria-label")).toBe("Analytics");
-    expect(page.statsAsked).toHaveLength(1);
+    expect(page.statsAsked).toHaveLength(2);
     expect(page.statsAsked[0]).toMatch(/^stats invoice-checker from \d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
     expect(page.host.textContent).toContain("Success by harness and effort");
   });

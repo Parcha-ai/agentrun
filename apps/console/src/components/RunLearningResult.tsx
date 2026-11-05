@@ -69,7 +69,9 @@ export function RunLearningResult({ run, read, onViewChanges }: Props) {
       <section aria-label="Grader decision">
         <h3 className="mb-2 text-[13px] font-semibold">Grader decision</h3>
         {result.verdict ? <>
-          <p className="text-[12px] text-muted-foreground">{result.verdict.merge ? "Recommended keeping these changes." : "Did not recommend keeping these changes."}</p>
+          <p className="text-[12px] text-muted-foreground">{result.verdict.merge
+            ? result.verdict.items?.some((item) => !item.keep) ? "Recommended keeping some changes." : "Recommended keeping these changes."
+            : "Did not recommend keeping these changes."}</p>
           <p className="mt-2 break-words text-[13px] leading-relaxed">{result.verdict.reason}</p>
           {result.verdict.items?.length ? <ul className="mt-3 divide-y rounded-lg border">{result.verdict.items.map((item, i) => <li key={`${item.file}-${i}`} className="space-y-2 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2"><code className="min-w-0 break-all text-[12px]">{item.file}</code><span className="rounded-md bg-muted px-2 py-1 text-[11px]">{item.pending ? "Needs approval" : item.keep ? "Keep" : "Do not keep"}</span></div>

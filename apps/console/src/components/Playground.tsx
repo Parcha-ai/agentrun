@@ -1,9 +1,11 @@
+import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { playgroundPrompt } from "@/lib/codingAgentPrompts";
+import { Picker } from "@/components/ui/picker";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
@@ -64,11 +66,14 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
+  // In a short viewport (a phone in landscape) the code and response panel is folded so the form gets the height, and
+  // Show code swaps the two. Taller viewports show both, as before.
+  const [showCode, setShowCode] = useState(false);
   const [result, setResult] = useState<StartResult | null>(initialResult);
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
-    const error = (result && result.status >= 400 ? (result.body as { error?: { message?: unknown; details?: { box?: unknown } } } | null)?.error : undefined);
-    return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined } : undefined;
+    const error = (result && result.status >= 400 ? (result.body as { error?: { code?: unknown; message?: unknown; details?: { box?: unknown } & Record<string, unknown> } } | null)?.error : undefined);
+    return error && typeof error.message === "string" ? { message: error.message, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined } : undefined;
   }, [result]);
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
@@ -83,24 +88,27 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     if (!built.ok || !onSend || attachments.busy) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
-    setSending(false); setResult(r); setPane("response");
+    setSending(false); setResult(r); setPane("response"); setShowCode(true);
     // The run has its own copies: the next request starts with none picked.
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
-        <label className="flex items-center gap-2 text-[12px]">
-          <span className="caps text-muted-foreground">Agent</span>
-          <select aria-label="Agent" value={agentId} onChange={(e) => { setAgentId(e.target.value); setRevision(""); onAgent?.(e.target.value); }} className="h-10 max-w-full rounded-lg border bg-background px-3 text-sm">
-            {agents.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name}</option>)}
-          </select>
-        </label>
-
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+      <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+        <div className="flex min-w-0 items-center gap-2 text-[12px]">
+          <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
+          <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+            options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+        </div>
+        <span className="font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
+        <span className="flex-1" />
+        <span className="caps text-[11px] text-muted-foreground">Live API</span>
+        <button type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-[11px] text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</button>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
-        <section className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
+      {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
+        <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="text-[14px] font-semibold">Request</span>
             <span className="flex gap-4 text-[12px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
@@ -130,13 +138,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <FilePicker attachments={attachments} limits={limits} />
                 </Label>
                 <Label name="revision" note="Empty runs the current revision.">
-                  <select value={revision} onChange={(e) => setRevision(e.target.value)} className={field}>
-                    <option value="">The current revision</option>
-                    {revisions.map((r) => <option key={r.revision} value={r.revision}>rev {r.version}{r.current ? " (current)" : ""}{r.note ? `: ${r.note}` : ""}</option>)}
-                  </select>
+                  <Picker label="Revision" value={revision} onChange={setRevision} className="w-full"
+                    options={[{ value: "", label: "The current revision" }, ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` }))]} />
                 </Label>
                 <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
-                  <select aria-label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)} className={field}>{["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "Agent default"}</option>)}</select>
+                  <Picker label="Effort" value={effort} onChange={setEffort} className="w-full"
+                    options={["", ...efforts].map((value) => ({ value, label: value || "Agent default" }))} />
                 </Label>
                 {kind === "agentic" && (
                   <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
@@ -146,15 +153,15 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               </>
             )}
           </div>
-          <footer className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
             <span className="text-[12px] text-muted-foreground">Sends a real request to this server.</span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
-            <CodingAgentAction label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={!built.ok || !agentId || attachments.busy} />
-            <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+              <CodingAgentAction label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={!built.ok || !agentId || attachments.busy} />
+              <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
             </div>
           </footer>
         </section>
-        <section className="flex min-h-0 flex-col">
+        <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="flex gap-4 text-[13px]">
               <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-primary" : "border-transparent text-muted-foreground")}>Code</button>
@@ -174,6 +181,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               {refusal && (
                 <p className="border-b px-5 py-2.5 font-mono text-[12px] text-destructive-text md:px-6" role="alert">
                   The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
+                  <ToolBlockers agentId={agentId} details={refusal.details} />
                 </p>
               )}
               {result.runId && live ? (

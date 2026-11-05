@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import plugin from "tailwindcss/plugin";
 
 // The hosted AgentRun theme: shadcn's variables, orange accents and the same two fonts.
 const hsl = (name: string) => `hsl(var(--${name}) / <alpha-value>)`;
@@ -31,4 +32,7 @@ export default {
       },
     },
   },
+  // `short:`, a viewport too low for a page's every panel (a phone in landscape). A variant, not a screen: a raw screen
+  // would turn off the `max-*` variants, which need every screen to be a plain min-width.
+  plugins: [plugin(({ addVariant }) => addVariant("short", "@media (max-height: 500px)"))],
 } satisfies Config;

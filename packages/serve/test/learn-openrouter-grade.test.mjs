@@ -134,3 +134,19 @@ for (const model of ["openai/gpt-6-sol", "openrouter/openai/gpt-6-sol", undefine
     assert.deepEqual(refused, [], "nothing left loopback");
   });
 }
+
+// opencode takes codex's route (adapters.ts' codexModel and codexProvider), so its grade goes where codex's does: the
+// same names, the same model on the wire.
+for (const model of ["openai/gpt-6-sol", "openrouter/openai/gpt-6-sol", undefined]) {
+  const named = model ?? "the host's default";
+  test(`on OPENROUTER_API_KEY alone, an opencode grade (${named}) goes to OpenRouter with the run's key and model, and is graded`, { timeout: 60_000 }, async (t) => {
+    const gw = await startFauxGateway({ text: (r) => (isGrade(r) ? KEEP : "ok") });
+    t.after(() => gw.close());
+    const refused = toGatewayJevQuiet(t, gw.url);
+    const judged = await judgeProposal({ runId: "run_or_grade_opencode", agent: { instructions: "Answer the question.", harness: "opencode", ...(model ? { model } : {}) }, main: { active: [], superseded: [] }, proposed: [{ file: "check-units.md", text: UNITS }], env: { OPENROUTER_API_KEY: KEY }, signal: new AbortController().signal, gradeTimeoutMs: 30_000 });
+    assert.ok("verdict" in judged, `${named}: graded, not ${judged.reason}: ${judged.error?.message}`);
+    assert.equal(judged.verdict.merge, true, JSON.stringify(judged.verdict));
+    assert.deepEqual(graded(gw.requests), [["/api/v1/chat/completions", "", `Bearer ${KEY}`, null, CODEX_WIRE]]);
+    assert.deepEqual(refused, [], "nothing left loopback");
+  });
+}

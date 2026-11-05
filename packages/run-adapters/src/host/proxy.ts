@@ -16,6 +16,8 @@
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import { CONTENT_FILTERED } from "../types.js";
+import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -55,6 +57,14 @@ export interface ProviderPolicy {
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
+  /** Whether the provider stopped a completed answer on its content filter (a refusal), read from its text as `usageOf`
+   *  reads it, never by matching its words, and from `lineStarts`, the start of each of its last whole lines (16 KiB of
+   *  each, for a line longer than the text kept). Absent: the policy cannot tell, and no answer is read as stopped. */
+  filtered?(text: string, lineStarts: readonly string[]): boolean;
+  /** Whether a request is the turn's answer request (the client's own turn, which offers the model the session's tools),
+   *  and not a side call its client makes beside the turn (a title, a summary): only an answer request's content-filter
+   *  stop ends the turn; a side call's is logged and left to the client. Absent: every request is the turn's. */
+  answers?(body: Record<string, unknown>): boolean;
   /** Called once for each request the proxy forwards that the provider answers, as the answer starts. Requests overlap (a
    *  client's background calls run beside its turn), so what it keeps is for the sink to tell apart: each call returns its own
    *  observer. The observer is given each piece of the answer as text, BEFORE that piece is written to the client, so what it
@@ -80,6 +90,18 @@ export interface ProviderPolicy {
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
+  /** The reasoning tokens the body's request may bill that its response does not stream (a provider that streams only a
+   *  summary of its reasoning, or none): its effort's or its thinking's budget, else its output limit when it reasons at
+   *  an effort the body does not say. A stopped request counts them beside what streamed. Absent or 0: none. */
+  reasoningHidden?(body: Record<string, unknown>): number | undefined;
+  /** The bytes of reasoning one whole server-sent event of the response carries (a reasoning summary's or a thinking
+   *  delta's text, UTF-8), 0 for any other event. A stopped request subtracts what reached its client from the budget
+   *  `reasoningHidden` reads, so reasoning that streamed is not counted twice, and answer text never stands in for it. */
+  reasoningBytesOf?(event: string): number;
+  /** The bytes of content one whole server-sent event of the response carries: its text, reasoning and tool-call
+   *  arguments, UTF-8, never the framing around them (ids, indexes, sequence numbers). A stopped request counts what of
+   *  this reached its client, as pi counts the blocks it streamed. Absent: the bytes as sent. */
+  contentBytesOf?(event: string): number;
   /** The body `apply` returned with its output limited to `max` tokens, thinking included (what is left of a spend cap
    *  can buy): never more than it asked for, and never longer as sent, since its input bound was measured on it. A host
    *  that limits a request's output needs it: without it such a request is refused, never sent unlimited. */
@@ -97,9 +119,56 @@ export interface ModelUsageReport extends ProxyUsage {
   tableUsd?: number | null;
   /** The ids the response's headers gave it (`providerIdsOf`), when they came. */
   providerIds?: Record<string, string>;
-  /** A response its client left before its end (a stop), with the bytes of it the client was sent: what streamed. Not
-   *  set for one the provider ended early (an error part way), nor for one the client read whole. */
+  /** A response its client left before its end (a stop), with what of it the client was sent: the content of its events
+   *  (text, reasoning, tool arguments, UTF-8 bytes) where the policy reads it (`contentBytesOf`), else the bytes as sent.
+   *  Not set for one the provider ended early (an error part way), nor for one the client read whole. */
   stoppedAfterBytes?: number;
+  /** A stopped response's reasoning budget, as the policy reads it from the body (`reasoningHidden`): reasoning that
+   *  streams only as a summary, or not at all. Set only with `stoppedAfterBytes`, and only when above 0. */
+  stoppedHiddenTokens?: number;
+  /** The bytes of reasoning the client was sent of a stopped response (its summary or thinking deltas, by the policy's
+   *  `reasoningBytesOf`), set with `stoppedHiddenTokens`. The host counts the budget less these, max(0, budget - these),
+   *  beside `stoppedAfterBytes`. */
+  stoppedReasoningBytes?: number;
+}
+
+/** The longest a response's text may run with no event boundary before the reasoning count lets it go (a body that is
+ *  not a stream of events, read whole as one). */
+const EVENT_MAX_CHARS = 1 << 22;
+
+/** What of a response reached its client, event by event: each whole server-sent event (up to a blank line) read by
+ *  each of `readers`, its bytes added to that reader's sum; a reader the policy does not have counts none. */
+function eventCounter<K extends string>(readers: Record<K, ((event: string) => number) | undefined>): { push(text: string): void; bytes(of: K): number } {
+  const keys = (Object.keys(readers) as K[]).filter((key) => readers[key] !== undefined);
+  const sums = Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
+  let pending = "";
+  /** A "\r" the last piece ended on: the first half of a "\r\n" the next piece ends. */
+  let cr = "";
+  return {
+    push(text) {
+      if (!keys.length) return;
+      // A line end split between pieces ("\r" here, "\n" in the next) is joined before "\r\n" becomes "\n", or the two
+      // events around a split blank line would read as one, which no policy can parse.
+      let piece = cr + text;
+      cr = piece.endsWith("\r") ? "\r" : "";
+      if (cr) piece = piece.slice(0, -1);
+      pending += piece.replace(/\r\n/g, "\n");
+      for (let at = pending.indexOf("\n\n"); at >= 0; at = pending.indexOf("\n\n")) {
+        const event = pending.slice(0, at);
+        pending = pending.slice(at + 2);
+        for (const key of keys) {
+          try {
+            const n = readers[key]!(event);
+            if (typeof n === "number" && Number.isFinite(n) && n > 0) sums[key] += n;
+          } catch {
+            // An event the policy cannot read carries nothing it counts.
+          }
+        }
+      }
+      if (pending.length > EVENT_MAX_CHARS) pending = "";
+    },
+    bytes: (of) => sums[of] ?? 0,
+  };
 }
 
 /** A paid request as the host is asked about it, before it leaves. */
@@ -118,8 +187,9 @@ export interface ModelProxyHooks {
    *  `afterRequest`, since requests may be in flight together. A ticket's `outputTokensMax` limits the request's output
    *  (thinking included) to that many tokens, written into its body by the policy's `limitOutput` before it is sent. */
   beforeRequest(request: ProxyRequest): Promise<unknown>;
-  /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
-  afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
+  /** When a request's response has completed, with its usage, the ticket its `beforeRequest` returned, and how it ended
+   *  (booking.ts), which the runner books it by: one rule for every path. */
+  afterRequest(usage: ModelUsageReport, ticket?: unknown, ended?: Ended): Promise<void>;
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
    *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
   responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
@@ -148,6 +218,9 @@ export interface ModelProxyOptions {
   headers?: Readonly<Record<string, string>>;
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
+  /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
+   *  (`ProviderPolicy.filtered`): the harness halts the turn with it, before its client asks for the answer again. */
+  onFiltered?: (message: string) => void;
 }
 
 /** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
@@ -179,6 +252,13 @@ const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** How much of a response's start and end the proxy keeps to read its usage from. */
 const USAGE_WINDOW = 64 * 1024;
+/** How long an answer the provider stopped on its content filter is still read after its client left, or the proxy began
+ *  to close, so the request is booked at the usage its end reports; past it, it is cut off as any other. */
+const FILTERED_DRAIN_MS = 5_000;
+/** How much of the start of each line of an answer the proxy keeps, for its last LINE_STARTS whole lines: an event's name
+ *  and the first fields of its data, which a stop can be read from when the event's line is longer than either window. */
+const LINE_START = 16 * 1024;
+const LINE_STARTS = 4;
 
 /** A response header that names the request: the provider's `request-id` (`x-request-id`), or a gateway's own call id
  *  (LiteLLM's `x-litellm-call-id`, the id its spend log records; `llm_provider-request-id`, the provider's passed on). */
@@ -351,6 +431,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const origin = baseOf(options.origin);
   const refusedStatus = policy.refusedStatus ?? 400;
   const inflight = new Set<AbortController>();
+  /** The requests whose answer the provider stopped on its content filter, read on for their usage, each until booked. */
+  const draining = new Map<AbortController, Promise<void>>();
   /** Set by close(): nothing is admitted or sent after it. */
   let closing = false;
 
@@ -432,9 +514,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
     let outputTokensAsked: number | undefined;
     let outputTokensLeast: number | undefined;
+    /** The reasoning a stop of this request leaves unseen (the policy's `reasoningHidden`), in tokens. */
+    let hiddenTokens = 0;
+    /** The content and the reasoning the client was sent, by the policy's reading of each event (content: text,
+     *  reasoning and tool arguments; reasoning: what of its reasoning streamed). */
+    const sentOf = eventCounter({ content: policy.contentBytesOf?.bind(policy), reasoning: policy.reasoningBytesOf?.bind(policy) });
     try {
       outputTokensAsked = figure(policy.outputAsked?.(body));
       outputTokensLeast = figure(policy.outputLeast?.(body));
+      hiddenTokens = figure(policy.reasoningHidden?.(body)) ?? 0;
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not read the body's output; its worst case is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       inputTokensMax = undefined;
@@ -505,15 +593,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     const controller = new AbortController();
     inflight.add(controller);
+    /** Set once the provider's content-filter stop was told: the answer is read on to its end for its usage, though the
+     *  client (whose turn the harness ends) goes away. */
+    let keepReading = false;
     /** That the client left before the answer reached it whole (the harness stopped the request). */
     let clientLeft = false;
-    /** The bytes of the answer the client was sent. */
+    /** The bytes of the answer the client was sent (and, for one read on after its content-filter stop, read after its
+     *  client left: what the provider streamed). */
     let sentBytes = 0;
     /** That the answer ended because its client left part way, not because the provider or this proxy ended it. */
     let stoppedByClient = false;
     res.on("close", () => {
       if (!answered) clientLeft = true;
-      controller.abort();
+      if (!keepReading) controller.abort();
     });
     let head = "";
     let tail = "";
@@ -521,11 +613,59 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** The provider's answer, once it reached the client whole. */
     let answered: { ok: boolean } | undefined;
     /** That the provider's answer began, with its status: what a client that left before the end had of it. */
-    let began: { ok: boolean } | undefined;
+    let began: { ok: boolean; status: number } | undefined;
+    /** The code of the provider's fetch failing before any response (rejectionCode): a connect-phase one never left. */
+    let failedCode: string | undefined;
     let watchEnd: (() => void) | undefined;
     /** The ids its headers gave it. */
     let ids: Record<string, string> | undefined;
     let reported: number | undefined;
+    /** Whether the provider's content-filter stop was read (once an answer). */
+    let filteredTold = false;
+    /** Whether this request is the turn's answer request (`ProviderPolicy.answers`): a side call's stop ends nothing. */
+    let answering = true;
+    try {
+      answering = policy.answers ? policy.answers(body) : true;
+    } catch (error) {
+      say(`model proxy (${policy.id}): whether the request is the turn's could not be read; taken as the turn's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    }
+    /** Called once the request is booked, when its answer was read on after its stop (the proxy's close waits for it). */
+    let drained: (() => void) | undefined;
+    const settled = (): void => {
+      if (!drained) return;
+      draining.delete(controller);
+      drained();
+    };
+    /** The start of the line being read (LINE_START) and of the last whole lines (LINE_STARTS). */
+    let lineStart = "";
+    let lineLength = 0;
+    const starts: string[] = [];
+    /** Tells the harness the provider stopped this answer on its content filter, when `text` (the answer so far, or the
+     *  kept window of it) says so: once, and never failing the answer. */
+    const tellFiltered = (text: string): void => {
+      if (filteredTold || !policy.filtered) return;
+      let stopped = false;
+      try {
+        stopped = policy.filtered(text, starts);
+      } catch (error) {
+        say(`model proxy (${policy.id}): whether the provider's content filter stopped the answer could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+      if (!stopped) return;
+      filteredTold = true;
+      if (!answering) {
+        say(`model proxy (${policy.id}): the provider stopped a side call on its content filter; left to the client`);
+        return;
+      }
+      say(`model proxy (${policy.id}): the provider stopped the answer on its content filter`);
+      // Read on to the answer's end for its usage, though the client goes; the proxy's close waits for it, bounded.
+      keepReading = true;
+      draining.set(controller, new Promise<void>((resolve) => (drained = resolve)));
+      try {
+        options.onFiltered?.(CONTENT_FILTERED);
+      } catch (error) {
+        say(`model proxy (${policy.id}): onFiltered threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+    };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
@@ -546,7 +686,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           say(`model proxy (${policy.id}): responded threw; the request's ids are kept with its booking only`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }
       }
-      began = { ok: upstream.ok };
+      began = { ok: upstream.ok, status: upstream.status };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
       let watcher: { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
@@ -570,8 +710,27 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
               watcher = undefined;
             }
           }
-          // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
-          if (!res.write(chunk)) {
+          // The provider's content-filter stop, read before the client has the piece that carries it: the harness ends the
+          // turn before its client acts on the stop (asks for the refused answer again, or ends the turn its own way).
+          // A line longer than the window is read as it ends, from its start, while the lines just before it (an event's
+          // name) are still the last starts kept: a piece may carry the lines after it too.
+          const window = (tail + text).slice(-USAGE_WINDOW);
+          const lines = text.split("\n");
+          for (let at = 0; at < lines.length; at++) {
+            if (lineStart.length < LINE_START) lineStart += lines[at]!.slice(0, LINE_START - lineStart.length);
+            lineLength += lines[at]!.length;
+            if (at < lines.length - 1) {
+              starts.push(lineStart);
+              if (starts.length > LINE_STARTS) starts.shift();
+              if (upstream.ok && lineLength > USAGE_WINDOW) tellFiltered(window);
+              lineStart = "";
+              lineLength = 0;
+            }
+          }
+          if (upstream.ok && lines.length > 1) tellFiltered(window);
+          // A client that reads slowly holds the provider back: nothing more is read until what was written drains. A
+          // client gone after the stop was told is written nothing more: the answer is read on for its usage alone.
+          if (!res.destroyed && !res.write(chunk)) {
             // One wait, and nothing left behind: whichever comes first takes both listeners off.
             await new Promise<void>((resolve) => {
               const done = () => { res.off("drain", done); res.off("close", done); resolve(); };
@@ -582,6 +741,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           // The usage is at the start, the end, or both: keep those, not the whole answer.
           length += text.length;
           sentBytes += chunk.byteLength;
+          sentOf.push(text);
           if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
           tail = (tail + text).slice(-USAGE_WINDOW);
         }
@@ -590,7 +750,11 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       answered = { ok: upstream.ok };
     } catch (error) {
       // Its client had left before this (a stop): read now, as the proxy's own end below closes the response too.
-      stoppedByClient = clientLeft && began?.ok === true;
+      // Before any header too: the request left, and the provider may have begun it, as a stop part way. Only this proxy's
+      // abort ends a stop: an answer read on after its client left (its content-filter stop) that the provider ends with
+      // an error is no stop.
+      stoppedByClient = clientLeft && (began === undefined || began.ok) && controller.signal.aborted;
+      if (!began) failedCode = rejectionCode(error);
       say(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
       else res.destroy();
@@ -603,7 +767,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // when the answer is whole and says them; nothing for a provider's error answer; an unknown cost for an answer
     // cut short, one that said no usage, or a usage or a price that could not be read. A booking that fails is
     // reported (the runner stops the node on it).
-    if (route.free) return;
+    if (route.free) return settled();
     let usage: ProxyUsage | undefined;
     let usd: number | null = null;
     // Whether `usd` is a figure the provider gave (an error answer's nothing included), not one this proxy made up.
@@ -612,14 +776,23 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // A client may leave once it has read the response's usage (Codex does, at the completion event) while the provider
     // still holds the stream open: what was read of a successful answer is read for its usage as a whole one is. With none
     // in it, the cost is unknown, as for any answer cut short.
-    const seen = answered ?? (began?.ok ? began : undefined);
+    // An error answer cut part way is still an error answer: its status says it was not paid.
+    const seen = answered ?? began;
     if (!seen) {
       usage = { input: 0, output: 0, cacheRead: 0 };
+      // A request refused at connect never left: it costs nothing. Anything else may have reached the provider.
+      if (isConnectCode(failedCode)) {
+        usd = 0;
+        own = true;
+      }
     } else if (!seen.ok) {
-      // A provider's error answer was not a paid response: it costs nothing.
+      // A provider's error answer was not a paid response: it costs nothing. But a gateway's 504 or 524 says only that
+      // the gateway gave up: the provider was still at work, and bills it.
       usage = { input: 0, output: 0, cacheRead: 0 };
-      usd = 0;
-      own = true;
+      if (!isGatewayTimeout(began?.status ?? 0)) {
+        usd = 0;
+        own = true;
+      }
     } else {
       let unread = false;
       try {
@@ -648,11 +821,24 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     try {
       // A response its client stopped and whose cost is unknown says what streamed of it, for the host to count it by.
-      const stopped = stoppedByClient && usd === null ? { stoppedAfterBytes: sentBytes } : {};
-      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}), ...stopped }, ticket);
+      // With the reasoning it never streamed, which the provider can have billed too.
+      // What it streamed: its content where the policy reads it, never the provider's framing; else the bytes as sent.
+      const streamed = policy.contentBytesOf ? sentOf.bytes("content") : sentBytes;
+      const stopped = stoppedByClient && usd === null ? { stoppedAfterBytes: streamed, ...(hiddenTokens > 0 ? { stoppedHiddenTokens: hiddenTokens, stoppedReasoningBytes: sentOf.bytes("reasoning") } : {}) } : {};
+      // How it ended, for the runner to book it by (booking.ts). A stop counts what the stop fields above say of it: its
+      // content, and the part of its hidden reasoning budget that did not stream, max(0, budget - the reasoning sent).
+      const ended: Ended = stoppedByClient && usd === null ? { end: "stopped", streamedTokens: streamed + Math.max(0, hiddenTokens - sentOf.bytes("reasoning")) }
+        : !seen ? (isConnectCode(failedCode) ? { end: "nothing", label: "never_left" } : { end: "lost", label: "error_before" })
+        : !seen.ok ? (isGatewayTimeout(began?.status ?? 0) ? { end: "lost", label: "gateway_timeout" } : { end: "nothing", label: "status" })
+        : !answered && usd === null ? { end: "lost", label: "error_after", began: true }
+        : { end: "answered", usd, ...(filteredTold ? { label: "filtered" as const } : {}) };
+      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}), ...stopped }, ticket, ended);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // An answer whose stop no piece showed before it ended (a whole JSON body): read whole once it is booked.
+    if (seen?.ok) tellFiltered(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`);
+    settled();
   };
 
   const server = createServer((req, res) => { void serve(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed", req); else res.destroy(); }); });
@@ -667,7 +853,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     key,
     close: async () => {
       closing = true;
-      for (const c of inflight) c.abort();
+      for (const c of inflight) if (!draining.has(c)) c.abort();
+      // An answer the provider stopped on its content filter is read on to its end and booked first, for FILTERED_DRAIN_MS.
+      if (draining.size) {
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([Promise.all(draining.values()), new Promise<void>((resolve) => (timer = setTimeout(resolve, FILTERED_DRAIN_MS)))]);
+        clearTimeout(timer);
+        for (const c of inflight) c.abort();
+      }
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },

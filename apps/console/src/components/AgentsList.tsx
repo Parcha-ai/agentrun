@@ -26,8 +26,9 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <label className="flex h-11 min-w-0 flex-1 items-center gap-3 rounded-lg border px-3">
           <Search className="size-4 text-muted-foreground" aria-hidden />
+          {/* On a narrow portrait screen only its first letter fitted: there the magnifier says it, and the name stays. */}
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents by name or description..." aria-label="Search agents"
-            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
+            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground max-sm:portrait:placeholder:text-transparent" />
         </label>
         <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>
       </div>

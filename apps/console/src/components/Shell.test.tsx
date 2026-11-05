@@ -101,3 +101,34 @@ describe("Shell's theme switch", () => {
     expect(pick("Dark").getAttribute("aria-pressed")).toBe("true");
   });
 });
+
+// On a short screen (a phone on its side, 844x390) the sidebar is taller than the window: it scrolls, so Sign out at its
+// foot is always reachable.
+describe("Shell's sidebar on a short screen", () => {
+  it("scrolls navigation while keeping Sign out reachable at its foot", () => {
+    const { host } = mount();
+    const aside = host.querySelector("aside")!;
+    const navigation = aside.querySelector('nav[aria-label="Navigation"]')!;
+    const signOut = [...aside.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Sign out")!;
+    expect(aside.className.split(" ")).toContain("md:h-dvh");
+    expect(navigation.className.split(" ")).toEqual(expect.arrayContaining(["min-h-0", "flex-1", "overflow-y-auto"]));
+    expect(navigation.contains(signOut)).toBe(false);
+    expect(signOut.parentElement?.className.split(" ")).toContain("shrink-0");
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Navigation"]')!.click());
+    expect(aside.className.split(" ")).toEqual(expect.arrayContaining(["max-h-[60dvh]", "overflow-y-auto"]));
+  });
+});
+
+describe("Shell's navigation", () => {
+  const items = (schedules?: boolean) => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(Shell, { active: "schedules", schedules, children: "page" })));
+    return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
+  };
+  it("offers Schedules where the server has them, after Runs, and not where it does not", () => {
+    expect(items(true)).toEqual(["Mission Control", "API playground", "Agents", "Build", "Connected agents", "Runs", "Schedules", "Agent Dojo"]);
+    act(() => root?.unmount());
+    expect(items(false)).toEqual(["Mission Control", "API playground", "Agents", "Build", "Connected agents", "Runs", "Agent Dojo"]);
+  });
+});

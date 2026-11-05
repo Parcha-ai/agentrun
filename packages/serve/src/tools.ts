@@ -1,13 +1,17 @@
 // The tools a revision may name here: one closed table. Each entry is how the run's process binds the name and which
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
 // The file tools and `bash` bind from the run's coding source (coding-tools.ts): on the runner, pi's coding tools
-// without `bash`, so a run gets no shell on this machine; in a box, pi's four, each call made in the box. `bash` may be
+// without `bash`, so a run gets no shell on this machine; in a box, pi's four and the background tools (bash_background,
+// bash_output, bash_input, bash_signal, bash_list), each call made in the box. `bash` and the background tools may be
 // named only by an agent whose place is a box (runnable.ts).
 import type { TSchema } from "@earendil-works/pi-ai";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
+import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import type { CodingSource } from "./coding-tools.js";
 import { writeInWork } from "./workspace.js";
 import { FETCH_PAGE_TOOL, fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./fetch-page.js";
@@ -18,15 +22,20 @@ import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger } from "./paid-calls.js";
+import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, capabilityOf, explainsView, isUnavailable, NO_PARALLEL_KEY, permissionsOf, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { defaultPermission, permissionOf } from "./tool-gate.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
+import { handedSignIn } from "./secrets.js";
+import { SIGN_IN_KEY, SIGN_IN_SAVED } from "./sign-ins.js";
 
 export const ASK_TOOL = "ask_person";
-/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
- *  Browserbase's (the tests' fake backend). */
+/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
+ *  environment, the vendor its plane names (`browserbase`, `kernel`) and the saved sign-in it was handed for that
+ *  vendor (`{ provider, ref, save }`, or undefined), in place of that vendor's (the tests' fake backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
@@ -161,32 +170,114 @@ export const evidenceIn = (work: string) => {
   };
 };
 
-/** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
- *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go. */
+/** The Browserbase contexts a run's browser may open: its agent's saved sign-in's alone, by its profile name, never one
+ *  made here (nothing a run makes is kept for its agent). */
+export const keptContexts = (ref: string | undefined) => ({
+  clear: false,
+  resolve: async (key: string) => {
+    if (ref && key.endsWith(`|profile:${SIGN_IN_KEY}`)) return ref;
+    throw new Error("this run's browser has no saved sign-in to open");
+  },
+});
+
+/** Kernel's provider, opening the agent's saved profile (`ref`, its name at Kernel) where a session asks for the
+ *  profile `default`: the policy, the session's record and the model see only that name. */
+export const keptProfile = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, ref: string): P => ({
+  ...provider,
+  create: (spec, signal) => provider.create(spec.profile?.name === SIGN_IN_KEY ? { ...spec, profile: { ...spec.profile, name: ref } } : spec, signal),
+});
+
+/** `provider`, its sessions' profile as this launch was handed it, whatever the policy a conversation was made with (a
+ *  follow-up's was made under an earlier launch, which may have had no sign-in, or another lease): with a sign-in, every
+ *  session opens on the profile `default`, saving only as `kept.save` says; without one, none asks for a profile. */
+export const asHanded = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, kept: { save: boolean } | undefined): P => ({
+  ...provider,
+  create: (spec, signal) => provider.create(kept ? { ...spec, profile: { name: SIGN_IN_KEY, save: kept.save } } : spec.profile ? { ...spec, profile: undefined } : spec, signal),
+});
+
+/** Whether a session's change is one that saved to the run's sign-in, in a run that saves (every session of it runs on
+ *  the profile, asHanded, whatever its record names): let go by the run (its tool, its idle time, a relaunch, its close,
+ *  its end), never one the vendor had already lost or never made. */
+export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null } }, change: string): boolean =>
+  change === "released" && row.session.resourceId !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
+
+/** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
+ *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
+ *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
+ *  lives in the run's own store. No recording and no live view; a session the run still holds is released when the run
+ *  is let go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
+ *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). A run handed its agent's
+ *  saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the profile `default`,
+ *  saving only where it holds the agent's save lease; one that saved says so in its run directory. */
 const browserTool: ToolEntry = {
-  summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
-  needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+  summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
+  // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
+  needs: [],
   nodes: true,
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
     ]);
+    const vendor = planeOf(host.env).browser ?? "browserbase";
+    const refused = isUnavailable(vendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(vendor)}.`)) : undefined;
+    const handed = handedSignIn();
+    const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
-      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv) => { provider: unknown; driver: unknown } }).default(host.env)
-      : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
-    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
-    const extension = browser.extension as unknown as Extension;
+      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string, signIn?: typeof kept) => { provider: unknown; driver: unknown } }).default(host.env, vendor, kept)
+      : {
+          provider: refused
+            ? undefined
+            : vendor === "kernel"
+              ? ((kernel) => (kept ? keptProfile(kernel, kept.ref) : kernel))((await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }))
+              : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env, profiles: keptContexts(kept?.ref) }),
+          driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
+        };
+    // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
+    const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
+    const provider = () => {
+      if (refused) throw refused;
+      return handedProvider as never;
+    };
+    // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
+    const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
+    const price = browserPrice(providerName, host.env);
+    const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
+    // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
+    // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
+    const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
+    const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
+    // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
+    const saved = kept?.save
+      ? { onSession: (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 })) }
+      : {};
+    // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
+    // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, redact: { values: () => (kept ? [kept.ref] : []) }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
+    const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
-      Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy: DEFAULT_BROWSER_POLICY });
+      // The profile is the host's choice, never the model's: the agent's one sign-in, when the run was handed it.
+      const policy = kept ? { ...DEFAULT_BROWSER_POLICY, profile: { name: SIGN_IN_KEY, save: kept.save } } : DEFAULT_BROWSER_POLICY;
+      Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy });
     });
-    host.beforeResume(async (harness) => void (await browser.reconcile(harness as never, () => true, context)));
+    host.beforeResume(async (harness) => {
+      // Its charges move what the process counts once each is committed, reconcile's own among them.
+      spend.watch(harness, (browser.docs.Inventory as unknown as { definition: { kind: string } }).definition.kind);
+      // With its vendor's key gone there is no session to reconcile or release from here: each would only fail.
+      if (refused) return;
+      // Every session custody still tracks across a restart is held from here; one kept is released an idle window on
+      // unless a call uses it.
+      await browser.reconcile(harness as never, () => true, context);
+      await spend.reopened(harness, browser.docs, context);
+    });
     host.beforeRelease(async (harness) => {
+      if (refused) return;
       const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
       for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
         const conversation = await harness.conversation(id as never, context);
@@ -194,7 +285,7 @@ const browserTool: ToolEntry = {
       }
       await browser.drain(harness as never, context);
     });
-    return { tools: browser.tools as unknown as readonly ToolRegistration[], extensions: [extension] };
+    return { tools, extensions: [extension] };
   },
 };
 
@@ -203,6 +294,12 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   write: fileTool("write", "Write a file in the run's work/."),
   edit: fileTool("edit", "Edit a file in the run's work/."),
   bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 300 s unless the call names a timeout.", true),
+  // The background tools (background.ts): each call a short command in the run's box, on bash's environment.
+  bash_background: fileTool("bash_background", `Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe, and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
+  bash_output: fileTool("bash_output", `Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
+  bash_input: fileTool("bash_input", "Write text to a running background process's stdin, and close it if asked. Sandbox only.", true),
+  bash_signal: fileTool("bash_signal", "Send TERM, INT or KILL to a background process's process group. Sandbox only.", true),
+  bash_list: fileTool("bash_list", "List the run's background processes: id, state or exit code, output size and command. Sandbox only.", true),
   [ASK_TOOL]: {
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
@@ -243,11 +340,28 @@ export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) =>
  *  still saves and runs, though the table lists it no more. */
 export const allows = (allowed: readonly string[], name: string): boolean => allowed.includes(capabilityOf(name));
 
-/** The tools a run's learned workflow draft may name (learn/check.ts): those of the agent's `granted` tools a workflow's
- *  model or call node runs here (NODE_TOOLS, CALL_TOOLS), each as granted and by its capability's name. A harness's own
- *  tool (Bash, exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
-export const learnedWorkflowTools = (granted: readonly string[]): string[] =>
-  [...new Set(granted.filter((name) => allows(NODE_TOOLS, name) || allows(CALL_TOOLS, name)).flatMap((name) => [name, capabilityOf(name)]))];
+/** The tools a run's learned workflow may name (learn/check.ts at learn time, learned-workflow.ts at a call): those of the
+ *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS), each as granted and by its capability's name,
+ *  and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name does not run either). A
+ *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
+ *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
+export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane): string[] =>
+  [...new Set(granted.filter((name) => allows(CALL_TOOLS, name) && !isUnavailable(plane?.[capabilityOf(name) as Pickable])).flatMap((name) => [name, capabilityOf(name)]))];
+
+/** The tools a learned draft may name (learnedWorkflowTools) that the gate allows: `permission` is what the gate holds a
+ *  tool to now (tool-gate.ts permissionOf, or the run's gate's policy), by its capability's settings key, as the gate
+ *  holds a legacy name. One set to ask or deny is left out of `tools`, so the end-of-run prompt never offers it, and named
+ *  in `gated` with its setting, which the checker and a learned workflow's check before it runs refuse a draft for. */
+export const learnedDraftTools = (granted: readonly string[], permission: (name: string) => string, plane?: Plane): { tools: string[]; gated: Record<string, string> } => {
+  const gated: Record<string, string> = {};
+  const tools = learnedWorkflowTools(granted, plane).filter((name) => {
+    const setting = permission(capabilityOf(name));
+    if (setting === "allow") return true;
+    gated[name] = setting;
+    return false;
+  });
+  return { tools, gated };
+};
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
  *  `via: "tool"` (`tool`). */
@@ -304,8 +418,11 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  sets none), the default, and what it resolves to on each harness under the server's `settings`: available where any
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
  *  (`reason`). `noBox`: why no box can run a sandbox-only tool here (place.ts noBoxReason), which leaves it
- *  unavailable with that reason; undefined, a box can. */
-export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string) => {
+ *  unavailable with that reason; undefined, a box can. `refused`: the variables of the keys this server was started with
+ *  that their provider refused at the start (ToolKeys.refused), each with why: a tool that needs one is unavailable,
+ *  saying that. Each tool also gives its permission under the server's settings (tool-gate.ts), the owner's default
+ *  and the permissions it may be set to. */
+export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}) => {
   const views = explainsView(env, settings);
   const picked = withDefaults(settings);
   return Object.entries(TOOLS).map(([name, entry]) => {
@@ -313,10 +430,14 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     const plane = view?.resolves;
     const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
     const boxless = entry.sandboxOnly ? noBox : undefined;
-    const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined;
+    // The browser needs the keys of the vendor it resolves to: one refused at the start leaves it unavailable, never on the
+    // other vendor, as a refused Parallel key never moves web_search elsewhere.
+    const needs = name === "browser" ? [...new Set(Object.values(plane ?? {}).flatMap(browserNeeds))] : entry.needs;
+    const refusal = needs.map((name) => (Object.hasOwn(refused, name) ? refused[name] : undefined)).find((why) => why !== undefined);
+    const available = (plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0) && boxless === undefined && refusal === undefined;
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
-    const reason = available ? undefined : boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${missing.join(", ")}`);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${missing.join(", ")}`);
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], permission: permissionOf(name, settings as never), default_permission: defaultPermission(name), permissions: [...permissionsOf(name)], ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
 };

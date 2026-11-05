@@ -6,7 +6,7 @@ import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { importAgentsPrompt } from "@/lib/codingAgentPrompts";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
-import type { ToolChoice } from "@/lib/toolSettings";
+import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
 
@@ -45,7 +45,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
 
 /** One agent's editor on the live server. Each save is made on the revision the editor loaded (its ETag as If-Match):
  *  when another save landed first, the server refuses it and the editor shows the conflict. */
-export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Client; caps: EditorCaps; choices?: ToolChoice[]; agentId: string | null; go: (hash: string) => void }) {
+export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, agentId, go }: { v2: Client; caps: EditorCaps; choices?: ToolChoice[]; gates?: ToolGate[]; focusTool?: string; agentId: string | null; go: (hash: string) => void }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [etag, setEtag] = useState<string | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
@@ -89,12 +89,12 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
-    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => void load()}
+    <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} permissionGates={gates} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => void load()}
       onSave={async (fields, note) => {
         let saved;
         try {
           if (!agent) {
-            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, decisionProvider: caps.decisionProvider }));
+            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
             go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;

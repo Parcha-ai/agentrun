@@ -1,13 +1,13 @@
-import { Brain, ChevronDown, Code, Hammer, History, LayoutGrid, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
+import { Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { DojoIcon } from "@/components/DojoIcon";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "settings";
+export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "schedules" | "settings";
 
-const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", settings: "#/settings/keys" };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", schedules: "#/schedules", settings: "#/settings/keys" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
@@ -37,11 +37,11 @@ export function Wordmark() {
   </span>;
 }
 
-export type ShellProps = { active: Section; settings?: boolean; building?: boolean; onBuild?: () => void; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode };
+export type ShellProps = { active: Section; settings?: boolean; schedules?: boolean; banners?: ReactNode; building?: boolean; onBuild?: () => void; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode };
 
 /** The hosted console's workspace shell, with only destinations this server supports. The logo row aligns with
  * the 48px page toolbar. Agent creation, management and history share the expandable Agents section. */
-export function Shell({ active, settings = false, building = false, onBuild, onNavigate, onSignOut, children }: ShellProps) {
+export function Shell({ active, settings = false, schedules = false, banners, building = false, onBuild, onNavigate, onSignOut, children }: ShellProps) {
   const [open, setOpen] = useState(false);
   const [agentsExpanded, setAgentsExpanded] = useState(true);
   const agentsActive = active === "agents" || active === "runs";
@@ -73,6 +73,7 @@ export function Shell({ active, settings = false, building = false, onBuild, onN
                 <button type="button" className={navStyle(active === "runs", true)} aria-current={active === "runs" ? "page" : undefined} onClick={() => navigate("runs")}><History className="size-3.5 shrink-0" aria-hidden />Runs</button>
               </div>
             </div>
+            {schedules && <button type="button" className={navStyle(active === "schedules")} aria-current={active === "schedules" ? "page" : undefined} onClick={() => navigate("schedules")}><CalendarClock className="size-4 shrink-0" aria-hidden />Schedules</button>}
             <button type="button" className={navStyle(active === "dojo")} aria-current={active === "dojo" ? "page" : undefined} onClick={() => navigate("dojo")}><DojoIcon size={16} className="shrink-0" />Agent Dojo</button>
           </div>
           {settings && <div data-sidebar-account className="mt-auto border-t pb-2 pt-3">
@@ -86,6 +87,7 @@ export function Shell({ active, settings = false, building = false, onBuild, onN
       </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
+        {banners}
         <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
       </div>
     </div>

@@ -8,13 +8,10 @@ import { type Client, follow, problemOf } from "@/lib/client";
 import { when } from "@/lib/format";
 import { learningSteps } from "@/lib/learning";
 import { NO_MESSAGES, runState } from "@/lib/runState";
-import { latest } from "@/lib/viewing";
+import { latest, pause, TRIES_MS } from "@/lib/viewing";
 import { useLearningSettle } from "@/lib/useLearningSettle";
 import type { Run, TimelineRow } from "@/lib/v2";
 
-/** When the run's record is read again after its status moved: at once, then twice more after these pauses. */
-const TRIES_MS = [0, 250, 1000];
-const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** An agent's latest run as the run page shows it: its status, its timeline followed from the cursor while it goes, and
  *  a link to the whole run. When a timeline page names a status or state the run's record does not, the record is read
