@@ -14,14 +14,32 @@
 // file's text, and the mark goes. Each `run` is noted in `made.jsonl`, `pulledInRun` when Docker had no image then, as
 // Docker would pull it there, inside the call; for the server's own image (`agentrun-box:*`), which no registry has, that
 // pull fails, and `run` with it, in Docker's words.
-// `info` answers as a daemon on this Linux machine (its kernel), or as `docker-info` says.
+// `info` answers as a daemon on this Linux machine (its kernel), or as `docker-info` says, or, with `docker-runtime` naming
+// one of RUNTIMES, as that runtime's daemon does, each field of `--format` filled in from its own `docker info` (quoted
+// from each runtime's own pasted output: see RUNTIMES).
+// Named volumes (`volume create`, `inspect`, `rm`) are directories under `volumes/`, their options and labels noted in
+// `volumes.jsonl`; a `--mount type=volume` maps its target there. A container may have a `--name`, which `inspect`, `logs`
+// and `rm` take as well as its id (a second with a taken name is refused, as Docker refuses it). The proxy container (label
+// `agentrun.egress`) is RUN here: its `node` command, its mounts mapped, in a process group of its own, its output its
+// `docker logs`, with `--import $FAKE_DOCKER_EGRESS_PRELOAD` when that is set (the tests' fake network); `rm` kills it.
+// `ps --all` lists stopped containers too.
 // An `exec` of the box's network relay (socat) is noted, never run here (`no-socat`, `no-setsid` or `relay-dead` in the
 // state directory: an image without one, or a relay that never listened).
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { constants, release } from "node:os";
 import { join } from "node:path";
+
+/** What each runtime's `docker info` says, field by field, as its users pasted it: Docker Desktop for Mac
+ *  (docker/for-mac#7791), OrbStack (orbstack/orbstack#1902), colima (abiosoft/colima#1450), Rancher Desktop on a Mac
+ *  (rancher-sandbox/rancher-desktop#9866). */
+export const RUNTIMES = {
+  "docker-desktop": { OSType: "linux", KernelVersion: "6.10.14-linuxkit", DockerRootDir: "/var/lib/docker", OperatingSystem: "Docker Desktop", Name: "docker-desktop" },
+  orbstack: { OSType: "linux", KernelVersion: "6.13.7-orbstack-00283-g9d1400e7e9c6", DockerRootDir: "/var/lib/docker", OperatingSystem: "OrbStack", Name: "orbstack" },
+  colima: { OSType: "linux", KernelVersion: "6.8.0-64-generic", DockerRootDir: "/var/lib/docker", OperatingSystem: "Ubuntu 24.04.2 LTS", Name: "colima" },
+  "rancher-desktop": { OSType: "linux", KernelVersion: "6.6.119-0-virt", DockerRootDir: "/var/lib/docker", OperatingSystem: "Alpine Linux v3.23", Name: "lima-rancher-desktop" },
+};
 
 const state = process.env.FAKE_DOCKER_STATE;
 if (!state) {
@@ -34,7 +52,8 @@ mkdirSync(containers, { recursive: true });
 appendFileSync(join(state, "argv.jsonl"), `${JSON.stringify(args)}\n`);
 
 const file = (id) => join(containers, `${id}.json`);
-const read = (id) => (existsSync(file(id)) ? JSON.parse(readFileSync(file(id), "utf8")) : undefined);
+const byId = (id) => (/^[0-9a-f]{64}$/.test(id) && existsSync(file(id)) ? JSON.parse(readFileSync(file(id), "utf8")) : undefined);
+const read = (ref) => byId(ref) ?? all().find((c) => c.Name === ref);
 const save = (container) => {
   writeFileSync(`${file(container.Id)}.tmp`, JSON.stringify(container));
   renameSync(`${file(container.Id)}.tmp`, file(container.Id));
@@ -74,7 +93,11 @@ switch (args[0]) {
     // `docker-info-hold` it never answers.
     if (existsSync(join(state, "docker-info-hold"))) setInterval(() => {}, 60_000);
     else if (existsSync(join(state, "docker-info-fail"))) fail(readFileSync(join(state, "docker-info-fail"), "utf8").trim() || "Cannot connect to the Docker daemon");
-    else done(existsSync(join(state, "docker-info")) ? readFileSync(join(state, "docker-info"), "utf8") : `linux|${release()}|${state}|Debian GNU/Linux 13 (trixie)\n`);
+    else if (existsSync(join(state, "docker-runtime"))) {
+      const fields = RUNTIMES[readFileSync(join(state, "docker-runtime"), "utf8").trim()];
+      if (!fields) fail("fake docker: no such runtime");
+      done(`${args[args.indexOf("--format") + 1].replace(/\{\{\.(\w+)\}\}/g, (_, name) => fields[name] ?? "")}\n`);
+    } else done(existsSync(join(state, "docker-info")) ? readFileSync(join(state, "docker-info"), "utf8") : `linux|${release()}|${state}|Debian GNU/Linux 13 (trixie)\n`);
     break;
   }
   case "image": {
@@ -126,9 +149,10 @@ switch (args[0]) {
       } else if (args[i] === "--env") container.env.push(args[++i]);
       else if (args[i] === "--mount") {
         const fields = Object.fromEntries(value.split(",").map((part) => [part.split("=")[0], part.slice(part.indexOf("=") + 1)]));
-        container.mounts.push({ source: fields.source, target: fields.target });
+        if (fields.type === "volume" && !existsSync(join(state, "volumes", fields.source))) fail(`docker: Error response from daemon: no such volume: ${fields.source}`, 125);
+        container.mounts.push({ source: fields.type === "volume" ? join(state, "volumes", fields.source) : fields.source, target: fields.target, type: fields.type });
         i++;
-      } else if (args[i] === "--workdir") container.workdir = args[++i];
+      } else if (args[i] === "--name") container.Name = args[++i]; else if (args[i] === "--workdir") container.workdir = args[++i];
       else if (args[i] === "--network") container.HostConfig.NetworkMode = args[++i];
       else if (args[i] === "--cap-drop") (container.HostConfig.CapDrop ??= []).push(args[++i]);
       else if (args[i] === "--security-opt") (container.HostConfig.SecurityOpt ??= []).push(args[++i]);
@@ -140,30 +164,77 @@ switch (args[0]) {
     const image = args[args.indexOf("--entrypoint") + 2];
     appendFileSync(join(state, "made.jsonl"), `${JSON.stringify({ id: container.Id, image, pulledInRun: !hasImage(image) })}\n`);
     if (!hasImage(image) && image.startsWith("agentrun-box:")) fail(`Unable to find image '${image}' locally\ndocker: Error response from daemon: pull access denied for agentrun-box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied.\nSee 'docker run --help'.`, 125);
-    container.Mounts = container.mounts.map((mount) => ({ Type: "bind", Source: mount.source, Destination: mount.target, RW: true }));
+    container.Mounts = container.mounts.map((mount) => ({ Type: mount.type ?? "bind", Source: mount.source, Destination: mount.target, RW: true }));
+    if (container.Name && read(container.Name)) fail(`docker: Error response from daemon: Conflict. The container name "/${container.Name}" is already in use.`, 125);
+    if ("agentrun.egress" in container.Config.Labels) {
+      // The proxy container: its command run here, its paths mapped through its mounts (longest target first).
+      const command = args.slice(args.indexOf("--entrypoint") + 3);
+      const mounts = [...container.mounts].sort((a, b) => b.target.length - a.target.length);
+      const map = (text) => mounts.reduce((mapped, mount) => (mapped === mount.target || mapped.startsWith(`${mount.target}/`) ? mount.source + mapped.slice(mount.target.length) : mapped), text);
+      mkdirSync(join(state, "logs"), { recursive: true });
+      const log = openSync(join(state, "logs", `${container.Id}.log`), "a");
+      const preload = process.env.FAKE_DOCKER_EGRESS_PRELOAD;
+      const child = spawn(process.execPath, [...(preload ? ["--import", preload] : []), ...command.map(map)], { detached: true, stdio: ["ignore", log, log], env: { PATH: "/usr/local/bin:/usr/bin:/bin", ...Object.fromEntries(container.env.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)])) } });
+      child.unref();
+      container.pid = child.pid;
+      appendFileSync(join(state, "egress.jsonl"), `${JSON.stringify({ id: container.Id, pid: child.pid, args })}\n`);
+    }
     save(container);
     if (existsSync(join(state, "fail-run"))) fail("docker: Error response from daemon: the fake's start failed.", 125);
     done(`${container.Id}\n`);
+    break;
+  }
+  case "volume": {
+    const volumes = join(state, "volumes");
+    mkdirSync(volumes, { recursive: true });
+    const name = args.at(-1);
+    if (args[1] === "inspect") existsSync(join(volumes, name)) ? done(`[{"Name":${JSON.stringify(name)}}]\n`) : fail(`Error response from daemon: get ${name}: no such volume`);
+    else if (args[1] === "create") {
+      appendFileSync(join(state, "volumes.jsonl"), `${JSON.stringify(args)}\n`);
+      mkdirSync(join(volumes, name), { recursive: true, mode: 0o700 });
+      done(`${name}\n`);
+    } else if (args[1] === "rm") {
+      rmSync(join(volumes, name), { recursive: true, force: true });
+      done(`${name}\n`);
+    } else fail(`fake docker: no volume ${args[1]}`);
+    break;
+  }
+  case "logs": {
+    const container = read(args.at(-1));
+    if (!container) fail(`Error response from daemon: No such container: ${args.at(-1)}`);
+    const log = join(state, "logs", `${container.Id}.log`);
+    done(existsSync(log) ? readFileSync(log, "utf8") : "");
     break;
   }
   case "ps": {
     const filters = [];
     for (let i = 1; i < args.length; i++) if (args[i] === "--filter") filters.push(args[++i].replace(/^label=/, ""));
     const matches = (labels) => filters.every((filter) => (filter.includes("=") ? labels[filter.slice(0, filter.indexOf("="))] === filter.slice(filter.indexOf("=") + 1) : filter in labels));
-    done(all().filter((c) => c.State.Running && matches(c.Config.Labels)).map((c) => `${c.Id}\n`).join(""));
+    done(all().filter((c) => (args.includes("--all") || c.State.Running) && matches(c.Config.Labels)).map((c) => `${c.Id}\n`).join(""));
     break;
   }
   case "inspect": {
     const container = read(args.at(-1));
     if (!container) fail(`Error: No such object: ${args.at(-1)}`);
-    // `--format {{json .}}` gives the object; without it Docker answers a list.
+    // `--format {{.State.Running}}` gives that; `--format {{json .}}` the object; without it Docker answers a list.
+    if (args.includes("{{.State.Running}}")) done(`${container.State.Running}\n`);
     done(`${JSON.stringify(args.includes("--format") ? container : [container])}\n`);
     break;
   }
   case "rm": {
     const id = args.at(-1);
-    if (!read(id)) fail(`Error response from daemon: No such container: ${id}`);
-    rmSync(file(id));
+    const container = read(id);
+    if (!container) fail(`Error response from daemon: No such container: ${id}`);
+    // The proxy container's process group, which this fake started (its pgid is its pid).
+    // Checked first by its command line, so a pid the system gave another process since is never signalled.
+    let cmdline = "";
+    try {
+      cmdline = readFileSync(`/proc/${container.pid}/cmdline`, "utf8");
+    } catch {}
+    if (container.pid && cmdline.includes("main.js")) try {
+      process.kill(-container.pid, "SIGKILL");
+    } catch {}
+    rmSync(file(container.Id));
     done(`${id}\n`);
     break;
   }
