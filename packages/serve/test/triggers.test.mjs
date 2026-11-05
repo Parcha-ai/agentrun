@@ -3,54 +3,14 @@
 // the last run is active, stops while paused and skips the paused range, runs now once per Idempotency-Key, and starts
 // no second run when a restart drives a firing left due. The triggers' clock is a fake one the test moves.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { openStore } from "@parcha/pi-durable-agent";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
-
-/** The triggers' clock: `to(time)` moves it, and fires the one timer the engine holds once its time has come. */
-function fakeClock(start) {
-  const clock = {
-    t: Date.parse(start),
-    timer: null,
-    now: () => clock.t,
-    arm(fire, ms) {
-      const held = { at: clock.t + ms, fire };
-      clock.timer = held;
-      return { clear: () => void (clock.timer === held && (clock.timer = null)) };
-    },
-    to(time) {
-      clock.t = Date.parse(time);
-      const held = clock.timer;
-      if (held && held.at <= clock.t) {
-        clock.timer = null;
-        held.fire();
-      }
-    },
-  };
-  return clock;
-}
-
-const keyOf = (kind, id, what) => `fir_${createHash("sha256").update(`${kind}\n${id}\n${what}`).digest("hex").slice(0, 32)}`;
-const schedule = (id, source, extra = {}) => ({ name: "nightly", source: { kind: "schedule", ...source }, target: { kind: "start_run", agent_id: id, input: { content: "Say hello." }, max_cost_usd: 0.5 }, ...extra });
-
-async function made(api, id, extra) {
-  assert.equal((await api("POST", "/agents", agent(id, extra))).status, 201);
-}
-
-/** The trigger's firings, newest first, once it holds at least `n` and none is still due. */
-async function firings(api, id, n) {
-  for (const end = Date.now() + 30_000; ; await sleep(50)) {
-    const { status, body } = await api("GET", `/triggers/${id}/firings`);
-    assert.equal(status, 200, JSON.stringify(body));
-    if (body.firings.length >= n && body.firings.every((f) => f.status !== "due")) return body.firings;
-    assert.ok(Date.now() < end, `no ${n} settled firings: ${JSON.stringify(body.firings)}`);
-  }
-}
+import { flowAgent, follow, scratch, serve } from "./support.mjs";
+import { fakeClock, firings, keyOf, made, schedule } from "./trigger-support.mjs";
 
 async function documented(t, baseUrl) {
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
@@ -254,7 +214,9 @@ test("a firing left due by a server that went down mid-start is driven again at 
   assert.deepEqual(run.body.trigger, { id: body.id, firing_key: fired.key }, "its provenance read back from serve.json");
 });
 
-test("a firing whose run the server lost while setting it up is failed with why, keeps that run, never fires again, and the next firing starts a new run", { timeout: 180_000 }, async (t) => {
+// A run its server never set up: no serve.json, or one that holds no input (runs.ts load's notSetUp).
+for (const [left, meta] of [["no serve.json", undefined], ["a serve.json with no input", { title: "", created_at: "2026-06-01T00:10:00.000Z" }]])
+test(`a firing whose run the server lost while setting it up (${left}) is failed with why, keeps that run, never fires again, and the next firing starts a new run`, { timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
@@ -271,8 +233,9 @@ test("a firing whose run the server lost while setting it up is failed with why,
   kept.triggers[0].next_at = "2026-06-01T00:20:00.000Z";
   await writeFile(file, JSON.stringify(kept));
   const store = openStore(data);
-  const { runId } = await store.startRun({ agent: "lost", origin: { key } });
+  const { runId, dir: runDir } = await store.startRun({ agent: "lost", origin: { key } });
   store.close();
+  if (meta) await writeFile(join(runDir, "serve.json"), `${JSON.stringify(meta)}\n`);
   clock.to("2026-06-01T00:10:30Z");
   const second = await serve(t, { data, triggerClock: clock });
   const [lost] = await firings(second.api, body.id, 1);
@@ -330,4 +293,59 @@ test("a firing a full server refuses (429) stays due and starts its run once a p
   }
   assert.equal(fired.status, "started", JSON.stringify(fired));
   await follow(api, fired.run_id, ["completed"]);
+});
+
+test("a run parked on a person keeps every later firing skipped, after its firing has left the history", { timeout: 300_000 }, async (t) => {
+  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  await made(api, "parked", { tools: ["ask_person"] });
+  const { body } = await api("POST", "/triggers", { ...schedule("parked", { cron: "0 9 * * *" }), target: { kind: "start_run", agent_id: "parked", input: { content: "Pick a region." }, max_cost_usd: 0.5 } });
+  const first = await api("POST", `/triggers/${body.id}/fire`, undefined, { "idempotency-key": "first" });
+  assert.equal(first.body.status, "started", JSON.stringify(first.body));
+  await follow(api, first.body.run_id, ["input_required"]);
+  for (let n = 1; n <= 201; n++) {
+    const fired = await api("POST", `/triggers/${body.id}/fire`, undefined, { "idempotency-key": `again-${n}` });
+    assert.deepEqual([fired.status, fired.body.status], [202, "skipped"], `firing ${n}: ${JSON.stringify(fired.body)}`);
+  }
+  const { firings: kept } = (await api("GET", `/triggers/${body.id}/firings`)).body;
+  assert.equal(kept.length, 200);
+  assert.ok(!kept.some((f) => f.run_id === first.body.run_id), "the firing that started the run is out of the history");
+  const last = await api("POST", `/triggers/${body.id}/fire`, undefined, { "idempotency-key": "last" });
+  assert.equal(last.body.status, "skipped");
+  assert.equal(last.body.reason, `The last run, ${first.body.run_id}, is waiting for a person.`);
+  assert.equal((await api("GET", `/triggers/${body.id}`)).body.last_run_id, first.body.run_id);
+  assert.equal((await api("GET", "/agents/parked/runs")).body.runs.length, 1, "no second run");
+  assert.equal((await api("POST", `/runs/${first.body.run_id}/cancel`)).status, 202);
+});
+
+test("a date that is no date, and an interval past a year, are 422 on their field, never a 500", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  await made(api, "dates");
+  for (const [source, field] of [
+    [{ at: "2026-13-01T00:00:00Z" }, "source.at"],
+    [{ at: "2026-02-30T00:00:00Z" }, "source.at"],
+    [{ at: "2026-07-01T00:00:00+99:00" }, "source.at"],
+    [{ every_s: 600, start_at: "2026-13-01T00:00:00Z" }, "source.start_at"],
+    [{ every_s: 10 ** 12 }, "source.every_s"],
+    [{ every_s: 366 * 86_400 + 1 }, "source.every_s"],
+  ]) {
+    const answer = await api("POST", "/triggers", schedule("dates", source));
+    assert.equal(answer.status, 422, `${JSON.stringify(source)}: ${JSON.stringify(answer.body)}`);
+    assert.deepEqual(answer.body.error.fields.map((f) => f.field), [field], JSON.stringify(source));
+  }
+  const year = await api("POST", "/triggers", schedule("dates", { every_s: 366 * 86_400, start_at: "2026-01-01T00:00:00Z" }));
+  assert.equal(year.status, 201, JSON.stringify(year.body));
+  assert.equal(year.body.next_at, "2027-01-02T00:00:00.000Z");
+});
+
+test("a triggers file holding a malformed trigger leaves the server up: the triggers routes say store_unreadable, the rest of the API works, and the file is never written over", { timeout: 60_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  await mkdir(data, { recursive: true });
+  const text = `${JSON.stringify({ v: 1, triggers: [null] })}\n`;
+  await writeFile(join(data, "triggers.json"), text);
+  const { api } = await serve(t, { data, triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  const listed = await api("GET", "/triggers");
+  assert.deepEqual([listed.status, listed.body.error.code], [409, "store_unreadable"]);
+  assert.equal((await api("POST", "/agents", { definition: { id: "fine", version: 1, name: "fine", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
+  assert.equal((await api("POST", "/triggers", schedule("fine", { every_s: 600 }))).status, 409);
+  assert.equal(await readFile(join(data, "triggers.json"), "utf8"), text, "never written over");
 });
