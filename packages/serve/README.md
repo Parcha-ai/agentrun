@@ -609,7 +609,8 @@ provider's answer.
   and the token is set. It asks nothing of the provider. Runs execute in it: [a run in the VM box](#a-run-in-the-vm-box).
 - `bwrap` is not in this release yet.
 
-The boxes come from `@parcha/pi-transport`, an optional peer of this package; install it beside the server to use any.
+The boxes come from `@parcha/pi-transport`, a dependency of this package, so every install of the server, `npx
+@parcha/agentrun`'s included, has the Docker box's provider.
 The keys belong to the server alone. The launcher hands them over with the server's other secrets, and no run's process
 gets them, in its environment or on its pipe.
 

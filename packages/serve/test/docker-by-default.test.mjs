@@ -7,8 +7,9 @@
 // daemon is reached, nothing is pulled or built, and no box provider is called.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 import { boxRegistry, enabledBoxes, VM_PROVIDER } from "../dist/boxes.js";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
@@ -37,10 +38,12 @@ async function fakeDocker(t, boxes) {
   return { calls: () => jsonLines(join(state, "argv.jsonl")), state };
 }
 
-/** A PATH with no docker on it (node's own directory only), AGENTRUN_BOXES not set. */
+/** A PATH with no docker on it (an empty directory), AGENTRUN_BOXES not set. */
 async function noDocker(t) {
-  const node = dirname(process.execPath);
-  withEnv(t, { PATH: node }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  // A directory of its own, empty: wherever node and docker are installed, no docker is on this PATH.
+  const empty = join(await scratch(t), "empty");
+  await mkdir(empty);
+  withEnv(t, { PATH: empty }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   assert.notEqual(spawnSync("/bin/sh", ["-c", "command -v docker"], { encoding: "utf8" }).status, 0, "no docker on PATH");
 }
 
@@ -128,6 +131,15 @@ for (const value of ["", "none", " none "]) {
     assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
   });
 }
+
+test("the published server installs the Docker box's provider: @parcha/pi-transport is a dependency at the server's version, not an optional peer", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const transport = JSON.parse(readFileSync(new URL("../../pi-transport/package.json", import.meta.url), "utf8"));
+  assert.equal(manifest.dependencies["@parcha/pi-transport"], manifest.version);
+  assert.equal(transport.version, manifest.version);
+  assert.equal(manifest.peerDependencies?.["@parcha/pi-transport"], undefined);
+  assert.equal(manifest.peerDependenciesMeta?.["@parcha/pi-transport"], undefined);
+});
 
 test("none stands alone: AGENTRUN_BOXES that names none and a box refuses the start, naming why", () => {
   assert.throws(() => enabledBoxes({ AGENTRUN_BOXES: "none,docker" }), /AGENTRUN_BOXES=none sets up no box, so it names no other: list the boxes to set up, or none alone/);

@@ -7,7 +7,8 @@
 // to list. Set, it wins: a box it does not list is never probed and is unavailable, its reason naming the setting that
 // lists it, an empty value or `none` sets up no box, and a name in it that is no box refuses the start. Every reason says
 // what to do next.
-// pi-transport is an optional peer of this package and the VM provider's SDK is the host's, so each is loaded by the
+// pi-transport is a dependency of this package (a plain install has the Docker box) and the VM provider's SDK is the
+// host's; each is loaded by the
 // probe that needs it, and a box whose module is not installed says what to install. The keys are the server's own: the
 // launcher hands them over with its other secrets (secrets.ts), the probes read them here, and no run's process is
 // handed one (SERVER_ONLY in runs.ts).
