@@ -16,7 +16,7 @@ import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { seal, unseal } from "@parcha/pi-durable-agent";
 import { ApiError } from "./errors.js";
-import { homeOf, writeWhole } from "./files.js";
+import { homeOf, writeDurable } from "./files.js";
 
 export const SIGN_INS_DIR = "sign-ins";
 const FILE = "sign-ins.json";
@@ -79,7 +79,8 @@ export class SignIns {
     if (!entries.length) return void (await rm(this.file(agentId), { force: true }));
     await mkdir(dir, { recursive: true, mode: 0o700 });
     if ((await lstat(dir)).isSymbolicLink()) throw new Error(`${SIGN_INS_DIR}/ is a link, which this server never follows`);
-    await writeWhole(this.file(agentId), `${JSON.stringify({ format: FORMAT, sign_ins: entries } satisfies Stored)}\n`);
+    // Synced before it answers: a pointer to a vendor object just made survives a crash of the machine.
+    await writeDurable(this.file(agentId), `${JSON.stringify({ format: FORMAT, sign_ins: entries } satisfies Stored)}\n`);
   }
 
   private locked<T>(agentId: string, work: () => Promise<T>): Promise<T> {
@@ -124,19 +125,27 @@ export class SignIns {
       const entries = await this.read(agentId);
       let entry = entries.find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
       let ref: string | undefined;
+      let made = false;
       if (entry) {
         // Never replaced by itself: the vendor's object it points to would be left behind, holding the agent's cookies.
         ref = this.open(agentId, entry);
         if (ref === undefined) throw new Error(`its saved sign-in does not open under this server's seal key: forget it (DELETE /v2/agents/${agentId}/sign-ins/${SIGN_IN_KEY}) and its next run signs in afresh`);
       } else {
         ref = await this.vendors.create(vendor);
+        made = true;
         entry = { key: SIGN_IN_KEY, provider: vendor, ref: "", verified_at: null, held_by: null };
         entry.ref = seal(key, Buffer.from(ref, "utf8"), aad(agentId, entry)).toString("base64");
         entries.push(entry);
       }
       const save = entry.held_by === runId || !(await this.held(entry));
       if (save) entry.held_by = runId;
-      await this.write(agentId, entries);
+      try {
+        await this.write(agentId, entries);
+      } catch (error) {
+        // Never kept, so never forgotten: the object just made goes at the vendor now, as far as it answers.
+        if (made) await this.vendors.remove(vendor, ref).catch(() => undefined);
+        throw error;
+      }
       return { provider: vendor, ref, save };
     });
   }

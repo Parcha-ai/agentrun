@@ -6,7 +6,7 @@
 // vendors are the tests' fakes.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
@@ -292,4 +292,18 @@ test("a pointer that does not open under this server's seal key reads unreadable
   assert.deepEqual(await rotated.view("alpha"), []);
   const state = openapiDocument(() => undefined).components.schemas.SignIn.properties.state;
   assert.deepEqual([state.enum, state["x-agentrun-serve"]], [["ready", "held", "unreadable"], "signins/1"]);
+});
+
+test("a pointer to an object just made that cannot be kept here is deleted at the vendor, never left there holding cookies", async (t) => {
+  const data = await scratch(t);
+  const { store, made, removed } = fakeStore(data);
+  const dir = join(homeOf(data, "alpha"), "sign-ins");
+  await mkdir(dir, { recursive: true });
+  await chmod(dir, 0o500);
+  t.after(() => chmod(dir, 0o700).catch(() => undefined));
+  await assert.rejects(store.forRun("alpha", "run-1", "browserbase"), /EACCES/);
+  assert.deepEqual(removed, [["browserbase", made[0]]]);
+  await chmod(dir, 0o700);
+  assert.deepEqual(await store.forRun("alpha", "run-2", "browserbase"), { provider: "browserbase", ref: made[1], save: true });
+  assert.deepEqual(removed.length, 1, "one kept is never removed");
 });
