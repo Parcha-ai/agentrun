@@ -55,8 +55,9 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<Box
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`))].join(" ");
 }
 
-/** `places` in capabilities: the modes a revision may name, this host's default, and each box. */
-export const placesOf = (registry: readonly BoxOffer[]) => ({ modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxAvailability(registry).map(stated) });
+/** `places` in capabilities: the modes a revision may name, this host's default, each box, and the hosts a box whose
+ *  `network` is `allowlist` reaches (`allow`, run-box.ts boxAllowOf; empty for `none`). */
+export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none") => ({ modes: [...PLACE_MODES], default: DEFAULT_PLACE_MODE, boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] });
 /** A box with its state: what the server set (a Docker box whose image is coming is `preparing`), else `ready` when it
  *  is available and `unavailable` when not. */
 const stated = ({ state, ...offer }: BoxOffer): BoxOffer => ({ ...offer, state: offer.available ? (state ?? "ready") : "unavailable" });

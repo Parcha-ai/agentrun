@@ -10,7 +10,7 @@ import { markdown, runLabel, when } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
   APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, HOST_RUNS, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shortTitle, shownImpact, took, TYPE_HINT, typeLabel, usedBy,
-  counted, type LearnedItem, learnedItems,
+  counted, type LearnedItem, learnedItems, statusFile,
 } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -45,18 +45,21 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   const [adding, setAdding] = useState(false);
   const asked = useRef(0);
   const reading = useRef(false);
-  const read = () => {
+  // Reads the tab again. The answer settles once the list is read, or once that read failed (it never rejects), so an
+  // approve or a retire that landed stays busy until then, and is never left busy after it.
+  const read = (): Promise<void> => {
     const n = ++asked.current;
     reading.current = false;
     setError(null);
-    v2.agentLearning(agent.agent_id).then((r) => {
+    const learning = v2.agentLearning(agent.agent_id).then((r) => {
       if (n !== asked.current) return;
       setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
     }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
     v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); setAllRuns(!r.next_cursor); } }, () => {});
+    return learning;
   };
-  useEffect(read, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void read(); }, [v2, agent.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
   // The next page of notes, for this read only: a page asked for before a refresh (an edit, a retire) never lands after
   // it, so old and new versions never mix and the cursor is always the current read's.
   const more = () => {
@@ -95,8 +98,9 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
   useEffect(() => {
     if (view && missing && later.cursor && later.error === undefined && later.pages < MORE_PAGES) more();
   }, [view, missing, later.cursor, later.pages]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A note whose source is past the changes read: the next changes are read until every note's is known, or they end.
-  const unknown = all.some((x) => !from.has(x.file));
+  // A note whose source is past the changes read, or a retired skill's or draft's retirement (its status file's latest
+  // change): the next changes are read until every one is known, or they end.
+  const unknown = all.some((x) => !from.has(x.file)) || [...skills, ...workflows].some((x) => x.status === "retired" && !from.get(statusFile(x))?.edited);
   useEffect(() => {
     if (!view || !unknown || !olderLog.cursor || olderLog.pages >= MORE_PAGES) return;
     const n = asked.current;
@@ -173,15 +177,21 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
           const items = kind === "skill" ? skills : workflows;
           if (!items.length) return null;
           const title = kind === "skill" ? "Skills it learned" : "Workflows it learned";
+          // The ones a person retired are no longer given to a run: under Earlier, as retired notes are.
+          const inUse = items.filter((x) => x.status !== "retired");
+          const gone = items.filter((x) => x.status === "retired");
           return (
             <section key={kind} className="min-w-0 space-y-3" aria-label={title}>
               <div>
                 <h2 className="text-lg font-semibold">{title}</h2>
-                <p className="mt-0.5 text-[13px] text-muted-foreground">{kind === "skill" ? `${counted(items.length, "skill")}: how to do a job it does again, given to every later run once active.` : `${counted(items.length, "workflow")}: a job it does again, as steps a later run can call.`}</p>
+                <p className="mt-0.5 text-[13px] text-muted-foreground">{!inUse.length ? `No ${kind} is in use: the next run gets none.` : kind === "skill" ? `${counted(inUse.length, "skill")}: how to do a job it does again, given to every later run once active.` : `${counted(inUse.length, "workflow")}: a job it does again, as steps a later run can call.`}</p>
               </div>
-              <ul className="space-y-3">
-                {items.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
-              </ul>
+              {inUse.length > 0 && (
+                <ul className="space-y-3">
+                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} kind={kind} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={read} /></li>)}
+                </ul>
+              )}
+              {gone.length > 0 && <EarlierLearned kind={kind} items={gone} from={from} />}
             </section>
           );
         })}
@@ -339,7 +349,7 @@ type From = { run?: { id: string; at: string; reason: string }; edited?: string 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
  *  `usedOf`: how many runs `usedIn` counts over, when they are the agent's latest only (more runs than were read). */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, usedOf, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; usedOf?: number; onChanged: () => void; approves?: Approval }) {
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, usedOf, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; usedIn?: number; usedOf?: number; onChanged: () => void | Promise<void>; approves?: Approval }) {
   const [editing, setEditing] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
@@ -357,11 +367,14 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
       if (seen.kind === "changed") { setSaid(words(`${CHANGED} Reload the tab to see the newest version.`)); setApproving(false); return; }
       if (seen.kind === "unknown") { setSaid(words(NO_VERSION)); setApproving(false); return; }
       await v2.approveNote(agentId, note.file, seen.etag);
-      onChanged();
     } catch (e) {
       setApproving(false);
       setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, "the note", "The note was not approved.")} className="" />);
+      return;
     }
+    // It landed: Approving until the list is read again, however that read ends.
+    await onChanged();
+    setApproving(false);
   };
   useEffect(() => {
     if (!focused) return;
@@ -406,21 +419,30 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, usedIn, us
         {from?.run && from.edited && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />Edited by you · {when(from.edited)}</span>}
         {usedIn !== undefined && usedIn > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Used in {usedOf ? `${usedIn} of the latest ${usedOf} runs` : runsWord(usedIn)}</span>}
       </footer>}
-      {retiring && <RetireConfirm note={note} v2={v2} agentId={agentId} onDone={(ok) => { setRetiring(false); if (ok) onChanged(); }} />}
+      {retiring && <RetireConfirm name={note.name} kind="note" retire={async () => {
+        const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
+        if (seen.kind === "changed") return `${CHANGED} Reload the tab to see the newest version.`;
+        if (seen.kind === "unknown") return NO_VERSION;
+        await v2.retireNote(agentId, note.file, seen.etag);
+        return null;
+      }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
 }
 
-/** A skill or a workflow the agent learned: its name, what it is for, the run that kept it, whether it waits for the
- *  owner's OK (Approve where this caller approves, on the version listed: a skill's SKILL.md, a workflow's README), and
- *  its text, read when it is opened. A run changes it; a person approves it, never edits or retires it here. */
-function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void }) {
+/** A skill or a workflow the agent learned, in use or waiting: its name, what it is for, the run that kept it, whether it
+ *  waits for the owner's OK (Approve where this caller approves), and its text, read when it is opened. Approve and
+ *  Retire (after the notes' confirm) are made on the file that says whether it is in use, a skill's SKILL.md or a
+ *  workflow's README, at the version listed, or an open skill's shown. A run changes it; a person approves or retires
+ *  it, never edits it. */
+function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChanged }: { item: LearnedItem; kind: "skill" | "workflow"; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | null>(null);
   // The version of the text shown: a skill is approved on it, never on a newer one the list holds (its etag).
   const [shown, setShown] = useState<string | null>(null);
   const [readError, setReadError] = useState<unknown>(null);
   const [approving, setApproving] = useState(false);
+  const [retiring, setRetiring] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
   const load = async () => {
@@ -440,15 +462,21 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
     if (open) void load();
     else { setText(null); setShown(null); }
   }, [item.etag]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The version an approve or a retire is made on: an open skill's, the one shown; else the list's (a workflow's text read
+  // is its workflow.json, never the README either one names).
+  const version = kind === "skill" && open && shown ? shown : item.etag;
   const approve = async () => {
     setApproving(true); setSaid(null);
     try {
-      await v2.approveNote(agentId, kind === "workflow" && item.readme ? item.readme : item.file, kind === "skill" && open && shown ? shown : item.etag);
-      onChanged();
+      await v2.approveNote(agentId, statusFile(item), version);
     } catch (e) {
       setApproving(false);
       setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? <p className="text-[12px] text-destructive-text" role="alert">{`${CHANGED} Reload the tab to see the newest version.`}</p> : <ProblemCard problem={failed(e, `the ${kind}`, `The ${kind} was not approved.`)} className="" />);
+      return;
     }
+    // It landed: Approving until the list is read again, however that read ends.
+    await onChanged();
+    setApproving(false);
   };
   const label = `the ${kind} ${item.name}`;
   return (
@@ -463,7 +491,10 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
           {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-[11px] text-muted-foreground">{approves === "password" ? APPROVE_SIGN_IN : APPROVE_LATER}</p>}
         </div>
         <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
-          {waits && !readOnly && approves === "yes" && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${item.name}`}>{approving ? "Approving" : "Approve"}</Button>}
+          {!readOnly && !retiring && <>
+            {waits && approves === "yes" && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${item.name}`}>{approving ? "Approving" : "Approve"}</Button>}
+            <Button size="sm" variant="destructive" onClick={() => setRetiring(true)} aria-label={`Retire ${item.name}`}>Retire</Button>
+          </>}
           <Button size="sm" variant="ghost" onClick={() => void show()} aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} ${label}`}><ChevronDown className={cn("transition-transform", open && "rotate-180")} aria-hidden />{open ? "Hide" : "Show"}</Button>
         </div>
       </header>
@@ -478,6 +509,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         </span>}
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
+      {retiring && <RetireConfirm name={item.name} kind={kind} retire={async () => { await v2.retireNote(agentId, statusFile(item), version); return null; }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
 }
@@ -498,10 +530,18 @@ function Body({ text }: { text: string }) {
   );
 }
 
+/** What a retire does, said in its confirm: a note is no longer read, a skill or a workflow no longer given to a run. */
+const RETIRES: Record<"note" | "skill" | "workflow", string> = {
+  note: "Later runs stop reading it. It stays under Earlier notes.",
+  skill: "Later runs stop getting it. It stays under Earlier skills.",
+  workflow: "Later runs stop getting it. It stays under Earlier workflows.",
+};
+
 /** Retire, after a confirm in place as the run header's cancel is: "Yes, retire" takes the focus, so Enter retires,
- *  and Esc or Keep keeps it. It is made on the version the card showed (seenVersion): a note changed since is never
- *  retired unseen, it says so instead, and one the server names no version of is not retired either. */
-function RetireConfirm({ note, v2, agentId, onDone }: { note: LearningNote; v2: Client; agentId: string; onDone: (retired: boolean) => void }) {
+ *  and Esc or Keep keeps it. `retire` makes it on the version the card showed, and answers why it did not, or null: a
+ *  note changed since is never retired unseen (seenVersion), it says so instead, and one the server names no version of
+ *  is not retired either. A 412, made on a version changed since, says so in the same words. */
+function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "note" | "skill" | "workflow"; retire: () => Promise<string | null>; onDone: (retired: boolean) => void | Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -510,23 +550,23 @@ function RetireConfirm({ note, v2, agentId, onDone }: { note: LearningNote; v2: 
   const go = async () => {
     setBusy(true); setSaid(null);
     try {
-      const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
-      if (seen.kind === "changed") { setBusy(false); setSaid(words(`${CHANGED} Reload the tab to see the newest version.`)); return; }
-      if (seen.kind === "unknown") { setBusy(false); setSaid(words(NO_VERSION)); return; }
-      await v2.retireNote(agentId, note.file, seen.etag);
-      onDone(true);
+      const not = await retire();
+      if (not !== null) { setBusy(false); setSaid(words(not)); return; }
     } catch (e) {
       setBusy(false);
-      setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, "the note", "The note was not retired.")} className="" />);
+      setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, `the ${kind}`, `The ${kind} was not retired.`)} className="" />);
+      return;
     }
+    // It landed: Retiring until the card's owner has read the list again (and closed this), however that read ends.
+    await onDone(true);
   };
   return (
-    <div role="alertdialog" aria-label={`Retire ${note.name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(false); } }}
+    <div role="alertdialog" aria-label={`Retire ${name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); void onDone(false); } }}
       className="flex flex-wrap items-center gap-3 border-t border-destructive/40 bg-destructive/5 px-5 py-3">
-      <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Retire it?</span> Later runs stop reading it. It stays under Earlier notes.</p>
+      <p className="min-w-0 flex-1 text-[13px]"><span className="font-semibold">Retire it?</span> {RETIRES[kind]}</p>
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="destructive" onClick={() => void go()} disabled={busy}>{busy ? "Retiring" : "Yes, retire"}</Button>
-      <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Keep</Button>
+      <Button size="sm" variant="ghost" onClick={() => void onDone(false)} disabled={busy}>Keep</Button>
     </div>
   );
 }
@@ -664,28 +704,56 @@ function Earlier({ notes: list, all, from, focus }: { notes: LearningNote[]; all
     card?.focus({ preventScroll: true });
   };
   return (
-    <section className="border" aria-label="Earlier notes">
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
+    <Folded title="Earlier notes" count={`${list.length} no longer read`} open={open} onToggle={() => setOpen((o) => !o)}>
+      {list.map((x) => (
+        <li key={x.file} id={`note-${x.file}`} className={cn("border-b px-4 py-3 last:border-b-0", focus.includes(x.file) && "bg-primary/5")}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[14px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
+            <Chip tone="muted">{x.status === "retired" ? "Retired" : "Replaced"}</Chip>
+          </div>
+          <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+            {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : x.status === "retired" ? `Retired${from.get(x.file)?.edited ? ` by you · ${when(from.get(x.file)!.edited!)}` : ""}` : null}
+          </p>
+        </li>
+      ))}
+    </Folded>
+  );
+}
+
+/** A closed list under its caps title and count, opened on a click: the notes, skills and workflows no longer in use. */
+function Folded({ title, count, open, onToggle, children }: { title: string; count: string; open: boolean; onToggle: () => void; children: ReactNode }) {
+  return (
+    <section className="border" aria-label={title}>
+      <button type="button" aria-expanded={open} onClick={onToggle} className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-accent">
         <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} aria-hidden />
-        <span className="caps text-[12px] font-semibold">Earlier notes</span>
-        <span className="font-mono text-[11px] text-muted-foreground">{list.length} no longer read</span>
+        <span className="caps text-[12px] font-semibold">{title}</span>
+        <span className="font-mono text-[11px] text-muted-foreground">{count}</span>
       </button>
-      {open && (
-        <ul className="border-t">
-          {list.map((x) => (
-            <li key={x.file} id={`note-${x.file}`} className={cn("border-b px-4 py-3 last:border-b-0", focus.includes(x.file) && "bg-primary/5")}>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[14px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
-                <Chip tone="muted">{x.status === "retired" ? "Retired" : "Replaced"}</Chip>
-              </div>
-              <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : x.status === "retired" ? `Retired${from.get(x.file)?.edited ? ` by you · ${when(from.get(x.file)!.edited!)}` : ""}` : null}
-              </p>
-            </li>
-          ))}
-        </ul>
-      )}
+      {open && <ul className="border-t">{children}</ul>}
     </section>
+  );
+}
+
+/** The skills or the workflows a person retired, as retired notes are shown: closed until asked, each by its name, and
+ *  who retired it and when once the changes read say. No Approve and no Retire: no later run is given it. */
+function EarlierLearned({ kind, items, from }: { kind: "skill" | "workflow"; items: LearnedItem[]; from: ReturnType<typeof provenance> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Folded title={kind === "skill" ? "Earlier skills" : "Earlier workflows"} count={`${items.length} no longer given`} open={open} onToggle={() => setOpen((o) => !o)}>
+      {items.map((x) => {
+        const edited = from.get(statusFile(x))?.edited;
+        return (
+          <li key={x.file} className="border-b px-4 py-3 last:border-b-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-[13px] text-muted-foreground line-through decoration-muted-foreground/40">{x.name}</span>
+              <Chip tone="muted">Retired</Chip>
+            </div>
+            {x.description && <p className="mt-1 text-[12px] text-muted-foreground">{x.description}</p>}
+            <p className="mt-1 font-mono text-[11px] text-muted-foreground">{`Retired${edited ? ` by you · ${when(edited)}` : ""}`}</p>
+          </li>
+        );
+      })}
+    </Folded>
   );
 }
 
