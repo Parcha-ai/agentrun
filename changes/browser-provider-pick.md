@@ -1,9 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-Pick the browser: the `browser` tool runs on Browserbase or on Kernel, picked for the server (`PUT /v2/settings/tools` `{browser: {provider}}`) or for one agent (`definition.tool_settings.browser.provider`, which wins), as `web_search`'s provider is.
-- The choices are `auto` (the default), `browserbase`, `kernel` and `chrome`. `auto` is Browserbase where the server holds `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, else Kernel where it holds `KERNEL_API_KEY`, else unavailable, saying which keys would do. A vendor picked without its key is unavailable, never the other vendor. `chrome` is in the list but not set up on any server yet: it reads unavailable (`a local Chrome is not set up on this server`), and a run that would get it is `409 agent_not_runnable`.
-- A run keeps the vendor its first launch resolved for its life (its tool plane names it, `browser: "kernel"` or `"browserbase"`); at a later launch a vendor whose key is gone since is unavailable, and each browser call says why. Kernel's browsers run headless.
-- Kernel's key is a tool key: `PUT /v2/settings/tool-keys/kernel` `{values: {KERNEL_API_KEY}}` saves it sealed, after one check that costs nothing (Kernel's list of browsers, at most one, 5 s); a key Kernel refuses (401) is `422`, reason `refused_by_provider`. `KERNEL_API_KEY` is on the launcher's secrets list, and reaches a run's process over its pipe only when its revision names `browser`.
-- `GET /v2/capabilities`' `browser` tool gives its `providers`, the server's `provider` and what it `resolves` to, as the web tools do; `GET /v2/agents/{id}`' `tools` gives an agent's. With no vendor's keys it is unavailable with that reason, and no longer lists `missing` variables: either vendor's keys would do. The served contract marks `features.browser`'s `kernel` (`browser/1`).
