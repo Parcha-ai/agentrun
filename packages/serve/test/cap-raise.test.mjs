@@ -214,3 +214,16 @@ test("a raise taken, then the server killed before its follow-up went: the next 
     db.close();
   }
 });
+
+test("a paused run's pending suggests a raise, spent + 10 × the refused request's least rounded up to a whole dollar and above its cap, and PATCHing it resumes the run", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const runId = await paused(api, "suggested");
+  const { pending } = await view(api, runId);
+  // Nothing spent, a least of $0.1024: $0 + $1.024, up to $2, above the $0.05 cap.
+  assert.deepEqual([pending.spent_usd, pending.suggested_cap_usd], [0, 2], JSON.stringify(pending));
+  const raised = await raise(api, runId, { max_cost_usd: pending.suggested_cap_usd });
+  assert.deepEqual([raised.status, raised.body.max_cost_usd, raised.body.resumed], [200, 2, true], JSON.stringify(raised.body));
+  const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.error, run.cost.cap_usd, said(rows)], ["completed", null, 2, ["Write one.md", CONTINUE("$2")]], JSON.stringify(run));
+});
