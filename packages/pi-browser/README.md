@@ -405,7 +405,7 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
 - `onCharge(charge, tx, call?)`: each charge of a session's time, `{ conversationId, tag, provider, at, seconds, usd,
   final, state }`, called in the commit that writes it on the session's record, so a host that books it in `tx` books
   exactly what the record bills: at a browser call (`call.callId`), what the session ran since its last charge; at its
-  release (`final`), the rest, topped up to `prices.sessionMinimumS`. A session already billed in full is never charged
+  release, or when custody gives up releasing it (`lost`) (`final`), the rest, topped up to `prices.sessionMinimumS`. A session already billed in full is never charged
   again. `state` is `priced`, or `unpriced`/`invalid` with `usd` 0 (no price, not $0). It must not throw: a throw fails the
   commit, and a call's charge is then carried by the session's next one.
 

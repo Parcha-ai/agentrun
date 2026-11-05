@@ -59,9 +59,9 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
   prices?: Partial<PriceTable>;
   /** Each charge of a session's time, called in the commit that writes it on the session's record (`tx`), so a host that
    *  books it in that commit books what the record bills, once: at a browser call (`call`), what the session ran since its
-   *  last charge; at its release (`final`, no `call`), what it ran since, topped up to the provider's minimum. Never for a
-   *  session already billed in full. It must not throw: a throw fails that commit, and a call's charge is then carried by
-   *  the session's next one. */
+   *  last charge; at its release, or when custody gives up releasing it (`final`, no `call`), what it ran since, topped up
+   *  to the provider's minimum. Never for a session already billed in full. It must not throw: a throw fails that commit,
+   *  and a call's charge is then carried by the session's next one. */
   onCharge?: (charge: SessionCharge, tx: Tx, call?: { callId: string }) => void | Promise<void>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };

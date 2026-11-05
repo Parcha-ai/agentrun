@@ -26,7 +26,7 @@ export type StoreDeps = {
   providerOf(read: DocumentReader, cid: ConversationId, plane: string, context: Context): Promise<BrowserProvider>;
   emit(cid: ConversationId, label: string, record: SessionRecord, change: SessionChange): Promise<void>;
   meter(spent: SessionRecord["spent"], at: string, final?: boolean): { spent: SessionRecord["spent"] };
-  /** The release's charge, written on `record` in the commit `tx` and told to the host (durable.ts). */
+  /** The release's charge (or a lost session's), written on `record` in the commit `tx` and told to the host (durable.ts). */
   bill(tx: Tx, conversationId: ConversationId, record: SessionRecord, at: string, final: true): Promise<unknown>;
   scrubbed(error: unknown): Error;
   createDeadlineMs: number;
@@ -48,7 +48,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     const record = state.sessions.find((r) => r.tag === row.tag);
     if (!record) return;
     moveRecord(record, next);
-    if (next.state === "released" && record.resourceId !== null) await bill(tx, cidOf(row), record, next.at, true);
+    // A session custody gave up releasing (lost) is billed in full too, what it ran and its minimum, so a host lets go of
+    // what it held for it; a later release finds it billed and adds nothing.
+    if ((next.state === "released" || next.state === "lost") && record.resourceId !== null) await bill(tx, cidOf(row), record, next.at, true);
     if (next.notice) {
       for (const stale of [notices.kept(record.lastUrl), notices.lost(record.lastUrl)]) state.notice = state.notice?.replace(stale, "").replace(/\s+/g, " ").trim() || null;
       addNotice(state, notices[next.notice](record.lastUrl));

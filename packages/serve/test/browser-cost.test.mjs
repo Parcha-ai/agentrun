@@ -17,7 +17,7 @@ const KEYS = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fa
 /** A pi run in this process whose model calls browser_read `reads` times, thinking `thinkS` between calls, each read
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap). `seen()` runs at every moment the
  *  run can spend: inside each call, before each model turn and after the release. */
-async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", seen = () => {} }) {
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, seen = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -27,6 +27,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   useSpend(cap === undefined ? undefined : { cap, spent: () => spent, add: (usd) => void (spent = spent === null || usd === null ? null : spent + usd) });
   t.after(() => useSpend(undefined));
   const backend = new FakeBackend({ name: provider, start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  setup(backend);
   const releases = [];
   // A refusal's release, waited for here so its charge is billed at the moment of the refusal.
   const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); });
@@ -59,7 +60,9 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   const sessions = async () => (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
   if (end === "idle") for (let i = 0; i < 200 && (await sessions())[0]?.state !== "released"; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
   else await browser.release(root, "close", ctx);
-  await browser.drain(harness, ctx);
+  // `pump`: the mock clock moves on 2 s every 5 ms of real time, for the release task's backoffs to pass.
+  const pumping = pump ? setInterval(() => t.mock.timers.tick(2_000), 5) : undefined;
+  await browser.drain(harness, ctx).finally(() => clearInterval(pumping));
   seen("released", spent);
   const [record] = await sessions();
   const entries = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 500), ctx)).items;
@@ -117,6 +120,17 @@ test("capped, a session pi-browser releases itself once the run stops calling: i
   assert.deepEqual(booked.map((row) => row.seconds), [3, 57]);
   assert.equal(total(booked), 0.002);
   assert.equal(paidHolds(), 0);
+});
+
+test("capped, a session whose release the provider never confirms ends lost: billed what it ran and its minimum, and its reserve is let go", { timeout: 90_000 }, async (t) => {
+  const { RELEASE_ATTEMPTS } = await import("@parcha/pi-browser/durable");
+  const cap = 0.03;
+  const { record, booked } = await run(t, { reads: 1, cap, pump: true, setup: (backend) => backend.fail("release", RELEASE_ATTEMPTS) });
+  assert.equal(record.state, "lost");
+  assert.equal(booked.length, 2, JSON.stringify(booked));
+  assert.ok(booked[0].seconds === 3 && booked[1].seconds >= 57, "the call's 3 s, then what it ran until custody gave up, at least the rest of its minute");
+  assert.deepEqual([record.spent.final, total(booked)], [true, record.spent.usd]);
+  assert.equal(paidHolds(), 0, "no stretch is left held for a session custody no longer tracks as open");
 });
 
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {
