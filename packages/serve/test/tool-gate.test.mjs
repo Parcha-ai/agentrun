@@ -15,7 +15,8 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { REPLAY } from "../dist/host-tools.js";
-import { deniedText, gateToolCall, RunGate, TURN_ORIGIN_FILE, waitingText } from "../dist/tool-gate.js";
+import { runsTestHooks } from "../dist/runs.js";
+import { deniedText, gateToolCall, RESUME_PREFIX, RunGate, TURN_ORIGIN_FILE, waitingText } from "../dist/tool-gate.js";
 import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -131,6 +132,19 @@ test("the reflect carve-out: under ask, a reflect turn's write or edit inside wo
   assert.match((await gate.enter("write", { path: "b.md" }, "c4", park)).text, /^This write call was not run: the write call c3 already waits for a person's approval\./, "one call waits at a time");
   const node = new RunGate({ root, work, data, runId: "r2" }, {}, false);
   assert.deepEqual(await node.enter("write", { path: "notes.md" }, "c5", park), { text: "This write call needs a person's approval, which a workflow's model node cannot wait for; it was not run.", isError: true });
+});
+
+test("two ask calls entered at once, as pi runs a turn's calls in parallel: exactly one parks, and the other is refused in the usual words", async (t) => {
+  const [root, work, data] = [await scratch(t), await scratch(t), await scratch(t)];
+  const gate = new RunGate({ root, work, data, runId: "r1" }, { write: { permission: "ask" } });
+  const written = [];
+  // A commit answers after its own await, as the run's store does.
+  const park = { commit: async (change) => change({ appendEntry: async (_conversation, entry) => written.push(entry) }), parked: (id) => written.push({ parked: id }) };
+  const [first, second] = await Promise.all([gate.enter("write", { path: "a.md" }, "c1", park), gate.enter("write", { path: "b.md" }, "c2", park)]);
+  assert.deepEqual(first, { text: waitingText("write"), isError: false, parked: true }, "the first parks");
+  assert.equal(second.parked, undefined, "the second does not");
+  assert.match(second.text, /^This write call was not run: the write call c1 already waits for a person's approval\./);
+  assert.deepEqual(written.filter((entry) => entry.kind).map((entry) => entry.data.call_id), ["c1"], "one request in the run's store");
 });
 
 test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
@@ -587,6 +601,76 @@ test("a person's message while an approval waits declines the call, with the mes
   }
   await sleep(2_000);
   assert.deepEqual(await dialled(), [], "neither call ran");
+});
+
+test("an answer or a stop that lands while a declining message is on its way stands: an allow stays allow and runs once, and a stop stays withdrawn with no resume", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  t.after(() => (runsTestHooks.personsTurn = undefined));
+  for (const [lands, url] of [["allow", PAGE], ["stop", `${PAGE}notes.txt`]]) {
+    const runId = await fetching(api, `latched-${lands}`, "pi", url, { tool_settings: { web_fetch: { permission: "ask" } } });
+    const id = (await parked(api, runId)).view.pending.id;
+    // The message has read the call waiting, and is held as it sends its turn (runs.ts personsTurn).
+    let release, reached;
+    const held = new Promise((resolve) => (release = resolve));
+    const at = new Promise((resolve) => (reached = resolve));
+    runsTestHooks.personsTurn = () => (reached(), held);
+    const sent = api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
+    await at;
+    if (lands === "allow") assert.equal((await answer(runId, id, { decision: "allow" })).status, 204);
+    else assert.deepEqual(((await api("POST", `/runs/${runId}/stop`, {})).body ?? {}).stopped, true);
+    runsTestHooks.personsTurn = undefined;
+    release();
+    assert.ok([200, 202].includes((await sent).status), `${lands}: the message is taken`);
+    const { rows } = await follow(api, runId, ["completed", "input_required"], { deadlineMs: 55_000 });
+    const kept = JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).approvals[id];
+    const resumes = rows.filter((row) => row.kind === "user_message" && row.text?.startsWith(RESUME_PREFIX));
+    if (lands === "allow") {
+      assert.deepEqual([kept.decision, kept.by], ["allow", undefined], "the allow stands: first answer wins");
+      await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+      assert.deepEqual((await dialled()).filter((dial) => dial === url), [url], "and its call ran once");
+    } else {
+      assert.equal(kept.decision, "withdrawn", "the stop stands");
+      assert.deepEqual(resumes, [], "nothing resumes the parked call");
+      assert.deepEqual((await dialled()).filter((dial) => dial === url), [], "and it never ran");
+    }
+  }
+});
+
+test("a declining message is held to the call it read: when that call is answered and another parks while the message is on its way, the message declines nothing, and the new call still waits for its own answer", { timeout: 150_000 }, async (t) => {
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  t.after(() => (runsTestHooks.personsTurn = undefined));
+  const file = join(await scratch(t), "go");
+  const ask = `Fetch ${PAGE} again once ${file} exists.`;
+  assert.equal((await api("POST", "/agents", agent("pinned", { harness: "pi", instructions: ask, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }))).status, 201);
+  const runId = (await api("POST", "/agents/pinned/runs", { input: { content: ask } })).body.run_id;
+  const first = (await parked(api, runId)).view.pending.id;
+  let release, reached;
+  const held = new Promise((resolve) => (release = resolve));
+  const at = new Promise((resolve) => (reached = resolve));
+  runsTestHooks.personsTurn = () => (reached(), held);
+  const sent = api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
+  await at;
+  // The call the message read is allowed and runs; the model then makes its next call, which parks.
+  assert.equal((await answer(runId, first, { decision: "allow" })).status, 204);
+  await writeFile(file, "");
+  let second;
+  for (let i = 0; !(second && second !== first); i++) {
+    assert.ok(i < 600, "the next call did not park");
+    second = (await api("GET", `/runs/${runId}`)).body.pending?.id;
+    await sleep(100);
+  }
+  runsTestHooks.personsTurn = undefined;
+  release();
+  assert.ok([200, 202].includes((await sent).status), "the message is taken");
+  await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+  const kept = JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).approvals;
+  assert.deepEqual([kept[first]?.decision, kept[second]], ["allow", undefined], "the call it read keeps its allow, and the new one is not declined");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, second, "the new call still waits for its own answer");
 });
 
 test("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {

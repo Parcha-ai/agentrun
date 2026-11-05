@@ -5,7 +5,7 @@ import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredi
 import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
-import { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
+import { DECISION_ERROR_MAX, DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeIssues } from "./workflow-shape.js";
@@ -13,6 +13,11 @@ import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 import { setLongTimeout, type LongTimer } from "./long-timer.js";
 import { isRecoveryError } from "./recovery/errors.js";
+
+/** A request's error as its receipt keeps it: whole up to DECISION_ERROR_MAX characters, a longer one cut there and
+ *  marked, so a host redacts it before it cuts it and holds a cut one's tail back (decision-receipts.ts). */
+const errorOfReceipt = (text: string): { error: string; error_truncated?: true } =>
+  text.length > DECISION_ERROR_MAX ? { error: text.slice(0, DECISION_ERROR_MAX), error_truncated: true } : { error: text };
 
 /** The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),
  *  or the kind's default. A router that sends the few thin cases to `strong` buys depth only where the
@@ -2194,7 +2199,7 @@ async function decide<T>(
       ...(evidenceOf(result) ? { evidence: evidenceOf(result) } : {}),
       ...(images ? { images: imagesOf(result) } : {}),
       state: seen.state, state_truncated: seen.truncated,
-      ...(outcome.error !== undefined ? { error: String(outcome.error instanceof EscalationSignal ? outcome.error.escalation.summary : (outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
+      ...(outcome.error !== undefined ? errorOfReceipt(String(outcome.error instanceof EscalationSignal ? outcome.error.escalation.summary : (outcome.error as Error)?.message || outcome.error)) : {}),
     };
   };
   /** Records `made`; with `failure`, the request's own failure, a recorder that also fails surfaces both. */

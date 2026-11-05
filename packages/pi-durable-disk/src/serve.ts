@@ -13,7 +13,7 @@ import { isIP, type AddressInfo } from "node:net";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
-import type { Conversation, ConversationId, EntryId, Harness, SubmissionId, SubmissionRecord, UserInput } from "@earendil-works/pi-durable";
+import type { Conversation, ConversationId, EntryId, Harness, JsonObject, SubmissionId, SubmissionRecord, UserInput } from "@earendil-works/pi-durable";
 import type { RunRef } from "./claim.ts";
 import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
@@ -28,6 +28,23 @@ export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHOR
 
 const MAX_BODY = 1 << 20;
 const REQUEST_ID = /^[\x21-\x7e]{1,200}$/;
+/** The entry kind that names the origin of a server-written message (pi-durable-agent's MESSAGE_ORIGIN, the same text):
+ *  `{ origin, text }`, matched by its text to the user entry that follows it. */
+export const MESSAGE_ORIGIN_KIND = "agentrun.message_origin";
+/** The reasons a server-written message has, the ones the Timeline reads (pi-durable-agent's MessageOrigin): any other
+ *  is refused, never accepted and then shown as the person's. */
+const ORIGIN_REASONS: ReadonlySet<string> = new Set(["cap_raised", "approval", "approval_declined"]);
+/** A submit's `origin`: `{ kind: "server", reason }`, who wrote a message the person did not; with `said` (a non-empty
+ *  string, the person's own words) only for `approval_declined`. */
+const isOrigin = (value: unknown): boolean => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const { kind, reason, said, ...rest } = value as Record<string, unknown>;
+  if (kind !== "server" || typeof reason !== "string" || !ORIGIN_REASONS.has(reason) || Object.keys(rest).length) return false;
+  return reason === "approval_declined" ? typeof said === "string" && said.trim() !== "" : said === undefined;
+};
+/** An input's text: the string, or its text blocks joined, as the Timeline reads a user entry's. */
+const textOfInput = (content: UserInput): string =>
+  (typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")).trim();
 
 export interface ServeOptions {
   /** Default 0: any free port (the address is in `url` and in run.json's holder). */
@@ -245,18 +262,22 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   };
 
   async function submit(body: Record<string, unknown>, context: Context): Promise<{ status: number; body: unknown }> {
-    const { requestId, content, whenBusy, wait } = body;
+    const { requestId, content, whenBusy, wait, origin } = body;
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");
+    if (origin !== undefined && !isOrigin(origin)) throw new HttpError(400, "BAD_REQUEST", "origin is { kind: \"server\", reason }, a reason cap_raised, approval or approval_declined, with said (the person's words) for approval_declined");
     if (pauses > 0) throw unavailable("PARKING", "the run is parking or draining");
     if (door) {
       if (body.conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook takes its input in the root conversation: no conversationId");
       const root = await conversationOf(undefined, context);
-      const input = { requestId, content: content as UserInput, whenBusy: whenBusy ?? "followUp" } as const;
+      const input = { requestId, content: content as UserInput, whenBusy: whenBusy ?? "followUp", ...(origin ? { origin: origin as JsonObject } : {}) } as const;
       return doorAnswer(requestId, await door.submit(root.id, input, context));
     }
     const conversation = await conversationOf(optionalId(body.conversationId, "conversationId"), context);
+    // A message the server wrote: pi writes its user entry with no data, so its origin goes first as an entry of its own,
+    // queued with it, which the Timeline matches to it by its text (MESSAGE_ORIGIN_KIND).
+    if (origin) await conversation.submit({ type: "write", requestId: `${requestId}:origin`, entry: { kind: MESSAGE_ORIGIN_KIND, data: { origin: origin as JsonObject, text: textOfInput(content as UserInput) } } }, context);
     const submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(whenBusy === undefined ? {} : { whenBusy }) }, context);
     let record: SubmissionRecord = await submission.status(context);
     if (wait === true) record = await submission.wait(context);
