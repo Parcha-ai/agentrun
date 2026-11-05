@@ -372,15 +372,33 @@ const keepMark = (runDir: string, mark: SyncMark) => writeDurable(join(runDir, B
  *  it is `none`; a create the provider refuses for its list (NO_LIST) is said to `onNoList` at once, with its refusal's
  *  code and words (so a closed box or a seed that then fails leaves it said), and made again with no network, never open.
  *  A found box is kept when it has no network, or the list asked (the same hosts, in any order, as its provider reads
- *  them); any other (open, unknown, another list or one it does not say, or a list when `none` was asked) is destroyed
- *  and made again, so a narrower list holds after a restart. A box whose seed fails is destroyed, and the call fails. */
-export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>, allow: readonly string[] | "none" = "none", onNoList?: (code: string, message: string) => void): Promise<{ id: string; made: boolean }> {
+ *  them); any other (open, unknown, another list or one it does not say, or a list when `none` was asked) is copied back
+ *  whole, then destroyed and made again, so a narrower list holds after a restart. One whose copy back fails or is not
+ *  whole is kept, and the call fails. A box whose seed fails is destroyed, and the call fails. */
+/** What ensureRemoteBox takes beyond the run: the wake of a box Daytona stopped, the hosts the box may reach (`none` for
+ *  none), who hears a refused list, and the copy back a found box gets before it is replaced (pullRemoteBox). */
+export type RemoteBoxOptions = {
+  wake?: () => Promise<number>;
+  allow?: readonly string[] | "none";
+  onNoList?: (code: string, message: string) => void;
+  pull?: (boxes: BoxProvider, run: { id: string; dir: string }, context: Context, wake?: () => Promise<number>) => Promise<unknown>;
+};
+
+export async function ensureRemoteBox(boxes: BoxProvider, run: { id: string; dir: string }, context: Context, options: RemoteBoxOptions = {}): Promise<{ id: string; made: boolean }> {
+  const { wake, allow = "none", onNoList, pull = pullRemoteBox } = options;
   let asked: "none" | "allowlist" = allow === "none" ? "none" : "allowlist";
   let box = await runningRunBox(boxes, run.id, context, wake);
   let made = false;
   const facts = box?.facts();
   const keep = facts?.network === "none" || (facts?.network === "allowlist" && allow !== "none" && sameHosts(facts.allow, allow));
   if (box && !keep) {
+    // Its files first, whole: a box replaced here holds nothing only it had. One whose copy back fails, or is not whole,
+    // is kept for a later copy, and the call refused, so no tool runs in it.
+    try {
+      await pull(boxes, run, context, wake);
+    } catch (error) {
+      throw new Error(`the run's box has another host list than this server's now (or a network it does not ask for), and its files could not all be copied back, so it is kept and not used: ${(error as Error).message}`);
+    }
     await destroyRunBoxes(boxes, run.id, context);
     box = undefined;
   }

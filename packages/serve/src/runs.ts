@@ -1165,10 +1165,14 @@ export class Runs {
     // After any pull of this run's box, so a seed never meets a pull.
     run.boxing ??= (run.pulling ?? Promise.resolve())
       .then(() =>
-        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), this.wakeOf(run.id), (this.remoteAllow ??= this.options.boxAllow ?? "none"), (code, message) => {
-          if (this.remoteAllow === "none") return;
-          this.remoteAllow = "none";
-          this.options.onNoBoxList?.(code, message);
+        ensureRemoteBox(boxes, run, boxContext(REMOTE_SYNC_MS), {
+          wake: this.wakeOf(run.id),
+          allow: (this.remoteAllow ??= this.options.boxAllow ?? "none"),
+          onNoList: (code, message) => {
+            if (this.remoteAllow === "none") return;
+            this.remoteAllow = "none";
+            this.options.onNoBoxList?.(code, message);
+          },
         }),
       )
       .finally(() => void (run.boxing = undefined));
