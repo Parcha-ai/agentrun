@@ -125,10 +125,14 @@ export class Agents {
 
   /** A new agent and its first revision, current. A definition id already here is `409 agent_exists`. `check` sees the
    *  revision before anything is written, and may refuse it. */
-  async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>): Promise<AgentEntry> {
+  /** `fresh`: the place a new agent that names none is saved with, and the tools it gets when it names none (place.ts
+   *  newAgentPlace); an agentic definition alone takes them, and only where it leaves them out. */
+  async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>, fresh?: { place: RevisionPlace; tools: readonly string[] }): Promise<AgentEntry> {
     const given = typeof definition.id === "string" ? definition.id : undefined;
     if (given !== undefined && (await this.request(() => this.store.readAgent(given)))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
-    const revision = this.revisionOf(definition, skills, note);
+    // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
+    const stamped = fresh && definition.place === undefined && !isObject(definition.workflow) ? { place: fresh.place, ...(definition.tools === undefined ? { tools: [...fresh.tools] } : {}) } : {};
+    const revision = this.revisionOf({ ...definition, ...stamped }, skills, note);
     this.checkVersion(definition, 1);
     await this.checked(revision);
     await check?.(revision);

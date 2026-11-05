@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box wherever the server has docker, whether ready or still preparing its image (the first run waits for the image). The place is written on its revision. If the definition names no tools either, the agent gets `bash`, so it has a shell. A definition that names its tools keeps exactly those. Where docker is unavailable, a new agent is saved as before and runs on the runner. `capabilities.places.default_place` says what a new agent gets, and `default_reason` says why when that is the runner. `places.default` stays `runner`, because it is where a revision that names no place runs. Agents saved before keep running where they ran, and a workflow is never given a box. The console's new-agent form starts on the served default, with bash ticked in a sandbox.

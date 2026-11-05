@@ -33,7 +33,7 @@ import { gradeModelOf, learningBudgetOf, type LearningMode, learningOf } from ".
 import { agentLearning, learningLog, learningNotes, noteBody, readNote, runDiff, runLearning, secretsShown, sendNote, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxesLine, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxesLine, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./run-box.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
@@ -1452,7 +1452,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
           let warnings: InputIssue[] = [];
-          const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
+          // A new agent that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision.
+          const fresh = newAgentPlace(boxOffers);
+          const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
           return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);

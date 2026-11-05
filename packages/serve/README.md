@@ -104,6 +104,9 @@ curl -sN "$AGENTRUN_BASE_URL/runs/$run/timeline" -H "$H" -H 'accept: text/event-
 curl -s "$AGENTRUN_BASE_URL/runs/$run/files" -H "$H"; curl -s "$AGENTRUN_BASE_URL/runs/$run/files/out.txt" -H "$H"
 ```
 
+The `place` above is what a new agent gets anyway on a server with docker, so a definition that names only its name and
+instructions lands in the box too, with `bash` as its one tool ([Place](#place)).
+
 The timeline ends when the run does. `out.txt` names the image's Debian, whatever this machine runs, and it is in
 the run's `work/`, the one directory the container binds. No key? Start the server with `--faux box.mjs`, a
 [faux model](#the-faux-model) that makes one `bash` call and then answers, and run the same commands:
@@ -269,11 +272,25 @@ A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": 
 the ids under [Boxes](#boxes). A runner has no shell. In a sandbox the agent's `bash` runs in the named box and its
 file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
 while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
-remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). A definition that
-names none runs in this host's default (`capabilities.places.default`, `runner` here), and its answers show no place; one
-that names a place keeps it, `runner` included. An edit that names no place keeps the agent's.
+remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
+place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
-A run runs in its revision's place, else this host's default. A run request names no place: `POST /agents/{id}/runs`
+The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
+(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
+run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
+show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
+names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
+with no place, and runs on the runner. A workflow is never given a box.
+
+`capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
+`default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
+unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker`. `default` stays `runner`,
+because it means where a revision that names no place runs. An agent saved with no place (before this, where docker was
+unavailable, or a workflow) keeps running on the runner, whatever the server has now. The default is never worked out
+again at run time. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+What a person picks or unticks there is what is sent.
+
+A run runs in its revision's place, else on the runner. A run request names no place: `POST /agents/{id}/runs`
 with `place` is `422 input_invalid`, as with any field the body does not keep. The run keeps the place it resolved to,
 and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, when they come, will be an option of
 `sandbox` (such as `native_tools: true`), never a third mode.
@@ -283,11 +300,11 @@ the sandbox place as its `fix`), and a workflow's place is `runner` or none (`42
 its `fix`). In `capabilities.tools`, `bash` is `available: false` with a `reason` (`no box is set up on this server: …`,
 each box's own reason) when no box this server has can run it.
 
-`GET /v2/capabilities` lists `places`: the modes, the default, and each box with `available`, its `state` (`ready`,
+`GET /v2/capabilities` lists `places`: the modes, the default, a new agent's place, and each box with `available`, its `state` (`ready`,
 `preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`.
+`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/3"`.
 
 ### A run in a Docker box
 
