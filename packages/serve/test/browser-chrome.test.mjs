@@ -154,7 +154,7 @@ test("through the API: a run on the local Chrome is handed the server's resolved
   assert.deepEqual((await third.api("GET", "/agents/local")).body.sign_ins, []);
 });
 
-test("the local Chrome's provider: pi-browser's cdp provider, which refuses a profile and offers a vault nothing; its profiles under the run's directory; Chrome's arguments send every request through the proxy, loopback too, with no bypass and no resolution but its own DevTools socket's", async (t) => {
+test("the local Chrome's provider: pi-browser's cdp provider, which refuses a profile and offers a vault nothing; its profiles under the run's directory; Chrome's arguments send every request through the proxy, loopback too, with no bypass and no resolution but its DevTools guard's", async (t) => {
   const root = await scratch(t);
   const local = await localChrome({ executablePath: EXECUTABLE, root, runId: `unit-${randomBytes(4).toString("hex")}`, env: {}, log: () => {} });
   t.after(() => local.close());
@@ -170,7 +170,7 @@ test("the local Chrome's provider: pi-browser's cdp provider, which refuses a pr
 
   assert.deepEqual(chromeFence("http://127.0.0.1:41000", 42000), [
     "--proxy-server=http://127.0.0.1:41000", // key-gate: loopback-rule the relay a local Chrome is pointed at
-    "--proxy-bypass-list=<-loopback>;127.0.0.1:42000", // key-gate: loopback-rule Chrome own DevTools socket, its one bypass
+    "--proxy-bypass-list=<-loopback>;127.0.0.1:42000", // key-gate: loopback-rule the DevTools guard, the one loopback port Chrome reaches past the proxy
     "--host-resolver-rules=MAP 127.0.0.1:41000 127.0.0.1:41000, MAP 127.0.0.1:42000 127.0.0.1:42000, MAP * ~NOTFOUND", // key-gate: loopback-rule the two addresses Chrome resolves itself
     "--disable-quic",
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",

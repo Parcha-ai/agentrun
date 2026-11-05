@@ -10,7 +10,9 @@
 // so this server, the machine's other services, private networks and a cloud's metadata address are each refused.
 // Chrome resolves no name or address itself but the proxy's and its own socket's, speaks no QUIC, and sends WebRTC over
 // no UDP. It keeps no saved sign-in: a session that asks for a profile is refused by name, and the provider offers a
-// session vault nothing, so nothing sealed is ever handed to it.
+// session vault nothing, so nothing sealed is ever handed to it. It reads no file of this machine: every client of its
+// DevTools socket (the driver, and the code a model runs in the browser) goes through pi-browser's guard, which refuses a
+// navigation or a new tab to anything but http, https and about:blank, and any command that hands a page a file.
 import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { access, mkdtemp, rm, stat } from "node:fs/promises";
@@ -22,21 +24,22 @@ import { LOCAL_CHROME_ENV } from "./tool-plane.js";
 /** Where a run's local Chrome keeps its sessions' profiles: under the run's own directory. */
 export const CHROME_PROFILES = "browser-chrome";
 
-/** The arguments that hold a local Chrome to the proxy at `proxy` (an http URL of a loopback port), its own DevTools socket
- *  on `debuggingPort`: every request through the proxy, loopback too (`<-loopback>`), but Chrome's own socket, which
- *  Stagehand's extension in it dials (pi-browser opens it to that extension's Origin alone); and no name or address
- *  resolved by Chrome itself but those two, so even a request a page or a browser context sends around the proxy reaches
+/** The arguments that hold a local Chrome to the proxy at `proxy` (an http URL of a loopback port), the guard in front of
+ *  its DevTools socket on `guardPort` (pi-browser's cdp guard, cdp-guard.ts): every request through the proxy, loopback too
+ *  (`<-loopback>`), but the guard, which Stagehand's extension in the browser dials (it passes the browser's Origin check
+ *  on, so only that extension is let in); not the browser's own socket, which nothing in the browser reaches; and no name
+ *  or address resolved by Chrome itself but those two, so even a request a page or a browser context sends around the proxy reaches
  *  nothing (the proxy resolves and checks each name); no QUIC, which goes around an HTTP proxy; and WebRTC on no UDP but
  *  the proxy's, which carries none, so no ICE candidate is gathered and no STUN packet leaves. That last is
  *  `--webrtc-ip-handling-policy`: Chrome 155 and 156 ignore the `--force-` spelling (measured: a STUN server on loopback
  *  is sent its binding requests under it). */
-export function chromeFence(proxy: string, debuggingPort: number): string[] {
+export function chromeFence(proxy: string, guardPort: number): string[] {
   const { hostname, port } = new URL(proxy);
   const own = (at: string) => `MAP ${at} ${at}`;
   return [
     `--proxy-server=${proxy}`,
-    `--proxy-bypass-list=<-loopback>;${hostname}:${debuggingPort}`,
-    `--host-resolver-rules=${own(`${hostname}:${port}`)}, ${own(`${hostname}:${debuggingPort}`)}, MAP * ~NOTFOUND`,
+    `--proxy-bypass-list=<-loopback>;${hostname}:${guardPort}`,
+    `--host-resolver-rules=${own(`${hostname}:${port}`)}, ${own(`${hostname}:${guardPort}`)}, MAP * ~NOTFOUND`,
     "--disable-quic",
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
   ];
@@ -88,7 +91,7 @@ export async function localChrome(options: { executablePath: string; root: strin
   try {
     const [{ cdpProvider }, { BrowserFailureError, browserFailure }] = await Promise.all([import("@parcha/pi-browser/providers/cdp"), import("@parcha/pi-browser")]);
     // `sandbox: true` whatever PI_BROWSER_NO_SANDBOX says, and no seam turns it off.
-    const { vault: _vault, ...chrome } = cdpProvider({ chrome: { executablePath: options.executablePath, profileRoot: join(options.root, CHROME_PROFILES), headless: true, sandbox: true, args: ({ debuggingPort }) => chromeFence(egress.url, debuggingPort) } });
+    const { vault: _vault, ...chrome } = cdpProvider({ chrome: { executablePath: options.executablePath, profileRoot: join(options.root, CHROME_PROFILES), headless: true, sandbox: true, guard: true, args: ({ guardPort }) => chromeFence(egress.url, guardPort!) } });
     // A session whose Chrome cannot start its sandbox: pi-browser's failure offers to turn it off, which this server
     // never does, so the session is refused in words of its own, and Chrome's own go to the run's log for the operator.
     const create: typeof chrome.create = async (spec, signal) => {
