@@ -23,7 +23,7 @@ import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-wo
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
-import { ATTEMPTS, type Attempt, CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
+import { ATTEMPTS, type Attempt, attemptLost, CAP_REFUSED_FIELD, CLAMP, HELD_FIELD, HELD_USD, MARK_NOT_WRITTEN, markResponseBegan, piEnded, sideRequests, STOPPED_USD, type Stopped } from "./cap.js";
 import { RUN_CANCELLED } from "./files.js";
 
 
@@ -66,12 +66,38 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
    *  STOPPED_USD), as an end mark's field; its worst case when the cap gave no such figure; none without a cap. */
   /** Whether a request that ended on an error before any event is lost (piEnded, from the attempts its cap recorded):
    *  it left and can have been billed, so it counts at its hold. A request no cap watched (no hold) is never lost here. */
+  /** Whether a request the cap watched is lost (piEnded): an error before any event that left, or an answer after an
+   *  attempt that was lost. */
+  const lostOf = (options: unknown, message: AssistantMessage): boolean => {
+    const record = options as Record<symbol, unknown> | undefined;
+    if (typeof record?.[HELD_USD] !== "number" || !record || !(ATTEMPTS in record)) return false;
+    return piEnded(message, false, (record[ATTEMPTS] as Attempt[] | null) ?? undefined).end === "lost";
+  };
   const lostBefore = (options: unknown, message: AssistantMessage): boolean => {
     const record = options as Record<symbol, unknown> | undefined;
     // Only a request the cap watched (its attempts, or null on an API it cannot watch): another is read as before.
     if (typeof record?.[HELD_USD] !== "number" || !record || !(ATTEMPTS in record)) return false;
     const attempts = record[ATTEMPTS] as Attempt[] | null;
     return piEnded(message, false, attempts ?? undefined).end === "lost";
+  };
+  /** `options` whose fetch, before each attempt after one that was lost (attemptLost: sent, then reset; a gateway's
+   *  timeout; an answer pi-ai tries again), first writes the request's end mark at its hold (`lost`), once: whatever its
+   *  retry answers, the provider can have billed the lost attempt, and the mark is in the store before pi's entry for the
+   *  answer can be, so a later process reads the hold this one books, with no window between them. `options` as given
+   *  on a request the cap does not watch. */
+  const watchingLost = <O>(options: O, markLost: () => Promise<void>): O => {
+    const record = options as (Record<symbol, unknown> & { fetch?: typeof fetch }) | undefined;
+    const attempts = record && ATTEMPTS in record ? (record[ATTEMPTS] as Attempt[] | null) : null;
+    if (!attempts || typeof record?.[HELD_USD] !== "number" || typeof record.fetch !== "function") return options;
+    const inner = record.fetch;
+    let marked = false;
+    return { ...record, fetch: (async (input, init) => {
+      if (!marked && attempts.some((attempt) => attemptLost(attempt, false))) {
+        marked = true;
+        await markLost().catch(() => undefined);
+      }
+      return inner(input, init);
+    }) as typeof fetch } as O;
   };
   const stoppedOf = (options: unknown, message: AssistantMessage): Record<string, number> => {
     const stopped = (options as Record<symbol, unknown> | undefined)?.[STOPPED_USD] as Stopped | undefined;
@@ -128,8 +154,14 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // The stream's error event, passed on once the request's end is marked (below): the outer stream's result, which
       // pi writes as the entry and the cap counts, settles on that event.
       let failure: Parameters<typeof outer.push>[0] | undefined;
+      // Marked lost before pi-ai tries again (watchingLost): its end mark is in the store before its answer can be.
+      let lostMarked = false;
+      const sent = watchingLost(options, () => {
+        lostMarked = true;
+        return mark(REQUEST_ENDED, { lost: true, ...heldOf(options) });
+      });
       try {
-        const inner = models.streamSimple(model, context, options);
+        const inner = models.streamSimple(model, context, sent);
         for await (const event of inner) {
           if (event.type === "error") {
             failure = event;
@@ -149,7 +181,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       // take the mark leaves the request unended, which the timeline also reads as cut, at an unknown cost: the
       // conservative reading, so the failure is swallowed here.
       let ending: Promise<void> | undefined;
-      if (result.stopReason === "aborted") {
+      // A request marked lost before its retry was sent has its end in the store already, at its hold: nothing more.
+      if (lostMarked) {
+        if (result.stopReason === "error" && failure?.type === "error") markResponseBegan(failure.error);
+      } else if (result.stopReason === "aborted") {
         const responseId = (result as { responseId?: unknown }).responseId;
         ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...stoppedOf(options, result) });
       } else if (result.stopReason === "error" && (began || lostBefore(options, result))) {
@@ -208,7 +243,7 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       if (began) markResponseBegan(result);
       // Failed before any response, it counts at its hold too unless it provably never left (piEnded): the same figure the
       // cap books in this process, which a later process reads from this mark.
-      const failure = began || (result.stopReason === "error" && lostBefore(options, result)) ? { failed: true, ...heldOf(options) } : {};
+      const failure = began || lostOf(options, result) ? { failed: true, ...heldOf(options) } : {};
       await mark(REQUEST_COST, usage ? { ...COMPACTION, usd, usage: usage as never, ...failure } : { ...COMPACTION, usd, ...failure }).catch(() => undefined);
     }
     return result;

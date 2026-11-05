@@ -108,14 +108,19 @@ export const stoppedPriceOf = (cost: (output: number) => number, limit: number) 
 export const ATTEMPTS = Symbol.for("agentrun.serve.attempts");
 /** One attempt of a request: the status it was answered with, or the code its fetch was refused with. */
 export type Attempt = { status: number } | { code: string | undefined };
-/** The APIs whose requests the cap cannot watch through a fetch, so it gives them none: their transport goes another way
- *  (Codex's WebSocket first, Bedrock's own client, Cloudflare's binding and Workers AI, the decision and System One
- *  clients), or they refuse a custom fetch outright (pi-ai's Google adapters throw on one). A request on one that fails
- *  before any event books its hold. */
-export const NO_RECORDER_APIS: ReadonlySet<string> = new Set([
-  "openai-codex-responses", "bedrock-converse-stream", "cloudflare-ai-binding", "cloudflare-workers-ai-system-one",
-  "google-generative-ai", "google-vertex", "openai-decisions", "typesafe-system-one",
-]);
+/** The APIs whose requests the cap cannot watch through a fetch, each with why: it gives them no recording fetch, and
+ *  a request on one that fails before any event books its hold (piEnded). The one table both read. */
+export const UNWATCHED_APIS: Readonly<Record<string, string>> = {
+  "openai-codex-responses": "tries a WebSocket first, which a fetch never sees",
+  "bedrock-converse-stream": "sends through its own AWS client, never options.fetch",
+  "cloudflare-ai-binding": "calls a Workers binding, never options.fetch",
+  "cloudflare-workers-ai-system-one": "never reads options.fetch",
+  "google-generative-ai": "throws on a custom fetch",
+  "google-vertex": "throws on a custom fetch",
+  "openai-decisions": "never reads options.fetch",
+  "typesafe-system-one": "never reads options.fetch",
+};
+const unwatched = (api: string): boolean => Object.hasOwn(UNWATCHED_APIS, api);
 /** A fetch that does what `inner` does (globalThis.fetch by default) and records each attempt in `attempts`. */
 export function recordingFetch(attempts: Attempt[], inner?: typeof fetch): typeof fetch {
   return (async (input, init) => {
@@ -135,13 +140,17 @@ export function recordingFetch(attempts: Attempt[], inner?: typeof fetch): typeo
  *  gateway gave up on it (504, 524), or when it was answered 2xx and its request then ended on an error, or was tried
  *  again. An answer after a lost attempt can have been billed twice: lost. No attempt seen on a watched API: it never
  *  left. */
-export function piEnded(message: Pick<AssistantMessage, "stopReason" | "usage">, began: boolean, attempts: readonly Attempt[] | undefined): Ended {
-  const ok = (a: Attempt) => "status" in a && a.status >= 200 && a.status < 300;
-  const lost = (a: Attempt, last: boolean) => ("code" in a ? !isConnectCode(a.code) : isGatewayTimeout(a.status) || (ok(a) && !last));
-  const anyLost = attempts?.some((a, at) => lost(a, at === attempts.length - 1)) ?? false;
+const answeredOk = (a: Attempt) => "status" in a && a.status >= 200 && a.status < 300;
+/** Whether one attempt was lost: refused after it could have left (any code but a connect one), a gateway's timeout, or
+ *  an answer that was not the request's last attempt (pi-ai tried again after it). */
+export const attemptLost = (a: Attempt, last: boolean): boolean => ("code" in a ? !isConnectCode(a.code) : isGatewayTimeout(a.status) || (answeredOk(a) && !last));
+export function piEnded(message: Pick<AssistantMessage, "stopReason" | "usage" | "api">, began: boolean, attempts: readonly Attempt[] | undefined): Ended {
+  const ok = answeredOk;
+  const anyLost = attempts?.some((a, at) => attemptLost(a, at === attempts.length - 1)) ?? false;
   if (message.stopReason !== "error") return anyLost ? { end: "lost", label: "retried" } : { end: "answered", usd: typeof message.usage?.cost?.total === "number" ? message.usage.cost.total : null };
   if (began) return { end: "lost", label: "error_after", began: true };
-  if (attempts === undefined) return { end: "lost", label: "error_before" };
+  // On an API the cap cannot watch (UNWATCHED_APIS), or with no record of its attempts, nothing says it never left.
+  if (attempts === undefined || unwatched(message.api)) return { end: "lost", label: "error_before" };
   const last = attempts.at(-1);
   if (last && "status" in last && isGatewayTimeout(last.status)) return { end: "lost", label: "gateway_timeout" };
   if (anyLost || (last !== undefined && ok(last))) return { end: "lost", label: "error_before" };
@@ -284,25 +293,30 @@ export function spentIn(storeFile: string): number | null {
   // no request's, and no end mark takes one.
   const stopOf = (entry: EntryLike) => (entry.model?.[0] as { stopReason?: unknown } | undefined)?.stopReason;
   const errorsAt: number[] = [];
+  // pi's answers: a `lost` end mark (written before a retry, request-start.ts) takes pi's entry for its request, an
+  // answer or an error, as an error mark takes an error entry: it is counted at the mark's hold, never at its usage too.
+  const answersAt: number[] = [];
   let refusals = 0;
   rows.forEach((entry, at) => {
     if (entry.kind === REQUEST_REFUSED) refusals += 1;
     else if (entry.kind === "pi.assistant" && stopOf(entry) === "error" && !refusedHere(entry) && !notSentHere(entry)) {
       if (refusals > 0) refusals -= 1;
       else errorsAt.push(at);
-    }
+    } else if (entry.kind === "pi.assistant" && stopOf(entry) !== "error" && stopOf(entry) !== "aborted") answersAt.push(at);
   });
   const taken = new Set<number>();
   const fieldsOf = (entry: EntryLike) => (entry.data ?? {}) as Record<string, unknown>;
   const generationStart = (entry: EntryLike) => entry.kind === REQUEST_STARTED && typeof fieldsOf(entry).request !== "string" && fieldsOf(entry)[CAP_REFUSED_FIELD] !== true;
   // Each such end mark, with the earliest start holding its figure (-1 for none: any error entry then).
-  const ends = rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry).error === true
+  const endsOf = (field: "error" | "lost") => rows.flatMap((entry, at) => entry.kind === REQUEST_ENDED && fieldsOf(entry)[field] === true
     ? [{ at, from: rows.findIndex((start, i) => i < at && generationStart(start) && figureOf(fieldsOf(start)[HELD_FIELD]) === figureOf(fieldsOf(entry)[HELD_FIELD])) }]
     : []);
-  for (const { at, from } of ends.sort((a, b) => b.from - a.from)) {
-    let nearest = -1;
-    for (const error of errorsAt) if (error > from && !taken.has(error) && (nearest < 0 || Math.abs(error - at) < Math.abs(nearest - at))) nearest = error;
-    if (nearest >= 0) taken.add(nearest);
+  for (const [field, candidates] of [["error", errorsAt], ["lost", [...errorsAt, ...answersAt].sort((a, b) => a - b)]] as const) {
+    for (const { at, from } of endsOf(field).sort((a, b) => b.from - a.from)) {
+      let nearest = -1;
+      for (const entry of candidates) if (entry > from && !taken.has(entry) && (nearest < 0 || Math.abs(entry - at) < Math.abs(nearest - at))) nearest = entry;
+      if (nearest >= 0) taken.add(nearest);
+    }
   }
   // Each paid tool call marked and not settled, by call: what it was held at.
   const calls = new Map<unknown, unknown>();
@@ -728,7 +742,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // null on an API the cap cannot watch: its marks read a failure before any event as lost.
     ...(attempts ? { [ATTEMPTS]: attempts, fetch: recordingFetch(attempts, (options as { fetch?: typeof fetch } | undefined)?.fetch) } : { [ATTEMPTS]: null }),
   }) as O;
-  const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (NO_RECORDER_APIS.has(model.api) ? undefined : []);
+  const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (unwatched(model.api) ? undefined : []);
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
     (model: Model<Api>, context: Context, options?: Options): AssistantMessageEventStream => {
       const judged = judge(model, context, options, simpleCall);
