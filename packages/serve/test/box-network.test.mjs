@@ -330,7 +330,7 @@ test("a Docker in a VM (docker info names the runtime, on another kernel): docke
   const why = process.platform === "linux"
     ? `this Docker (OrbStack) runs in a VM (its kernel is "6.15.11-orbstack-00539-g9885ebd8e3f4", this machine's ${JSON.stringify(KERNEL)}) that can't reach this server's egress proxy yet`
     : undefined;
-  assert.deepEqual(places.allow, []);
+  assert.deepEqual(places.allow, DEFAULT, "the server's one list stands: this box's network says it cannot have it");
   assert.equal(offer.network, "none");
   if (why) assert.equal(offer.network_reason, why);
   assert.ok(server.boxesLine.includes(`docker boxes have no network: ${offer.network_reason}.`), server.boxesLine);
