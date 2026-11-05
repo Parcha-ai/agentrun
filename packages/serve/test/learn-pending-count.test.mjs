@@ -10,6 +10,7 @@ import { seedOf } from "../dist/learning.js";
 import { pendingTestHooks } from "../dist/learning-routes.js";
 import { note, skill } from "./learn-format-support.mjs";
 import { git } from "./learn-support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
 /** Agent `id`'s learning folder made as a first run makes it, then `files` committed on main. */
@@ -26,7 +27,7 @@ async function commit(data, id, files) {
 const held = (text) => text.replace(/\n---\n/, "\nstatus: pending\n---\n");
 
 test("an agent that learns says how many learned items wait for its owner's OK, in the list and on its own view; one approved counts no more", async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, baseUrl } = await serve(t, { learning: "on" });
   assert.equal((await api("POST", "/agents", agent("waits", { learning: true }))).status, 201);
   await commit(data, "waits", {
     "held-note.md": held(note({ name: "Held note" })),
@@ -35,7 +36,12 @@ test("an agent that learns says how many learned items wait for its owner's OK, 
   });
   const listed = (await api("GET", "/agents")).body.agents.find((a) => a.agent_id === "waits");
   assert.deepEqual(listed.learning, { pending: 2 }, JSON.stringify(listed.learning));
-  assert.deepEqual((await api("GET", "/agents/waits")).body.learning, { pending: 2 });
+  const view = (await api("GET", "/agents/waits")).body;
+  assert.deepEqual(view.learning, { pending: 2 });
+  // The contract pins it: the Agent schema says it, and the served view is one it allows.
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  assert.equal(doc.components.schemas.Agent.properties.learning.properties.pending.type, "integer");
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Agent.properties.learning, view.learning), [], JSON.stringify(view.learning));
   // The owner's OK, as main records it: the note's status gone.
   await commit(data, "waits", { "held-note.md": note({ name: "Held note" }) });
   assert.deepEqual((await api("GET", "/agents/waits")).body.learning, { pending: 1 });
