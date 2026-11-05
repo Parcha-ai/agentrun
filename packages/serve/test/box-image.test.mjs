@@ -26,7 +26,7 @@ const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const IMAGE = "debian:bookworm-slim";
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const PULLING = `Preparing the box image: pulling ${IMAGE}…`;
-const BUILDING = "Preparing the box image: building it (python, git, curl, node, rg)…";
+const BUILDING = "Preparing the box image: building it (python, git, curl, node, npm, rg)…";
 /** Docker's own words for a refused pull, with a marker no reason may carry. */
 const DENIED = `Error response from daemon: pull access denied for nosuch/box, repository does not exist or may require 'docker login': denied: requested access to the resource is denied RAW-DOCKER-STDERR`;
 
@@ -69,6 +69,10 @@ const recordOf = (data) => {
 };
 const writerOf = (data) => JSON.parse(readFileSync(join(data, IMAGE_STATE_FILE), "utf8")).writer;
 const dockerOffer = async (api) => (await api("GET", "/capabilities")).body.places.boxes.find((box) => box.id === "docker");
+/** A Docker box's network on this machine (box-network.test.mjs): the default list on Linux, with the fake's own kernel. */
+const DOCKER_NET = process.platform === "linux" ? { network: "allowlist" } : { network: "none", network_reason: "this server runs on macOS, where Docker runs in a VM that can't reach this server's egress proxy yet" };
+/** The banner's sentence for it. */
+const NET_SENTENCE = process.platform === "linux" ? " docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com, github.com, and codeload.github.com." : ` docker boxes have no network: ${DOCKER_NET.network_reason}.`;
 /** The run's timeline as it is now, every page read. */
 async function rowsOf(api, runId) {
   const rows = new Map();
@@ -111,14 +115,14 @@ const logged = () => {
   return { lines, log: (line) => void lines.push(line), of: (event) => lines.filter((line) => line.includes(` event=${event} `)) };
 };
 
-test("the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build", async (t) => {
+test("the default image is built on first use, once, from a private context directory holding the recipe alone, removed after; tagged with the recipe's hash and labelled with it; present with that hash, it is ready with no build", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F35 (tl-places) until 2026-11-06T10:06Z, scripts/quarantine.json" }, async (t) => {
   const docker = await fakeDocker(t, { "build-hold": "" });
   const data = await scratch(t);
   assert.equal(DEFAULT_DOCKER_IMAGE, `agentrun-box:${RECIPE_HASH.slice(0, 12)}`);
   const changes = [];
   const before = Date.now();
   const image = await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { onChange: (state) => changes.push(state) });
-  assert.deepEqual(image.state(), { state: "preparing", reason: "building the box image (python, git, curl, node, rg)" }, "the start does not wait for the build");
+  assert.deepEqual(image.state(), { state: "preparing", reason: "building the box image (python, git, curl, node, npm, rg)" }, "the start does not wait for the build");
   const preparing = recordOf(data);
   assert.deepEqual([preparing.state, preparing.row], ["preparing", BUILDING]);
   if (process.platform === "linux") assert.deepEqual(writerOf(data), { pid: process.pid, startTime: startTimeOf(process.pid) }, "the record names its writer, this server");
@@ -134,7 +138,7 @@ test("the default image is built on first use, once, from a private context dire
   assert.equal(existsSync(build.context), false, "the context directory is gone after the build");
   assert.match(BOX_RECIPE, /^FROM python:3\.12-slim@sha256:[0-9a-f]{64}\n/, "the base pinned by its digest");
   assert.equal([...BOX_RECIPE.matchAll(/^FROM /gm)].length, 1, "one FROM, python:3.12-slim");
-  assert.match(BOX_RECIPE, /apt-get install -y --no-install-recommends git curl ca-certificates nodejs ripgrep \\\n && rm -rf \/var\/lib\/apt\/lists\/\*\n$/, "node and rg from apt, the lists cleaned after");
+  assert.match(BOX_RECIPE, /apt-get install -y --no-install-recommends git curl ca-certificates nodejs npm ripgrep socat \\\n && rm -rf \/var\/lib\/apt\/lists\/\*\n$/, "node, npm, rg and socat from apt, the lists cleaned after");
   assert.deepEqual(docker.calls().find((args) => args[0] === "build"), ["build", "--quiet", "--label", `${RECIPE_LABEL}=${RECIPE_HASH}`, "--tag", DEFAULT_DOCKER_IMAGE, build.context], "the context directory is the build's last argument, never stdin");
   assert.deepEqual(docker.pulls(), [], "nothing is pulled by hand: the build pulls its base");
   // The next start finds it, with this recipe's hash: no build.
@@ -163,7 +167,7 @@ test("a build that fails, or takes too long, makes the box unavailable with a re
   const data = await scratch(t);
   const now = { retryAfterMs: 0 };
   const failed = await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled;
-  assert.deepEqual(failed, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt): ${NEXT}` });
+  assert.deepEqual(failed, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs, npm, ripgrep and socat with apt): ${NEXT}` });
   assert.ok(!failed.reason.includes("RAW-DOCKER-STDERR"));
   assert.deepEqual(recordOf(data), { image: DEFAULT_DOCKER_IMAGE, state: "unavailable", reason: failed.reason });
   await writeFile(join(docker.state, "build-fail"), NO_BASE);
@@ -171,9 +175,9 @@ test("a build that fails, or takes too long, makes the box unavailable with a re
   await writeFile(join(docker.state, "build-fail"), "failed to copy files: write /var/lib/docker/x: no space left on device RAW-DOCKER-STDERR");
   assert.equal((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, "the build of the box image ran out of disk space: free some, then restart the server");
   await writeFile(join(docker.state, "build-fail"), "E: Unable to locate package git RAW-DOCKER-STDERR");
-  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, /^apt could not install what the box image needs \(git, curl, nodejs, ripgrep\): /);
+  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, /^apt could not install what the box image needs \(git, curl, nodejs, npm, ripgrep, socat\): /);
   await writeFile(join(docker.state, "build-fail"), "Err:1 http://deb.debian.org/debian bookworm InRelease Temporary failure resolving 'deb.debian.org' RAW-DOCKER-STDERR");
-  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, /^the build of the box image could not reach the network \(it pulls python:3\.12-slim and installs git, curl, nodejs and ripgrep with apt\): /);
+  assert.match((await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, now)).settled).reason, /^the build of the box image could not reach the network \(it pulls python:3\.12-slim and installs git, curl, nodejs, npm, ripgrep and socat with apt\): /);
   await rm(join(docker.state, "build-fail"));
   await writeFile(join(docker.state, "build-hold"), "");
   const started = Date.now();
@@ -296,10 +300,10 @@ test("a run's first box waits on the record: at once when it is ready, missing o
 async function waitsForTheImage(t, way) {
   const built = way === "build";
   const docker = await fakeDocker(t, built ? { "build-hold": "" } : { "no-image": "", "pull-hold": "" }, built ? {} : OVERRIDE);
-  const [image, row, reason] = built ? [DEFAULT_DOCKER_IMAGE, BUILDING, "building the box image (python, git, curl, node, rg)"] : [IMAGE, PULLING, `pulling ${IMAGE}`];
+  const [image, row, reason] = built ? [DEFAULT_DOCKER_IMAGE, BUILDING, "building the box image (python, git, curl, node, npm, rg)"] : [IMAGE, PULLING, `pulling ${IMAGE}`];
   const printed = logged();
   const { api, data } = await serve(t, { faux: PROBE, log: printed.log });
-  assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "preparing", reason });
+  assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "preparing", reason, ...DOCKER_NET });
   assert.equal(printed.of("box_image").length, 1);
   assert.ok(printed.of("box_image")[0].includes(`image=${image} state=preparing reason="${reason}"`), printed.of("box_image")[0]);
   const runId = await boxedRun(api, [{ tool: "bash", args: { command: "printf boxed > out.txt" } }, { tool: "read", args: { path: "out.txt" } }]);
@@ -320,7 +324,7 @@ async function waitsForTheImage(t, way) {
   assert.deepEqual(docker.made().map((box) => [box.image, box.pulledInRun]), [[image, false]], "one box, from the image, and no `docker run` pulled it");
   assert.deepEqual([docker.builds().length, docker.pulls().length], built ? [1, 0] : [0, 1], built ? "built once, never pulled by hand" : "pulled once, never built");
   await until(async () => (await dockerOffer(api)).state === "ready", "docker ready in capabilities");
-  assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "ready" });
+  assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "ready", ...DOCKER_NET });
   assert.ok(new RegExp(`image=${image.replace(/[.:]/g, "\\$&")} state=ready ms=\\d+`).test(printed.of("box_image").at(-1)), printed.of("box_image").at(-1));
   // The next run makes its box at once: no row.
   const again = (await api("POST", "/agents/boxed/runs", { input: { content: JSON.stringify({ probe: [{ tool: "bash", args: { command: "true" } }] }) } })).body.run_id;
@@ -401,8 +405,8 @@ test("a Daytona box is the server's to make, and never waits on the Docker box's
   const docker = await fakeDocker(t, { "build-hold": "" }, { AGENTRUN_BOXES: "docker,daytona", DAYTONA_API_KEY: key, DAYTONA_API_URL: daytona.url });
   const { api, data } = await serve(t, { faux: PROBE });
   const offers = (await api("GET", "/capabilities")).body.places.boxes;
-  assert.deepEqual(offers.find((b) => b.id === "docker"), { id: "docker", available: true, state: "preparing", reason: "building the box image (python, git, curl, node, rg)" });
-  assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready" });
+  assert.deepEqual(offers.find((b) => b.id === "docker"), { id: "docker", available: true, state: "preparing", reason: "building the box image (python, git, curl, node, npm, rg)", ...DOCKER_NET });
+  assert.deepEqual(offers.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
   const preparing = (rows) => rows.filter((r) => r.summary?.startsWith("Preparing the box image"));
   // A Daytona agent's run, while Docker's image is held: its box is made, and the run ends, with no row about any image.
   for (const [id, box] of [["remote", "daytona"], ["local", "docker"]]) {
@@ -433,15 +437,15 @@ test("the start's banner says of the Docker box what capabilities say: preparing
   const first = await serve(t, { faux: PROBE });
   const offer = await dockerOffer(first.api);
   assert.equal(offer.state, "preparing");
-  assert.equal(first.boxesLine, `Boxes: docker is preparing (${offer.reason}).`, "the banner gives capabilities' state and reason");
-  assert.equal(first.boxesLine, "Boxes: docker is preparing (building the box image (python, git, curl, node, rg)).");
+  assert.equal(first.boxesLine, `Boxes: docker is preparing (${offer.reason}).${NET_SENTENCE}`, "the banner gives capabilities' state and reason");
+  assert.equal(first.boxesLine, `Boxes: docker is preparing (building the box image (python, git, curl, node, npm, rg)).${NET_SENTENCE}`);
   assert.doesNotMatch(first.boxesLine, /docker is ready/);
   await docker.release();
   await until(async () => (await dockerOffer(first.api)).state === "ready", "the image built");
   // A server started once the image is in says ready, as its capabilities do.
   const second = await serve(t, { faux: PROBE });
   assert.equal((await dockerOffer(second.api)).state, "ready");
-  assert.equal(second.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there.");
+  assert.equal(second.boxesLine, `Boxes: docker is ready, so sandbox agents run their tools there.${NET_SENTENCE}`);
 });
 
 test("with no Docker box (none listed, or the tests' faux box), no image is asked for, and a record an earlier start left is removed", async (t) => {
@@ -459,7 +463,7 @@ test("with no Docker box (none listed, or the tests' faux box), no image is aske
 });
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
-const ONCE_MORE = "trying once more: the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt)";
+const ONCE_MORE = "trying once more: the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs, npm, ripgrep and socat with apt)";
 /** Docker's words for a `docker run` of the server's own image when Docker has none: it pulls it, and no registry has it. */
 const RAW_RUN = /Unable to find image|pull access denied|docker could not start a box/;
 
@@ -499,7 +503,7 @@ test("a build or pull that fails is tried once more, docker preparing meanwhile 
   await rm(join(docker.state, "images"), { recursive: true });
   await writeFile(join(docker.state, "build-fail"), OFFLINE);
   const twice = await (await dockerImage(process.env, data, DEFAULT_DOCKER_IMAGE, { retryAfterMs: 0 })).settled;
-  assert.deepEqual(twice, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs and ripgrep with apt): ${NEXT}` });
+  assert.deepEqual(twice, { state: "unavailable", reason: `the build of the box image could not reach the network (it pulls python:3.12-slim and installs git, curl, nodejs, npm, ripgrep and socat with apt): ${NEXT}` });
   assert.equal(docker.builds().length, 4, "one try more, never two");
 
   // A build that took its whole bound is not tried again.
@@ -539,7 +543,7 @@ test("a record whose server is gone is no wait: a run's first box fails at once,
   const notes = [];
   const put = (record) => writeFile(join(data, IMAGE_STATE_FILE), JSON.stringify(record));
   const gone = await goneWriter();
-  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, rg)", until: Date.now() + 10 * 60_000, row: BUILDING, writer: gone });
+  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, npm, rg)", until: Date.now() + 10 * 60_000, row: BUILDING, writer: gone });
   await assert.rejects(
     within(awaitImage(data, DEFAULT_DOCKER_IMAGE, BACKGROUND_CONTEXT, (summary) => void notes.push(summary)), 3_000, "a record whose writer is gone"),
     new RegExp(`its image ${DEFAULT_DOCKER_IMAGE} is not ready: the server stopped while building it: restart the server to build it again$`),
@@ -547,7 +551,7 @@ test("a record whose server is gone is no wait: a run's first box fails at once,
   assert.deepEqual(notes, [], "no row: there is nothing to wait for");
   // The same record from a server that runs (this process) is still waited on, even past its deadline: a named writer
   // decides, not the clock.
-  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, rg)", until: Date.now() - STALE_AFTER_MS - 1, row: BUILDING, writer: { pid: process.pid, startTime: startTimeOf(process.pid) } });
+  await put({ image: DEFAULT_DOCKER_IMAGE, state: "preparing", reason: "building the box image (python, git, curl, node, npm, rg)", until: Date.now() - STALE_AFTER_MS - 1, row: BUILDING, writer: { pid: process.pid, startTime: startTimeOf(process.pid) } });
   let done = false;
   const waiting = awaitImage(data, DEFAULT_DOCKER_IMAGE, BACKGROUND_CONTEXT, (summary) => void notes.push(summary)).finally(() => (done = true));
   await until(() => notes.length === 1, "the row");
@@ -605,7 +609,7 @@ test("demo through the API: a build that fails once is tried once more; capabili
   assert.equal((await dockerOffer(api)).state, "preparing");
   await docker.release();
   await until(async () => (await dockerOffer(api)).reason === ONCE_MORE, "the failure, in words, while it tries once more");
-  assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "preparing", reason: ONCE_MORE });
+  assert.deepEqual(await dockerOffer(api), { id: "docker", available: true, state: "preparing", reason: ONCE_MORE, ...DOCKER_NET });
   await until(async () => (await dockerOffer(api)).state === "ready", "docker ready after the second build", 30_000);
   assert.equal(docker.builds().length, 2);
   const lines = printed.of("box_image");

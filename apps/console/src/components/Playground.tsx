@@ -2,6 +2,7 @@ import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
+import { Picker } from "@/components/ui/picker";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
@@ -62,6 +63,9 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
+  // In a short viewport (a phone in landscape) the code and response panel is folded so the form gets the height, and
+  // Show code swaps the two. Taller viewports show both, as before.
+  const [showCode, setShowCode] = useState(false);
   const [result, setResult] = useState<StartResult | null>(initialResult);
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
@@ -81,26 +85,27 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     if (!built.ok || !onSend || attachments.busy) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
-    setSending(false); setResult(r); setPane("response");
+    setSending(false); setResult(r); setPane("response"); setShowCode(true);
     // The run has its own copies: the next request starts with none picked.
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
-        <label className="flex items-center gap-2 text-[12px]">
-          <span className="caps text-muted-foreground">Agent</span>
-          <select value={agentId} onChange={(e) => { setAgentId(e.target.value); setRevision(""); onAgent?.(e.target.value); }} className="h-10 border bg-background px-3 font-mono text-[13px]">
-            {agents.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name}</option>)}
-          </select>
-        </label>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+        <div className="flex min-w-0 items-center gap-2 text-[12px]">
+          <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
+          <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+            options={agents.map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+        </div>
         <span className="font-mono text-[12px]"><span className="text-primary">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
         <span className="flex-1" />
         <span className="caps text-[11px] text-muted-foreground">Live API</span>
+        <button type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-[11px] text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</button>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
-        <section className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
+      {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
+        <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="text-[14px] font-semibold">Request</span>
             <span className="flex gap-4 text-[12px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
@@ -130,10 +135,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <FilePicker attachments={attachments} limits={limits} />
                 </Label>
                 <Label name="revision" note="Empty runs the current revision.">
-                  <select value={revision} onChange={(e) => setRevision(e.target.value)} className={field}>
-                    <option value="">The current revision</option>
-                    {revisions.map((r) => <option key={r.revision} value={r.revision}>rev {r.version}{r.current ? " (current)" : ""}{r.note ? `: ${r.note}` : ""}</option>)}
-                  </select>
+                  <Picker label="Revision" value={revision} onChange={setRevision} className="w-full"
+                    options={[{ value: "", label: "The current revision" }, ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` }))]} />
                 </Label>
                 <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
                   <div className="flex gap-2">{["", ...efforts].map((e) => <button key={e || "default"} type="button" onClick={() => setEffort(e)} className={cn("caps border px-3 py-2 text-[12px]", effort === e ? "border-foreground" : "text-muted-foreground")}>{e || "default"}</button>)}</div>
@@ -146,12 +149,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               </>
             )}
           </div>
-          <footer className="flex items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
+          <footer className="flex shrink-0 items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
             <span className="text-[12px] text-muted-foreground">Sends a real request to this server.</span>
             <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
           </footer>
         </section>
-        <section className="flex min-h-0 flex-col">
+        <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "short:hidden")}>
           <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
             <span className="flex gap-4 text-[13px]">
               <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-foreground" : "border-transparent text-muted-foreground")}>Code</button>

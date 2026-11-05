@@ -83,7 +83,7 @@ test("a turn that does not end in time is aborted: the run completes with its an
   assert.equal(reflectRows(rows).filter((row) => row.kind === "user_message").length, 1, "the turn was asked");
 });
 
-test("no_budget: a turn whose request the run's cap refuses, and a run whose cap stopped its job (no turn sent); an agent with no tool at all is asked the turn", { timeout: 120_000 }, async (t) => {
+test("no_budget: a turn whose request the run's cap refuses; a run whose cap stopped its job (no turn sent) pauses at its cap, its learning not yet ended; an agent with no tool at all is asked the turn", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { learning: "on", faux: OUTPUT_PRICED });
   // What the job's one request costs, from a run that does not learn.
   await made(api, agent("probe", { tools: ["write"], learning: false }));
@@ -99,11 +99,13 @@ test("no_budget: a turn whose request the run's cap refuses, and a run whose cap
   assert.equal(tight.view.cost.usd, spent, "only the job was paid for");
   assert.match(reflectRows(tight.rows).find((row) => row.kind === "error")?.text ?? "", /^spend_cap_reached \(out of budget\): Not sent: the run has spent \$[\d.]+ of its \$[\d.]+ cap, and its next faux-1 request needs at least \$[\d.]+\. Raise the cap to at least \$[\d.]+ to run it\.$/);
   await made(api, learner("broke"));
-  // Half a request's least: the job's first request is refused, so no turn is sent.
-  const broke = await ended(api, await started(api, "broke", "hi", { max_cost_usd: LEAST / 2 }), ["failed"]);
-  assert.equal(broke.view.error.code, "spend_cap_reached");
-  settled(broke.view, broke.rows, "dropped", "no_budget");
-  assert.equal(reflectRows(broke.rows).length, 0, "no turn");
+  // Half a request's least: the job's first request is refused, so no turn is sent. The run pauses at its cap and its
+  // learning waits with it: it ends with the run (a raise that lets it answer, or a cancel).
+  const brokeId = await started(api, "broke", "hi", { max_cost_usd: LEAST / 2 });
+  const { rows: brokeRows } = await follow(api, brokeId, ["input_required", "failed"], { deadlineMs: 90_000 });
+  const broke = (await api("GET", `/runs/${brokeId}`)).body;
+  assert.deepEqual([broke.status, broke.state, broke.error, broke.pending?.kind, broke.learning?.state], ["input_required", "waiting", null, "budget", "seeded"], JSON.stringify(broke));
+  assert.equal(reflectRows(brokeRows).length, 0, "no turn");
   await made(api, agent("mute", { learning: true }));
   const mute = await ended(api, await started(api, "mute", "hi"));
   settled(mute.view, mute.rows, "dropped", "empty");
@@ -163,6 +165,24 @@ test("a follow-up sent as the run settles changes nothing that is checked: the t
   const repo = repoOf(data, "follower");
   assert.equal(`${git(repo, ["show", "main:check-units.md"])}\n`, onMain(PLAN[0][1]));
   assert.deepEqual(git(repo, ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "check-units.md"], "nothing of the follow-up's");
+});
+
+test("an end-of-run turn's origin written after a person's follow-up came does not carry to the follow-up's turn: under ask, its write in .learning/ parks for approval", { timeout: 150_000 }, async (t) => {
+  // The end-of-run turn's origin is written as the turn is asked (runs.ts toLiveDoor). A follow-up that came before that
+  // write waits for the run's end, then opens it again: the write lands here as it opens (beforeReopen), after the
+  // message came and before its turn is sent, the window a late write lands in.
+  learningTestHooks.beforeReopen = (runDir) => writeFile(join(runDir, "turn-origin.json"), `${JSON.stringify({ origin: "reflect" })}\n`);
+  t.after(() => (learningTestHooks.beforeReopen = undefined));
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
+  await made(api, learner("asked", { plan: PLAN, tools: ["write"], tool_settings: { write: { permission: "ask" } } }));
+  const runId = await started(api, "asked");
+  await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: `Write: ${JSON.stringify([["extra.md", note("Extra", "A note the follow-up wrote")]])}` });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  await follow(api, runId, ["input_required", "completed"], { deadlineMs: 90_000 });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.tool], ["input_required", "approval", "write"], "a person's write in .learning/ asks");
+  assert.ok(!existsSync(join(copyOf(data, runId), "extra.md")), "and is not written");
 });
 
 test("what the user asks the agent to remember during the task survives: the job writes it to .learning/notes.txt and says it saved it, and the end-of-run turn, which reads the whole conversation, answers it as a note that merges; a file the job scribbled in .learning/ is never read", { timeout: 120_000 }, async (t) => {

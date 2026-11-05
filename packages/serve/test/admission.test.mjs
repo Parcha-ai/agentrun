@@ -26,7 +26,7 @@ function withMemory(t, mib) {
 }
 
 test("the memory math: what runs may hold is the host's memory less the server's own, and each harness fits by its own size", () => {
-  assert.deepEqual(RUN_MIB, { pi: 128, "claude-agent": 288, codex: 192 }, "the measured table (harness.ts)");
+  assert.deepEqual(RUN_MIB, { pi: 128, "claude-agent": 288, codex: 192, opencode: 704 }, "the measured table (harness.ts)");
   assert.equal(SERVER_MIB, 128);
   const fit = (mib) => ["pi", "codex", "claude-agent"].map((id) => runsThatFit(id, mib * MiB));
   assert.equal(runsMemoryMib(512 * MiB), 384);
@@ -41,6 +41,15 @@ test("the memory math: what runs may hold is the host's memory less the server's
   assert.equal(neverFits("claude-agent", 512 * MiB), undefined);
   assert.equal(neverFits("claude-agent", 384 * MiB), "This server has 384 MB of memory and keeps 128 MB for itself; a claude-agent run needs about 288 MB more, so it can't start here. pi and codex runs fit.");
   assert.equal(neverFits("codex", 300 * MiB), "This server has 300 MB of memory and keeps 128 MB for itself; a codex run needs about 192 MB more, so it can't start here. pi runs fit.");
+});
+
+test("an opencode run reserves its own measured size, 704 MB, not the largest: 1 GB holds one, 2 GB two and 512 MB none, said in words", () => {
+  assert.equal(RUN_MIB.opencode, 704, "measured (harness.ts)");
+  assert.equal(host.runMibOf("opencode"), 704);
+  assert.deepEqual([512, 1024, 2048, 8192].map((mib) => runsThatFit("opencode", mib * MiB)), [0, 1, 2, 11]);
+  assert.equal(neverFits("opencode", 1024 * MiB), undefined);
+  assert.equal(neverFits("opencode", 512 * MiB), "This server has 512 MB of memory and keeps 128 MB for itself; an opencode run needs about 704 MB more, so it can't start here. pi, claude-agent and codex runs fit.");
+  assert.equal(host.memoryFull("opencode", 1024 * MiB, 512).startsWith("This server's memory is held by the runs it has going: an opencode run needs about 704 MB, and 384 MB of the 896 MB it has for runs is free;"), true, host.memoryFull("opencode", 1024 * MiB, 512));
 });
 
 test("a 384 MB server: claude-agent is unavailable with why in capabilities, its start refused at once with that reason; pi runs", async (t) => {

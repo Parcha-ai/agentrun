@@ -1,6 +1,7 @@
 // Credentials come from the host's env and live in this module's memory only: a ref is `{ id, tag }`, and the connect
 // URL (it carries a signing key) is held here, found again by `retrieve` after a restart.
 import { createReadStream } from "node:fs";
+import { isRefusal } from "../core/failures.js";
 import { fetchUsage, resolvePrices, searchUsage } from "../core/usage.js";
 import type { AttachTarget, BrowserProvider, FetchRequest, FetchResult, Geo, LiveView, PriceTable, ProviderCaps, Recording, RemoteFile, SearchRequest, SearchResult, SessionSpec } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
@@ -206,8 +207,11 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
         body = sessionCreateBody(spec, { extensionId: await extension(), ...(projectId && !baseUrl && !connectBase ? { projectId } : {}), ...(context ? { context } : {}) });
       } catch (error) { freeWriter(spec.tag); throw error; }
       // At most once: an SDK retry of a create the server already served would open a second paid browser. A failed send keeps
-      // the profile's claim until findByTag has looked: the session may exist.
-      const created = await (await client()).sessions.create(body, { maxRetries: 0, signal });
+      // the profile's claim until findByTag has looked: the session may exist. A refusal (401, 403) made none, so it frees the claim.
+      const created = await (await client()).sessions.create(body, { maxRetries: 0, signal }).catch((error: unknown) => {
+        if (isRefusal(error)) freeWriter(spec.tag);
+        throw error;
+      });
       connectUrls.set(held(created.id), created.connectUrl);
       noteWriter(spec.tag, running({ id: created.id, tag: spec.tag }), () => sleep(options.profileSettleMs ?? 5_000));
       return { id: created.id, tag: spec.tag };

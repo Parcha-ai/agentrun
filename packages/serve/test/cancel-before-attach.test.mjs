@@ -57,7 +57,8 @@ test("the run's app reads that guard: built on a cancelled run's directory, its 
   withEnv(t, { AGENTRUN_SERVE_FAUX: GATED, FAUX_GATE: gate, FAUX_SENT: join(dir, "sent-in-test") });
   const { default: app } = await import("../dist/app.js");
   const options = await app({ ref: { id: run.run_id }, root, work: join(root, "work"), store: join(root, "store") });
-  await options.onOpen({ harness: { commit: async (change) => change({ appendEntry: async () => ({ id: 1 }) }) } });
+  // No conversation yet: the tool gate reads none of its requests (tool-gate.ts).
+  await options.onOpen({ harness: { commit: async (change) => change({ appendEntry: async () => ({ id: 1 }) }), conversation: async () => undefined } });
   const ref = options.root.agent.model;
   const result = await options.models.streamSimple(options.models.getModel(ref.provider, ref.modelId), { messages: [] }, {}).result();
   assert.match(result.errorMessage ?? "", /cancelled/);

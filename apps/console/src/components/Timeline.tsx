@@ -1,5 +1,7 @@
 import { Brain, ChevronRight, CircleAlert, CircleDollarSign, FileText, Flag, LoaderCircle, MessageCircleQuestion, MessageSquareText, Scale, User, Wrench } from "lucide-react";
 import { useState } from "react";
+import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
+import { nameOf } from "@timeline/labels";
 import { Chip } from "@/components/ui/chip";
 import { clock } from "@/lib/format";
 import { rowDetail, rowFailed, type Step, steps } from "@/lib/timeline";
@@ -18,14 +20,22 @@ const title = (row: TimelineRow) => {
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
   }
-  // An answer's first line as text: its markdown (a heading's #, bold's **, code's `) is not shown as typed.
-  if (row.kind === "final_answer") return text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "").replace(/(\*\*|__|`)/g, "");
+  // An answer's first line as text: its markdown (a heading's #, bold's **, code's `) is not shown as typed. The summary is
+  // that first line (the server's), so an answer with more says so with "…": the rest is a click away, never dropped unseen.
+  if (row.kind === "final_answer") {
+    const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1;
+    return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "").replace(/(\*\*|__|`)/g, "")}${more ? "…" : ""}`;
+  }
   return text;
 };
 /** How long a tool took: "27 ms", or "3.5 s" from a second on. */
 const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+/** pi-browser's tools. Their wire names ("run", "snapshot") say nothing of the browser, so their rows take the name the
+ *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
+const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
+const toolName = (tool: string | null | undefined) => (tool && BROWSER.has(tool) ? nameOf(tool) : tool);
 const label = (row: TimelineRow) =>
-  ({ user_message: "You", thinking: "Thinking", tool_use: row.tool_name ?? "Tool", tool_result: row.tool_name ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
+  ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text" })[row.kind] ?? row.kind;
 
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
  *  failed or interrupted one reads as failed, and a missing one (a read that found nothing the run wrote) is grey. */

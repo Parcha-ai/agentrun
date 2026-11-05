@@ -1,10 +1,12 @@
 import { Archive, ArchiveRestore, ArrowLeft, Ban, Square } from "lucide-react";
 import { useState } from "react";
+import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { cost, isEstimate, soFar, soFarNote, when } from "@/lib/format";
+import { goBack } from "@/lib/back";
+import { cost, isEstimate, runLabel, soFar, soFarNote, when } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { Run } from "@/lib/v2";
 import { placeOf, runPlaceWords } from "@/lib/place";
@@ -30,10 +32,13 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   return (
     <header className="border-b px-5 py-4 md:px-8">
       <nav className="caps flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground" aria-label="Breadcrumb">
-        <ArrowLeft className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate">{agentName}</span>
+        {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
+        <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1 shrink-0 p-1 hover:text-foreground">
+          <ArrowLeft className="size-3.5" aria-hidden />
+        </button>
+        <a href={agentHash(run.agent_id)} className="truncate hover:text-foreground hover:underline">{agentName}</a>
         <span aria-hidden>/</span>
-        <span className="truncate">Run {run.run_id.slice(0, 8)}</span>
+        <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">

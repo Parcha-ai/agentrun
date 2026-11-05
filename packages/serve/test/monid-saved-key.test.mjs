@@ -6,11 +6,16 @@
 // monid is refused for it. No network, no real key.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { reported } from "./fixtures/custody-report.mjs";
+// A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
+// (fixtures/custody-report.mjs), never from the answer.
+process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -46,7 +51,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
     return [res.status, res.body.error?.code, res.body.error?.details?.missing];
   };
 
-  assert.equal((await api("POST", "/agents", agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: MONID }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: MONID, tool_settings: Object.fromEntries(MONID.map((name) => [name, { permission: "allow" }])) }))).status, 201);
   assert.deepEqual(await refusal("enrich"), [409, "agent_not_runnable", MISSING], "no key yet");
   assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved } })).status, 204);
 
@@ -71,7 +76,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
     assert.equal((await api("POST", "/agents", agent(id, { instructions: "Answer.", tools }))).status, 201);
     const { body } = await api("POST", `/agents/${id}/runs`, { input: { content: "Report." } });
     await follow(api, body.run_id, ["completed"]);
-    return JSON.parse((await api("GET", `/runs/${body.run_id}`)).body.result.final_answer);
+    return reported(body.run_id);
   };
   const reader = await handed("reader", ["read"]);
   assert.deepEqual([reader.handed.MONID_API_KEY, reader.inEnv, reader.pipe], ["none", [], { fd: 3, closed: true }]);
@@ -84,7 +89,7 @@ test("a saved monid key reaches only the runs that name monid, with no restart; 
   const ended = await follow(api, capped.body.run_id, ["completed", "failed"], { deadlineMs: 55_000 });
   const result = ended.rows.find((row) => row.kind === "tool_result" && row.tool_name === "monid_run");
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(result.tool_result_preview, /spend_cap_reached: monid_run was not sent\. It could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\), and with \$0\.001000 spent the run would pass its cap of \$0\.001/);
+  assert.match(result.tool_result_preview, /spend_cap_reached: Not sent: the run has spent \$0(\.001)?( and holds \$0\.001 for calls still answering)? of its \$0\.001 cap, and monid_run could cost up to \$1 \(no monid_inspect in this run quoted its price, so it is held at the \$1 allowance; monid_inspect gives its quote\)\. Raise the cap to at least \$1\.01 to run it\./);
   assert.equal(sent().length, before, "monid saw no request");
   assert.deepEqual([...entries(data, capped.body.run_id, "agentrun.tool_started"), ...entries(data, capped.body.run_id, "agentrun.tool_cost")], [], "nothing marked or charged");
 
@@ -107,7 +112,7 @@ test("two servers in one process each hand their own runs their own saved key, n
     assert.equal((await api("POST", "/agents", agent("holder", { instructions: "Answer.", tools: ["monid.run"] }))).status, 201);
     const { body } = await api("POST", "/agents/holder/runs", { input: { content: "Report." } });
     await follow(api, body.run_id, ["completed"]);
-    return JSON.parse((await api("GET", `/runs/${body.run_id}`)).body.result.final_answer).handed.MONID_API_KEY;
+    return reported(body.run_id).handed.MONID_API_KEY;
   };
   assert.equal(await handed(one.api), digest(first), "the first server's run: the first server's key");
   assert.equal(await handed(two.api), digest(second), "the second server's run: its own");

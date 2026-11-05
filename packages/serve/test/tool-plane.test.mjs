@@ -7,8 +7,8 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { BOUND_TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, planeFor, PROVIDERS, recheckPlane, resolveCapability, explainsView, settingsIssues, ToolSettings } from "../dist/tool-plane.js";
+import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
+import { CAPABILITIES, explainsView, LEGACY_NAMES, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, ToolSettings } from "../dist/tool-plane.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -20,7 +20,7 @@ test("the capabilities a grant may name are tools the table binds, fetch_page an
   assert.deepEqual([...CAPABILITIES], ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"]);
   for (const name of CAPABILITIES) assert.ok(BOUND_TOOLS.includes(name), name);
   for (const name of ["fetch_page", "pdf_pages", "llm", "monid.discover"]) assert.ok(!CAPABILITIES.includes(name), name);
-  assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"] });
+  assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] });
 });
 
 test("the resolver: the agent's pick over the server's; auto is native where codex or a direct Anthropic or OpenAI model on pi has it (never on claude-agent, where Claude's own search is an explicit pick), else keyless Exa; native is native only; the kernel's fetch; Parallel only with its key, never in its place", () => {
@@ -36,6 +36,12 @@ test("the resolver: the agent's pick over the server's; auto is native where cod
   assert.equal(search({ harness: "pi" }), "exa-keyless", "no model named");
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-4-5", gateway: true }), "exa-keyless", "behind a gateway");
   assert.equal(search({ harness: "codex", gateway: true }), "exa-keyless");
+  // OpenCode has no search of its own (its model requests carry no provider-hosted tool), whatever its model: keyless Exa,
+  // or on auto the server's Parallel key.
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5" }), "exa-keyless", "OpenCode has no native search");
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5", pick: "native" }), "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool");
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5", parallelKey: true }), "parallel", "auto takes the server's Parallel key where there is no native search");
+  assert.equal(search({ harness: "opencode", model: "openai/gpt-5", pick: "parallel", parallelKey: true }), "parallel", "Parallel when picked, with its key");
   assert.equal(search({ harness: "claude-agent", gateway: true, override: "native" }), "native", "Claude's model never goes through the other gateway");
   assert.equal(search({ harness: "claude-agent", pick: "exa-keyless" }), "exa-keyless", "a pick over the native one");
   assert.equal(search({ harness: "pi", pick: "parallel" }), "unavailable: parallel picked, no PARALLEL_API_KEY", "never a silent fallback");
@@ -89,18 +95,19 @@ test("auto where the server holds Parallel's key: the pick, then native, then Pa
 });
 
 test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Exa, a pick, off", async (t) => {
-  const why = (env, settings = {}) => Object.fromEntries(toolsView(env, settings).filter((tool) => tool.resolves).map((tool) => [tool.name, tool.why]));
-  const each = (text) => ({ pi: text, "claude-agent": text, codex: text });
+  // The web tools; the browser's words are browser-pick.test.mjs'.
+  const why = (env, settings = {}) => Object.fromEntries(toolsView(env, settings).filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.why]));
+  const each = (text) => ({ pi: text, "claude-agent": text, codex: text, opencode: text });
   const direct = { AGENT_MODEL: "anthropic/claude-sonnet-4-5" };
   const gateway = { ...direct, AGENT_MODEL_BASE_URL: "https://gateway.example/v1" };
   const claudeKeyless = "Exa's free keyless search, no key; Claude's own search is an explicit pick";
-  assert.deepEqual(why(direct), { web_fetch: each("the guarded direct fetch"), web_search: { pi: "Anthropic's hosted search, for anthropic/claude-sonnet-4-5", "claude-agent": claudeKeyless, codex: "Codex's own search" } });
+  assert.deepEqual(why(direct), { web_fetch: each("the guarded direct fetch"), web_search: { pi: "Anthropic's hosted search, for anthropic/claude-sonnet-4-5", "claude-agent": claudeKeyless, codex: "Codex's own search", opencode: "OpenCode's model requests carry no provider-hosted tool; Exa's free keyless search, no key" } });
   assert.deepEqual(why({ AGENT_MODEL: "openai/gpt-5" }).web_search.pi, "OpenAI's hosted search, for openai/gpt-5");
-  assert.deepEqual(why({ ...gateway, PARALLEL_API_KEY: "not-a-secret" }).web_search, { pi: "behind a gateway pi has no hosted search; your Parallel key (server)", "claude-agent": "your Parallel key (server)", codex: "behind a gateway Codex has no own search; your Parallel key (server)" });
-  assert.deepEqual(why(gateway).web_search, { pi: "behind a gateway pi has no hosted search; Exa's free keyless search, no key", "claude-agent": claudeKeyless, codex: "behind a gateway Codex has no own search; Exa's free keyless search, no key" });
+  assert.deepEqual(why({ ...gateway, PARALLEL_API_KEY: "not-a-secret" }).web_search, { pi: "behind a gateway pi has no hosted search; your Parallel key (server)", "claude-agent": "your Parallel key (server)", codex: "behind a gateway Codex has no own search; your Parallel key (server)", opencode: "OpenCode's model requests carry no provider-hosted tool; your Parallel key (server)" });
+  assert.deepEqual(why(gateway).web_search, { pi: "behind a gateway pi has no hosted search; Exa's free keyless search, no key", "claude-agent": claudeKeyless, codex: "behind a gateway Codex has no own search; Exa's free keyless search, no key", opencode: "OpenCode's model requests carry no provider-hosted tool; Exa's free keyless search, no key" });
   assert.deepEqual(why({ AGENT_MODEL: "google/gemini-2.5-pro" }).web_search.pi, "google/gemini-2.5-pro has no hosted search here; Exa's free keyless search, no key");
   assert.deepEqual(why({}).web_search.pi, "no model is named, so there is no hosted search; Exa's free keyless search, no key");
-  assert.deepEqual(why(gateway, { web_search: { provider: "native" } }).web_search, { pi: "no native search for pi behind a gateway", "claude-agent": "Claude's own search", codex: "no native search for codex behind a gateway" }, "native picked with none: the unavailable text's reason");
+  assert.deepEqual(why(gateway, { web_search: { provider: "native" } }).web_search, { pi: "no native search for pi behind a gateway", "claude-agent": "Claude's own search", codex: "no native search for codex behind a gateway", opencode: "no native search for opencode, whose model requests carry no provider-hosted tool" }, "native picked with none: the unavailable text's reason");
   assert.deepEqual(why(direct, { web_search: { provider: "off" } }).web_search, each("turned off in settings"));
   assert.deepEqual(why(direct, { web_search: { provider: "exa-keyless" } }).web_search, each("keyless Exa, picked in settings: Exa's free search, no key"));
   assert.deepEqual(why(direct, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } }), { web_fetch: each("Parallel is picked, and no PARALLEL_API_KEY is set or saved"), web_search: each("Parallel is picked, and no PARALLEL_API_KEY is set or saved") });
@@ -113,21 +120,21 @@ test("capabilities say why each web tool resolves as it does on each harness, on
   const caps = (await api("GET", "/capabilities")).body;
   assert.deepEqual(schemaProblems(doc, doc.paths["/capabilities"].get.responses["200"].content["application/json"].schema, caps), [], "capabilities meet their schema");
   const search = caps.tools.find((tool) => tool.name === "web_search");
-  assert.deepEqual([search.resolves, search.why], [{ pi: "parallel", "claude-agent": "parallel", codex: "parallel" }, { pi: "behind a gateway pi has no hosted search; your Parallel key (saved)", "claude-agent": "your Parallel key (saved)", codex: "behind a gateway Codex has no own search; your Parallel key (saved)" }]);
-  assert.equal(caps.tools.filter((tool) => tool.why).length, 2, "web_search and web_fetch, where resolves is");
+  assert.deepEqual([search.resolves, search.why], [{ pi: "parallel", "claude-agent": "parallel", codex: "parallel", opencode: "parallel" }, { pi: "behind a gateway pi has no hosted search; your Parallel key (saved)", "claude-agent": "your Parallel key (saved)", codex: "behind a gateway Codex has no own search; your Parallel key (saved)", opencode: "OpenCode's model requests carry no provider-hosted tool; your Parallel key (saved)" }]);
+  assert.equal(caps.tools.filter((tool) => tool.why).length, 3, "web_search, web_fetch and browser, where resolves is");
 });
 
 test("with no box on the server, a sandbox-only tool reads unavailable for that reason, and each web tool keeps its resolves and its why beside it", () => {
   const noBox = "no box is set up on this server: docker is unavailable (not enabled on this server)";
-  const each = (text) => ({ pi: text, "claude-agent": text, codex: text });
+  const each = (text) => ({ pi: text, "claude-agent": text, codex: text, opencode: text });
   const boxless = toolsView({}, {}, noBox);
   const bash = boxless.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, noBox, true], "a sandbox-only tool no box can run is unavailable, with the box's reason");
   assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash"], "only a sandbox-only tool");
   const keyless = "Exa's free keyless search, no key";
-  assert.deepEqual(boxless.filter((tool) => tool.resolves).map((tool) => [tool.name, tool.available, tool.resolves, tool.why]), [
+  assert.deepEqual(boxless.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.available, tool.resolves, tool.why]), [
     ["web_fetch", true, each("kernel"), each("the guarded direct fetch")],
-    ["web_search", true, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native" }, { pi: `no model is named, so there is no hosted search; ${keyless}`, "claude-agent": `${keyless}; Claude's own search is an explicit pick`, codex: "Codex's own search" }],
+    ["web_search", true, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native", opencode: "exa-keyless" }, { pi: `no model is named, so there is no hosted search; ${keyless}`, "claude-agent": `${keyless}; Claude's own search is an explicit pick`, codex: "Codex's own search", opencode: `OpenCode's model requests carry no provider-hosted tool; ${keyless}` }],
   ], "no box takes a web tool away, or the words for how it resolves");
   assert.equal(toolsView({}).find((tool) => tool.name === "bash").available, true, "where a box can run it, bash is available");
 });
@@ -177,11 +184,14 @@ test("a pi agent that names no model and picks native search runs on a server wh
   assert.equal(run.status, 202, JSON.stringify(run.body));
 });
 
-test("settings are checked before anything is kept: an unknown capability, a provider not offered for it, and a permission, which waits for the tool gate", () => {
+test("settings are checked before anything is kept: an unknown tool, a provider for a tool with no choice or not offered for it, and a permission not offered (tool-gate.test.mjs has the rest); the gate's names of the table are the table's", () => {
   assert.deepEqual(settingsIssues({ web_search: { provider: "exa-keyless" }, web_fetch: {} }), []);
-  assert.deepEqual(settingsIssues({ browser: { provider: "native" } }).map((i) => [i.field, i.reason]), [["browser", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ ask_person: { provider: "native" } }).map((i) => [i.field, i.reason]), [["ask_person.provider", "not_allowed"]]);
+  assert.deepEqual(settingsIssues({ fetch_pages: {} }).map((i) => [i.field, i.reason]), [["fetch_pages", "not_allowed"]]);
   assert.deepEqual(settingsIssues({ web_fetch: { provider: "native" } }).map((i) => [i.field, i.reason, i.message]), [["web_fetch.provider", "not_an_option", "web_fetch.provider is one of kernel, parallel"]]);
-  assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_yet", "permissions arrive with the tool gate"]]);
+  assert.deepEqual(settingsIssues({ web_search: { permission: "deny" } }, "definition.tool_settings"), []);
+  assert.deepEqual(settingsIssues({ web_search: { permission: "never" } }, "definition.tool_settings").map((i) => [i.field, i.reason, i.message]), [["definition.tool_settings.web_search.permission", "not_an_option", "definition.tool_settings.web_search.permission is one of allow, ask, deny"]]);
+  assert.deepEqual([...TABLE_TOOLS].sort(), [...Object.keys(TOOLS).filter((name) => !name.startsWith("monid.")), ...Object.keys(LEGACY_NAMES)].sort(), "tool-plane's names of the table are tools.ts's, and its legacy names");
   assert.deepEqual(settingsIssues({ web_search: "parallel" }).map((i) => i.reason), ["wrong_type"]);
   assert.deepEqual(settingsIssues([]).map((i) => [i.field, i.reason]), [["body", "wrong_type"]]);
 });
@@ -193,19 +203,19 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   const doc = (await api("GET", "/openapi.json")).body;
   const meets = (path, method, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses["200"].content["application/json"].schema, value), [], `${method} ${path}: ${JSON.stringify(value)}`);
   const got = await api("GET", "/settings/tools");
-  assert.deepEqual([got.status, got.body], [200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } }]);
+  assert.deepEqual([got.status, got.body], [200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" }, browser: { provider: "auto" } }]);
   meets("/settings/tools", "get", got.body);
   const catalog = (await api("GET", "/capabilities")).body;
   meets("/capabilities", "get", catalog);
-  assert.deepEqual(catalog.tools.filter((tool) => tool.providers).map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
-    ["web_fetch", ["kernel", "parallel"], "kernel", "kernel", { pi: "kernel", "claude-agent": "kernel", codex: "kernel" }],
-    ["web_search", ["auto", "native", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "native", "claude-agent": "exa-keyless", codex: "native" }],
+  assert.deepEqual(catalog.tools.filter((tool) => tool.providers && tool.name !== "browser").map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
+    ["web_fetch", ["kernel", "parallel"], "kernel", "kernel", { pi: "kernel", "claude-agent": "kernel", codex: "kernel", opencode: "kernel" }],
+    ["web_search", ["auto", "native", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "native", "claude-agent": "exa-keyless", codex: "native", opencode: "exa-keyless" }],
   ]);
 
   for (const [body, fields] of [
-    [{ browser: { provider: "native" } }, [["browser", "not_allowed"]]],
+    [{ ask_person: { provider: "native" } }, [["ask_person.provider", "not_allowed"]]],
     [{ web_search: { provider: "kernel" } }, [["web_search.provider", "not_an_option"]]],
-    [{ web_fetch: { provider: "kernel", permission: "ask" } }, [["web_fetch.permission", "not_yet"]]],
+    [{ web_fetch: { provider: "kernel", permission: "maybe" } }, [["web_fetch.permission", "not_an_option"]]],
   ]) {
     const refused = await api("PUT", "/settings/tools", body);
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, fields], JSON.stringify(body));
@@ -213,11 +223,11 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual((await api("GET", "/settings/tools")).body, got.body, "a refused PUT keeps nothing");
 
   const put = await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" } });
-  assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel" } }]);
+  assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel" }, browser: { provider: "auto" } }]);
   meets("/settings/tools", "put", put.body);
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.resolves]));
-  assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless" }, "recomputed with no restart");
-  assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.providers).map((tool) => [tool.provider, tool.default_provider]), [["kernel", "kernel"], ["exa-keyless", "auto"]], "the server's pick, and the built-in default");
+  assert.deepEqual(tools.web_search, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless", opencode: "exa-keyless" }, "recomputed with no restart");
+  assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.providers).map((tool) => [tool.provider, tool.default_provider]), [["kernel", "kernel"], ["exa-keyless", "auto"], ["auto", "auto"]], "the server's pick, and the built-in default");
   assert.equal(tools.read, undefined, "a tool with no provider choice resolves nothing");
   assert.equal("fetch_page" in tools, false, "fetch_page, web_fetch's legacy name, is not in the table");
   assert.equal((await stat(join(first.data, "tool-settings.json"))).mode & 0o777, 0o600);
@@ -229,17 +239,18 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.deepEqual(made.body.definition.tool_settings, { web_search: { provider: "native" } });
   const own = (await api("GET", "/agents/searcher")).body;
   meets("/agents/{agent_id}", "get", own);
+  const allowed = (askable = true) => ({ permission: "allow", permission_from: "default", default_permission: "allow", permissions: askable ? ["allow", "ask", "deny"] : ["allow", "deny"] });
   assert.deepEqual(own.tools, [
-    { name: "read" },
-    { name: "web_fetch", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
-    { name: "fetch_page", provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
-    { name: "web_search", provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
+    { name: "read", ...allowed() },
+    { name: "web_fetch", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "fetch_page", ...allowed(), provider: "kernel", provider_from: "default", default_provider: "kernel", resolved: "kernel" },
+    { name: "web_search", ...allowed(), provider: "native", provider_from: "agent", default_provider: "exa-keyless", resolved: "native" },
   ], "capabilities' order; its own pick over the server's, which is its default");
   assert.equal((await api("GET", "/agents")).body.agents[0].tools, undefined, "the projection is the one agent's read alone");
   const coded = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["web_search"] }));
   assert.equal(coded.status, 201, JSON.stringify(coded.body));
-  assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
-  for (const [tool_settings, field, reason] of [[{ web_search: { permission: "deny" } }, "definition.tool_settings.web_search.permission", "not_yet"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person", "not_allowed"]]) {
+  assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", ...allowed(), provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
+  for (const [tool_settings, field, reason] of [[{ web_search: { permission: "maybe" } }, "definition.tool_settings.web_search.permission", "not_an_option"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person.provider", "not_allowed"]]) {
     const refused = await api("POST", "/agents", agent("refused", { tools: ["web_search"], tool_settings }));
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [[field, reason]]], JSON.stringify(tool_settings));
   }
@@ -248,15 +259,15 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   process.env.AGENT_MODEL_BASE_URL = "https://gateway.example/v1";
   const gateway = await serve(t);
   assert.equal((await gateway.api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex behind a gateway" });
+  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "unavailable: no native search for pi behind a gateway", "claude-agent": "native", codex: "unavailable: no native search for codex behind a gateway", opencode: "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool" });
   assert.equal((await gateway.api("PUT", "/settings/tools", {})).status, 200);
-  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless" }, "auto falls back to keyless Exa");
+  assert.deepEqual((await gateway.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "exa-keyless", opencode: "exa-keyless" }, "auto falls back to keyless Exa");
   delete process.env.AGENT_MODEL_BASE_URL;
 
   // Kept across a restart: the next server on the same data reads them.
   await first.close();
   const again = await serve(t, { data: first.data });
-  assert.deepEqual((await again.api("GET", "/settings/tools")).body, { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel" } });
+  assert.deepEqual((await again.api("GET", "/settings/tools")).body, { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel" }, browser: { provider: "auto" } });
   assert.equal((await again.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves.pi, "exa-keyless");
 });
 
@@ -272,7 +283,9 @@ test("a kept plane at a later launch: as it was, but Parallel with its key gone 
     assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, text);
   }
   assert.equal(said.length, 2);
-  assert.match(said[0], /tool-settings\.json is not tool settings this server reads; every tool takes its default provider/);
+  assert.match(said[0], /tool-settings\.json does not read as JSON; every tool takes its defaults until a PUT/);
+  assert.match(said[1], /tool-settings\.json: web_search\.provider not_an_option; that entry is dropped/);
+  assert.ok(!said.join("").includes("bing"), "no value is said");
 });
 
 test("a workflow's model node naming web_search, its revision listing no tools, resolves and runs: on auto, to Parallel where the server holds its key; with keyless Exa picked, to Exa; an empty setting is no setting", async (t) => {
@@ -339,4 +352,14 @@ test("the run check resolves search as the run does: a workflow picking native s
   assert.doesNotMatch(said(await blockersOf(env, claude, {})), /web_search/, "uncapped: Claude's own search");
   assert.match(said(await blockersOf(env, claude, {}, { capped: true })), /The tool web_search does not run here on claude-agent: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet/, "capped: refused, its fees never let past the cap");
   assert.doesNotMatch(said(await blockersOf(env, { ...claude, toolSettings: {} }, {}, { capped: true })), /web_search/, "capped on auto: keyless Exa, nothing to refuse");
+});
+
+test("a run relaunched while a capability is set to deny is handed it denied; launched, it is handed the provider a held call would use, and the gate refuses each call", () => {
+  const tooling = { harness: "pi", tools: ["web_fetch"] };
+  const denied = { web_fetch: { permission: "deny" } };
+  assert.equal(planeFor({}, tooling, denied, { run: true }).web_fetch, "kernel", "at its launch: a deny lifted mid-run is lifted at the next call");
+  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied).web_fetch, "unavailable: denied", "relaunched while denied: denied");
+  assert.equal(relaunchPlane(undefined, {}, tooling, denied).web_fetch, "unavailable: denied", "a run made before its plane was kept: denied too");
+  assert.equal(relaunchPlane({ web_fetch: "unavailable: denied" }, {}, tooling, {}).web_fetch, "kernel", "a deny lifted since is lifted");
+  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied, { first: true }).web_fetch, "kernel", "its first launch, from its start: as under ask, the gate refusing each call");
 });

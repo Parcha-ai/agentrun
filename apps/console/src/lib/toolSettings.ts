@@ -1,7 +1,7 @@
 import type { ToolSettings } from "./v2";
 
 /** The harnesses a capability resolves for, in the order the console shows them. */
-export const HARNESS_ORDER = ["pi", "claude-agent", "codex"] as const;
+export const HARNESS_ORDER = ["pi", "claude-agent", "codex", "opencode"] as const;
 
 /** A capability with a provider choice (`capabilities.tools`, providers/1): the providers offered, the built-in default
  *  first; the server's pick (`provider`); the built-in default; what it resolves to on each harness under the server's
@@ -27,8 +27,25 @@ export function toolChoices(raw: unknown): ToolChoice[] {
 }
 
 const PROVIDER: Record<string, string> = { auto: "auto", native: "native", kernel: "kernel fetch", "exa-keyless": "Exa keyless", parallel: "Parallel" };
-/** A provider's name as a person reads it; one the console does not know is shown as the server names it. */
-export const providerLabel = (provider: string) => PROVIDER[provider] ?? provider;
+/** The browser's own names and help: its providers are another set from search's and fetch's, and two of its ids
+ *  ("auto", "kernel") mean other things there. The ids and the auto rule are the server's: packages/serve/src/tool-plane.ts
+ *  PROVIDERS.browser (auto, browserbase, kernel, chrome) and browserBy (auto is Browserbase where its keys are set or
+ *  saved, else Kernel where its key is, else unavailable; chrome is not set up on any server yet); the keys are
+ *  tool-keys.ts' browserbase and kernel rows. */
+const BY_TOOL: Record<string, { label: Record<string, string>; help: Record<string, string> }> = {
+  browser: {
+    label: { auto: "Auto (Browserbase where its key is saved, else Kernel)", browserbase: "Browserbase", kernel: "Kernel", chrome: "Local Chrome" },
+    help: {
+      auto: "Browserbase where its key is set or saved, else Kernel where its key is; unavailable with neither.",
+      browserbase: "Browserbase's hosted browser: needs the Browserbase key and project id.",
+      kernel: "Kernel's hosted browser: needs the Kernel key.",
+      chrome: "A Chrome on this server's own host. No server sets one up yet, so it stays unavailable.",
+    },
+  },
+};
+/** A provider's name as a person reads it, for `tool` where that tool names its own (the browser); one the console does
+ *  not know is shown as the server names it. */
+export const providerLabel = (provider: string, tool?: string) => (tool && BY_TOOL[tool]?.label[provider]) ?? PROVIDER[provider] ?? provider;
 
 const HELP: Record<string, string> = {
   auto: "The harness's own search, or the model provider's hosted one, else keyless Exa.",
@@ -37,13 +54,14 @@ const HELP: Record<string, string> = {
   parallel: "Parallel: needs the Parallel key.",
   kernel: "This server's own fetch, guarded against private addresses.",
 };
-/** What choosing a provider means, in a line; none for one the console does not know. */
-export const providerHelp = (provider: string): string | undefined => HELP[provider];
+/** What choosing a provider means, in a line, for `tool` where that tool says its own; none for one the console does not
+ *  know. */
+export const providerHelp = (provider: string, tool?: string): string | undefined => (tool && BY_TOOL[tool]?.help[provider]) ?? HELP[provider];
 
 /** What a capability resolves to, said plainly: a provider's name, or the server's "unavailable: <reason>". */
-export function resolution(value: string | undefined): { text: string; unavailable: boolean } {
+export function resolution(value: string | undefined, tool?: string): { text: string; unavailable: boolean } {
   if (!value) return { text: "not known", unavailable: false };
-  return value.startsWith("unavailable") ? { text: value, unavailable: true } : { text: providerLabel(value), unavailable: false };
+  return value.startsWith("unavailable") ? { text: value, unavailable: true } : { text: providerLabel(value, tool), unavailable: false };
 }
 
 /** `settings` with `tool`'s provider set to `provider`. One equal to `fallback` (what applies when this layer sets none:

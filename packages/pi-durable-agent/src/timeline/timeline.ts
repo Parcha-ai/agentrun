@@ -1,5 +1,6 @@
 import { BROWSER_OPENERS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
+import { originMatcher } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -8,7 +9,9 @@ export type TimelineKind =
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
   | "decision"
   /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
-  | "learning";
+  | "learning"
+  /** A tool call that waited for a person's approval, after its result's row (serve's tool gate). */
+  | "tool_approval_requested";
 
 /** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
 export type TimelineEvent = {
@@ -36,6 +39,9 @@ export type TimelineEvent = {
   session?: string;
   /** The file a "Saved" phase row is about. */
   path?: string;
+  /** `server` on the row of a message the server wrote into the run (origin.ts): a `phase` row, which counts, as a
+   *  person's `user_message` does, as the message its turn took (`isMessageRow`). */
+  origin?: "server";
   /** `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
    *  charged an unknown amount or cut). Absent when `usd` is known. */
@@ -103,6 +109,10 @@ const abortedCall = (entry: EntryLike) => {
  *  (that process died holding the run) or `server_stop` (it drained as the server stopped), `generation` the new
  *  process's, `at` when it opened. A phase row of its own, at that time; no request. */
 export const RUN_RESUMED = "agentrun.run_resumed";
+/** The end of a turn on another harness (claude-agent, codex), written on a run's root by serve as the turn's last entry:
+ *  `{ key, status, ... }`. No row. The turn is over, so the next message is the person's next one, never a steer, even
+ *  when the turn's last entry was a tool's result (a stop that came after it, before the next model request). */
+export const TURN_END = "adapter.turn_end";
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -364,6 +374,8 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
+/** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
+const WHOLE: ReadonlySet<TimelineKind> = new Set(["user_message", "text_block", "final_answer"]);
 /** An error's whole text as the host's `redact` makes it, before its first line becomes a summary or either is cut, so
  *  neither keeps part of what the whole text's redaction takes out. */
 const redactOf = (options: TimelineOptions) => (text: string): string => (options.redact ? options.redact(text) : text);
@@ -415,8 +427,8 @@ function createProjector(options: TimelineOptions) {
   // `conversation:id`: the call, when it comes, takes its result and is done.
   const early = new Map<string, { row: TimelineEvent; view: ToolResultView; shown: ToolResultView }>();
   const previous = new Map<number, string>();
-  // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
-  // the person's next message, not a steer.
+  // Whether every tool of the conversation's latest round ends the turn, or a turn's end (TURN_END) came after it: then
+  // the turn is over, and what comes next is the person's next message, not a steer.
   const ended = new Map<number, boolean>();
   // Conversations whose turn an abort cut since their latest tool round (a stop, a cancel): an aborted tool, or a model
   // request that had left and was aborted. That turn is over too, so the next message comes in a new turn, never a steer.
@@ -437,6 +449,8 @@ function createProjector(options: TimelineOptions) {
   // its own, which its host never sees as a call); a person's message settles it. A later answer of the same turn, an
   // empty one too, takes its place, so the earlier one is a text_block then.
   const provisional = new Map<number, TimelineEvent>();
+  /** Which user entries the server wrote (origin.ts): each shows as the server's, never as the person's. */
+  const origins = originMatcher();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -452,11 +466,15 @@ function createProjector(options: TimelineOptions) {
       if (row.summary !== null) row.summary = options.redact(row.summary);
       if (row.text !== null) row.text = options.redact(row.text);
     }
-    if (row.summary !== null) row.summary = clean(row.summary, caps.summary);
+    // A person's own message and the agent's own words (its text, its answer) show as written, their held keys redacted
+    // (readMessage): a URL in them keeps its fragment and query values. scrubUrls is for the URLs of what the model read
+    // (a tool's result, a page's title, a call's arguments) and for its thinking.
+    const whole = WHOLE.has(kind);
+    if (row.summary !== null) row.summary = whole ? cut(row.summary, caps.summary) : clean(row.summary, caps.summary);
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
-    if (row.text !== null) row.text = kind === "user_message" ? cut(row.text, caps.text) : clean(row.text, caps.text);
-    for (const key of ["round", "parent_tool_use_id", "session", "path", "usage"] as const) if (row[key] === undefined) delete row[key];
+    if (row.text !== null) row.text = whole ? cut(row.text, caps.text) : clean(row.text, caps.text);
+    for (const key of ["round", "parent_tool_use_id", "session", "path", "usage", "origin"] as const) if (row[key] === undefined) delete row[key];
     return row;
   }
 
@@ -526,6 +544,7 @@ function createProjector(options: TimelineOptions) {
     root ??= conv;
     current = conv;
     const message = entry.model?.[0];
+    const origin = origins({ ...entry, conversationId: conv });
     const at = message?.timestamp;
     if (typeof at === "number" && Math.abs(at) <= 8.64e15) stamp = at;
     const base = `${conv}:${entry.id ?? seq}`;
@@ -673,10 +692,27 @@ function createProjector(options: TimelineOptions) {
       if (state === "waiting") add(make("waiting", conv, base, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}`, session }));
       else if (state === "done") add(make("user_message", conv, base, { summary: "You signed in", session }));
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
+    } else if (origin) {
+      // A message the server wrote (a raised cap's follow-up, an approval's resume): the model reads it as it reads any,
+      // and the row says it is the server's. Its whole text is redacted as a person's is (a resume's later lines hold the
+      // call's result, where a held key can be), then its first line is taken, scrubbed and cut as a phase's. No `path`:
+      // a phase row with one folds into the tool row before it.
+      const text = redactText(textOf(message));
+      // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
+      // person's rules, with the entry's own id; the server's resume beside it is shown only (an id of its own, no
+      // origin). Any other: the server's row is that message, with the entry's id and `origin: "server"`.
+      if (origin.reason === "approval_declined") {
+        const said = redactText(origin.said.trim());
+        add(make("phase", conv, `${base}:server`, { summary: `AgentRun: ${firstLine(text)}`, text }));
+        add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));
+      } else add(make("phase", conv, base, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
+      provisional.delete(conv);
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
       const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
-      const text = textOf(message);
+      // A person can paste a held key: their row shows it redacted, as the host's `redact` makes it. The entry, which the
+      // model reads, keeps what they typed.
+      const text = redactText(textOf(message));
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
       provisional.delete(conv);
     }
@@ -684,6 +720,7 @@ function createProjector(options: TimelineOptions) {
     // A model request an abort cut after the round: its end mark is written only for an aborted request (not a withdrawn
     // one, nor a compaction's). The turn it would have gone on with is over.
     else if (entry.kind === REQUEST_ENDED && !unsent(entry) && !isCompaction(entry)) cutTurns.add(conv);
+    else if (entry.kind === TURN_END) ended.set(conv, true);
     return out;
   }
 
@@ -907,7 +944,9 @@ export function timelineReducer(options: TimelineOptions = {}) {
           const red = redactedWhy(raw);
           return options.redact && /\S$/.test(joined) ? red.replace(/\S+$/, "").trimEnd() : red;
         };
-        const text = scrubUrls(options.redactLive ? options.redactLive(raw) : fallback());
+        const shown = options.redactLive ? options.redactLive(raw) : fallback();
+        // The agent's text streams as it will settle, its URLs whole; its thinking is scrubbed, as when it settles.
+        const text = kind === "thinking" ? scrubUrls(shown) : shown;
         const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }

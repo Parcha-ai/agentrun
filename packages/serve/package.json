@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-serve",
-  "version": "0.1.0-beta.28",
+  "version": "0.1.0-beta.29",
   "description": "The Agentrun v2 API on your own machine: an agent store's agents, revisions and runs, served on loopback.",
   "keywords": [
     "agentrun",
@@ -47,29 +47,34 @@
   "dependencies": {
     "@browserbasehq/sdk": ">=2.20.0 <3",
     "@modelcontextprotocol/client": "2.4.0",
-    "@parcha/agentrun-decisions": "0.1.0-beta.28",
-    "@parcha/agentrun-dsl": "0.1.0-beta.28",
-    "@parcha/agentrun-harness-claude": "0.1.0-beta.28",
-    "@parcha/agentrun-harness-codex": "0.1.0-beta.28",
-    "@parcha/agentrun-jev": "0.1.0-beta.28",
-    "@parcha/agentrun-kernel": "0.1.0-beta.28",
-    "@parcha/agentrun-pi": "0.1.0-beta.28",
-    "@parcha/pi-browser": "0.1.0-beta.28",
-    "@parcha/pi-durable-agent": "0.1.0-beta.28",
-    "@parcha/pi-durable-disk": "0.1.0-beta.28",
+    "@parcha/agentrun-decisions": "0.1.0-beta.29",
+    "@parcha/agentrun-dsl": "0.1.0-beta.29",
+    "@parcha/agentrun-harness-claude": "0.1.0-beta.29",
+    "@parcha/agentrun-harness-codex": "0.1.0-beta.29",
+    "@parcha/agentrun-jev": "0.1.0-beta.29",
+    "@parcha/agentrun-kernel": "0.1.0-beta.29",
+    "@parcha/agentrun-pi": "0.1.0-beta.29",
+    "@parcha/pi-browser": "0.1.0-beta.29",
+    "@parcha/pi-durable-agent": "0.1.0-beta.29",
+    "@parcha/pi-durable-disk": "0.1.0-beta.29",
     "@secretlint/core": "13.1.0",
     "@secretlint/profiler": "13.1.0",
     "@secretlint/secretlint-rule-preset-recommend": "13.1.0",
+    "croner": "11.0.0",
     "undici": "^8.12.2"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.4.0",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-durable": ">=1.1.0 <1.4.0",
-    "@parcha/pi-transport": "0.1.0-beta.28"
+    "@parcha/pi-transport": "0.1.0-beta.29",
+    "opencode-ai": "1.19.5"
   },
   "peerDependenciesMeta": {
     "@parcha/pi-transport": {
+      "optional": true
+    },
+    "opencode-ai": {
       "optional": true
     }
   },
@@ -78,7 +83,8 @@
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
     "@modelcontextprotocol/server": "2.4.0",
-    "@parcha/pi-transport": "0.1.0-beta.28"
+    "@parcha/pi-transport": "0.1.0-beta.29",
+    "opencode-ai": "1.19.5"
   },
   "repository": {
     "type": "git",

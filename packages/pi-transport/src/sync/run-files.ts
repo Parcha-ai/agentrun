@@ -21,6 +21,21 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProcess } from "../box/box.ts";
 import { BoxError } from "../box/box.ts";
 import {
+	directoryMode,
+	type ExtractOptions,
+	type Extractor,
+	type ExtractStop,
+	fileMode,
+	MAX_NAMED_SKIPS,
+	MAX_PULL_BYTES,
+	MAX_PULL_ENTRIES,
+	nameProblem,
+	noSkips,
+	openExtractor,
+	removeEntries,
+	type SkipReason,
+} from "./extract.ts";
+import {
 	ASSUMED_FLOOR_BYTES_PER_SECOND,
 	BASE_DEADLINE_MS,
 	changedEntries,
@@ -47,22 +62,7 @@ import {
 	UNPACK_FILES_SCRIPT,
 	UNPACK_SCRIPT,
 	WorkspaceError,
-} from "../home/workspace.ts";
-import {
-	directoryMode,
-	type ExtractOptions,
-	type Extractor,
-	type ExtractStop,
-	fileMode,
-	MAX_NAMED_SKIPS,
-	MAX_PULL_BYTES,
-	MAX_PULL_ENTRIES,
-	nameProblem,
-	noSkips,
-	openExtractor,
-	removeEntries,
-	type SkipReason,
-} from "./extract.ts";
+} from "./transfer.ts";
 
 /** What an agent's home keeps to this machine: never pulled back from a box, and seeded read-only. */
 export const HOST_OWNED_HOME = ["/learning"] as const;

@@ -29,6 +29,7 @@ type FakeSandbox = {
 	env: Record<string, string>;
 	sandboxClass?: string;
 	networkBlockAll?: boolean;
+	domainAllowList?: string;
 };
 type Failure = { match: (method: string, path: string) => boolean; status: number; body: string; times: number };
 
@@ -48,6 +49,10 @@ class FakeDaytona {
 	redirect: { from: string; status: number; location: string } | undefined;
 	/** false: an organization whose own network policy holds (tier 1 or 2), which takes `networkBlockAll` and sets nothing. */
 	honorsBlockAll = true;
+	/** false: an organization whose tier takes no domain list, which takes `domainAllowList` and keeps nothing. */
+	honorsDomainList = true;
+	/** How a read answers a kept domain list: Daytona's comma-separated string, a list of hosts, or a value that is neither. */
+	domainListAs: "string" | "array" | "number" = "string";
 	/** Each new sandbox stays out of the label listing for this many list calls, as Daytona's does for a moment. */
 	listPattern: boolean[] = [];
 	readonly #hidden = new Map<string, boolean[]>();
@@ -88,6 +93,16 @@ class FakeDaytona {
 			memory: 1,
 			sandboxClass: sandbox.sandboxClass,
 			...(single && sandbox.networkBlockAll !== undefined ? { networkBlockAll: sandbox.networkBlockAll } : {}),
+			...(single && sandbox.domainAllowList !== undefined
+				? {
+						domainAllowList:
+							this.domainListAs === "array"
+								? sandbox.domainAllowList.split(",")
+								: this.domainListAs === "number"
+									? 7
+									: sandbox.domainAllowList,
+					}
+				: {}),
 		};
 	}
 
@@ -137,6 +152,9 @@ class FakeDaytona {
 				env: (spec.env ?? {}) as Record<string, string>,
 				sandboxClass: String(spec.snapshot ?? "").includes("vm") ? "linux-vm" : "container",
 				...(spec.networkBlockAll === true && this.honorsBlockAll ? { networkBlockAll: true } : {}),
+				...(typeof spec.domainAllowList === "string" && this.honorsDomainList
+					? { domainAllowList: spec.domainAllowList }
+					: {}),
 			};
 			this.sandboxes.set(created.id, created);
 			if (this.listPattern.length > 0) this.#hidden.set(created.id, [...this.listPattern]);
@@ -404,11 +422,7 @@ describe("daytona boxes", () => {
 			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
 			expect(created.ok ? "" : created.error.message).toContain("snapshot");
 		}
-		for (const fields of [
-			{ network: { allow: ["example.com"] } },
-			{ ports: [80] },
-			{ capabilities: ["fuse" as const] },
-		]) {
+		for (const fields of [{ ports: [80] }, { capabilities: ["fuse" as const] }]) {
 			const refused = await provider().create(spec(fields), context);
 			expect(refused.ok ? "ok" : refused.error.code).toBe("unsupported");
 		}
@@ -437,6 +451,69 @@ describe("daytona boxes", () => {
 			expect(JSON.parse(posted?.body ?? "{}")).not.toHaveProperty("networkBlockAll");
 			expect(box.facts().network).toBeUndefined();
 		});
+	});
+
+	it("asks Daytona for a domain list for a network allowlist, and the box says allowlist once Daytona reports the list", async () => {
+		const allow = ["pypi.org", "files.pythonhosted.org", "*.npmjs.org"];
+		await withBox(
+			async (box) => {
+				const posted = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").at(-1);
+				const body = JSON.parse(posted?.body ?? "{}") as { domainAllowList?: string; networkBlockAll?: boolean };
+				expect(body.domainAllowList).toBe(allow.join(","));
+				expect(body.networkBlockAll).toBeUndefined();
+				expect(box.facts().network).toBe("allowlist");
+				expect(box.facts().allow).toEqual(allow);
+				const attached = await provider().attach(box.id, context);
+				if (!attached.ok) throw attached.error;
+				expect(attached.value?.facts().network).toBe("allowlist");
+				expect(attached.value?.facts().allow).toEqual(allow);
+			},
+			{ network: { allow } },
+		);
+	});
+
+	it("takes a domain list Daytona reads back as a list of hosts, and the box knows its list", async () => {
+		fake.domainListAs = "array";
+		try {
+			await withBox(
+				async (box) => {
+					expect(box.facts().network).toBe("allowlist");
+					expect(box.facts().allow).toEqual(["pypi.org", "*.npmjs.org"]);
+				},
+				{ network: { allow: ["PyPI.org", "*.npmjs.org"] } },
+			);
+		} finally {
+			fake.domainListAs = "string";
+		}
+	});
+
+	it("abandons a sandbox whose domain list reads back as neither a string nor a list, deleting it, and never throws", async () => {
+		fake.domainListAs = "number";
+		try {
+			const created = await provider().create(spec({ network: { allow: ["pypi.org"] } }), context);
+			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
+			expect(created.ok ? "" : created.error.message).toContain("domainAllowList");
+			expect(fake.sandboxes.size).toBe(0);
+		} finally {
+			fake.domainListAs = "string";
+		}
+	});
+
+	it("refuses a domain list Daytona did not keep, deleting its sandbox, and a CIDR in the list before anything is made", async () => {
+		fake.honorsDomainList = false;
+		try {
+			const created = await provider().create(spec({ network: { allow: ["pypi.org"] } }), context);
+			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
+			expect(created.ok ? "" : created.error.message).toContain("domainAllowList");
+			expect(fake.sandboxes.size).toBe(0);
+		} finally {
+			fake.honorsDomainList = true;
+		}
+		const before = fake.requests.length;
+		const range = "10.0.0.0/8"; // key-gate: denylist a CIDR the provider refuses
+		const cidr = await provider().create(spec({ network: { allow: ["pypi.org", range] } }), context);
+		expect(cidr.ok ? "ok" : cidr.error.code).toBe("unsupported");
+		expect(fake.requests.slice(before).filter((r) => r.method === "POST" && r.path === "/api/sandbox")).toEqual([]);
 	});
 
 	it("refuses a box Daytona did not block, deleting its sandbox: a tier whose own network policy holds sets nothing", async () => {
