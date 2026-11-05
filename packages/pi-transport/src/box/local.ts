@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -36,7 +36,8 @@ const HAS_PROC = existsSync("/proc/self/environ");
 /**
  * Runs detached from the host and ends the box when its lifetime has passed: `$1` seconds, `$2` the box's directory,
  * `$3` the marker its programs carry. A box that was destroyed first has no record left, and the script does nothing.
- * It ends the recorded programs whose start time still matches, then every process that carries the marker.
+ * It ends the recorded programs whose start time still matches, then every process that carries the marker, then every
+ * process working in a directory inside the box's, with its process group.
  */
 const WATCHDOG_SCRIPT = `sleep "$1" || exit 0
 [ -f "$2/${RECORD_FILE}" ] || exit 0
@@ -57,6 +58,17 @@ while [ "$round" -lt ${KILL_ROUNDS} ]; do
 		pid=\${environ#/proc/}
 		kill -KILL "\${pid%/environ}" 2>/dev/null
 	done
+done
+for cwd in /proc/[0-9]*/cwd; do
+	pid=\${cwd#/proc/}
+	pid=\${pid%/cwd}
+	[ "$pid" = "$$" ] && continue
+	at=$(readlink "$cwd" 2>/dev/null) || continue
+	case "\${at% (deleted)}" in "$2" | "$2"/*)
+		group=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f3)
+		[ -n "$group" ] && [ "$group" -gt 1 ] && kill -KILL "-$group" 2>/dev/null
+		kill -KILL "$pid" 2>/dev/null ;;
+	esac
 done
 rm -rf -- "$2" 2>/dev/null || { chmod -R u+rwX -- "$2" 2>/dev/null; rm -rf -- "$2"; }`;
 
@@ -326,14 +338,16 @@ function endRecorded(directory: string): number[] {
 }
 
 /**
- * The processes whose environment names this box, as its programs or as its watchdog. One pass over `/proc`, read
- * synchronously: a pass of awaited reads is twenty times slower on a machine with thousands of processes.
+ * The processes of this box, as its programs or as its watchdog: those whose environment names it, and those working in a
+ * directory inside the box's own, which finds a program that cleared its environment and outlived what started it. One
+ * pass over `/proc`, read synchronously: a pass of awaited reads is twenty times slower on a machine with thousands of
+ * processes.
  */
-function processesOf(id: string): { programs: number[]; watchdogs: number[] } {
+function processesOf(directory: string, id: string): { programs: number[]; watchdogs: number[] } {
 	const programs: number[] = [];
 	const watchdogs: number[] = [];
 	for (const name of readdirSync("/proc")) {
-		if (!/^\d+$/.test(name)) continue;
+		if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
 		let entries: string[];
 		try {
 			entries = readFileSync(`/proc/${name}/environ`, "latin1").split("\0");
@@ -341,18 +355,44 @@ function processesOf(id: string): { programs: number[]; watchdogs: number[] } {
 			// Another user's process, or one that has ended.
 			continue;
 		}
-		if (entries.includes(`${BOX_MARKER}=${id}`)) programs.push(Number(name));
-		else if (entries.includes(`${WATCHDOG_MARKER}=${id}`)) watchdogs.push(Number(name));
+		if (entries.includes(`${WATCHDOG_MARKER}=${id}`)) watchdogs.push(Number(name));
+		else if (entries.includes(`${BOX_MARKER}=${id}`) || worksIn(Number(name), directory)) programs.push(Number(name));
 	}
 	return { programs, watchdogs };
 }
+
+/** Whether `pid` works in `directory` or a directory under it (a removed one reads with " (deleted)" after it). */
+function worksIn(pid: number, directory: string): boolean {
+	let cwd: string;
+	try {
+		cwd = readlinkSync(`/proc/${pid}/cwd`).replace(/ \(deleted\)$/, "");
+	} catch {
+		return false;
+	}
+	return cwd === directory || cwd.startsWith(`${directory}/`);
+}
+
+/** The process group of `pid`, from `/proc/<pid>/stat`, or undefined once it has ended. */
+function groupOf(pid: number): number | undefined {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
+		const pgid = Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[2]);
+		return pgid > 1 ? pgid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** This process's own group, which a box's end never kills: every program a box starts runs in a group of its own. */
+const OWN_GROUP = HAS_PROC ? groupOf(process.pid) : undefined;
 
 /**
  * End every program of a box and its watchdog. Two ways find them: the record of each program the box started and
  * that still runs, whose process group is ended even when it replaced its environment; and the marker in a
  * process's own environment, which also finds a program that left its group or outlived the one that started it.
- * Neither kills a reused process id. A program that does both, replaces its environment and outlives its starter,
- * is not found. Where `/proc` is missing, only the process groups this process started are ended.
+ * A third way finds a program that did both, replaced its environment and outlived its starter: it works in a directory
+ * inside the box's. Each program found takes its process group with it. None kills a reused process id or this process's
+ * own group. Where `/proc` is missing, only the process groups this process started are ended.
  */
 function endPrograms(directory: string, id: string): number[] {
 	if (!HAS_PROC) {
@@ -361,9 +401,23 @@ function endPrograms(directory: string, id: string): number[] {
 		return [];
 	}
 	const ended = endRecorded(directory);
+	// What /proc shows a process working in: the directory with every link resolved.
+	let real = directory;
+	try {
+		real = realpathSync(directory);
+	} catch {
+		// Gone already: the environment's marker and the records still find what is left.
+	}
 	for (let round = 0; round < KILL_ROUNDS; round += 1) {
-		const { programs, watchdogs } = processesOf(id);
+		const { programs, watchdogs } = processesOf(real, id);
 		for (const pid of [...watchdogs, ...programs]) {
+			// A program's group goes with it: a member that cleared its environment and works elsewhere is found by it alone,
+			// and once the program is killed the group has no other way back to the box.
+			const group = groupOf(pid);
+			if (programs.includes(pid) && group !== undefined && group !== OWN_GROUP) {
+				ended.push(...groupMembers(group));
+				killGroup(group);
+			}
 			try {
 				process.kill(pid, "SIGKILL");
 				ended.push(pid);
