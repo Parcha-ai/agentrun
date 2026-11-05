@@ -271,3 +271,66 @@ test("claude-agent: a priced call through the CLI's own MCP client is held and b
   }
   assert.deepEqual([calls(fake, "paid").length, calls(fake, "add").length], [1, 1]);
 });
+
+/** A server for `harness` with the owner signed in and the fake saved: pi on the faux model, claude-agent on the pinned
+ *  Agent SDK and CLI against a scripted Messages endpoint that calls add, then answers with the gate's resume. */
+async function parkingServer(t, harness) {
+  if (harness === "pi") {
+    const server = await serve(t);
+    return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: {}, content: ADD };
+  }
+  const anthropic = await fakeAnthropic({
+    reply: (request) => {
+      const at = request.text.lastIndexOf("[tool approval]");
+      if (at >= 0) return { text: `Resumed: ${request.text.slice(at).split("\n")[1] ?? ""}` };
+      if (Object.keys(request.results).length) return { text: `The tool said: ${Object.values(request.results)[0]}` };
+      return request.tools.includes("mcp__fake__add") ? { tool: { name: "mcp__fake__add", input: { a: 2, b: 3 } } } : { text: "Noted." };
+    },
+  });
+  t.after(() => anthropic.close());
+  const saved = { ...process.env };
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  });
+  delete process.env.AGENT_MODEL_BASE_URL;
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
+  const server = await serve(t, { faux: undefined });
+  return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: "Add 2 and 3 with the add tool." };
+}
+const PARK_HARNESSES = ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : [])];
+
+test("a person's message while an MCP call is parked declines it with their words: the run resumes with the refusal, the row reads Declined by your message, a later allow is 409, and the server saw nothing; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
+  const said = "use the cached sum instead";
+  for (const harness of PARK_HARNESSES) {
+    const { server, answer, fake, extra, content } = await parkingServer(t, harness);
+    const { api } = server;
+    const runId = await started(api, `declined-${harness}`, ["mcp:fake/add"], content, { extra });
+    const pending = await parked(api, runId);
+    const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
+    assert.equal(sent.status, 202, JSON.stringify(sent.body));
+    const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
+    assert.match(await answerOf(api, runId) ?? "", new RegExp(`^Resumed: The user denied this mcp:fake/add call\\. Reason: ${said}`), harness);
+    assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Declined by your message: mcp:fake\/add /, harness);
+    assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
+    assert.equal(calls(fake).length, 0, `${harness}: the server saw nothing`);
+  }
+});
+
+test("a stop while an MCP call is parked withdraws it: no pending approval, the row reads Withdrawn, a later allow is 409, and the server saw nothing; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
+  for (const harness of PARK_HARNESSES) {
+    const { server, answer, fake, extra, content } = await parkingServer(t, harness);
+    const { api } = server;
+    const runId = await started(api, `stopped-${harness}`, ["mcp:fake/add"], content, { extra });
+    const pending = await parked(api, runId);
+    const stop = await api("POST", `/runs/${runId}/stop`, {});
+    assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    assert.equal(view.pending, null, `${harness}: nothing pending`);
+    const { rows } = await follow(api, runId, ["input_required", "completed", "failed"]);
+    assert.match(rows.find((row) => row.kind === "tool_approval_requested")?.summary ?? "", /^Withdrawn/, harness);
+    assert.equal(await answer(runId, pending.id, { decision: "allow" }), 409, `${harness}: a later allow`);
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    assert.equal(calls(fake).length, 0, `${harness}: the server saw nothing`);
+  }
+});
