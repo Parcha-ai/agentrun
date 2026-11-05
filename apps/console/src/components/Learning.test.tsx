@@ -1088,3 +1088,24 @@ describe("restoring a retired note, skill or draft", () => {
     expect(t.button(/^Restore Keep it to three lines$/)).toBeUndefined();
   });
 });
+
+// Who changed it comes only from what the server names (last_change, retired): a person's commit in the learning log
+// alone names no one, and nothing more of the log is read to find one.
+describe("the Learning tab's lines name only what the server serves", () => {
+  it("a person's change in the log alone gives a card no by-line", async () => {
+    const t = await open(agent(true), { learning: async () => view() });
+    const mine = t.card("Keep it to three lines")!;
+    expect(mine.textContent).not.toMatch(/(Written|Edited|Created) by you/);
+  });
+  it("a retired skill the server names no retirement of says just Retired, and no more of the log is read for it", async () => {
+    const SKILL_FILE = "skills/find-policies/SKILL.md";
+    const v = view({ skills: [{ name: "find-policies", file: SKILL_FILE, description: "Find a store's policies", status: "retired", run: "run-b", bytes: 92, etag: '"skill-v1"' }], workflows: [] } as Partial<AgentLearning>);
+    v.log = { ...v.log, items: [{ by: { user: true }, commit: "c9", at: "2026-11-04T10:00:00Z", reason: "retired by a person", files: [SKILL_FILE] }, ...v.log.items], next_cursor: "l1" };
+    const t = await open(agent(true), { learning: async () => v });
+    expect(t.calls).not.toContain("log after l1");
+    await t.click(/^Earlier skills/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier skills"]')!.textContent ?? "";
+    expect(earlier).toContain("Retired");
+    expect(earlier).not.toContain("by you");
+  });
+});
