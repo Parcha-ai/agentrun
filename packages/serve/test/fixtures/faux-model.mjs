@@ -142,6 +142,12 @@ export default function reply(context, faux) {
     process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
     return faux.message("Recorded.");
   }
+  // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
+  const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
+  if (linked) {
+    const key = process.getBuiltinModule("node:fs").readFileSync(linked[1], "utf8").trim();
+    return faux.message(`Open http://127.0.0.1:7340/#/runs/01a1a961-3257-7131-a652-c6fb78880244?x=1 and see https://api.example/v1?k=${key}&y=2 for it.`); // key-gate: loopback-rule a console link an agent's answer gives, as text
+  }
   const quote = /^Quote the key in (\S+)$/.exec(first);
   if (quote) {
     const key = process.getBuiltinModule("node:fs").readFileSync(quote[1], "utf8").trim();
