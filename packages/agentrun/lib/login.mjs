@@ -31,9 +31,10 @@ const scrubbed = (io, secrets) => {
   return { ...io, stdout: scrub(io.stdout), stderr: scrub(io.stderr) };
 };
 
-/** The string values of a secret route's JSON body (none of its `type` or `url` fields), or the whole body when it is
- *  not JSON: the secrets to cut from what is printed. */
-function secretsOf(body) {
+/** The string values of a secret route's JSON body, but for its public fields (`publicFields`, full paths such as
+ *  `auth.type`, from the table), or the whole body when it is not JSON: the secrets to cut from what is printed. A value
+ *  under a map (a header's, a tool key field's) is never public, whatever its key. */
+function secretsOf(body, publicFields = []) {
   const text = body === undefined ? "" : String(body);
   let value;
   try {
@@ -41,12 +42,13 @@ function secretsOf(body) {
   } catch {
     return [text];
   }
+  const open = new Set(publicFields.map((field) => JSON.stringify(field.split("."))));
   const found = [];
-  const walk = (node, key) => {
-    if (typeof node === "string") return void (["type", "url"].includes(key) || found.push(node));
-    if (node && typeof node === "object") for (const [k, v] of Object.entries(node)) walk(v, Array.isArray(node) ? key : k);
+  const walk = (node, path) => {
+    if (typeof node === "string") return void (open.has(JSON.stringify(path)) || found.push(node));
+    if (node && typeof node === "object") for (const [key, child] of Object.entries(node)) walk(child, Array.isArray(node) ? [...path, "*"] : [...path, key]);
   };
-  walk(value);
+  walk(value, []);
   return found;
 }
 
@@ -71,8 +73,9 @@ function secretClient(clientOf, target, io, secrets) {
   };
 }
 
-/** cli.mjs's client for a generated command or an `api` call whose body goes to a secret route. */
-export const guarded = (clientOf, target, io, body) => secretClient(clientOf, target, io, secretsOf(body));
+/** cli.mjs's client for a generated command or an `api` call whose body goes to a secret route, with that route's
+ *  public fields. */
+export const guarded = (clientOf, target, io, body, publicFields) => secretClient(clientOf, target, io, secretsOf(body, publicFields));
 
 const print = (io, value) => io.stdout.write(`${io.stdout.isTTY ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`);
 

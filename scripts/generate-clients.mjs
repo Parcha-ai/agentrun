@@ -101,6 +101,35 @@ export function operationsOf(doc) {
   return found;
 }
 
+/** The string fields of a body schema, each as its path of property names; `*` stands for any key of a map
+ *  (additionalProperties), whose every value a body may name as it likes. */
+function stringPaths(doc, schema, path = [], seen = new Set()) {
+  const s = deref(doc, schema);
+  if (!s || typeof s !== 'object' || seen.has(s)) return [];
+  seen = new Set([...seen, s]);
+  const found = [...['oneOf', 'anyOf', 'allOf'].flatMap((key) => (s[key] ?? []).flatMap((part) => stringPaths(doc, part, path, seen)))];
+  const types = Array.isArray(s.type) ? s.type : [s.type];
+  if (types.includes('string') || s.enum?.some((v) => typeof v === 'string')) found.push(path);
+  for (const [name, property] of Object.entries(s.properties ?? {})) found.push(...stringPaths(doc, property, [...path, name], seen));
+  if (s.additionalProperties && typeof s.additionalProperties === 'object') found.push(...stringPaths(doc, s.additionalProperties, [...path, '*'], seen));
+  return found;
+}
+
+/** What is wrong with the map's public fields (the string fields of a secret body that are no secret, which the CLI
+ *  leaves in what it prints): one that is not a secret body's, or not one of its body's string fields by its full path,
+ *  or one under a map, whose values are always secrets. */
+export function publicFieldProblems(doc, map) {
+  const problems = [];
+  for (const [id, fields] of Object.entries(map.publicFields ?? {})) {
+    if (!map.secretBody.includes(id)) problems.push(`${RESOURCES} names public fields of ${id}, whose body is no secret body`);
+    let schema;
+    for (const item of Object.values(doc.paths ?? {})) for (const method of METHODS) if (item[method]?.operationId === id) schema = deref(doc, item[method].requestBody)?.content?.['application/json']?.schema;
+    const paths = new Set(stringPaths(doc, schema).filter((path) => !path.includes('*')).map((path) => path.join('.')));
+    for (const field of fields) if (!paths.has(field)) problems.push(`${RESOURCES} names ${id}'s public field ${field}, which is not a string field of its body (by its full path, under no map)`);
+  }
+  return problems;
+}
+
 /** An operation's command: the map's name, else its tag and its operationId. */
 const commandOf = (op, map) => map.commands[op.operationId] ?? [op.tags[0] ?? 'api', kebab(op.operationId)];
 
@@ -154,6 +183,8 @@ export function commandsOf(ops, map) {
       pathParams: [...op.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
       // The path parameters that are file paths, slashes kept: the rest are encoded whole.
       multiSegment: map.multiSegment[op.operationId] ? [map.multiSegment[op.operationId]] : [],
+      // A secret body's string fields that are no secret, by their full path: every other one is cut from what is printed.
+      ...(secretBody ? { publicFields: map.publicFields[op.operationId] ?? [] } : {}),
       query, headers, bodyFlags, hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
       // A download: its answer is the file's bytes, written as received.
       raw: op.answers.length > 0 && !op.answers.includes('application/json'),
@@ -185,10 +216,10 @@ export function tableText(ops, map) {
 
 async function main() {
   const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' } } });
-  const map = { secretBody: [], omit: {}, multiSegment: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
-  const problems = problemsOf(ops, map);
+  const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map)];
   if (problems.length) {
     console.error(`The command map does not fit the document:\n${problems.map((p) => `  ${p}`).join('\n')}`);
     process.exitCode = 1;

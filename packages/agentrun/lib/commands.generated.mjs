@@ -783,6 +783,11 @@ export const COMMANDS = [
     "path": "/settings/mcp-servers/preview",
     "pathParams": [],
     "multiSegment": [],
+    "publicFields": [
+      "url",
+      "auth.type",
+      "name"
+    ],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -829,6 +834,10 @@ export const COMMANDS = [
       "name"
     ],
     "multiSegment": [],
+    "publicFields": [
+      "url",
+      "auth.type"
+    ],
     "query": [],
     "headers": [],
     "bodyFlags": [],
@@ -1576,6 +1585,7 @@ export const COMMANDS = [
       "key_id"
     ],
     "multiSegment": [],
+    "publicFields": [],
     "query": [],
     "headers": [],
     "bodyFlags": [],

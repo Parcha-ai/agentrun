@@ -346,4 +346,14 @@ test("generate-clients --check passes on the committed skill, and fails on a han
   const missing = check("--resources", renamed);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /the skill names agentrun runs files, a command the CLI does not have/);
+
+  // A public field (left in what a secret command prints) must be a string field of the secret body by its full path,
+  // never a map's value: a header's value is always a secret, whatever its name.
+  for (const field of ["auth.headers.*", "auth.headers", "type", "nope"]) {
+    const loose = join(dir, "public.json");
+    writeFileSync(loose, JSON.stringify({ ...resources, publicFields: { ...resources.publicFields, saveMcpServer: ["url", field] } }));
+    const refused = check("--resources", loose);
+    assert.equal(refused.status, 1, field);
+    assert.match(refused.stderr, new RegExp(`saveMcpServer's public field ${field.replace(/[.*]/g, "\\$&")}, which is not a string field of its body`));
+  }
 });

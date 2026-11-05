@@ -327,7 +327,8 @@ async function api(argv, env, io) {
   const landed = secretAt(verb, `${target.base}${path}`);
   if (landed) refuseInline(`${verb} ${landed.path}`, values.body);
   // A body bound for a secret route: an error's answer is never printed, and the body's values are cut from the rest.
-  const client = secret || landed ? guarded(clientOf, target, io, body) : clientOf(target, io);
+  const route = secret || landed;
+  const client = route ? guarded(clientOf, target, io, body, route.publicFields) : clientOf(target, io);
   return send(client, { method: verb, path, headers, body, type });
 }
 
@@ -383,7 +384,7 @@ async function command(entry, argv, env, io) {
   const target = targetOf(values, env);
   const landed = !entry.secretBody && secretAt(entry.method, `${target.base}${path}`);
   if (landed) refuseInline(`${entry.command.join(" ")} (${landed.path} under the base URL)`, values.body);
-  const client = entry.secretBody || landed ? guarded(clientOf, target, io, body) : clientOf(target, io);
+  const client = entry.secretBody || landed ? guarded(clientOf, target, io, body, (entry.secretBody ? entry : landed).publicFields) : clientOf(target, io);
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (!values.wait) return send(client, req);

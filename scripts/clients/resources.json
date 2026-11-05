@@ -1,5 +1,9 @@
 {
   "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer"],
+  "publicFields": {
+    "saveMcpServer": ["url", "auth.type"],
+    "previewMcpServer": ["url", "auth.type", "name"]
+  },
   "multiSegment": {
     "readRunFile": "path",
     "readHomeFile": "path",
