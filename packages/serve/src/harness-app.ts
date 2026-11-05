@@ -628,7 +628,8 @@ export function adapterRun(
       if (budgetUsd !== undefined) {
         useSpend({
           cap: budgetUsd,
-          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(plus(booking.spentUsd(), charged), inFlight.total())),
+          spent: async () => (await bookings(BOOKING_WAIT_MS), plus(booking.spentUsd(), charged)),
+          held: () => inFlight.total(),
           add: (usd) => void (charged = plus(charged, usd)),
         });
       }
