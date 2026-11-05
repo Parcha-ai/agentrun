@@ -164,7 +164,7 @@ test("the contract's operations are as vendored; this server's own are added and
   const notes = [];
   const strip = (schema, at) => {
     for (const [field, property] of Object.entries(schema.properties ?? {})) {
-      for (const mark of ["x-agentrun-serve-unsupported", "x-agentrun-serve-details"]) {
+      for (const mark of ["x-agentrun-serve-unsupported", "x-agentrun-serve-details", "x-agentrun-serve-note"]) {
         if (property[mark] === undefined) continue;
         delete property[mark];
         notes.push(`${at}.${field}`);
@@ -221,7 +221,7 @@ test("the contract's operations are as vendored; this server's own are added and
   for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
-  assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details].sort(), "info lists the contract properties it notes");
+  assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });
 
 test("the served definition takes exactly the fields this server takes: a contract field it refuses is marked with the reason its 422 gives, and a run it refuses has the details the document says", async (t) => {
@@ -231,7 +231,7 @@ test("the served definition takes exactly the fields this server takes: a contra
   const refused = Object.keys(fields).filter((field) => fields[field]["x-agentrun-serve-unsupported"]);
   assert.deepEqual(Object.keys(fields).filter((field) => !refused.includes(field)).sort(), [...DEFINITION_FIELDS].sort(), "every field validate.ts takes, and no other, unmarked");
   assert.deepEqual(doc.info["x-agentrun-serve"].unsupported_fields, refused.map((field) => `DefinitionInput.${field}`));
-  const values = { input_schema: { type: "object" }, output_schema: { type: "object" }, max_cost_usd: 1 };
+  const values = { input_schema: { type: "object" }, output_schema: { type: "object" } };
   for (const field of refused) {
     const answer = await api("POST", "/agents", agent(`with-${field.replaceAll("_", "-")}`, { [field]: values[field] ?? "x" }));
     assert.equal(answer.status, 422, field);
