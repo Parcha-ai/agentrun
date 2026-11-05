@@ -1585,9 +1585,9 @@ Under a cap, whatever cannot be priced is refused, never passed as $0:
 
 A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
 word we read; never more than it was held. That is its input bound and each byte of content it streamed (its text,
-thinking and tool calls on pi; on `claude-agent` and `codex`, the text, reasoning and tool-argument deltas the response
-sent, never the provider's framing around them, which runs to about 12 bytes a character on the Responses API and 24 on
-the Messages API) as a token, plus 1,024 tokens of output (`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most
+thinking and tool calls on pi; on `claude-agent`, `codex` and `opencode`, the text, reasoning and tool-argument deltas
+the response sent, never the provider's framing around them, which runs to about 12 bytes a character on the Responses
+API and 24 on the Messages API) as a token, plus 1,024 tokens of output (`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most
 the worst case the cap held for it. The cut stream's own usage is never read: it is not what the provider billed (the
 Responses API reports none until the end, and Anthropic's output count comes at the end). The 1,024 tokens are a stated
 bound, as the native search allowance is: a provider that went on producing for longer after the stop could bill past
@@ -1599,8 +1599,8 @@ Reasoning the provider never streams counts too. A model whose reasoning streams
 reasoning; Claude 4-class thinking, and redacted thinking) or not at all is billed for far more than the summary's
 bytes, so a stopped request that reasons also counts the part of its reasoning budget that did not stream: input +
 streamed + 1,024 + max(0, reasoning budget - reasoning streamed), never more than the hold. Reasoning streamed is its
-thinking's bytes on pi, and on `claude-agent` and `codex` the bytes of the reasoning events the response sent (a
-thinking delta, a reasoning summary delta); answer text never stands in for it. The budget is its effort's or thinking
+thinking's bytes on pi, and on `claude-agent`, `codex` and `opencode` the bytes of the reasoning events the response
+sent (a thinking delta, a reasoning summary delta); answer text never stands in for it. The budget is its effort's or thinking
 level's (minimal 1,024, low 2,048, medium 8,192, high 16,384; on Anthropic's API, the `budget_tokens` it was sent with).
 A Claude model whose thinking is adaptive (pi-ai sends every current one `thinking: {type: "adaptive"}`, no budget) thinks
 within its output limit as it sees fit, so on pi it counts that limit less 1,024 tokens, as `claude-agent` counts
