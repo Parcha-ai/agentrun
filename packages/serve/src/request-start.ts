@@ -231,6 +231,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       if (lostMarked) {
         if (result.stopReason === "error" && failure?.type === "error") markResponseBegan(failure.error);
       } else if (result.stopReason === "aborted") {
+        // Reached only with no lost attempt: watchingLost sets `lostMarked` synchronously, before it awaits the mark, the
+        // moment an attempt is lost, and that mark lands before pi-ai's retry sleep, so a stop in the sleep finds it set.
         const responseId = (result as { responseId?: unknown }).responseId;
         ending = mark(REQUEST_ENDED, { ...(typeof responseId === "string" ? { responseId } : {}), ...stoppedOf(options, result) });
       } else if (result.stopReason === "error" && (began || lostOf(options, result))) {

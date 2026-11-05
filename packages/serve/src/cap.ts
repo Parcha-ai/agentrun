@@ -129,15 +129,17 @@ export const UNWATCHED_APIS: Readonly<Record<string, string>> = {
   "typesafe-system-one": "never reads options.fetch",
 };
 const unwatched = (api: string): boolean => Object.hasOwn(UNWATCHED_APIS, api);
-/** A fetch that does what `inner` does (globalThis.fetch by default) and records each attempt in `attempts`. */
-export function recordingFetch(attempts: Attempt[], inner?: typeof fetch): typeof fetch {
+/** A fetch that does what `inner` does (globalThis.fetch by default) and records each attempt in `attempts`. An attempt
+ *  is `aborted` only when the request's own signal (`stop`, the run's) had fired: the SDKs hand fetch a signal of their
+ *  own, which they also abort on their own timeout, and an attempt that timed out left, so it is lost, never a stop. */
+export function recordingFetch(attempts: Attempt[], inner?: typeof fetch, stop?: AbortSignal): typeof fetch {
   return (async (input, init) => {
     try {
       const response = await (inner ?? globalThis.fetch)(input, init);
       attempts.push({ status: response.status });
       return response;
     } catch (error) {
-      attempts.push({ code: rejectionCode(error), ...(init?.signal?.aborted ? { aborted: true as const } : {}) });
+      attempts.push({ code: rejectionCode(error), ...(stop?.aborted ? { aborted: true as const } : {}) });
       throw error;
     }
   }) as typeof fetch;
@@ -839,7 +841,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const carrying = <O>(options: O, { worst, stopped }: Judged, attempts: Attempt[] | undefined): O => ({
     ...options, [HELD_USD]: worst, [STOPPED_USD]: stopped,
     // null on an API the cap cannot watch: its marks read a failure before any event as lost.
-    ...(attempts ? { [ATTEMPTS]: attempts, fetch: recordingFetch(attempts, (options as { fetch?: typeof fetch } | undefined)?.fetch) } : { [ATTEMPTS]: null }),
+    ...(attempts ? { [ATTEMPTS]: attempts, fetch: recordingFetch(attempts, (options as { fetch?: typeof fetch } | undefined)?.fetch, (options as { signal?: AbortSignal } | undefined)?.signal) } : { [ATTEMPTS]: null }),
   }) as O;
   const attemptsFor = (model: Model<Api>): Attempt[] | undefined => (unwatched(model.api) ? undefined : []);
   const stream = (send: (model: Model<Api>, context: Context, options?: Options) => AssistantMessageEventStream, simpleCall: boolean) =>
