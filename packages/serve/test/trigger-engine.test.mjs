@@ -278,3 +278,42 @@ test("a firing whose drive throws and stays due is driven again after the write 
   assert.equal(lookups.length, 2);
   assert.equal(second.triggers.firings(made.id).firings[0].status, "due", "still due, for the next try");
 });
+
+test("a failure whose trigger.failed is not in the outbox yet stays in the history past 200 later firings, and leaves it once it is", async (t) => {
+  let saved = false;
+  const told = [];
+  let starts = 0;
+  const { clock, triggers } = await engine(t, {
+    start: async () => (++starts === 1 ? Promise.reject(new ApiError("agent_not_runnable", "archived")) : { run_id: `run-${starts}` }),
+    notify: (failed, key) => (told.push(key), saved ? "queued" : "unsaved"),
+  });
+  const made = await triggers.create(body({ every_s: 600 }));
+  const failed = await triggers.fire(made.id, "first");
+  assert.equal(failed.firing.status, "failed");
+  for (let n = 1; n <= 205; n++) await triggers.fire(made.id, `next-${n}`);
+  const kept = () => triggers.firings(made.id).firings.find((f) => f.key === failed.firing.key);
+  assert.ok(kept(), "kept while its message is not in the outbox");
+  // The outbox's write works again: its message is queued, it is marked, and the next firing lets it go.
+  saved = true;
+  clock.to("2026-06-01T00:00:05Z");
+  await until(() => told.length >= 2 && told.at(-1) === failed.firing.key, "queued again");
+  await triggers.fire(made.id, "last");
+  assert.equal(kept(), undefined, "trimmed once told");
+});
+
+test("a restart queues the failures it finds unsent before its first tick records anything, so a trim never takes one first", async (t) => {
+  const first = await engine(t, {});
+  const made = await first.triggers.create(body({ every_s: 600 }));
+  first.triggers.close();
+  // A full history whose oldest is a failure never queued, and a time due at the restart that records one more.
+  const file = join(first.data, "triggers.json");
+  const kept = JSON.parse(await readFile(file, "utf8"));
+  const trigger = kept.triggers[0];
+  const firing = (n, status) => ({ key: `fir_${n.toString(16).padStart(32, "0")}`, by: "manual", nominal_at: "2026-06-01T00:00:00Z", status, at: "2026-06-01T00:00:00.000Z", ...(status === "failed" ? { error: { code: "agent_not_runnable", message: "archived" } } : { run_id: `run-${n}` }) });
+  trigger.firings = [firing(1, "failed"), ...Array.from({ length: 199 }, (_, i) => firing(i + 2, "started"))];
+  await writeFile(file, JSON.stringify(kept));
+  const told = [];
+  const second = await engine(t, { notify: (failed, key) => (told.push(key), "queued") }, { data: first.data, at: "2026-06-01T00:10:00Z" });
+  assert.deepEqual(told, [firing(1, "failed").key], "the unsent failure was queued");
+  await until(() => second.triggers.firings(made.id).firings.length >= 200 && second.triggers.firings(made.id).firings.every((f) => f.status !== "due"), "the restart's firing settled");
+});
