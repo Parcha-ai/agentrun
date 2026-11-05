@@ -184,17 +184,19 @@ export const keptProfile = <P extends { create(spec: { profile?: { name: string;
   create: (spec, signal) => provider.create(spec.profile?.name === SIGN_IN_KEY ? { ...spec, profile: { ...spec.profile, name: ref } } : spec, signal),
 });
 
-/** `provider`, its sessions' profile as this launch was handed it: saving only as `kept.save` says, whatever the policy
- *  a conversation was made with (a follow-up's was made under an earlier launch's lease), and none without a sign-in. */
+/** `provider`, its sessions' profile as this launch was handed it, whatever the policy a conversation was made with (a
+ *  follow-up's was made under an earlier launch, which may have had no sign-in, or another lease): with a sign-in, every
+ *  session opens on the profile `default`, saving only as `kept.save` says; without one, none asks for a profile. */
 export const asHanded = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, kept: { save: boolean } | undefined): P => ({
   ...provider,
-  create: (spec, signal) => provider.create(spec.profile ? { ...spec, profile: kept ? { ...spec.profile, save: kept.save } : undefined } : spec, signal),
+  create: (spec, signal) => provider.create(kept ? { ...spec, profile: { name: SIGN_IN_KEY, save: kept.save } } : spec.profile ? { ...spec, profile: undefined } : spec, signal),
 });
 
-/** Whether a session's change is one that saved to the run's sign-in: a session that ran on the profile, let go by the
- *  run (its tool, its idle time, a relaunch, its close, its end), never one the vendor had already lost or never made. */
-export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null; settings: { profile: string | null } } }, change: string): boolean =>
-  change === "released" && row.session.resourceId !== null && row.session.settings.profile !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
+/** Whether a session's change is one that saved to the run's sign-in, in a run that saves (every session of it runs on
+ *  the profile, asHanded, whatever its record names): let go by the run (its tool, its idle time, a relaunch, its close,
+ *  its end), never one the vendor had already lost or never made. */
+export const savedOnRelease = (row: { session: { resourceId: string | null; releaseReason: string | null } }, change: string): boolean =>
+  change === "released" && row.session.resourceId !== null && row.session.releaseReason !== null && !["lost", "create_failed"].includes(row.session.releaseReason);
 
 /** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
  *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
