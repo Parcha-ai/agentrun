@@ -30,7 +30,7 @@ import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decisions.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
@@ -287,6 +287,8 @@ export type Run = {
   resuming?: "sending" | "failed";
   /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures). */
   capRefusal?: RefusalFigures;
+  /** What it has spent paused at that refusal (its row), its process gone: the store's spend (spentNow), read once. */
+  capSpent?: { mark: string; usd: number | null };
 };
 
 const ASKED = "Asked you: ";
@@ -368,13 +370,16 @@ export const suggestedCap = (cap: number, spentUsd: number, needsUsd: number): n
 };
 /** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
  *  needs (its refusal's mark; none from a store written before it kept them), the raise it is offered (suggestedCap),
- *  the refusal's words, and when it came (its error row's time). The figures are as the cap counts them, never rounded. */
-const budgetPending = (run: Run): Pending | undefined => {
+ *  the refusal's words, and when it came (its error row's time). The figures are as the cap counts them, never rounded.
+ *  What was taken is the store's spend once its process is gone (`spentNow`), when that is lower: the refusal counted
+ *  requests still answering at what it held for them, and they have settled. */
+const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   const said = pausedAt(run);
   const cap = run.meta.max_cost_usd;
   if (said === undefined || cap === undefined) return undefined;
   const r = run.capRefusal;
-  const figures = r ? { spent_usd: r.spentUsd, needs_usd: r.needsUsd, suggested_cap_usd: suggestedCap(cap, r.spentUsd, r.needsUsd) } : {};
+  const spent = r && spentNow !== undefined ? Math.min(r.spentUsd, spentNow) : r?.spentUsd;
+  const figures = r && spent !== undefined ? { spent_usd: spent, needs_usd: r.needsUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
@@ -1036,6 +1041,24 @@ export class Runs {
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
+  /** What a run paused at its cap has spent once its process is gone: its store's spend as the cap reads it (spentIn),
+   *  read once per pause (its refusal's row). None while its process lives, nor when the store says unknown or cannot
+   *  be read: the refusal's own figure stands then. */
+  private spentNow(run: Run): number | undefined {
+    const mark = meaningful(run.rows)?.id;
+    if (mark === undefined || !run.capRefusal || this.live(run) || pausedAt(run) === undefined) return undefined;
+    if (run.capSpent?.mark !== mark) {
+      let usd: number | null = null;
+      try {
+        usd = spentIn(this.storeFile(run));
+      } catch (error) {
+        warn(run.id, `its store's spend was not read (${(error as Error).message}); its refusal's figure stands`);
+      }
+      run.capSpent = { mark, usd };
+    }
+    return run.capSpent.usd ?? undefined;
+  }
+
   private refresh(run: Run): void {
     this.mark(run);
     // A run whose cap was raised at its pause goes on once its paused process is gone (resumeRaised).
@@ -2419,7 +2442,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
-      pending: status === "input_required" && state === "waiting" ? (budgetPending(run) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
