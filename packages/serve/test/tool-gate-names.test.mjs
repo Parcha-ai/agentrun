@@ -11,7 +11,7 @@ import { BROWSER_TOOL_NAMES } from "@parcha/pi-browser";
 import { wireName } from "../dist/catalog.js";
 import { REPLAY } from "../dist/host-tools.js";
 import * as gate from "../dist/tool-gate.js";
-import { LEGACY_NAMES, TABLE_TOOLS } from "../dist/tool-plane.js";
+import { LEGACY_NAMES, permissionsOf, TABLE_TOOLS } from "../dist/tool-plane.js";
 import { scratch } from "./support.mjs";
 
 const { deniedText, noApproverText, RunGate, waitingText } = gate;
@@ -96,6 +96,16 @@ test("on pi, browser set to deny refuses each of its registrations, run and snap
     const { text, ran } = await onPi(t, { browser: { permission: "deny" } }, name);
     assert.deepEqual([text, ran], [deniedText("browser"), 0], name);
   }
+});
+
+test("on pi, the agent's ask for the person in its browser (browser_request_handoff) is held to the browser setting: deny refuses it, allow lets it run (the browser offers no ask)", async (t) => {
+  assert.ok(BROWSER_TOOL_NAMES.includes("browser_request_handoff"), "pi-browser lists it");
+  assert.equal(keyOf("pi", "browser_request_handoff"), "browser");
+  const denied = await onPi(t, { browser: { permission: "deny" } }, "browser_request_handoff");
+  assert.deepEqual([denied.text, denied.ran], [deniedText("browser"), 0], "deny: refused, never asked of the person");
+  const allowed = await onPi(t, { browser: { permission: "allow" } }, "browser_request_handoff");
+  assert.deepEqual([allowed.text, allowed.ran], ["ran", 1], "allow: it runs");
+  assert.deepEqual(permissionsOf("browser"), ["allow", "deny"], "the browser setting is allow or deny");
 });
 
 test("OpenCode's <server>_<tool> is an MCP tool only for a server the run has configured, never by its shape alone; a table tool's name stays the table tool's", () => {
