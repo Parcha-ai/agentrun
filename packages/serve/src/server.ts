@@ -52,7 +52,8 @@ import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { outcomes } from "./usage.js";
 import { keyOf, SEAL_KEY_ENV, sealKeyOf, TOOL_FIELDS, ToolKeys } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, McpServers } from "./mcp-servers.js";
-import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { type RunNotice, WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
+import { NO_SLACK_SECRET, Slack, SLACK_TOLERANCE_S, slackMessageOf, slackRefusal } from "./slack.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -218,8 +219,11 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
-  /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
+  /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS);
+   *  a Slack post's too (slack.ts). */
   webhookRetryMs?: readonly number[];
+  /** A test's seam: Slack's Web API, in place of https://slack.com/api (slack.ts). */
+  slackApiUrl?: string;
   /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
    *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
   box?: BoxHost;
@@ -345,7 +349,12 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   // Answered before the bearer check: the request's signature is its credential.
+  // Answered before the bearer check, as receiveHook is, and before it: `slack` is never a trigger's id (trg_...).
+  { method: "POST", pattern: /^\/hooks\/slack$/, name: "receiveSlackEvent" },
   { method: "POST", pattern: /^\/hooks\/([^/]+)$/, name: "receiveHook" },
+  { method: "GET", pattern: /^\/settings\/slack$/, name: "getSlack" },
+  { method: "PUT", pattern: /^\/settings\/slack$/, name: "saveSlack" },
+  { method: "DELETE", pattern: /^\/settings\/slack$/, name: "deleteSlack" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -512,7 +521,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
+      triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], overlap: [...OVERLAP], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: HOOK_MAX_BODY, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" }, slack: { signing: "slack-v0", tolerance_s: SLACK_TOLERANCE_S, events: ["app_mention", "message"], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -618,7 +627,9 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   /** The host's secrets as a run's notes are checked against (learning-run.ts), and the keys a person saved on this
    *  server (storedKeys, below), read at each call: a person's note, and every learning text read. */
-  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? [])];
+  const learningSecrets = () => [...hostSecrets(process.env, storedKeys), token, doorToken, ...(triggerSecrets?.values() ?? []), ...(slack?.values() ?? [])];
+  // The server's Slack app (slack.ts), made below once the environment is read; its secrets shown nowhere either.
+  let slack: Slack | undefined;
   // Each webhook trigger's secret, made below once the environment is read; shown nowhere, as the server's own are not.
   let triggerSecrets: TriggerSecrets | undefined;
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
@@ -741,6 +752,17 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   triggerSecrets = new TriggerSecrets(data, env, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)));
   const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
   stops.push(() => webhooks.close());
+  slack = new Slack(data, env, (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), options.slackApiUrl, options.webhookRetryMs);
+  stops.push(async () => slack!.close());
+  // A run a Slack trigger started is told its thread too: its thread looked up once the triggers are read (below).
+  let slackThreadOf: (runId: string) => { channel: string; thread_ts: string } | undefined = () => undefined;
+  const tellSlack = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string) => {
+    const thread = slackThreadOf(run.run_id);
+    if (!thread) return;
+    void (event === "run.ended" && run.status === "completed" ? runs.get(run.run_id).then((held) => (held ? runs.view(held) : null)).then((view) => view?.result?.final_answer ?? null, () => null) : Promise.resolve(null))
+      .then((answer) => slack!.emit(event, run, marker, thread, answer))
+      .catch((error: Error) => void process.stderr.write(`agentrun-serve: slack: ${error.message}\n`));
+  };
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
   // temp file found now is a crashed one's.
@@ -748,7 +770,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => webhooks.emit(event, run, marker), ownSecrets: () => triggerSecrets?.values() ?? [] });
+  const runs = new Runs({ dockerAllow: boxNetwork.allow, agents, token, storedKeys, doorTokenFile, doorToken, learning, learningBudget, ...(documents ? { documents: resolve(documents) } : {}), fauxEnv: fauxEnvOf(options), toolSettings: () => settings.get(), ...(runBoxes ? { runBoxes } : {}), ...(remoteBoxes ? { remoteBoxes } : {}), ...(remoteBoxes && daytonaApi(env) ? { remoteApi: daytonaApi(env)! } : {}), ...(remoteBoxes ? { boxAllow, onNoBoxList } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(options.reflectTimeoutMs ? { reflectTimeoutMs: options.reflectTimeoutMs } : {}), ...(options.gradeTimeoutMs ? { gradeTimeoutMs: options.gradeTimeoutMs } : {}), ...(options.gradeModel ? { gradeModel: options.gradeModel } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}), notify: (event, run, marker) => (tellSlack(event, run, marker), webhooks.emit(event, run, marker)), ownSecrets: () => triggerSecrets?.values() ?? [] });
   const daytona = daytonaApi(env);
   const relay = remoteBoxes && daytona ? await startBoxRelay({ root: data, tokenOf: (id) => runs.relayToken(id), ...daytona, serves: (id) => runs.servesBox(id), ensure: (id) => runs.ensureBox(id) }) : undefined;
   if (relay) stops.push(() => relay.close());
@@ -806,6 +828,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const meta = await readJson(join(agents.dir, "runs", id, RUN_META));
         return { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: isObject(meta) && typeof meta.title === "string" ? meta.title : "" };
       });
+      // And each end a Slack thread was not told, as the webhook's catch-up does, by the same marker (its end time).
+      for (const id of triggers.slackRuns()) {
+        const row = byId.get(id);
+        if (!row || row.state === "running" || !row.endedAt || slack!.toldEnd(id)) continue;
+        tellSlack("run.ended", { run_id: id, agent_id: row.agent, status: await runs.statusOfRow(row), title: "" }, row.endedAt);
+      }
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: the webhook's catch-up: ${error.message}\n`));
 
@@ -832,20 +860,22 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       const run = await startRunOf(entry, { input, max_cost_usd: target.max_cost_usd, ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key } });
       return { run_id: run.id };
     },
-    async message(target, input, key) {
+    async message(target, input, key, { person = false } = {}) {
       const run = await needRun(target.run_id);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
       // A store held past its retries is a busy store: the firing stays due and is tried again, never failed.
       if (await runs.tookMessage(run, key).catch((error: unknown) => { throw storeBusy(error) ? homeBusy() : error; })) return;
       // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on
-      // its person is told nothing by a trigger.
+      // its person is told nothing by a trigger. A person's reply in the run's Slack thread (`person`) is that person:
+      // it answers the run's question, and a run paused at its cap waits for its cap to be raised.
       if (run.meta.max_cost_usd === undefined) throw new ApiError("not_continuable", NO_CAP);
       const { status, state } = statusOf(run);
-      if (status === "input_required" && state === "waiting") return { skipped: WAITS_ON_A_PERSON };
+      if (status === "input_required" && state === "waiting" && !person) return { skipped: WAITS_ON_A_PERSON };
       try {
-        await runs.message(run, String(input.content), key, { answers: false });
+        await runs.message(run, String(input.content), key, { answers: person });
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
+        if (person && error instanceof ApiError && error.code === "budget_reached") return { skipped: error.message };
         throw error;
       }
     },
@@ -865,6 +895,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     },
   });
   stops.push(async () => triggers.close());
+  slackThreadOf = (runId) => triggers.slackThreadOf(runId);
   triggers.start();
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
@@ -984,6 +1015,33 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!secret || refusal) throw refuse(secret ? refusal! : "no_webhook_trigger");
     const { created, firing } = triggers.receive(id, String(req.headers["webhook-id"]), body.toString("utf8"));
     return send(res, created ? 202 : 200, firing, created ? {} : { "idempotent-replayed": "true" });
+  }
+
+  /** POST /v2/hooks/slack: an event of the server's Slack app, checked by Slack's v0 signature on its raw body before
+   *  anything else (slack.ts). No Slack set, or a check that fails: one answer, checked in the same time. Then Slack's
+   *  url_verification is answered with its challenge, and a message a Slack trigger acts on is recorded, in one write,
+   *  and answered at once, inside Slack's 3 s; its run starts after. Everything else verified is answered 200 and
+   *  ignored, so Slack never counts a failure for it, and a retry (x-slack-retry-num) is the same message, deduped by
+   *  its key, never dropped. A write that fails is 503, which Slack tries again. */
+  async function slackHook(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await bytesOf(req, HOOK_MAX_BODY);
+    const own = slack!.checker();
+    const refusal = slackRefusal(own?.signing_secret ?? NO_SLACK_SECRET, req.headers, body, Date.now());
+    if (!own || refusal) {
+      authFailed("/v2/hooks/slack", own ? refusal! : "no_slack");
+      throw new ApiError("unauthenticated", "this route needs a request signed by the server's Slack app");
+    }
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(body.toString("utf8"));
+    } catch {}
+    if (!isObject(envelope)) return send(res, 200, { ok: "ignored" });
+    if (envelope.type === "url_verification" && typeof envelope.challenge === "string") return send(res, 200, { challenge: envelope.challenge });
+    if (envelope.type !== "event_callback") return send(res, 200, { ok: "ignored" });
+    const message = slackMessageOf(envelope, own);
+    if ("ignored" in message) return send(res, 200, { ok: "ignored" });
+    const received = triggers.receiveSlack(message);
+    return send(res, 200, { ok: received ? (received.created ? "received" : "replayed") : "ignored" });
   }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
@@ -1472,6 +1530,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // The one route with no token: a webhook trigger's request, checked by its signature before anything else is read.
     if (found.name === "receiveHook") return hook(req, res, path);
+    if (found.name === "receiveSlackEvent") return slackHook(req, res);
     if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
@@ -1813,6 +1872,14 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         return send(res, 200, await runLearning(await needRun(id), secretsShown(learningSecrets()), learningSecrets()));
       case "getRunLearningDiff":
         return send(res, 200, await runDiff(data, await needRun(id), secretsShown(learningSecrets())));
+      case "getSlack":
+        return send(res, 200, slack!.view());
+      // Never through `idempotent`: its record keeps the body, and this body is the secrets.
+      case "saveSlack":
+        return send(res, 200, await slack!.save(await bodyOf(req)));
+      case "deleteSlack":
+        slack!.remove();
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -1944,6 +2011,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
+  // A line in Slack links its run only at an address a person there can open: the public one, when the server has one.
+  slack!.attach(options.publicUrl);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;

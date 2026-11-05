@@ -16,7 +16,8 @@ import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { MCP_AUTH_TYPES, MCP_SERVER_NAME } from "./mcp-servers.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { HOOK_TOLERANCE_S } from "./trigger-secrets.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, MIN_EVERY_S, OVERLAP, SLACK_CHANNELS_MAX, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
+import { ANSWER_POSTED_CHARS, SLACK_TOLERANCE_S } from "./slack.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 import { NOT_YET, PICKABLE, PROVIDERS } from "./tool-plane.js";
 
@@ -455,8 +456,20 @@ const TRIGGER_SOURCE = {
     closed({ kind: { const: "schedule" }, at: { ...DATE_TIME, description: "Once, at this time (to the second, in the future); the trigger turns itself off after." } }),
     closedWith({ kind: { const: "schedule" }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, description: "Every this many seconds, on the grid from start_at." } }, { start_at: { ...DATE_TIME, description: "The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made." } }),
     closed({ kind: { const: "webhook" } }),
+    closed({ kind: { const: "slack" }, channels: { type: "array", minItems: 1, maxItems: SLACK_CHANNELS_MAX, uniqueItems: true, items: { type: "string", pattern: "^[CG][A-Z0-9]{2,20}$" }, description: "The Slack channels (their ids) where a mention of the server's Slack app starts a run: each its own thread's, and a reply in the thread is a message to it. A channel is one trigger's: one another Slack trigger lists is 409 \`channel_taken\`. The target is \`start_run\`." } }),
   ],
-  description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), or a signed request to /hooks/{trigger_id} (\`webhook\`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+  description: `When it fires: a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more), a signed request to /hooks/{trigger_id} (\`webhook\`), or a mention of the server's Slack app (\`slack\`, PUT /settings/slack). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one \`missed\` firing with their count, and the schedule goes on from now.`,
+};
+/** GET /settings/slack, and what PUT answers. */
+const SLACK_VIEW = {
+  oneOf: [
+    closed({ configured: { const: false } }),
+    closed({
+      configured: { const: true }, team_id: { type: "string" }, bot_user_id: { type: "string" }, app_id: { type: ["string", "null"] }, post_answer: { type: "boolean" },
+      links: { type: "boolean", description: "Whether a line links its run: only with a public address (AGENTRUN_PUBLIC_URL), which a person in Slack can open." },
+      at_rest: { enum: ["sealed", "unreadable"] }, disabled: { oneOf: [closed({ at: DATE_TIME, reason: { type: "string" } }), { type: "null" }] }, updated_at: DATE_TIME,
+    }),
+  ],
 };
 const START_RUN = closedWith(
   {
@@ -481,7 +494,7 @@ const TRIGGER_TARGET = {
 const TRIGGER_FIRING = closedWith(
   {
     key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
-    by: { enum: ["schedule", "manual", "webhook"], description: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`." },
+    by: { enum: ["schedule", "manual", "webhook", "slack"], description: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`. `slack`: a Slack message (a mention, or a reply in a thread the trigger started), its key from the trigger and the message's team, channel and ts, so Slack's retries and the same message told twice are one firing." },
     nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
     status: { enum: [...FIRING_STATUSES], description: `\`due\`: recorded, its run not started yet (a full server keeps it due, with \`retry_at\`). \`started\`: its run is \`run_id\`. \`sent\`: a message_run firing's message reached \`run_id\`. \`skipped\`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; \`reason\` says which. \`failed\`: the run was refused, with \`error\`; a trigger.failed webhook message says so. \`missed\`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), \`count\` of them from \`nominal_at\` on.` },
     at: { ...DATE_TIME, description: "When it was recorded." },
@@ -1056,6 +1069,35 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ...TRIGGER_MARK,
     },
   },
+  "/hooks/slack": {
+    post: {
+      operationId: "receiveSlackEvent", tags: ["local"], summary: "An event of the server's Slack app: a request signed by Slack, no token",
+      description: `Slack's Event Subscriptions Request URL (\`https://<public address>/v2/hooks/slack\`), with no token: the request is checked by Slack's v0 signature (\`X-Slack-Signature\`, \`v0=\` and the hex HMAC-SHA256 of \`v0:{X-Slack-Request-Timestamp}:{raw body}\` under the signing secret set by PUT /settings/slack), within ${SLACK_TOLERANCE_S} s of this server's clock, before anything else is read; one that fails, or a server with no Slack set, is 401 with no detail. Then \`url_verification\` is answered with its \`challenge\`. An \`app_mention\` in a channel a Slack trigger lists starts a run for its thread (one run a thread), and a message in a thread such a trigger started (a reply) is a message to that run, which answers the run's question when it asks one; each is recorded in one write and answered at once, its run started or its message sent after. A message from a bot (this app's own posts included), from another workspace, an edit, a direct message, and one in no such thread or channel are answered 200 and ignored. Slack's retries are the same message, deduped by its team, channel and ts, never dropped; a write that fails is 503, which Slack tries again. The event text reaches the run marked untrusted.`,
+      security: [],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
+      responses: { "200": json({ oneOf: [closed({ challenge: { type: "string" } }), closed({ ok: { enum: ["received", "replayed", "ignored"] } })] }, "The challenge, or what came of the event."), ...errors(401, 413, 503) },
+      "x-agentrun-serve": "slack/1",
+    },
+  },
+  "/settings/slack": {
+    get: {
+      operationId: "getSlack", tags: ["local"], summary: "The server's Slack app, if one is set; never its secrets",
+      responses: { "200": json(SLACK_VIEW, "The app, or \`configured: false\`."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "slack/1",
+    },
+    put: {
+      operationId: "saveSlack", tags: ["local"], summary: "Set the server's Slack app: its signing secret and bot token",
+      description: `One Slack app a server. The bot token is checked with Slack's auth.test, which names the workspace and the app's bot user, before anything is kept; both secrets are kept sealed under the seal key the server was handed (409 \`no_sealing_key\` with none), and never shown again. \`app_id\`, when given, is checked against each event's \`api_app_id\`. \`post_answer\` (default false): a completed run's line in its thread carries its final answer, redacted and cut to ${ANSWER_POSTED_CHARS} characters; else each line is its status and, on a server with a public address, a link to the run. Lines are posted in the thread when its run needs its person and when it ends, through an outbox tried again on the webhook's schedule; a post whose answer never came may show twice. A bot token Slack refuses turns posting off until the app is set again. 422 for a missing field, or a bot token Slack refuses.`,
+      requestBody: { required: true, content: { "application/json": { schema: closedWith({ signing_secret: { type: "string", minLength: 1, maxLength: 256 }, bot_token: { type: "string", minLength: 1, maxLength: 512 } }, { app_id: { type: "string", pattern: "^A[A-Z0-9]{2,30}$" }, post_answer: { type: "boolean" } }) } } },
+      responses: { "200": json(SLACK_VIEW, "Set."), ...errors(400, 401, 409, 415, 422, 424, 429, 500) },
+      "x-agentrun-serve": "slack/1",
+    },
+    delete: {
+      operationId: "deleteSlack", tags: ["local"], summary: "Remove the server's Slack app: its events are refused, and nothing more is posted",
+      responses: { "204": { description: "Removed." }, ...errors(401, 429, 500) },
+      "x-agentrun-serve": "slack/1",
+    },
+  },
   "/hooks/{trigger_id}": {
     post: {
       operationId: "receiveHook", tags: ["local"], summary: "Fire a webhook trigger: a request signed by its secret, no token",
@@ -1399,7 +1441,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "webhook/1",
     },
     triggers: {
-      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, overlap: { type: "array", items: { enum: [...OVERLAP] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }) }),
+      ...closed({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, overlap: { type: "array", items: { enum: [...OVERLAP] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { enum: ["sealed", "unavailable"] } }), slack: closed({ signing: { const: "slack-v0" }, tolerance_s: { type: "integer" }, events: { type: "array", items: { enum: ["app_mention", "message"] } }, at_rest: { enum: ["sealed", "unavailable"] } }) }),
       description: "/triggers: schedules that start an agent's capped runs: the source and target kinds this server takes, what a firing does while the last run is active, the shortest interval, how many firings each trigger keeps, the default catch-up window, and how many failed firings in a row turn a trigger off.",
       ...TRIGGER_MARK,
     },
@@ -1575,7 +1617,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   if (own.length) {
     errorCode.enum = [...errorCode.enum!, ...own];
     // The newest addition that widened it: a client that validates against mcpservers/1 refuses budget_reached.
-    errorCode["x-agentrun-serve"] = "cappause/1";
+    errorCode["x-agentrun-serve"] = "slack/1";
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
