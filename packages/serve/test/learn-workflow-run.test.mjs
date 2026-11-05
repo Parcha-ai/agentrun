@@ -438,3 +438,13 @@ test("each call node of a learned workflow asks the run's gate as it runs, a com
     }
   }
 });
+
+test("a learned workflow's call reads on the run's timeline as the workflow it ran and what it gave: 'Ran the learned workflow <name>' and its output in one line", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const { rows } = await ran(api, data, "labelled", "pi", flowFiles("answer", answerFlow()));
+  const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
+  const result = learnedResult(rows);
+  assert.equal(use?.summary, "Ran the learned workflow answer", JSON.stringify(use));
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  assert.equal(result?.summary, "Ran the learned workflow answer: answer 42", JSON.stringify(result));
+});
