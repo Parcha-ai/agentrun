@@ -544,6 +544,18 @@ describe("App, the no-model bar", () => {
     expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("sits above the page, outside its scrolling main, so a full-height page (the agent editor) keeps its footer in view", async () => {
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }));
+    const host = await mount("#/agents/new");
+    await until(() => !!bar(host) && !!host.querySelector("main"));
+    const main = host.querySelector("main")!;
+    // The bar is not inside main: main's height is what is left under it, and the editor fills main, not main plus the bar.
+    expect(main.contains(bar(host))).toBe(false);
+    expect(bar(host)!.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(main.parentElement!.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-col", "min-h-0"]));
+    expect(main.className.split(" ")).toEqual(expect.arrayContaining(["flex-1", "min-h-0"]));
+  });
+
   it("reads the capabilities again on its own while no model is ready, and stops once one is", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     let ready = false;
