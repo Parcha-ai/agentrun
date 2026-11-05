@@ -39,7 +39,8 @@ async function setting(t, extra = {}) {
   return { seen: async () => ({ upstream: await json(files.upstream), parallel: await json(files.parallel), exa: await json(files.exa), opened: await json(files.opened), dialled: await lines(files.web) }) };
 }
 
-const resolves = async (api) => Object.fromEntries((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.resolves).map((tool) => [tool.name, tool.resolves]));
+// The web tools'; the browser's own pick is browser-pick.test.mjs'.
+const resolves = async (api) => Object.fromEntries((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.resolves]));
 
 /** Runs agent `id` (made from `definition`) to its end: its tool results, its usage row and its report.md. */
 async function research(api, id, definition, fields = {}) {
@@ -109,7 +110,7 @@ test("with only model keys: native search on pi, claude-agent and codex, and the
 
   // Parallel picked on the server: capabilities say so at once, and the next runs search and fetch through it.
   const put = await api("PUT", "/settings/tools", { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } });
-  assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } }]);
+  assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" }, browser: { provider: "auto" } }]);
   assert.deepEqual(await resolves(api), { web_search: each("parallel"), web_fetch: each("parallel") });
   const viaParallel = await research(api, "pi-parallel", {});
   assert.match(viaParallel.results.web_search, /^\{"provider":"parallel","query":"widgets","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results, in the one shape");

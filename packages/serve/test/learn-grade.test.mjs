@@ -346,7 +346,7 @@ test("GET /v2/usage books a run's tool charge as tools and a grade as learning, 
   assert.equal(byDay.total_usd, byMeter.total_usd);
   for (const body of [byMeter, byAgent, byDay]) assert.equal(body.unpriced_runs, 0);
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "learning"]);
+  assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
 });
 
 test("GET /v2/usage books each grade under the meter learning, by agent and by day; GET /v2/stats counts the runs that tried to learn, over its filters, from the ledger, and a restarted server counts the same with runs/ unreadable", { timeout: 180_000 }, async (t) => {

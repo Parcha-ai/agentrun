@@ -1,5 +1,6 @@
 import { BROWSER_OPENERS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
+import { originMatcher } from "./origin.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -38,6 +39,9 @@ export type TimelineEvent = {
   session?: string;
   /** The file a "Saved" phase row is about. */
   path?: string;
+  /** `server` on the row of a message the server wrote into the run (origin.ts): a `phase` row, which counts, as a
+   *  person's `user_message` does, as the message its turn took (`isMessageRow`). */
+  origin?: "server";
   /** `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
    *  charged an unknown amount or cut). Absent when `usd` is known. */
@@ -445,6 +449,8 @@ function createProjector(options: TimelineOptions) {
   // its own, which its host never sees as a call); a person's message settles it. A later answer of the same turn, an
   // empty one too, takes its place, so the earlier one is a text_block then.
   const provisional = new Map<number, TimelineEvent>();
+  /** Which user entries the server wrote (origin.ts): each shows as the server's, never as the person's. */
+  const origins = originMatcher();
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -468,7 +474,7 @@ function createProjector(options: TimelineOptions) {
     if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
     if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
     if (row.text !== null) row.text = whole ? cut(row.text, caps.text) : clean(row.text, caps.text);
-    for (const key of ["round", "parent_tool_use_id", "session", "path", "usage"] as const) if (row[key] === undefined) delete row[key];
+    for (const key of ["round", "parent_tool_use_id", "session", "path", "usage", "origin"] as const) if (row[key] === undefined) delete row[key];
     return row;
   }
 
@@ -538,6 +544,7 @@ function createProjector(options: TimelineOptions) {
     root ??= conv;
     current = conv;
     const message = entry.model?.[0];
+    const origin = origins({ ...entry, conversationId: conv });
     const at = message?.timestamp;
     if (typeof at === "number" && Math.abs(at) <= 8.64e15) stamp = at;
     const base = `${conv}:${entry.id ?? seq}`;
@@ -685,6 +692,21 @@ function createProjector(options: TimelineOptions) {
       if (state === "waiting") add(make("waiting", conv, base, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}`, session }));
       else if (state === "done") add(make("user_message", conv, base, { summary: "You signed in", session }));
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
+    } else if (origin) {
+      // A message the server wrote (a raised cap's follow-up, an approval's resume): the model reads it as it reads any,
+      // and the row says it is the server's. Its whole text is redacted as a person's is (a resume's later lines hold the
+      // call's result, where a held key can be), then its first line is taken, scrubbed and cut as a phase's. No `path`:
+      // a phase row with one folds into the tool row before it.
+      const text = redactText(textOf(message));
+      // A person's message that declined the call: their words are the message the turn took, a row of theirs under a
+      // person's rules, with the entry's own id; the server's resume beside it is shown only (an id of its own, no
+      // origin). Any other: the server's row is that message, with the entry's id and `origin: "server"`.
+      if (origin.reason === "approval_declined") {
+        const said = redactText(origin.said.trim());
+        add(make("phase", conv, `${base}:server`, { summary: `AgentRun: ${firstLine(text)}`, text }));
+        add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));
+      } else add(make("phase", conv, base, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
+      provisional.delete(conv);
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
       const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv) && !cutTurns.has(conv);
