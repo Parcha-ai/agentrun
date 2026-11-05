@@ -373,7 +373,13 @@ const RETIRED = closed({
   at: { type: "string", format: "date-time", description: "When: the commit that retired it." },
   by: { enum: ["person", "run"], description: "`person`: its owner, in the console or with POST .../retire; `run`: anything else that set it." },
 }, "When and by whom it was retired; absent unless `status` is `retired`. POST .../restore makes it active again.");
-const LEARNING_NOTE = { ...LEARNING_NOTE_REQUIRED, properties: { ...LEARNING_NOTE_REQUIRED.properties, retired: RETIRED } };
+/** The newest change to a note, skill or draft, from the newest commit on its file. */
+const LAST_CHANGE = closed({
+  kind: { enum: ["approved", "edited", "created", "retired", "restored", "learned"], description: "What the change was: a person's approval, edit, creation, retire or restore (named by its commit), or `learned`, a run's merge." },
+  by: { enum: ["person", "run"], description: "`person`: its owner, in the console or through the API; `run`: a run's merge." },
+  at: { type: "string", format: "date-time", description: "When: the commit's time." },
+}, "The item's last change: the newest commit on its file (a note's file, a skill's SKILL.md, a draft's README.md).");
+const LEARNING_NOTE = { ...LEARNING_NOTE_REQUIRED, required: [...LEARNING_NOTE_REQUIRED.required, "last_change"], properties: { ...LEARNING_NOTE_REQUIRED.properties, retired: RETIRED, last_change: LAST_CHANGE } };
 const LEARNING_CHANGE = closed({
   by: { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." },
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
@@ -396,7 +402,7 @@ const IMPACT_SIDE = (side: "before" | "after") => closed({
 /** A skill or a workflow draft the agent learned, as the agent's learning lists it (learning-routes.ts learnedAt). */
 const LEARNED_ITEM = (kind: "skill" | "workflow") => ({
   type: "object", additionalProperties: false,
-  required: ["name", "file", ...(kind === "workflow" ? ["readme"] : []), "description", "status", "run", "bytes", "etag"],
+  required: ["name", "file", ...(kind === "workflow" ? ["readme"] : []), "description", "status", "run", "bytes", "etag", "last_change"],
   properties: {
     name: { type: "string", description: `The ${kind}'s folder name; \`[redacted]\` when it holds one of the host's secrets as they are now.` },
     file: { type: "string", description: kind === "skill" ? "Its SKILL.md, `skills/<name>/SKILL.md`: GET .../learning/files/{file}, percent-encoded, reads it." : "Its draft, `workflows/<name>/workflow.json`: GET .../learning/files/{file}, percent-encoded, reads it as JSON." },
@@ -407,6 +413,7 @@ const LEARNED_ITEM = (kind: "skill" | "workflow") => ({
     bytes: { ...COUNT, description: `The size of its ${kind === "skill" ? "SKILL.md" : "workflow.json"} on main.` },
     etag: { type: "string", description: `The version of its ${kind === "skill" ? "SKILL.md" : "README.md"} on main, as its file's GET answers it: an approval sends it as If-Match.` },
     retired: RETIRED,
+    last_change: LAST_CHANGE,
   },
   "x-agentrun-serve": "learning/3",
 });

@@ -44,9 +44,13 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\n");
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
-type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired };
+type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
 type Retired = { at: string; by: "person" | "run" };
+/** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
+ *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
+type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned"; by: "person" | "run"; at: string };
+const PERSON_KINDS = ["approved", "edited", "created", "retired", "restored"] as const;
 type Change = { by: { run: string } | { user: true; via?: string }; commit: string; at: string; reason: string; files: string[] };
 /** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
 type Note = LearnedNote & { text: string; oid: string };
@@ -209,27 +213,38 @@ async function notesAt(home: string, repo: string, sha: string): Promise<{ index
  *  workflow.json, with its `readme`), its description, `pending` while it waits for its owner's OK, the run whose merge
  *  last changed it, its size in bytes, and the ETag of the file that says whether it waits (a SKILL.md, a README.md),
  *  which an approval names. */
-type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired };
-/** By the folder and the commit: when each retired file of `files` was retired and by whom, the newest commit that
- *  changed it on main's first-parent line (a retired file changes no more: a run never changes it, a person's restore
- *  makes it active): a person's (its subject `learning: retired by a person:`, or Changed-By: user), else a run's. */
-const retiredCache = new Recent<Map<string, Retired>>(8, 1 << 20);
-async function retiredOf(home: string, repo: string, sha: string, files: readonly string[]): Promise<Map<string, Retired>> {
+type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
+/** By the folder and the commit: the newest change to each of `files` on main's first-parent line, read in one walk of
+ *  its log (each file's newest commit) and kept: what it was (`last_change`), and, for a retired one, when and by whom
+ *  it was retired (`retired`: a retired file changes no more until a person restores it, so its newest commit is its
+ *  retire). A person's commit says its kind in its subject, `learning: <kind> by a person: <file>`, or carries
+ *  Changed-By: user (`edited` when its subject names none); a run's merge (its Run-Id, `learning: <run>: merged`) and
+ *  anything else is `learned`, by the run. */
+const changesCache = new Recent<Map<string, LastChange>>(8, 1 << 20);
+async function changesOf(home: string, repo: string, sha: string, files: readonly string[]): Promise<Map<string, LastChange>> {
   if (!files.length) return new Map();
   const key = `${repo}\0${sha}\0${[...files].sort().join("\0")}`;
-  const known = retiredCache.get(key);
+  const known = changesCache.get(key);
   if (known) return known;
-  const out = new Map<string, Retired>();
+  const out = new Map<string, LastChange>();
   const wanted = new Set(files);
-  for (const { head, files: changed } of recordsOf(await git(home, repo, ["log", "--first-parent", "-z", "--name-only", "--format=%x1e%cI%x1f%s%x1f%(trailers:key=Changed-By,valueonly,separator=%x2C)", sha, "--", ...files]))) {
-    const [at = "", subject = "", by = ""] = head.split("\x1f");
-    const person = subject.startsWith("learning: retired by a person:") || by.trim() === "user";
-    for (const file of changed) if (wanted.has(file) && !out.has(file)) out.set(file, { at, by: person ? "person" : "run" });
+  const format = "%x1e%cI%x1f%s%x1f%(trailers:key=Changed-By,valueonly,separator=%x2C)%x1f%(trailers:key=Run-Id,valueonly,separator=%x2C)";
+  for (const { head, files: changed } of recordsOf(await git(home, repo, ["log", "--first-parent", "-z", "--name-only", `--format=${format}`, sha, "--", ...files]))) {
+    const [at = "", subject = "", changedBy = "", runId = ""] = head.split("\x1f");
+    const named = /^learning: (\w+) by a person: /.exec(subject)?.[1];
+    const kind = (PERSON_KINDS as readonly string[]).includes(named ?? "") ? (named as LastChange["kind"]) : undefined;
+    const person = !runId.trim() && (kind !== undefined || changedBy.trim() === "user");
+    const change: LastChange = person ? { kind: kind ?? "edited", by: "person", at } : { kind: "learned", by: "run", at };
+    for (const file of changed) if (wanted.has(file) && !out.has(file)) out.set(file, change);
     if (out.size === wanted.size) break;
   }
-  retiredCache.set(key, out, 128 * out.size + key.length);
+  changesCache.set(key, out, 128 * out.size + key.length);
   return out;
 }
+
+/** An item as the view shows it, with its last change, and when and by whom it was retired on a retired one. */
+const withChanges = <T extends { status: string }>(view: T, change: LastChange | undefined): T & { last_change?: LastChange; retired?: Retired } =>
+  change ? { ...view, last_change: change, ...(view.status === "retired" ? { retired: { at: change.at, by: change.by } } : {}) } : view;
 
 /** By the folder and the commit: its skills and drafts, raw (each answer cuts them of the host's secrets as they are
  *  then), for the 8 commits last read. */
@@ -313,9 +328,10 @@ export async function agentLearning(data: string, agentId: string, shown: Shown,
   const sha = await mainOf(home, repo);
   if (!sha) return { agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact };
   const [{ index, notes }, { skills, workflows }, log] = await Promise.all([notesAt(home, repo, sha), learnedAt(home, repo, sha), logPage(home, repo, sha, 0, LOG_PAGE, shown)]);
-  // When each retired one was retired, and by whom: a note by its file, a skill by its SKILL.md, a draft by its README.md.
-  const retired = await retiredOf(home, repo, sha, [...notes.filter((note) => note.status === "retired").map((note) => note.file), ...[...skills, ...workflows].filter((item) => item.status === "retired").map((item) => item.readme ?? item.file)]);
-  const withRetired = <T extends object>(view: T, file: string): T => (retired.has(file) ? { ...view, retired: retired.get(file)! } : view);
+  // Each one's last change, and when a retired one was retired: a note by its file, a skill by its SKILL.md, a draft by
+  // its README.md (the file that says whether it is in use).
+  const changes = await changesOf(home, repo, sha, [...notes.slice(0, NOTES_PAGE).map((note) => note.file), ...[...skills, ...workflows].map((item) => item.readme ?? item.file)]);
+  const withRetired = <T extends { status: string }>(view: T, file: string) => withChanges(view, changes.get(file));
   return { agent: agentId, main: sha, index: shown.text(index), notes: pageOf(notes, sha, 0, NOTES_PAGE, (note) => withRetired(noteView(note, shown), note.file)), skills: skills.map((item) => withRetired(learnedView(item, shown), item.file)), workflows: workflows.map((item) => withRetired(learnedView(item, shown), item.readme ?? item.file)), log, counts, impact };
 }
 
@@ -330,8 +346,9 @@ export async function learningNotes(data: string, agentId: string, query: URLSea
   if (!sha) return EMPTY;
   const { notes } = await notesAt(home, repo, sha);
   const listed = status === null ? notes : notes.filter((note) => note.status === status);
-  const retired = await retiredOf(home, repo, sha, listed.filter((note) => note.status === "retired").map((note) => note.file));
-  return pageOf(listed, sha, at?.offset ?? 0, limit, (note) => (retired.has(note.file) ? { ...noteView(note, shown), retired: retired.get(note.file)! } : noteView(note, shown)));
+  const page = listed.slice(at?.offset ?? 0, (at?.offset ?? 0) + limit);
+  const changes = await changesOf(home, repo, sha, page.map((note) => note.file));
+  return pageOf(listed, sha, at?.offset ?? 0, limit, (note) => withChanges(noteView(note, shown), changes.get(note.file)));
 }
 
 /** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first, reading only its own. */
