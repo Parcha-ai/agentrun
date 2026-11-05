@@ -2254,6 +2254,12 @@ export class Runs {
     return true;
   }
 
+  /** Until every tool call of the run that waited for approval is resolved in its store (its process acted on its answer,
+   *  or cut it), or `ms` pass. */
+  private async untilResolved(run: Run, ms: number): Promise<void> {
+    for (const end = Date.now() + ms; [...(run.approvals?.values() ?? [])].some((approval) => !approval.resolved) && Date.now() < end; ) await sleep(50);
+  }
+
   /** stop()'s withdrawal of the tool call that waits for approval: never run, and an answer after is 409. */
   private async withdraw(run: Run): Promise<boolean> {
     const waiting = waitingApproval(run)!;
@@ -2329,7 +2335,7 @@ export class Runs {
       this.restate(run);
     }
     // An answer its process has not acted on yet is overridden too: nothing runs and nothing resumes.
-    await this.supersede(run, "canceled").catch((error: Error) => warn(run.id, `its superseded approval is not saved: ${error.message}`));
+    const superseded = await this.supersede(run, "canceled").catch((error: Error) => (warn(run.id, `its superseded approval is not saved: ${error.message}`), false));
     if (run.kind === "agentic") {
       run.finishing = "cancelled";
       run.endedAt = new Date().toISOString();
@@ -2340,6 +2346,9 @@ export class Runs {
     if (this.live(run)) {
       // The turn is aborted first, so the drain that SIGTERM starts does not wait for it.
       await this.abortTurn(run);
+      // An approved call in flight runs outside any turn: its process's gate cuts it once it reads the cancel (tool-gate.ts),
+      // which ending the process at once would forestall. A short wait for that, never a refusal.
+      if (superseded) await this.untilResolved(run, 3_000);
       this.terminate(run);
     } else await this.settle(run, null, false);
     return true;
