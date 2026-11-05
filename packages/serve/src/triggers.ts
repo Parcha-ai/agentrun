@@ -141,16 +141,27 @@ export const firingKey = (kind: "schedule" | "manual", triggerId: string, what: 
 const cronOf = (source: { cron: string; timezone: string }) => new Cron(source.cron, { timezone: source.timezone, mode: "5-part" });
 
 /** The source's first nominal time strictly after `after`, or null when it has none (or none a Date holds). */
-function nextAfter(source: Schedule, after: number): number | null {
-  const at = nextOf(source, after);
+function nextAfter(source: Schedule, after: number, cron?: Cron): number | null {
+  const at = nextOf(source, after, cron);
   return at !== null && Number.isFinite(at) && Math.abs(at) <= DATE_MAX_MS ? at : null;
 }
-function nextOf(source: Schedule, after: number): number | null {
-  if ("cron" in source) return cronOf(source).nextRun(new Date(after))?.getTime() ?? null;
+/** `cron`: the source's Cron, made once by a caller that asks for many times. */
+function nextOf(source: Schedule, after: number, cron?: Cron): number | null {
+  if ("cron" in source) return (cron ?? cronOf(source)).nextRun(new Date(after))?.getTime() ?? null;
   if ("at" in source) return Date.parse(source.at) > after ? Date.parse(source.at) : null;
   const start = Date.parse(source.start_at);
   const step = source.every_s * 1000;
   return start > after ? start : start + (Math.floor((after - start) / step) + 1) * step;
+}
+
+/** The source's latest nominal time at or before `now`, given one that is (`first`), found without walking to it: an
+ *  interval's on its grid, a cron line's by croner's search back from a second past now (previousRuns is exclusive and
+ *  to the second), which yields the times nextRun does, across clock changes too. */
+function latestBy(source: Schedule, first: number, now: number, cron?: Cron): number {
+  if ("at" in source) return first;
+  if ("every_s" in source) return first + Math.floor((now - first) / (source.every_s * 1000)) * source.every_s * 1000;
+  const at = (cron ?? cronOf(source)).previousRuns(1, new Date(Math.floor(now / 1000) * 1000 + 1000))[0]?.getTime();
+  return at !== undefined && at >= first && at <= now ? at : first;
 }
 
 /** A time in `zone` as a person reads it: "Nov 1, 2026, 1:30 AM PDT". */
@@ -277,7 +288,8 @@ export class Triggers {
   start(): void {
     this.tick();
     // A trigger.failed an earlier server wrote the firing of but never queued.
-    for (const t of this.unreadable ? [] : this.triggers) for (const f of t.firings) if (f.status === "failed" && !f.notified) this.notifyFailed(t.id, f.key);
+    for (const t of this.unreadable ? [] : this.triggers) for (const f of t.firings) if (unmarked(f)) this.notifyFailed(t.id, f.key);
+    this.arm();
   }
 
   close(): void {
@@ -381,6 +393,11 @@ export class Triggers {
     }
     const drive = this.triggers.flatMap((t) => t.firings.filter((f) => f.status === "due" && (!f.retry_at || this.dueAt(f) <= now)).map((f) => [t.id, f.key] as const));
     for (const [, key] of drive) this.rewrite.delete(key);
+    const tell = this.triggers.flatMap((t) => t.firings.filter((f) => unmarked(f) && this.dueAt(f) <= now).map((f) => [t.id, f.key] as const));
+    for (const [id, key] of tell) {
+      this.rewrite.delete(key);
+      this.notifyFailed(id, key);
+    }
     this.arm();
     for (const [id, key] of drive) void this.drive(id, key);
   }
@@ -390,31 +407,30 @@ export class Triggers {
    *  other is one `missed` row with their count. A one-time schedule, or one that never fires again, is turned off. */
   private advance(trigger: Trigger, now: number): void {
     const { source } = trigger;
+    const cron = "cron" in source ? cronOf(source) : undefined;
     const windowMs = settled(trigger).catchup_window_s * 1000;
-    let at: number | null = Date.parse(trigger.next_at!);
-    const first = at;
-    let last = at;
-    let count = 0;
-    while (at !== null && at <= now) {
-      // Past MISSED_COUNTED, the times too old to fire are passed over uncounted.
-      if (++count === MISSED_COUNTED) {
-        const skip = nextAfter(source, now - Math.max(windowMs, LATE_MS) - 1);
-        if (skip !== null && skip > at) {
-          last = at;
-          at = skip;
-          continue;
-        }
+    const first = Date.parse(trigger.next_at!);
+    const last = latestBy(source, first, now, cron);
+    // The times from first to last: an interval's counted on its grid, a cron line's walked, at most MISSED_COUNTED.
+    let count = 1;
+    let capped = false;
+    if ("every_s" in source) count += (last - first) / (source.every_s * 1000);
+    else for (let at = first; at < last; count++) {
+      if (count === MISSED_COUNTED) {
+        capped = true;
+        break;
       }
-      last = at;
-      at = nextAfter(source, at);
+      at = nextAfter(source, at, cron) ?? last;
     }
     const late = now - last;
     const fires = late <= LATE_MS || late <= windowMs;
-    const missed = fires ? count - 1 : count;
-    if (missed > 0) this.record(trigger, { key: firingKey("schedule", trigger.id, `missed\n${second(first)}`), by: "schedule", nominal_at: second(first), status: "missed", at: iso(now), count: missed, reason: `The server was down or its timer late: ${missed === 1 ? "this time was" : `${missed}${count >= MISSED_COUNTED ? " or more" : ""} times from this one were`} not fired.` });
+    // Capped, the times counted are all before the last: every one of them was missed, and more besides.
+    const missed = capped || !fires ? count : count - 1;
+    if (missed > 0) this.record(trigger, { key: firingKey("schedule", trigger.id, `missed\n${second(first)}`), by: "schedule", nominal_at: second(first), status: "missed", at: iso(now), count: missed, reason: `The server was down or its timer late: ${missed === 1 && !capped ? "this time was" : `${missed}${capped ? " or more" : ""} times from this one were`} not fired.` });
     if (fires) this.record(trigger, { key: firingKey("schedule", trigger.id, second(last)), by: "schedule", nominal_at: second(last), status: "due", at: iso(now), ...(late > LATE_MS ? { catch_up: true } : {}) });
-    trigger.next_at = at === null ? null : iso(at);
-    if (at === null) trigger.enabled = false;
+    const next = nextAfter(source, last, cron);
+    trigger.next_at = next === null ? null : iso(next);
+    if (next === null) trigger.enabled = false;
   }
 
   /** A firing taken from due to its end: skipped when its trigger's last run is active, else its run started. A full
@@ -505,7 +521,10 @@ export class Triggers {
     if (!found || found.firing.status !== "failed" || found.firing.notified) return;
     const { trigger, firing } = found;
     const told = this.deps.notify({ trigger_id: trigger.id, name: trigger.name, firing_key: key, nominal_at: firing.nominal_at, error: firing.error!, auto_paused: firing.paused === true }, key);
+    // A mark that does not land (the outbox's write failed, or this file's: settle) is tried again soon while the server
+    // runs (tick), under the same key, which the outbox holds once: a restart then finds it marked.
     if (told === "queued" || told === "off") this.settle(triggerId, key, { notified: true });
+    else if (told === "unsaved") this.rewrite.set(key, this.clock.now() + WRITE_RETRY_MS);
   }
 
   /** The firing's new state, written with `also` done to its trigger; one whose trigger was deleted meanwhile is gone with it. */
@@ -553,9 +572,8 @@ export class Triggers {
     let soonest = Infinity;
     for (const t of this.triggers) {
       if (t.enabled && t.next_at !== null) soonest = Math.min(soonest, Date.parse(t.next_at));
-      // One being driven arms nothing: its end arms the timer again.
-      // One being driven arms nothing: its end arms the timer again.
-      for (const f of t.firings) if (f.status === "due" && !this.driving.has(f.key)) soonest = Math.min(soonest, this.dueAt(f));
+      // One being driven arms nothing: its end arms the timer again. A failure whose mark did not land arms its retry.
+      for (const f of t.firings) if ((f.status === "due" && !this.driving.has(f.key)) || unmarked(f)) soonest = Math.min(soonest, this.dueAt(f));
     }
     if (soonest !== Infinity) this.timer = this.clock.arm(() => this.tick(), Math.max(0, soonest - this.clock.now()));
   }
@@ -601,6 +619,8 @@ const nextIso = (source: Schedule, now: number) => {
   const at = nextAfter(source, now);
   return at === null ? null : iso(at);
 };
+/** A failed firing whose trigger.failed is not marked queued. */
+const unmarked = (firing: Firing) => firing.status === "failed" && !firing.notified;
 /** A time a Date holds: past it (about the year 275760) a next time is none. */
 const DATE_MAX_MS = 8.64e15;
 
