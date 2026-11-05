@@ -99,25 +99,31 @@ Full API: [AgentRun Server](packages/serve/README.md#quick-start-no-key-no-netwo
 
 ### Where your agent lives
 
-![The control plane above reads one disk you own. On the disk: store.sqlite, a folder per run with run.sqlite and work, and a home per agent with learning and sign-ins. A run below mounts its own folder.](docs/assets/agentrun-disk.svg)
+![The control plane holds store.sqlite and reads each run's database live off the disk. One disk per owner holds each agent's learning repo and a folder per run with run.sqlite and work. A box running tools mounts work; a box running the loop and tools mounts the whole run folder.](docs/assets/agentrun-disk.svg)
 
-Your agents live on a disk you own. Locally that disk is a folder on your machine:
+Two kinds of data, two places.
+
+- **The control plane** keeps one database, `store.sqlite`: every agent, revision, run and cost. Only the server
+  writes it, and no sandbox ever mounts it.
+- **Your disk** keeps everything the agents make. One disk per owner: a folder on your machine, or your own
+  [Archil](https://archil.com) disk when sandboxes run on other machines.
 
 ```text
-~/.agentrun/
-├── store.sqlite              every agent, revision and run
-├── runs/<id>/
-│   ├── store/run.sqlite      the run's journal: every turn, tool call and cost
-│   └── work/                 the run's files, the only folder a sandbox sees
-└── homes/<agent>/
-    ├── learning/             a git repo of what the agent learned
-    └── sign-ins/             sealed pointers to its browser sign-ins
+disk/
+└── agents/<agent>/
+    ├── learning/                 a git repo of what the agent learned
+    └── runs/<run>/
+        ├── store/run.sqlite      the run's journal: every turn, tool call and cost
+        └── work/                 /workspace
 ```
 
-A run opens its own folder and nothing else. The agent store and every run's journal are SQLite files on that disk,
-and a Docker box binds the run's `work/` and sees nothing above it. Next, every agent gets a disk of its own, mounted
-the same way by sandboxes on other machines through [Archil](https://archil.com), with the control plane reading each
-run's SQLite live, straight off the disk ([roadmap](#roadmap)).
+A run mounts its own folder and nothing above it. A box that only runs tools mounts `work/`. A box that runs the agent
+loop too mounts the whole run folder, with the journal and the tools under different users. Nothing is copied in or out.
+
+Live views read the run's SQLite straight off the disk. The run writes its journal in WAL mode and never rewrites the
+database file mid-run; the control plane opens it read-only, lock-free, on every poll. SQLite's checksummed WAL frames
+mean a reader on another machine always lands on the last complete commit. No message bus, no streaming, about 100 ms
+behind a run on a remote sandbox.
 
 ### Durable by default
 
@@ -132,7 +138,7 @@ One Node process and one folder. No Postgres, no Redis, no queue, no worker flee
 its runs. A full server says `429` with a `retry-after` instead of queueing. Want to know exactly what a run did?
 
 ```sh
-sqlite3 ~/.agentrun/runs/<id>/store/run.sqlite
+sqlite3 disk/agents/<agent>/runs/<run>/store/run.sqlite
 ```
 
 ## The life of a request
@@ -258,7 +264,7 @@ open-source server.
 
 What's built is above. What's next:
 
-- The agent disk on Archil: the same layout, mounted by remote sandboxes, read in place by the control plane.
+- One disk per owner, read live off SQLite (rolling out in the next release), and Archil for sandboxes on other machines.
 - Agents calling the tools of your saved MCP servers.
 - Slack and GitHub triggers.
 - A CLI and SDKs.
