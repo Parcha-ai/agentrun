@@ -80,11 +80,11 @@ async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
-/** codex's model and pi-ai's catalog that prices it, where codex reaches OpenAI only through OpenRouter (codexModel: no
+/** codex's model (or opencode's, `harness`, on codex's route) and pi-ai's catalog that prices it, where it reaches OpenAI only through OpenRouter (codexModel: no
  *  OpenAI key needed); anywhere else, the run's usual models (runModels). */
-async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
-  if (env[FAUX_HARNESS_ENV] || !openRouterOnly("codex", env)) return runModels(env, ref, ["default"], "codex");
-  const choice = await codexModel(env, ref);
+async function codexModels(env: NodeJS.ProcessEnv, ref: string | undefined, harness: "codex" | "opencode" = "codex") {
+  if (env[FAUX_HARNESS_ENV] || !openRouterOnly(harness, env)) return runModels(env, ref, ["default"], harness);
+  const choice = await codexModel(env, ref, harness);
   if ("why" in choice) throw new Error(choice.why);
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
@@ -109,7 +109,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
   // codex's model as a save resolves it (codexModel): an OpenAI model it reaches through OpenRouter alone needs no OpenAI key.
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && revision.body.harness === "codex" ? await codexModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" && (revision.body.harness === "codex" || revision.body.harness === "opencode") ? await codexModels(env, revision.body.model, revision.body.harness) : revision.kind === "agentic" ? await runModels(env, revision.body.model, ["default"], revision.body.harness) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);

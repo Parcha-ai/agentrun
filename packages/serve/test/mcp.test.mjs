@@ -334,3 +334,22 @@ test("the timeline's limit, read while an answered run's end is carried back: it
   assert.equal(ended.final, true);
   assert.deepEqual(ended.ids, answered.ids, "no row a reader saw goes when the run's end is carried back");
 });
+
+test("a run paused at its spend cap: the instructions, runs_get and runs_respond say it waits for its cap to be raised and is not answered; runs_get gives pending kind budget, and runs_respond is refused 409 budget_reached", async (t) => {
+  const server = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname });
+  const mcp = mcpClient(server);
+  const init = await mcp.request("initialize", INIT);
+  assert.match(init.result.instructions, /pending kind budget.*paused at its spend cap.*do not answer it/s);
+  const { tools } = (await mcp.request("tools/list")).result;
+  const described = Object.fromEntries(tools.map((tool) => [tool.name, tool.description]));
+  assert.match(described.runs_get, /\{kind: "budget", cap_usd, spent_usd, needs_usd, said, at\}/);
+  assert.match(described.runs_respond, /paused at its spend cap \(pending kind budget\) takes no message: 409 budget_reached/);
+  // The run: a $0.05 cap under the least of one request ($0.1024), paused before anything was sent.
+  await mcp.tool("agents_create", { id: "capped", name: "Capped", instructions: "Answer." });
+  const started = await v2(server, "POST", "/agents/capped/runs", { input: { content: "hi" }, max_cost_usd: 0.05 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const paused = await mcp.until(started.body.run_id, ["input_required", "failed"]);
+  assert.deepEqual([paused.status, paused.state, paused.pending?.kind, paused.pending?.cap_usd], ["input_required", "waiting", "budget", 0.05], JSON.stringify(paused));
+  const refused = await mcp.tool("runs_respond", { run_id: started.body.run_id, content: "go on" }, { ok: false });
+  assert.match(JSON.stringify(refused), /budget_reached/);
+});

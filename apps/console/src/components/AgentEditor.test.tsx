@@ -213,3 +213,37 @@ describe("AgentEditor, a new decision agent", () => {
     done();
   });
 });
+
+
+// A harness this server doesn't run: its card says so briefly (from the served available: false), and the server's whole
+// reason (an install command with it) is a tap away in a details line, which wraps inside the card: nothing hover-only,
+// and nothing spills out of a narrow card.
+describe("AgentEditor, a harness this server doesn't run", () => {
+  const REASON = "Claude Agent SDK not installed: @anthropic-ai/claude-agent-sdk 0.3.286 is not installed beside @parcha/agentrun-harness-claude, and no module was given (sdk); install it with: npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286; once it is installed, restart AgentRun to pick it up.";
+  const off = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: false, reason: REASON }] };
+  const cardOf = (html: string, id: string) => {
+    const at = html.indexOf(`value="${id}"`);
+    const start = html.lastIndexOf('<div class="', at);
+    return { html: html.slice(start, html.indexOf("</details>", at) + 10), cls: /^<div class="([^"]*)"/.exec(html.slice(start))![1]!.split(" ") };
+  };
+  it("shows a short label in the card and the full reason in a details line that wraps, and the card can shrink", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: off, step: "settings" }));
+    const card = cardOf(html, "claude-agent");
+    expect(card.cls).toContain("min-w-0");
+    expect(card.html).toContain("Not available here");
+    const details = /<details[^>]*>([\s\S]*?)<\/details>/.exec(card.html);
+    expect(details).toBeTruthy();
+    expect(details![1]).toMatch(/<summary[^>]*>/);
+    expect(details![1]).toContain("npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286");
+    expect(/<details[^>]*>[\s\S]*?<p class="([^"]*)"/.exec(card.html)![1]!.split(" ")).toContain("break-words");
+    // The reason is not in the card's own line any more, nor only in a hover title.
+    expect(card.html.slice(0, card.html.indexOf("<details"))).not.toContain("npm install");
+    expect(card.html).not.toMatch(/title="Claude Agent SDK/);
+  });
+  it("gives an available harness no details line", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: off, step: "settings" }));
+    const at = html.indexOf('value="pi"');
+    const next = html.indexOf('value="claude-agent"');
+    expect(html.slice(at, next)).not.toContain("<details");
+  });
+});
