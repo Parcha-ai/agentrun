@@ -176,3 +176,35 @@ test("a host's follow-up prompt named to the settle (`host`) is withdrawn and ne
   await placed.submit({ id: 'next', kind: 'followUp', text: 'and now?' });
   assert.deepEqual(placed.pending().map((s) => s.text), ['and now?'], "a host prompt placed and never sent is not carried either");
 });
+
+// Why the settle and the next drive read the same log after a stop: a stopped drive writes nothing more. Its effects
+// are refused before they write (drive.ts, `effect` on an aborted signal), so no journal batch, mirror line or mark
+// of it lands; and a batch whose intent landed without its outcome counts for nothing (records.ts journalBatches), so
+// a batch cut by the stop leaves no records.
+test("a stopped drive's effect is refused before it writes anything: no journal batch, mirror line or mark of it lands", async () => {
+  const store = memorySessionStore();
+  const drive = await openOn(store);
+  const before = (await store.read('run-carry')).length;
+  drive.halt?.(new Error('stopped'));
+  await assert.rejects(drive.effect('journal:0', { name: 'journal', replay: 'safe', input: {} }, async () => true), /stopped/);
+  const journal = new processKit.NativeJournal(drive, { onPoison: () => {} });
+  journal.append('claude', { type: 'user', uuid: 'u1' });
+  await assert.rejects(journal.flush());
+  assert.equal((await store.read('run-carry')).length, before, 'nothing written');
+});
+
+test("a journal batch whose intent landed and whose outcome did not (a drive cut between the two) counts for nothing: its records are not in the log", async () => {
+  // A batch as a drive writes it: its intent and its outcome.
+  const whole = memorySessionStore();
+  const drive = await openOn(whole);
+  const journal = new processKit.NativeJournal(drive);
+  journal.append('claude', { type: 'user', uuid: 'u1' });
+  await journal.flush();
+  const records = await whole.read('run-carry');
+  assert.equal(processKit.journalRecords(kernel.foldSession('run-carry', records)).length, 1, 'setup: the whole batch counts');
+  // The same log with the batch's outcome cut off.
+  const cut = records.filter((r) => !(r.kind === 'kernel.end' && String(r.data?.stepId ?? '').startsWith('journal:0')));
+  assert.equal(cut.length, records.length - 1, 'setup: one outcome cut');
+  const state = kernel.foldSession('run-carry', cut);
+  assert.deepEqual([processKit.journalBatches(state).length, processKit.journalRecords(state).length], [0, 0]);
+});

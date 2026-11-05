@@ -870,3 +870,57 @@ test("a follow-up's own prompt the host names to the settle (`opening`) is withd
   const modelSaw = seenBy(model);
   assert.deepEqual(modelSaw.map((text) => [/Summarize the run/.test(text), /and now\?/.test(text)]), [[false, true]], `the person's message alone: ${JSON.stringify(modelSaw)}`);
 });
+
+/** The records of the session's mirrored rollout, read from the log (no drive opened: the session's own stays live). */
+async function rolloutRecords(store, key) {
+  const { THREAD_STREAM, rolloutStream } = await import('../dist/rollout.js');
+  const { journalRecords } = await import('@parcha/agentrun-kernel/process');
+  const state = foldSession(key, await store.read(key));
+  const thread = journalRecords(state, THREAD_STREAM).at(-1)?.data;
+  return thread ? journalRecords(state, rolloutStream(thread.threadId)).length : 0;
+}
+
+test("a stopped codex drive mirrors nothing more: after interrupt() resolves, the session's mirrored rollout does not grow, past the mirror's 2 s poll", async () => {
+  const spec = { key: 'step:mirror-quiet', label: 'quiet', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { adapter: codex } = adapter([], { fetch: holdingFirst().fetch });
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  for (const end = Date.now() + 10_000; !(await rolloutRecords(store, spec.key)); await new Promise((r) => setTimeout(r, 50))) if (Date.now() > end) throw new Error('timed out waiting for the rollout to be mirrored');
+  await a.interrupt();
+  const at = await rolloutRecords(store, spec.key);
+  await new Promise((r) => setTimeout(r, 2_500));
+  const after = await rolloutRecords(store, spec.key);
+  await a.turnEnd();
+  await a.close();
+  assert.equal(after, at, `the mirror held ${at} records at the stop and ${after} 2.5 s later`);
+});
+
+test("the settle reads a mirrored rollout only when the next drive would resume from it: a rollout whose first line is not session_meta is not resumed, so a prompt it holds is still carried", async () => {
+  const { NativeJournal, placeSubmissions } = await import('@parcha/agentrun-kernel/process');
+  const { THREAD_STREAM, rolloutStream } = await import('../dist/rollout.js');
+  const spec = { key: 'step:not-resumed', label: 'not-resumed', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  // A crashed process: the prompt placed and in a mirrored rollout whose session_meta never reached the log. The next
+  // drive cannot resume that thread (harness.ts, `resume`), so Codex will never have the prompt.
+  const dead = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await dead.submit({ id: 's1', kind: 'prompt', text: 'go' });
+  await placeSubmissions(dead, dead.pending());
+  const threadId = '0198a7c1-5b2e-7d43-9f10-3c6e8a2b4d10';
+  const journal = new NativeJournal(dead);
+  journal.append(THREAD_STREAM, { threadId, path: `sessions/2026/11/05/rollout-2026-11-05T08-00-00-${threadId}.jsonl` });
+  journal.append(rolloutStream(threadId), JSON.stringify({ timestamp: '2026-11-05T08:00:00.000Z', type: 'event_msg', payload: { type: 'item_completed', thread_id: threadId, turn_id: 't1', item: { type: 'UserMessage', id: 'u1', client_id: 's1', content: [{ type: 'text', text: 'go' }] } } }));
+  await journal.flush();
+  const { adapter: codex, provider: model } = adapter([]);
+  const a = await codex.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(a.state, 'open_turn', 'setup: the crashed turn is open');
+  await a.settleOpenTurn();
+  await a.send('and now?');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.close();
+  const ended = foldSession(spec.key, await store.read(spec.key));
+  const placed = ended.submissions.filter((s) => ended.placed.has(s.id)).map((s) => s.text);
+  assert.equal(placed.at(-1), CARRIED, 'the prompt the unresumable rollout held is carried: the next Codex never had it');
+});

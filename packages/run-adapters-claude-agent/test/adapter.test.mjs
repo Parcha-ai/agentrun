@@ -697,3 +697,63 @@ test("a stop while the CLI's transcript lines are still in their coalesce window
   assert.deepEqual(outcomes.map((o) => o.carried !== o.recorded), [true, true], `carried exactly when the next history lacks it: ${JSON.stringify(outcomes)}`);
   assert.deepEqual(outcomes[1], { label: 'after it', recorded: true, carried: false }, 'once the lines are in the log, nothing is carried');
 });
+
+test("a prompt a crash left placed and unrecorded, sent again in the recovery message, then a stop after the CLI recorded that message: the settle does not carry it a second time, and the next message's turn is its own", async (t) => {
+  const { placeSubmissions } = await import('@parcha/agentrun-kernel/process');
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'claude:recovered', label: 'recovered', system: [], tools: [wait], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  // The crashed process: the prompt placed, the CLI never told.
+  const dead = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await dead.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await placeSubmissions(dead, dead.pending());
+  const seen = [];
+  const { adapter: claudeAdapter } = await claude(t, { script: ['call wait {}'], sdk: { onMessage: (m) => seen.push(m.text) } });
+  const a = await claudeAdapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(a.state, 'open_turn', 'setup: the crashed turn is open');
+  await a.recover();
+  await reached;
+  // The recovery message is in the CLI's transcript, as the session keeps it, once its coalesce window has passed.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await a.interrupt();
+  await a.turnEnd();
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  await a.turnEnd();
+  await a.close();
+  assert.equal(seen.length, 2, `the recovery message, then the next one: ${JSON.stringify(seen)}`);
+  assert.match(seen[0], /Write five files\./, 'setup: the recovery message carried the prompt');
+  assert.equal(seen[1], 'and now?', 'the next message is its own: the prompt is not sent a second time');
+});
+
+test("a second crash in the same open turn: recovery 1 handed over and never recorded, then recovery 2 recorded, then a stop: the settle does not carry the prompt again, and the next message's turn is its own", async (t) => {
+  const { placeSubmissions } = await import('@parcha/agentrun-kernel/process');
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'claude:recovered-twice', label: 'recovered', system: [], tools: [wait], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  // The first crash: the prompt placed, the CLI never told. The second: recovery 1 covered it and was never recorded.
+  const dead = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await dead.submit({ id: 's1', kind: 'prompt', text: 'Write five files.' });
+  await placeSubmissions(dead, dead.pending());
+  await dead.effect('covers:00000000-0000-4000-8000-000000000001', { name: 'covers', replay: 'safe', input: { ids: ['s1'] } }, async () => true);
+  const seen = [];
+  const { adapter: claudeAdapter } = await claude(t, { script: ['call wait {}'], sdk: { onMessage: (m) => seen.push(m.text) } });
+  const a = await claudeAdapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.recover();
+  await reached;
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await a.interrupt();
+  await a.turnEnd();
+  if (a.state === 'open_turn') await a.settleOpenTurn();
+  await a.send('and now?');
+  await a.turnEnd();
+  await a.close();
+  assert.match(seen[0] ?? '', /Write five files\./, 'setup: recovery 2 carried the prompt');
+  assert.equal(seen.at(-1), 'and now?', `the next message is its own: ${JSON.stringify(seen)}`);
+});

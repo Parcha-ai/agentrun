@@ -812,3 +812,57 @@ test("an opencode follow-up's own prompt the host names to the settle (`opening`
   await s.session.close();
   assert.deepEqual(userTexts(p), ["and now?"], "the person's message alone");
 });
+
+test("an opencode prompt a crash left placed and unsent, sent again in the recovery message, then a stop after OpenCode was sent it: the settle does not carry it a second time, and the next message's turn is its own", { timeout: 60_000 }, async () => {
+  const { placeSubmissions } = await import("@parcha/agentrun-kernel/process");
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-recovered" });
+  // The crashed process: the prompt placed, OpenCode never sent it.
+  const dead = await openDrive({ writer: await store.open(sp.key), signal: new AbortController().signal });
+  await dead.submit({ id: "s1", kind: "prompt", text: "Write five files." });
+  await placeSubmissions(dead, dead.pending());
+  // The recovery's model request is held until the stop cuts it; the next one answers.
+  let held;
+  const asked = new Promise((resolve) => { held = resolve; });
+  const { adapter: a, provider: p } = adapter([() => { held(); return new Promise(() => {}); }, { text: "Now." }]);
+  const s = await session(a, store, sp);
+  assert.equal(s.session.state, "open_turn", "setup: the crashed turn is open");
+  await s.session.recover();
+  await asked;
+  await s.session.interrupt();
+  await s.session.turnEnd();
+  if (s.session.state === "open_turn") await s.session.settleOpenTurn();
+  await s.session.send("and now?");
+  assert.equal((await s.session.turnEnd()).status, "completed");
+  await s.session.close();
+  const texts = userTexts(p);
+  assert.match(texts[0] ?? "", /Write five files\./, "setup: the recovery message carried the prompt");
+  assert.equal(texts.at(-1), "and now?", `the next message is its own: the prompt is not sent a second time: ${JSON.stringify(texts)}`);
+});
+
+test("an opencode second crash in the same open turn: recovery 1 marked and never received, then recovery 2 received, then a stop: the settle does not carry the prompt again, and the next message's turn is its own", { timeout: 60_000 }, async () => {
+  const { NativeJournal, placeSubmissions } = await import("@parcha/agentrun-kernel/process");
+  const store = memorySessionStore();
+  const sp = spec([], { key: "s-recovered-twice" });
+  const dead = await openDrive({ writer: await store.open(sp.key), signal: new AbortController().signal });
+  await dead.submit({ id: "s1", kind: "prompt", text: "Write five files." });
+  await placeSubmissions(dead, dead.pending());
+  const journal = new NativeJournal(dead);
+  journal.append("opencode.prompt", { submission: "recovery:0", messageID: "msg_recovery_never_received", covers: ["s1"] });
+  await journal.flush();
+  let held;
+  const asked = new Promise((resolve) => { held = resolve; });
+  const { adapter: a, provider: p } = adapter([() => { held(); return new Promise(() => {}); }, { text: "Now." }]);
+  const s = await session(a, store, sp);
+  await s.session.recover();
+  await asked;
+  await s.session.interrupt();
+  await s.session.turnEnd();
+  if (s.session.state === "open_turn") await s.session.settleOpenTurn();
+  await s.session.send("and now?");
+  assert.equal((await s.session.turnEnd()).status, "completed");
+  await s.session.close();
+  const texts = userTexts(p);
+  assert.match(texts[0] ?? "", /Write five files\./, "setup: recovery 2 carried the prompt");
+  assert.equal(texts.at(-1), "and now?", `the next message is its own: ${JSON.stringify(texts)}`);
+});
