@@ -109,6 +109,22 @@ test("a save that grants a tool the server does not have is refused, naming the 
   assert.equal(reserved.status, 422, JSON.stringify(reserved.body));
 });
 
+test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on claude-agent at the save, in words; on pi it saves and runs", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const fake = await startFakeMcp({ token: TOKEN });
+  const either = { type: "object", properties: { a: { type: "string" }, b: { type: "string" } }, anyOf: [{ required: ["a"] }, { required: ["b"] }] };
+  fake.tools.pick = { description: "Picks one.", input: either, run: ({ a, b }) => ({ content: [{ type: "text", text: `picked ${a ?? b}` }] }) };
+  await addFake(t, api, "fake", fake);
+  const refused = await api("POST", "/agents", agent("claude-pick", { harness: "claude-agent", tools: ["mcp:fake/pick"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body), /tool pick cannot be offered on claude-agent: \/anyOf: the Claude Agent CLI drops a tool whose root has anyOf/);
+  assert.equal((await api("POST", "/agents", agent("pi-pick", { tools: ["mcp:fake/pick"] }))).status, 201);
+  const runId = await runOf(api, "pi-pick", 'Call mcp__fake__pick with {"a":"x"}');
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: picked x");
+});
+
 test("a save that checks a deeply nested tool schema leaves the server answering: /health meanwhile, and a readable refusal past the bounds", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP });
   const fake = await startFakeMcp({ token: TOKEN });
