@@ -7,8 +7,8 @@ import type { AgentLearning, LearningNote } from "@/lib/learning";
 
 // The agent page's Learning tab carries a count when learned items wait for the owner's OK (a risky note, a held skill or
 // workflow draft), so the wait is seen without opening the tab or finding the run that kept it. The count is the agent's
-// own `learning.pending` (GET /v2/agents/{id}): no read of what it learned for it. Absent (an agent that doesn't learn, a
-// server with learning off or an older one, a count that could not be read) or 0: no count, never "0".
+// own `learning.pending` (GET /v2/agents/{id}): no read of what it learned for it. Absent (an agent that doesn't learn,
+// learning off on the server, a learning folder that could not be read) or 0: no count, never "0".
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agentWith = (learning?: { pending: number }): Agent => ({ agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);

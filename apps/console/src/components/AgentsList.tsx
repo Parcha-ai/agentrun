@@ -70,7 +70,7 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
         {a.runs && <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
         {waiting > 0 && (
           <button type="button" aria-label={waitingWords(waiting)} onClick={() => actions.onLearning?.(a.agent_id)}
-            className="caps border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-[10px] text-warning-text hover:bg-warning/20">Learning · {waiting}</button>
+            className="caps shrink-0 whitespace-nowrap border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-[10px] text-warning-text hover:bg-warning/20">Learning · {waiting}</button>
         )}
         <span className="flex-1" />
         <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>

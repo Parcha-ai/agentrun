@@ -14,7 +14,7 @@ vi.setConfig({ testTimeout: 20_000 });
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const CAPS = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const agent = (id: string, name: string, extra: object = {}) => ({ agent_id: id, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name, instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...extra });
-const ACTIVE = [agent("qa-learn", "QA learn", { learning: { pending: 2 } }), agent("calc", "Calc", { learning: { pending: 0 } }), agent("old", "Old server")];
+const ACTIVE = [agent("qa-learn", "QA learn", { learning: { pending: 2 } }), agent("calc", "Calc", { learning: { pending: 0 } }), agent("off", "Learning off")];
 const ARCHIVED = [agent("gone", "Gone", { archived_at: "2026-11-05T00:00:00Z", learning: { pending: 4 } })];
 const STATS = {
   agents: 3, runs: { total: 1, active: 0, needs_input: 0, failed: 0, status_unknown: 0, needs_review: 0 },
@@ -51,6 +51,6 @@ describe("Mission Control's Needs you, learned items waiting", () => {
     await wait(() => !!needs()?.querySelector('a[href="#/agents/qa-learn/learning"]'), "Needs you with QA learn's waiting items");
     expect(needs()!.querySelector("h2")?.textContent).toBe("Needs you · 2");
     expect(needs()!.querySelector('a[href="#/agents/qa-learn/learning"]')!.closest("li")?.textContent).toContain("2 learned items wait for your OK");
-    for (const id of ["calc", "old", "gone"]) expect(needs()!.querySelector(`a[href="#/agents/${id}/learning"]`), id).toBeNull();
+    for (const id of ["calc", "off", "gone"]) expect(needs()!.querySelector(`a[href="#/agents/${id}/learning"]`), id).toBeNull();
   });
 });

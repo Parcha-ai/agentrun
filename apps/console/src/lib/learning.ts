@@ -123,7 +123,7 @@ export const counted = (n: number, one: "skill" | "workflow") => `${n} ${one}${n
 export const isPending = (n: Pick<LearningNote, "status">) => n.status === "pending";
 /** How many of an agent's learned items wait for its owner's OK: its `learning.pending` (GET /v2/agents and
  *  /v2/agents/{id}), counted on the server over its notes, skills and workflow drafts. 0 when the server leaves it out (an
- *  agent that doesn't learn, learning off, an older server, a count it could not read), which shows nothing. */
+ *  agent that doesn't learn, learning off, a learning folder it could not read), which shows nothing. */
 export const waitingOf = (agent: { learning?: { pending: number } } | null | undefined): number => agent?.learning?.pending ?? 0;
 /** The count's words, for its label: "2 learned items wait for your OK", "1 learned item waits for your OK". */
 export const waitingWords = (n: number) => `${n} learned ${n === 1 ? "item waits" : "items wait"} for your OK`;

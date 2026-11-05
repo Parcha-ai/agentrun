@@ -38,9 +38,9 @@ describe("AgentsList, learned items waiting for the owner's OK", () => {
   });
 
   it("shows nothing at 0, nor when the server leaves the field out", async () => {
-    const p = await open([agent("zero", "Zero", { pending: 0 }), agent("old", "Old server")]);
+    const p = await open([agent("zero", "Zero", { pending: 0 }), agent("off", "Learning off")]);
     expect(p.count("Zero")).toBeNull();
-    expect(p.count("Old server")).toBeNull();
+    expect(p.count("Learning off")).toBeNull();
     expect(p.card("Zero").textContent).not.toMatch(/\b0\b.*OK|Learning 0/);
   });
 });
