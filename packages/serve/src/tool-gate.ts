@@ -23,6 +23,14 @@
 // replay-safe, and is answered interrupted otherwise) on the run's own coding source, and resumes the session with one
 // message that names the call and carries its result, or the refusal. A result is cut as every host tool's is
 // (HOST_RESULT_MAX_CHARS); the gate spills nothing.
+//
+// A stop or a cancel wins over an answer (runs.ts supersede): the gate reads the answer again before it writes the
+// call's intent, cuts an approved call in flight when its answer is withdrawn, and reads it again once the call is
+// done. Two windows of milliseconds remain, the same class as a stop racing any tool call inside a turn:
+// - A stop that lands between the read before the intent and drive.effect's intent lets a short call that does not
+//   heed its abort run. Its result is dropped (the read after the call), never resumed.
+// - A stop that lands between the read after the call and resume()'s commit can start the resume turn on a stopped
+//   run: a stop, unlike a cancel, leaves no mark the resume is held to.
 
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
