@@ -1451,7 +1451,6 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         if (run.kind === "workflow") throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here, so it has no cap to raise." }]);
         const now = run.meta.max_cost_usd;
         if (now === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
-        if (!(cap > now)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's $${now}.` }]);
         const { resumed, messageId, note } = await runs.raiseCap(run, cap);
         const { status, state } = statusOf(run);
         return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
