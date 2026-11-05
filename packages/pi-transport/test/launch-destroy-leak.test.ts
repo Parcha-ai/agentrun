@@ -71,7 +71,13 @@ describe("a destroyed box ends what its launches started", () => {
 						await launch(
 							box,
 							"deaf",
-							{ argv: ["sh", "-c", "trap '' TERM; sleep 300 & echo $! > child.pid; echo $$ > prog.pid; while :; do sleep 1; done"] },
+							{
+								argv: [
+									"sh",
+									"-c",
+									"trap '' TERM; sleep 300 & echo $! > child.pid; echo $$ > prog.pid; while :; do sleep 1; done",
+								],
+							},
 							context,
 						),
 					);
@@ -82,7 +88,8 @@ describe("a destroyed box ends what its launches started", () => {
 					if (runnerGone) {
 						// What a stop that died, or a runner killed under load, leaves: the program with no runner over it.
 						for (const pid of liveMembers(pgid))
-							if (pid !== program && !/^sleep\b/.test(readFileSync(`/proc/${pid}/cmdline`, "latin1"))) process.kill(pid, "SIGKILL");
+							if (pid !== program && !/^sleep\b/.test(readFileSync(`/proc/${pid}/cmdline`, "latin1")))
+								process.kill(pid, "SIGKILL");
 						for (const name of readdirSync("/proc")) {
 							if (!/^\d+$/.test(name)) continue;
 							let cmd = "";
