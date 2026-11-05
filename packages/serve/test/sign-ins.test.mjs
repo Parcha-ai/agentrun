@@ -16,7 +16,9 @@ import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
-import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { ended, LEARN, learner, made, objects, repoOf, started } from "./learn-support.mjs";
+import { note } from "./fixtures/faux-learn.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
@@ -539,4 +541,45 @@ test("a run whose live process the next server adopts after a crash never shows 
   const view = (await next.api("GET", `/runs/${runId}`)).body;
   assert.match(view.result.final_answer, /I kept \[redacted\] for you\./);
   for (const shown of [JSON.stringify(view), JSON.stringify((await next.api("GET", "/runs")).body), JSON.stringify((await next.api("GET", `/runs/${runId}/timeline`)).body)]) assert.ok(!shown.includes(ref), shown);
+});
+
+test("a run's end keeps its line in the agent store cut of its browser sign-in's pointer, as everything it serves is", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const gate = join(dir, "gate");
+  const runId = (await api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  const opened = await until(async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)), (ops) => ops.some((op) => op.op === "profile"));
+  const { ref } = opened.find((op) => op.op === "sign-in");
+  await writeFile(`${gate}.echo`, `I kept ${ref} for you.`);
+  await writeFile(gate, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const row = storeRun(data, runId);
+  assert.equal(row.summary, "I kept [redacted] for you.");
+  assert.ok(!JSON.stringify((await api("GET", "/runs")).body).includes(ref));
+});
+
+test("a run's end-of-run learning never keeps its browser sign-in's pointer: a note that holds it is refused as a held value, and nothing of it reaches the agent's learning", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  await made(api, learner("alpha", { tools: ["browser"] }));
+  // Its first run makes its sign-in: the pointer, as the run's browser was handed it.
+  await ended(api, await started(api, "alpha"));
+  const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  // Its next run's end-of-run turn writes the pointer into a note (a model that repeats what it was given).
+  const kept = note("The pointer", "What the browser opened", `It opened ${ref} for me.\n`);
+  const { id: _, version: __, ...definition } = learner("alpha", { tools: ["browser"], plan: [["the-pointer.md", kept]] }).definition;
+  const edited = await api("PUT", "/agents/alpha/definition", { definition });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const runId = await started(api, "alpha");
+  const { view } = await ended(api, runId);
+  assert.deepEqual([view.learning.state, view.learning.reason], ["dropped", "checker"], JSON.stringify(view.learning));
+  const notes = JSON.stringify((await api("GET", "/agents/alpha/learning/notes")).body);
+  assert.ok(!notes.includes(ref), notes);
+  assert.ok(!objects(repoOf(data, "alpha")).includes(ref), "nothing of it in the agent's learning, in any commit");
+  for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", `/runs/${runId}/learning`)).body), await readFile(join(data, "runs", runId, "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
 });

@@ -1872,7 +1872,10 @@ export class Runs {
     const soFar = cost === null && !run.imported ? soFarOf(run.rows, run.decisionCost === undefined ? undefined : (run.decisionsPriced ?? null)) : undefined;
     if (soFar) run.meta.cost_so_far = soFar;
     else delete run.meta.cost_so_far;
-    const line = summary ?? (outcome === "completed" ? answerOfRun(run) : outcome === "cancelled" ? "cancelled" : run.error?.message);
+    // Cut of every value the run's answers and errors never show, as its served answer is (whole, never clipped): the
+    // store keeps it for good, and a view of the run reads it back as its answer.
+    const said = summary ?? (outcome === "completed" ? answerOfRun(run) : outcome === "cancelled" ? "cancelled" : run.error?.message);
+    const line = said ? redactedAnswer(said, this.refusedValues(run)) : said;
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     // Its end's time, chosen once and given to the store: the row, a retry of the write and its run.ended all name this one
     // time. A server that settles the run after a kill chooses its own: nothing was sent before the store had an end.

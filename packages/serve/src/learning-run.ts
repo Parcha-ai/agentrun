@@ -782,11 +782,12 @@ export class LearningRuns {
   }
 
   /** What a run's learning refuses, and cuts from what it says: the secrets this server holds, wherever its launcher put
-   *  them, the keys saved on it, what each launch handed the run, and its own tokens. */
+   *  them, the keys saved on it, what each launch handed the run, every value its errors and answers never show
+   *  (runs.ts' `handed`: its browser sign-in's pointer among them, read back after a restart), and its own tokens. */
   private refused(run: Run): string[] {
     // The run's own door token too: its process holds it, so its notes may.
     const own = run.doorToken ?? runDoorToken(run.dir);
-    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), this.options.token, this.options.doorToken, ...(own ? [own] : [])];
+    return [...hostSecrets(process.env, this.options.storedKeys), ...(this.handed.get(run.id) ?? []), ...(run.handed ?? []), this.options.token, this.options.doorToken, ...(own ? [own] : [])];
   }
 
   /** This server's environment for a call of its own (a grade's screen and grader): its secrets readable, never a
