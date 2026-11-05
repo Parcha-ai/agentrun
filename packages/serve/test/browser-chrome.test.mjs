@@ -199,11 +199,14 @@ test("through the API: the local Chrome's minutes are the run's spend at the ope
     assert.equal((await api("POST", "/agents", agent(id, { tools: ["browser"] }))).status, 201);
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Browse the example page 3 times." }, ...(cap ? { max_cost_usd: cap } : {}) });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    await follow(api, started.body.run_id, ["completed", "failed"]);
+    await follow(api, started.body.run_id, ["completed", "failed", "input_required"]);
+    const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+    // Paused at its cap, its process lets the run go: its store is that process's until it has.
+    if (view.status === "input_required") return { booked: undefined, view };
     const db = new DatabaseSync(join(data, "runs", started.body.run_id, "store", "run.sqlite"), { readOnly: true });
     const booked = db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
     db.close();
-    return { booked, view: (await api("GET", `/runs/${started.body.run_id}`)).body };
+    return { booked, view };
   };
   const free = await browse({}, "free");
   assert.deepEqual(free.booked, [], "free: nothing booked");
@@ -213,6 +216,8 @@ test("through the API: the local Chrome's minutes are the run's spend at the ope
   const priced = await browse({ AGENTRUN_BROWSER_USD_PER_HOUR_CDP: "36" }, "priced", 50);
   assert.ok(priced.booked.length >= 1 && priced.booked.every((row) => row.tool === "browser" && row.charged_by === "cdp" && row.usd > 0), JSON.stringify(priced.booked));
   assert.ok(priced.view.cost.usd > 0 && priced.view.cost.usd <= 50, `booked ${priced.view.cost.usd} within the cap`);
+  // A call the cap cannot hold is not sent: the run pauses at its cap, in the call's words (paid-pause.test.mjs).
   const tight = await browse({ AGENTRUN_BROWSER_USD_PER_HOUR_CDP: "36" }, "tight", 0.5);
-  assert.match(tight.view.result?.final_answer ?? "", /spend_cap_reached: /, "a call the cap cannot hold is not sent");
+  assert.deepEqual([tight.view.status, tight.view.pending?.kind], ["input_required", "budget"], JSON.stringify(tight.view));
+  assert.match(tight.view.pending.said, /^Not sent: the run has spent \$0 of its \$0\.50 cap, and this browser call could cost up to \$4\.20 \(cdp's session time at \$36 an hour: .*\)\. Raise the cap to at least \$4\.20 to run it\.$/);
 });
