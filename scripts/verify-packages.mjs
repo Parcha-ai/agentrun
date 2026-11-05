@@ -74,6 +74,8 @@ const allowedExtraFiles = {
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   serve: ['package/launcher/agentrun-serve'],
+  // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build.
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -119,6 +121,9 @@ const allowedEndpoints = {
     ['CHANGELOG.md', 'http://127.0.0.1:7340'],
     // The agentrun.v2/0 contract, vendored unchanged for GET /v2/openapi.json: its servers list the local server's default address.
     ['dist/openapi/agentrun-v2.openapi.json', 'http://127.0.0.1:7340'],
+    // The OpenCode adapter's MCP server listens on the loopback interface, on the free port it chose, and gives OpenCode that address.
+    ['dist/harness-opencode/host/mcp.js',
+      'http://127.0.0.1/mcp'], // key-gate: loopback-rule declares the MCP address of the OpenCode adapter, which listens on 127.0.0.1 only
   ],
 };
 
@@ -133,7 +138,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -161,7 +166,7 @@ try {
       const scanned = (allowedEndpoints[directory] ?? []).reduce((text, [file, literal]) => (name === `package/${file}` && text.includes(literal) ? (usedEndpoints.add(`${file} ${literal}`), text.replaceAll(literal, '')) : text), content);
       const scannedDecoded = scanned.replace(/(?:%[0-9a-f]{2})+/gi, value => { try { return decodeURIComponent(value); } catch { return value; } });
       for (const [kind, pattern] of forbid) assert.ok(!pattern.test(scanned) && !pattern.test(scannedDecoded), `${kind} found in ${manifest.name}/${name}; content omitted`);
-      if (name.endsWith('.js') || name.endsWith('.d.ts')) {
+      if (name.endsWith('.js') || name.endsWith('.mjs') || name.endsWith('.d.ts')) {
         const imports = importsOf(content);
         for (const dependency of imports) {
           if (dependency.startsWith('.')) {
@@ -393,7 +398,7 @@ assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWor
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-workflows-')); try { const work=join(dir,'work'), checkout=join(dir,'checkout'); await mkdir(work); await mkdir(checkout); const saved=await new piWorkflows.WorkflowStore(work).save('consumer-add',workflow); const records={[saved.digest+'.json']:await readFile(join(work,'.pi/agentrun/workflows/consumer-add',saved.digest+'.json'),'utf8'),latest:saved.digest+'\\n'}; const main={main:'0'.repeat(40),read:async()=>undefined,list:async()=>[]}; const candidate={run:'r1',name:'consumer-add',description:'Add two numbers.',records,untrusted:false}; assert.equal((await agentLearn.workflowAdmitter({tmpRoot:dir})({...main,workflow:candidate})).status,'held'); const admitted=await agentLearn.workflowAdmitter({tmpRoot:dir,allowExecutableCode:true})({...main,workflow:candidate}); assert.equal(admitted.status,'admitted'); assert.equal(agentLearn.parseTrial(admitted.files['.agents/skills/consumer-add/trial.json'],'consumer-add').status,'trial'); for (const [file,text] of Object.entries(admitted.files)) if (file.startsWith('.pi/')) { await mkdir(join(checkout,file,'..'),{recursive:true}); await writeFile(join(checkout,file),text); } assert.equal((await new piWorkflows.WorkflowStore(checkout).load('consumer-add')).digest,saved.digest); assert.equal(agentLearn.matches([{pointer:'/left',op:'gte',value:1}],{left:2}),true); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',fast:null,default:null,strong:null}); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key'}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
 { const draft={v:2,name:'w',schemas:{S:{type:'object'}},output:{schemaId:'S'},root:{node:'agent',label:'a',instructions:'Do it.',out:'S',as:'a',tools:['bash']}}; const changes=[{path:'workflows/w/workflow.json',status:'added',bytes:Buffer.from(JSON.stringify(draft))},{path:'AGENTS.md',status:'modified',bytes:Buffer.from('x')}]; assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes}).problems.map(p=>p.rule),['no_tool_list','locked','memo_missing']); assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes,tools:['fetch_page']}).problems.map(p=>p.rule),['workflow','locked','memo_missing']); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
@@ -405,6 +410,7 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
+  assert.match((await offlineNode(['node_modules/@parcha/agentrun/bin/agentrun.mjs', '--help'])).stdout, /^Usage: npx @parcha\/agentrun /, 'the installed agentrun bin prints its usage');
   if (requireConsole) {
     const consoleDir = join(consumer, 'node_modules/@parcha/agentrun-serve/dist/console');
     const index = await readFile(join(consoleDir, 'index.html'), 'utf8').catch(() => '');

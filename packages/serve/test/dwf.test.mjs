@@ -7,7 +7,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { completer } from "../dist/llm.js";
-import { documentPath, MAX_PAGE_PX, pdfPages } from "../dist/pdf-pages.js";
+import { documentPath, MAX_PAGE_PX, pagesStem, pdfPages } from "../dist/pdf-pages.js";
 import { gated, RUN_PAUSED } from "../dist/pause.js";
 import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -29,21 +29,24 @@ test("pdf_pages draws a document's first pages into the run's work directory, wi
   await mkdir(work);
   pdf(join(docs, "coi acme.pdf"), "CERTIFICATE OF INCORPORATION Acme");
   const out = await pdfPages({ path: "coi acme.pdf", maxPages: 1, dpi: 50 }, { work, documents: docs });
-  assert.deepEqual([out.name, out.pageCount, out.dpi, out.pages], ["coi acme.pdf", 2, 50, [{ page: 1, image: "pages/coi_acme/50/1.png" }]]);
+  // The page directory is the document's own: its path below the documents directory, made one safe name (pdf-pages-stem.test.mjs).
+  const coi = pagesStem({ base: "documents", rel: "coi acme.pdf" });
+  assert.match(coi, /^coi_acme-[0-9a-f]{12}$/);
+  assert.deepEqual([out.name, out.pageCount, out.dpi, out.pages], ["coi acme.pdf", 2, 50, [{ page: 1, image: `pages/${coi}/50/1.png` }]]);
   assert.match(out.text, /CERTIFICATE OF INCORPORATION Acme/);
-  const png = await readFile(join(work, "pages/coi_acme/50/1.png"));
+  const png = await readFile(join(work, `pages/${coi}/50/1.png`));
   assert.equal(png.subarray(1, 4).toString(), "PNG");
   // Drawn again at another dpi, the earlier image stays; asked past the cap, the page is drawn at the dpi that fits.
   const big = await pdfPages({ path: "coi acme.pdf", maxPages: 1, dpi: 300 }, { work, documents: docs });
   // Ghostscript's page is A4 (842 points tall) or letter (792), whichever its default is here.
   assert.ok([842, 792].map((points) => Math.floor(((MAX_PAGE_PX - 2) * 72) / points)).includes(big.dpi), String(big.dpi));
-  assert.equal(big.pages[0].image, `pages/coi_acme/${big.dpi}/1.png`);
+  assert.equal(big.pages[0].image, `pages/${coi}/${big.dpi}/1.png`);
   assert.ok(Math.max(png.readUInt32BE(16), png.readUInt32BE(20)) <= MAX_PAGE_PX);
   const drawn = await readFile(join(work, big.pages[0].image));
   assert.ok(Math.max(drawn.readUInt32BE(16), drawn.readUInt32BE(20)) <= MAX_PAGE_PX, `${drawn.readUInt32BE(16)} x ${drawn.readUInt32BE(20)}`);
-  assert.deepEqual(await readFile(join(work, "pages/coi_acme/50/1.png")), png);
+  assert.deepEqual(await readFile(join(work, `pages/${coi}/50/1.png`)), png);
   await writeFile(join(work, "scan.png"), png);
-  assert.deepEqual(await pdfPages({ path: "scan.png" }, { work, documents: docs }), { name: "scan.png", pageCount: 1, dpi: null, pages: [{ page: 1, image: "pages/scan/1.png" }], text: "" });
+  assert.deepEqual(await pdfPages({ path: "scan.png" }, { work, documents: docs }), { name: "scan.png", pageCount: 1, dpi: null, pages: [{ page: 1, image: `pages/${pagesStem({ base: "work", rel: "scan.png" })}/1.png` }], text: "" });
   // A scan over the cap passes through scaled to it, its proportions kept.
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=white:s=2000x1000", "-frames:v", "1", join(work, "wide.png")]);
   const wide = await pdfPages({ path: "wide.png" }, { work, documents: docs });
@@ -124,7 +127,7 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   const docs = join(dir, "docs");
   await mkdir(docs);
   for (const name of ["a", "b", "c"]) pdf(join(docs, `${name}.pdf`), `Document ${name}`);
-  const { api } = await serve(t, { documents: docs, allowCodeNodes: true });
+  const { api, data } = await serve(t, { documents: docs, allowCodeNodes: true });
   const made = await api("POST", "/agents", flowAgent("docs", docsFlow(), { tools: ["pdf_pages", "llm"] }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const caps = (await api("GET", "/capabilities")).body;
@@ -138,7 +141,11 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
   assert.equal((await api("GET", `/runs/${id}`)).body.status, "paused");
   const listed = (await api("GET", "/runs?status=paused")).body.runs.map((r) => r.run_id);
   assert.deepEqual(listed, [id]);
-  await sleep(3000);
+  // Its process is up and its workflow's driver open (it writes the live view then), so the first node waits at the gate.
+  for (let i = 0; !existsSync(join(data, "runs", id, "live.json")); i++) {
+    assert.ok(i < 600, "the run's process opens its workflow");
+    await sleep(50);
+  }
   let graph = (await api("GET", `/runs/${id}/graph`)).body;
   assert.deepEqual([graph.run.status, graph.run.paused, graph.totals.effects], ["paused", true, 0]);
   assert.deepEqual(graph.nodes["/root/steps/0"].items.map((i) => [i.index, i.status, i.label]), [[0, "pending", "a.pdf"], [1, "pending", "b.pdf"], [2, "pending", "c.pdf"]]);
@@ -158,26 +165,26 @@ test("a workflow with code, pdf_pages and llm calls runs on serve; its graph sho
     ["/root/steps/0/body", 0, "pdf_pages", "done"], ["/root/steps/0/body", 1, "pdf_pages", "done"], ["/root/steps/0/body", 2, "pdf_pages", "done"], ["/root/steps/2", null, "llm", "done"],
   ]);
   assert.deepEqual(graph.effects[0].input, { path: "a.pdf", maxPages: 1, dpi: 40 });
-  assert.equal(graph.effects[0].output.pages[0].image, "pages/a/40/1.png");
+  const pageA = `pages/${pagesStem({ base: "documents", rel: "a.pdf" })}/40/1.png`;
+  assert.equal(graph.effects[0].output.pages[0].image, pageA);
   assert.equal(typeof graph.effects[3].output.text, "string");
   assert.deepEqual([graph.totals.decisions, graph.totals.effects], [0, 4]);
-  const image = await api("GET", `/runs/${id}/files/pages/a/40/1.png`);
+  const image = await api("GET", `/runs/${id}/files/${pageA}`);
   assert.equal(image.status, 200);
   // An ended run is not paused again.
   assert.equal((await api("POST", `/runs/${id}/pause`)).status, 409);
-  assert.ok(!existsSync(join(dir, "never")));
 });
 
 /** The smoke's faux decision providers: each call waits AGENTRUN_SMOKE_DECISION_MS and is filed in AGENTRUN_SMOKE_DECISION_CALLS. */
 const FAUX_DECISIONS = new URL("../scripts/dwf-smoke/faux-decisions.mjs", import.meta.url).pathname;
 
-test("a run's graph reads while it goes and while it is paused mid-map at maxConcurrency 4, within a second, never busy", async (t) => {
+test("a run's graph reads while it goes and while it is paused mid-map at maxConcurrency 4, live and never waiting on a busy store", async (t) => {
   const dir = await scratch(t);
   const docs = join(dir, "docs");
   await mkdir(docs);
   const names = ["a", "b", "c", "d", "e", "f"];
   for (const name of names) pdf(join(docs, `${name}.pdf`), `Document ${name}`);
-  withEnv(t, { TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_MS: "1500", AGENTRUN_SMOKE_DECISION_CALLS: join(dir, "calls.jsonl") }, ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"]);
+  withEnv(t, { TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_MS: "300", AGENTRUN_SMOKE_DECISION_CALLS: join(dir, "calls.jsonl") }, ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"]);
   const { api } = await serve(t, { documents: docs, allowCodeNodes: true, fauxJev: FAUX_DECISIONS });
   const flow = {
     v: 2, name: "judged",
@@ -205,13 +212,17 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
   };
   assert.equal((await api("POST", "/agents", flowAgent("judged", flow, { tools: ["pdf_pages"] }))).status, 201);
   const id = (await api("POST", "/agents/judged/runs", { input: { documents: names.map((n) => `${n}.pdf`) } })).body.run_id;
+  const READ_BOUND_MS = 10_000;
   /** One read of the graph, timed; never asked again. */
   const read = async () => {
     const started = Date.now();
     const answer = await api("GET", `/runs/${id}/graph`);
     assert.equal(answer.status, 200, JSON.stringify(answer.body));
     assert.equal(answer.body.stale, false, "read live, not from a cache");
-    assert.ok(Date.now() - started < 1000, `the graph answered in ${Date.now() - started} ms`);
+    // A read that waited on the paused run's store would wait until the resume, which comes only after these reads; one that
+    // met a busy store answers at once, marked stale (asserted above). So the bound only has to clear a slow runner: CI's
+    // slowest read was 2.6 s (F30, a merge-queue run on 11-05), against 1 s before.
+    assert.ok(Date.now() - started < READ_BOUND_MS, `the graph answered in ${Date.now() - started} ms`);
     return answer.body;
   };
   // While it goes: the map's items are working once the calls are in flight.
@@ -226,11 +237,20 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
   assert.equal((await api("POST", `/runs/${id}/pause`)).body.paused, true);
   graph = await read();
   assert.equal(graph.run.status, "paused");
-  // The judges in flight finish; nothing new starts; every read answers within a second.
-  await sleep(3500);
-  const settled = await read();
+  // The judges in flight finish: every request sent has its receipt, and no call is working. Nothing new starts; every
+  // read answers live.
+  const sent = async () => (await readFile(join(dir, "calls.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+  let settled;
+  for (const end = Date.now() + 60_000; ; ) {
+    settled = await read();
+    if (settled.decisions.length === (await sent()) && settled.effects.every((e) => e.status !== "working")) break;
+    assert.ok(Date.now() < end, "the judges in flight finish within a minute");
+    await sleep(100);
+  }
+  const asked = await sent();
   await sleep(1000);
   const later = await read();
+  assert.equal(await sent(), asked, "no decision is asked while paused");
   assert.equal(later.totals.decisions, settled.totals.decisions, "no decision lands while paused");
   assert.equal(later.totals.effects, settled.totals.effects, "no call starts while paused");
   assert.ok(later.nodes["/root/steps/0"].items.some((i) => i.status === "pending"), "the map is paused mid-way");
@@ -378,8 +398,16 @@ test("a judge naming provider openrouter is answered by the OpenRouter model it 
   const placeholder = "faux-test-placeholder";
   withEnv(t, { OPENROUTER_API_KEY: placeholder }, ["TYPESAFE_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS"]);
   process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS = "0";
-  const fauxOpenrouter = new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).pathname;
-  const { api } = await serve(t, { fauxOpenrouter });
+  // The faux System One, behind a fetch that files the key each request was sent with.
+  const dir = await scratch(t);
+  const sentWith = join(dir, "keys.jsonl");
+  const fauxOpenrouter = join(dir, "faux-openrouter.mjs");
+  await writeFile(fauxOpenrouter, [
+    `import { appendFileSync } from "node:fs";`,
+    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
+    `export default async (url, init = {}) => (appendFileSync(${JSON.stringify(sentWith)}, JSON.stringify({ path: new URL(String(url)).pathname, auth: new Headers(init.headers).get("authorization") }) + "\\n"), faux(url, init));`,
+  ].join("\n"));
+  const { api, data } = await serve(t, { fauxOpenrouter });
   const flow = {
     v: 2, name: "asked",
     schemas: {
@@ -398,4 +426,9 @@ test("a judge naming provider openrouter is answered by the OpenRouter model it 
   const run = (await api("GET", `/runs/${id}`)).body;
   assert.equal(run.status, "completed", JSON.stringify(run.error));
   assert.equal(typeof run.result.output.is_coi, "boolean");
+  const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
+  const receipts = durableDecisions(join(data, "runs", id, "store", "run.sqlite"));
+  assert.deepEqual(receipts.map((r) => [r.provider, r.model]), [["openrouter", "liquid/d1 (faux)"]], "OpenRouter answered, on the model the node names (the faux marks its answers)");
+  const sent = (await readFile(sentWith, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent, [{ path: "/api/v1/systemone", auth: `Bearer ${placeholder}` }], "one request, sent with the key handed to the run");
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, parseSkillBundle, readSkillFiles, reachesWeb, same, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, parseSkillBundle, readSkillFiles, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -116,9 +116,38 @@ describe("createBody", () => {
 
   it("creates a native revision with each uploaded skill's files and names", () => {
     const skillFiles = { "cite/SKILL.md": "# Cite\n", "cite/reference.md": "Primary sources.\n" };
-    expect(createBody({ name: "Citer", description: "", instructions: "Cite.", harness: "pi", tools: [], skillFiles })).toEqual({
-      definition: { version: 1, name: "Citer", instructions: "Cite.", harness: "pi", tools: [], skills: ["cite"] }, skills: skillFiles,
+    expect(createBody({ name: "Citer", description: "", instructions: "Cite.", harness: "pi", tools: [], skillFiles, place: { mode: "sandbox", box: "docker" }, learning: true, max_cost_usd: 2.5, tool_settings: { web_search: { provider: "parallel" } } })).toEqual({
+      definition: { version: 1, name: "Citer", instructions: "Cite.", harness: "pi", tools: [], skills: ["cite"], place: { mode: "sandbox", box: "docker" }, learning: true, max_cost_usd: 2.5, tool_settings: { web_search: { provider: "parallel" } } }, skills: skillFiles,
     });
+  });
+});
+
+describe("the agent's default spend cap per run (definition.max_cost_usd)", () => {
+  const capped = { ...(agent.body as object), definition: { ...agent.body.definition, max_cost_usd: 2.5, some_future_field: { kept: true } } } as never;
+  it("an edit keeps every field the form does not show: max_cost_usd and an unknown one", () => {
+    const body = editBody(capped, { instructions: "Check it twice." }, "");
+    expect(body.definition).toMatchObject({ max_cost_usd: 2.5, some_future_field: { kept: true }, instructions: "Check it twice." });
+  });
+  it("an edit sets a new cap, and a cleared one is sent as an explicit 0, never left out", () => {
+    expect(editBody(capped, { max_cost_usd: 4 }, "").definition.max_cost_usd).toBe(4);
+    const cleared = editBody(capped, { max_cost_usd: 0 }, "");
+    expect([cleared.unchanged, cleared.definition.max_cost_usd, cleared.definition.some_future_field]).toEqual([false, 0, { kept: true }]);
+  });
+  it("a new agent's first revision carries the cap typed, none when empty, and a starter never one", () => {
+    const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };
+    expect(createBody({ ...f, max_cost_usd: 0.75 }).definition.max_cost_usd).toBe(0.75);
+    expect(createBody(f).definition).not.toHaveProperty("max_cost_usd");
+    expect(createBody({ ...f, harness: DECISION, decisionProvider: "jev", max_cost_usd: 0.75 }).definition).not.toHaveProperty("max_cost_usd");
+  });
+});
+
+describe("capOf, the default cap field's text", () => {
+  it("empty is none, a number (with or without a leading $) is that number, and a $ alone or text is refused", () => {
+    expect(capOf("")).toEqual({ ok: true, value: undefined });
+    expect(capOf("   ")).toEqual({ ok: true, value: undefined });
+    expect(capOf("$2.50")).toEqual({ ok: true, value: 2.5 });
+    expect(capOf(" 4 ")).toEqual({ ok: true, value: 4 });
+    for (const text of ["$", " $ ", "ten"]) expect(capOf(text).ok, text).toBe(false);
   });
 });
 
@@ -132,6 +161,14 @@ describe("harnessOptions", () => {
   });
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
+  });
+  it("offers OpenCode last of the harnesses, when the server lists it", () => {
+    const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
+    expect(harnessOptions(listed)).toEqual([
+      { id: "pi", label: "Pi", available: true, reason: undefined },
+      { id: "codex", label: "Codex", available: true, reason: undefined },
+      { id: "opencode", label: "OpenCode", available: false, reason: "opencode is not installed here" },
+    ]);
   });
 });
 
@@ -263,8 +300,7 @@ describe("tools by default (tools on, Miguel's rule), and whether the agent reac
     { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
     { name: "fetch_page", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
   ]);
-  it("takes the server's tools as objects, or as names from an older server", () => {
-    expect(toolOffers(["read", "write"])).toEqual([{ name: "read", available: true }, { name: "write", available: true }]);
+  it("takes the server's tools as objects", () => {
     expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] });
   });
   it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
@@ -306,5 +342,35 @@ describe("call-only tools", () => {
   it("no harness runs one, so no agent starts with one ticked", () => {
     expect(toolsFor("pi", offers).map((t) => t.name)).toEqual(["read"]);
     expect(defaultTools("pi", offers)).toEqual(["read"]);
+  });
+});
+
+describe("sandbox-only tools", () => {
+  const offers = toolOffers([
+    { name: "read", nodes: true, available: true, harnesses: ["pi", "codex"] },
+    { name: "bash", nodes: false, sandbox_only: true, available: true, harnesses: ["pi", "codex"] },
+  ]);
+  it("keeps what capabilities say of a tool: sandbox_only", () => {
+    expect(offers[1]).toEqual({ name: "bash", available: true, harnesses: ["pi", "codex"], sandbox_only: true, nodes: false });
+  });
+  it("lists one for an agent to name, and starts no new agent with it ticked: a new agent's place is the runner", () => {
+    expect(toolsFor("codex", offers).map((t) => t.name)).toEqual(["read", "bash"]);
+    expect(defaultTools("pi", offers)).toEqual(["read"]);
+  });
+  it("can be ticked only on an agent whose place is a sandbox: a new agent, or a runner one, says why not", () => {
+    for (const place of [undefined, { mode: "runner" }]) expect(sandboxReason(offers[1], place)).toMatch(/^Sandbox-only: it runs in a box/);
+    expect(sandboxReason(offers[1], { mode: "sandbox", box: "docker" })).toBeUndefined();
+    expect(sandboxReason(offers[0], undefined)).toBeUndefined();
+  });
+});
+
+// Where an agent runs: a new agent's place goes in its first revision, and a tool's reason from the server is kept.
+describe("places in the definition", () => {
+  it("createBody carries the place the form picked, and none when it picked none", () => {
+    expect(createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: ["read", "bash"], place: { mode: "sandbox", box: "docker" } }).definition.place).toEqual({ mode: "sandbox", box: "docker" });
+    expect(createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] }).definition).not.toHaveProperty("place");
+  });
+  it("toolOffers keeps a tool's reason, for a tool the server can't run with nothing missing", () => {
+    expect(toolOffers([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }])).toEqual([{ name: "bash", available: false, sandbox_only: true, reason: "fixture: no box" }]);
   });
 });

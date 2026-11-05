@@ -16,6 +16,8 @@
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.1.1",
     "@fontsource/schibsted-grotesk": "5.1.1",
+    "@headlessui/react": "2.2.10",
+    "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "dompurify": "3.4.17",
     "lucide-react": "0.468.0",

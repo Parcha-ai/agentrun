@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { bulletOf, fold, hasVersionSection, loadFragments, parseFragment, releaseRace, unreleasedEdits, unreleasedSection } from './changes.mjs';
+import { bulletOf, fold, hasVersionSection, loadFragments, ownVersionPackages, parseFragment, releaseRace, staleOwnVersions, unreleasedEdits, unreleasedSection } from './changes.mjs';
 
 const exec = promisify(execFile);
 const script = join(dirname(fileURLToPath(import.meta.url)), 'changes.mjs');
@@ -505,6 +505,46 @@ test('releaseRace: in the merge queue the base holds an earlier pull request\'s 
   await git('merge', '-q', '--no-ff', '-m', 'merge group', 'release');
   assert.deepEqual((await releaseRace(root, groupBase.trim())).unfolded, ['earlier.md']);
 }));
+// A package on its own version line: @parcha/agentrun, published at its manifest's version.
+const ownPackage = async (root, git, version) => {
+  await mkdir(join(root, 'packages/agentrun/lib'), { recursive: true });
+  await mkdir(join(root, 'packages/agentrun/test'), { recursive: true });
+  await writeFile(join(root, 'packages/agentrun/package.json'), JSON.stringify({ name: '@parcha/agentrun', version, files: ['bin', 'lib', 'README.md'] }));
+  await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 1;\n');
+  await writeFile(join(root, 'packages/agentrun/test/start.test.mjs'), 'export {};\n');
+  await commitAll(git, 'the own-version package');
+  return (await git('rev-parse', 'HEAD')).stdout.trim();
+};
+const setVersion = async (root, version) => {
+  const path = join(root, 'packages/agentrun/package.json');
+  await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version }));
+};
+
+test('a package on its own version line: bumping it beside a fragment is an ordinary pull request, not a release', () => repo(async (root, git) => {
+  assert.deepEqual(ownVersionPackages, ['agentrun']);
+  await withVersion(root, git);
+  const base = await ownPackage(root, git, '0.3.0');
+  await writeFile(join(root, 'changes/start.md'), fragment('repo', 'fix', 'Start.'));
+  await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
+  await setVersion(root, '0.3.1');
+  assert.deepEqual(await releaseRace(root, base), { release: false, bumped: [], unfolded: [] });
+  assert.deepEqual(await staleOwnVersions(root, base), []);
+}));
+test('a package on its own version line that changes a file it publishes and keeps its version is stale; its tests, a bump or a new package are not', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  assert.deepEqual(await staleOwnVersions(root, (await git('rev-parse', 'HEAD')).stdout.trim()), [], 'a package the base does not have is new');
+  const base = await ownPackage(root, git, '0.3.0');
+  await writeFile(join(root, 'packages/agentrun/test/start.test.mjs'), 'export const more = 1;\n');
+  assert.deepEqual(await staleOwnVersions(root, base), [], 'its tests are not published');
+  await writeFile(join(root, 'packages/agentrun/README.md'), 'Start it.\n');
+  await commitAll(git, 'a readme');
+  assert.deepEqual(await staleOwnVersions(root, base), ['agentrun'], 'the README is published');
+  await setVersion(root, '0.3.1');
+  assert.deepEqual(await staleOwnVersions(root, base), []);
+  await setVersion(root, '0.3.0');
+  await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
+  assert.deepEqual(await staleOwnVersions(root, base), ['agentrun']);
+}));
 test('the command line fails a release commit that carries a fragment, and passes the release and an ordinary change', () => repo(async (root, git) => {
   await withVersion(root, git);
   const { stdout: base } = await git('rev-parse', 'HEAD');
@@ -518,6 +558,37 @@ test('the command line fails a release commit that carries a fragment, and passe
   assert.equal(fail.status, 1);
   assert.match(fail.stderr, /release commit carries unfolded fragments: normal\.md; refold on current main/);
   await rm(join(root, 'changes/normal.md'));
+  const pass = local();
+  assert.equal(pass.status, 0, pass.stderr);
+}));
+test('a pull request that changes the files the command publishes keeps its version: the release sets it, and a pull request that moves it is refused', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const base = await ownPackage(root, git, '0.3.0');
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base], { cwd: root, encoding: 'utf8' });
+  await writeFile(join(root, 'changes/start.md'), fragment('@parcha/agentrun', 'fix', 'Start.'));
+  await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
+  const pass = local();
+  assert.equal(pass.status, 0, pass.stderr);
+  await setVersion(root, '0.3.1');
+  const fail = local();
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /packages\/agentrun moved its version from 0\.3\.0 to 0\.3\.1; the release sets it \(docs\/releasing\.md\), so a pull request leaves it at 0\.3\.0/);
+}));
+test('a release commit that changes the files the command publishes and keeps its version is refused; with its next version it passes', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const base = await ownPackage(root, git, '0.3.0');
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base], { cwd: root, encoding: 'utf8' });
+  // The release: every workspace package bumped, and the command's pin on the server moved with them.
+  await bump(root, '0.1.0-beta.14');
+  await writeFile(join(root, 'packages/agentrun/lib/start.mjs'), 'export const start = 2;\n');
+  const fail = local();
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /packages\/agentrun changed the files it publishes and kept its version; the release sets its next version in its package\.json/);
+  await setVersion(root, '0.3.1');
   const pass = local();
   assert.equal(pass.status, 0, pass.stderr);
 }));

@@ -80,6 +80,19 @@ describe("KeysPage", () => {
     expect(page.row("Browserbase").textContent).toContain("pi only");
   });
 
+  // QA: a key that no harness reads (TypeSafe's, which only a decision provider uses) read "Unlocks decisions.jev ·
+  // Harnesses", a label with nothing after it. Its row says what it unlocks and nothing about harnesses.
+  it("says nothing about harnesses on a row whose key no harness reads", async () => {
+    const plain = view({});
+    const jev = { id: "typesafe", label: "TypeSafe (Jev)", fields: [field("TYPESAFE_API_KEY", null)], unlocks: ["decisions.jev"], harnesses: [] };
+    const { v2 } = server([{ ...plain, keys: [...plain.keys, jev] }]);
+    const page = await open(v2);
+    expect(page.row("TypeSafe (Jev)").textContent).toContain("Unlocks decisions.jev");
+    expect(page.row("TypeSafe (Jev)").textContent).not.toContain("Harnesses");
+    expect(page.row("TypeSafe (Jev)").textContent).not.toContain(" · ");
+    expect(page.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search · Harnesses pi, claude-agent, codex");
+  });
+
   it("Add key sends a PUT with only the values typed, then reads the keys again and says it changed", async () => {
     const { v2, calls } = server([view({}), view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "stored") })]);
     let changed = 0;
@@ -227,5 +240,26 @@ describe("KeysPage", () => {
     expect([...page.host.querySelectorAll("input")].map((i) => i.value)).not.toContain(FAKE);
     await page.click(page.row("Monid"), /^Change$/);
     expect(page.input("MONID_API_KEY").value).toBe("");
+  });
+
+  it("lists a model provider's key under Models, before the tools' keys, and saves it through its own route; with none, no headings", async () => {
+    const plain = view({});
+    const anthropic = { id: "anthropic", kind: "model" as const, label: "Anthropic", fields: [field("ANTHROPIC_API_KEY", null)], unlocks: [], harnesses: ["pi", "claude-agent"] };
+    const { v2, calls } = server([{ ...plain, keys: [...plain.keys.map((k) => ({ ...k, kind: "tool" as const })), anthropic] }]);
+    const page = await open(v2);
+    expect([...page.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["Models", "Tools"]);
+    const labels = (section: string) => [...page.host.querySelectorAll(`section[aria-label="${section}"] > ul > li`)].map((li) => li.querySelector("span.font-mono")?.textContent);
+    expect([labels("Model keys"), labels("Tool keys")]).toEqual([["Anthropic"], ["Parallel", "Monid", "Browserbase"]]);
+    expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses pi, claude-agent");
+    await page.click(page.row("Anthropic"), /^Add key$/);
+    await page.type("ANTHROPIC_API_KEY", FAKE);
+    await page.click(page.row("Anthropic"), /^Save$/);
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([{ method: "PUT", path: "/v2/settings/tool-keys/anthropic", type: "application/json", body: { values: { ANTHROPIC_API_KEY: FAKE } } }]);
+    expect(page.host.innerHTML).not.toContain(FAKE);
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    const older = await open(server([plain]).v2);
+    expect(older.host.querySelectorAll("h2")).toHaveLength(0);
+    expect(older.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search");
   });
 });

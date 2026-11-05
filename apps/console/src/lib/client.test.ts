@@ -29,6 +29,22 @@ describe("createClient", () => {
     expect(() => createClient({ fetch: fn, base: "https://server.example/v2" })).toThrow(/same.origin/i);
   });
 
+  it.each([false, true])("uploads original bytes through the configured credential boundary (bearer=%s)", async (bearer) => {
+    const uploaded = { file_id: "upload-1", path: "report data.txt", size_bytes: 5, content_type: "text/plain", sha256: "example", status: "ready" };
+    const { fn, calls } = fakeFetch(() => json(201, { file: uploaded }));
+    const base = bearer ? "https://server.example/v2" : "/console-api";
+    const v2 = createClient({ fetch: fn, base, ...(bearer ? { auth: { type: "bearer" as const, token: "example-sdk-token" } } : {}) });
+    const file = new File(["bytes"], uploaded.path, { type: "text/plain" });
+    const progress = vi.fn();
+    expect(await v2.upload(file, progress, new AbortController().signal)).toEqual(uploaded);
+    expect(calls[0].url).toBe(`${base}/files?path=report%20data.txt`);
+    expect(calls[0].init?.body).toBe(file);
+    expect(calls[0].init?.credentials).toBe(bearer ? "omit" : "same-origin");
+    expect(new Headers(calls[0].init?.headers).get("authorization")).toBe(bearer ? "Bearer example-sdk-token" : null);
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("text/plain");
+    expect(progress.mock.calls.map(([fraction]) => fraction)).toEqual([0, 1]);
+  });
+
   it("invalidates protected session state on a 401 without treating a rejected sign-in as session expiry", async () => {
     const { fn } = fakeFetch(() => json(401, { error: { code: "unauthenticated", message: "Sign in again.", retryable: false } }));
     const v2 = createClient({ fetch: fn });
@@ -68,12 +84,12 @@ describe("createClient", () => {
     expect((await v2.getAgent("shared-id")).agent.warnings).toBeUndefined();
   });
 
-  it("does not dispatch an old write if identity changes while its bearer token is being resolved", async () => {
+  it.each(["start", "upload"])("does not dispatch an old %s if identity changes while its bearer token is being resolved", async (operation) => {
     let release!: (token: string) => void;
     const pending = new Promise<string>((resolve) => { release = resolve; });
     const f = vi.fn(async () => json(202, { run_id: "unexpected" }));
     const v2 = createClient({ fetch: f as typeof fetch, auth: { type: "bearer", token: () => pending } });
-    const old = v2.startRun("agent", { input: { content: "Owner A task" } }, "stable-request").catch((error) => error);
+    const old = (operation === "start" ? v2.startRun("agent", { input: { content: "Owner A task" } }, "stable-request") : v2.upload(new File(["Owner A file"], "private.txt"), () => {}, new AbortController().signal)).catch((error) => error);
     v2.clearSessionState();
     release("replacement-owner-token");
     expect(await old).toMatchObject({ code: "session_changed" });
@@ -129,6 +145,18 @@ describe("createClient", () => {
   });
 });
 
+describe("raiseCap", () => {
+  it("raises a run's spend cap with PATCH /v2/runs/{id} and only max_cost_usd, as same-origin JSON, and answers what the server says", async () => {
+    const answer = { run_id: "r 1", max_cost_usd: 1.03, resumed: true, message_id: "m1", status: "input_required", state: "waiting" };
+    const { fn, calls } = fakeFetch(() => json(200, answer));
+    const v2 = createClient({ fetch: fn });
+    expect(await v2.raiseCap("r 1", 1.03)).toEqual(answer);
+    expect([calls[0].init?.method, calls[0].url, JSON.parse(String(calls[0].init?.body))]).toEqual(["PATCH", "/v2/runs/r%201", { max_cost_usd: 1.03 }]);
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("application/json");
+    expect(calls[0].init?.credentials).toBe("same-origin");
+  });
+});
+
 describe("follow", () => {
   it("resumes a disconnected timeline at its saved cursor without replacing prior rows", async () => {
     const first = running.body as unknown as TimelinePage;
@@ -147,6 +175,18 @@ describe("follow", () => {
     await follow(v2 as never, "r1", { checkpoint, minDelayMs: 0, onRows: (rows) => restored.push(rows.map((r) => r.id)) });
     expect(requests).toEqual([undefined, first.next_after, first.next_after]);
     expect(restored[0]).toEqual(first.rows.map((r) => r.id));
+  });
+
+  it("with no onRows, follows a run's status alone: each page to onPage, the cursor kept, no rows merged or held", async () => {
+    const first = running.body as unknown as TimelinePage;
+    const done: TimelinePage = { ...first, reset: false, rows: [], unchanged: true, final: true, status: "completed", state: "idle", next_after: first.next_after + 1 };
+    const pages = [first, done];
+    const { fn, calls } = fakeFetch(() => json(200, pages.shift()));
+    const statuses: string[] = [];
+    const out = await follow(createClient({ fetch: fn }), "r1", { onPage: (p) => statuses.push(p.status), waitMs: 1, minDelayMs: 0 });
+    expect(calls.map((c) => new URL(c.url, "http://x").searchParams.get("after"))).toEqual([null, String(first.next_after)]);
+    expect(statuses).toEqual([first.status, "completed"]);
+    expect(out.status).toBe("completed");
   });
 
   it("applies each page from the previous cursor until the server says final, and never duplicates a row", async () => {
@@ -197,6 +237,21 @@ describe("agents", () => {
       expect(c.init?.body).toBe("{}");
       expect(c.init?.credentials).toBe("same-origin");
     }
+  });
+
+  it("retires a learned skill's SKILL.md and a draft's README.md through the note's retire route, slashes percent-encoded, under If-Match", async () => {
+    const { fn, calls } = fakeFetch(() => new Response("---\nname: find-policies\nstatus: retired\n---\n", { status: 200, headers: { "content-type": "text/markdown", etag: '"skill-v2"' } }));
+    const v2 = createClient({ fetch: fn });
+    const done = await v2.retireNote("refunds", "skills/find-policies/SKILL.md", '"skill-v1"');
+    await v2.retireNote("refunds", "workflows/check-refunds/README.md", '"readme-v1"');
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual([
+      "POST /v2/agents/refunds/learning/files/skills%2Ffind-policies%2FSKILL.md/retire",
+      "POST /v2/agents/refunds/learning/files/workflows%2Fcheck-refunds%2FREADME.md/retire",
+    ]);
+    expect(new Headers(calls[0].init?.headers).get("if-match")).toBe('"skill-v1"');
+    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"readme-v1"');
+    expect(calls[0].init?.credentials).toBe("same-origin");
+    expect(done).toEqual({ note: "---\nname: find-policies\nstatus: retired\n---\n", etag: '"skill-v2"' });
   });
 
   it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {
@@ -342,6 +397,26 @@ describe("the owner's session", () => {
       'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}",
     ]);
     expect(calls.every((c) => c.init?.credentials === "same-origin")).toBe(true);
+  });
+});
+
+describe("setup's import status", () => {
+  it("reads a 200 that says there is no offer as none, and still a 404 or 403 from an older server", async () => {
+    const answers: [number, unknown][] = [
+      [200, { offer: false }],
+      [404, { error: { code: "not_found", message: "no route /v2/setup/import", retryable: false } }],
+      [403, { error: { code: "forbidden", message: "this read must come from this server's page", retryable: false } }],
+    ];
+    const { fn, calls } = fakeFetch(() => json(...answers.shift()!));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([null, null, null]);
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(Array(3).fill("GET /v2/setup/import"));
+  });
+  it("passes an offer and an import's state through as the server says them", async () => {
+    const answers: unknown[] = [{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }];
+    const { fn } = fakeFetch(() => json(200, answers.shift()));
+    const v2 = createClient({ fetch: fn });
+    expect([await v2.setupImport(), await v2.setupImport(), await v2.setupImport()]).toEqual([{ counting: true }, { projects: 1, sessions: 2 }, { state: "done", agents: 1, runs: 2, skipped: 0 }]);
   });
 });
 

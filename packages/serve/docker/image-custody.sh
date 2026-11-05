@@ -11,7 +11,9 @@ set -eu
 image=${1:?usage: image-custody.sh <image> [docker run arguments...]}
 shift
 name="agentrun-image-custody-$$"
-canary="not-a-secret-image-$$-$(date +%s)"
+# Short, each value its own: every secret set at once goes over the launcher's pipe, which holds 4096 bytes for sure, and
+# the list grows with pi-ai's providers. The token's is the API's, 32 characters or more.
+canary="nak-$$-$(date +%s)"
 cleanup() { docker rm -f -v "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 launcher=/opt/agentrun/packages/serve/launcher/agentrun-serve
@@ -19,7 +21,12 @@ names=$(docker run --rm --entrypoint sh "$image" -c "sed -n \"s/^SECRETS='\\(.*\
 [ -n "$names" ] || { echo "image custody: the launcher in $image names no secrets" >&2; exit 1; }
 # Names and canaries have no spaces, so the -e arguments go as one word list.
 secrets=
-for n in $names; do secrets="$secrets -e $n=$canary-$n"; done
+i=0
+for n in $names; do
+  i=$((i + 1))
+  case $n in AGENTRUN_TOKEN) value="$canary-$n" ;; *) value="$canary-$i" ;; esac
+  secrets="$secrets -e $n=$value"
+done
 # shellcheck disable=SC2086
 docker run -d --name "$name" $secrets "$@" "$image" --data /data --port 7340 --faux /opt/agentrun/packages/serve/test/fixtures/faux-custody.mjs >/dev/null
 docker exec -i -e CANARY="$canary" -e TOKEN="$canary-AGENTRUN_TOKEN" "$name" node --input-type=module - <<'EOF'
@@ -33,7 +40,8 @@ for (let i = 0; ; i++) {
   if (i > 300) fail("the server never answered /v2/health");
   await sleep(200);
 }
-if ((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [] } })).status !== 201) fail("the agent was not made (the token did not reach the server?)");
+// On an OpenAI model (the faux model answers): OpenAI's key is the one key its run's process needs.
+if ((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status !== 201) fail("the agent was not made (the token did not reach the server?)");
 const run = (await api("POST", "/agents/custody/runs", { input: { content: "Report." } })).body;
 let view;
 for (let i = 0; (view = (await api("GET", `/runs/${run.run_id}`)).body).status !== "completed"; i++) {
@@ -41,7 +49,9 @@ for (let i = 0; (view = (await api("GET", `/runs/${run.run_id}`)).body).status !
   await sleep(200);
 }
 const report = JSON.parse(view.result.final_answer);
-if (report.handed.AGENT_MODEL_API_KEY === "none") fail("the run's process was not handed its model key");
+if (report.handed.OPENAI_API_KEY === "none") fail("the run's process was not handed its model key");
+const held = Object.entries(report.handed).filter(([, value]) => value !== "none").map(([name]) => name);
+if (held.join() !== "OPENAI_API_KEY") fail(`the run's process was handed ${held.join(", ")}, not its model's key alone`);
 if (report.inEnv.length) fail(`the run's process has ${report.inEnv.join(", ")} in its environment`);
 await api("POST", `/runs/${run.run_id}/messages`, { content: "Hold." });
 for (let i = 0; (await api("GET", `/runs/${run.run_id}`)).body.state !== "working"; i++) {

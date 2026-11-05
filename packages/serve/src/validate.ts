@@ -3,6 +3,7 @@ import { type InputIssue, invalid } from "./errors.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { placeIssues } from "./place.js";
+import { settingsIssues } from "./tool-plane.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SKILL_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/)(?!.*\/$)[^/\\\u0000][^\\\u0000]*$/;
@@ -11,21 +12,26 @@ export type Json = Record<string, unknown>;
 export const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** JSON with every object's keys sorted, so two equal values read the same. */
+/** How long an Idempotency-Key answers with its first answer (capabilities' limits.idempotency_ttl_s). */
+export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "skills", "tools"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "learning", "skills", "tools", "tool_settings", "max_cost_usd"];
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
   output_schema: "The agent store keeps no output_schema: a workflow run's output is its workflow's.",
-  max_cost_usd: "The agent store keeps no max_cost_usd on a definition: give one with each run.",
 };
 /** `provider/model-id`. */
 export const MODEL_REF = /^[^/\s]+\/\S+$/;
 const SKILL_FILE = "/SKILL.md";
 
 const issue = (field: string, reason: string, message: string, fix?: string): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });
+
+/** A body's fields that `allowed` does not name, each as the 422's not_allowed issue. */
+export const unknownFields = (body: object, allowed: readonly string[]): InputIssue[] =>
+  Object.keys(body).filter((key) => !allowed.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
 
 function names(value: unknown, field: string, out: InputIssue[]): void {
   if (!Array.isArray(value)) return void out.push(issue(field, "wrong_type", `${field} is not a list of names`));
@@ -66,8 +72,20 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     if (d.workflow !== undefined) out.push(issue(`${at}.thinking`, "not_allowed", "A workflow revision keeps no thinking level: each model node carries its own.", `Remove ${at}.thinking.`));
     else if (!(THINKING_LEVELS as readonly unknown[]).includes(d.thinking)) out.push(issue(`${at}.thinking`, "not_an_option", `${at}.thinking is one of ${THINKING_LEVELS.join(", ")}: thinking is never off`));
   }
+  if (d.learning !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.learning`, "not_allowed", "A workflow revision does not learn: only an agentic run reflects on its work.", `Remove ${at}.learning.`));
+    else if (typeof d.learning !== "boolean") out.push(issue(`${at}.learning`, "wrong_type", `${at}.learning is true or false`));
+  }
   if (d.skills !== undefined) names(d.skills, `${at}.skills`, out);
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);
+  // The agent's own tool settings, over the server's (tool-plane.ts); an edit that leaves them out keeps none.
+  if (d.tool_settings !== undefined) out.push(...settingsIssues(d.tool_settings, `${at}.tool_settings`));
+  // The agent's default cap of each run started without one of its own: above 0 sets it, 0 clears it (no default), and
+  // an edit that leaves it out keeps the agent's (agents.ts), so leaving a field out never removes a spend limit.
+  if (d.max_cost_usd !== undefined) {
+    if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
+    else if (d.workflow !== undefined && d.max_cost_usd > 0) out.push(issue(`${at}.max_cost_usd`, "not_allowed", "A workflow run's spend is not capped here, so a workflow revision keeps no max_cost_usd.", `Remove ${at}.max_cost_usd.`));
+  }
   return out;
 }
 

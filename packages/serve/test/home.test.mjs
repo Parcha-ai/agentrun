@@ -10,7 +10,13 @@ import { test } from "node:test";
 import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { homeKey, homeOf } from "../dist/files.js";
 import { workspaceTestHooks } from "../dist/workspace.js";
+import { ROUTES } from "../dist/server.js";
 import { agent, serve } from "./support.mjs";
+
+// A read under learning/ names the learning API only where this server has its route (next-step.test.mjs).
+const LEARNING_READ = ROUTES.some((route) => route.method === "GET" && route.pattern.test("/agents/keeper/learning"))
+  ? "the server keeps learning/ for itself: read it through /v2/agents/keeper/learning"
+  : "the server keeps learning/ for itself; this server has no learning API yet";
 
 /** A server with the agent `keeper`, and where its home is on disk. */
 async function served(t) {
@@ -170,7 +176,7 @@ test("learning/ is the server's in any case: a GET, PUT or DELETE there is 403 h
     for (const query of ["", "?download=1"]) {
       const read = await get(server, `${path}${query}`);
       assert.deepEqual([...refused(read), read.body.error?.details?.reason], [403, "system_file_forbidden", "host_owned"], `GET ${path}${query}`);
-      assert.equal(read.body.error.message, "read it through /v2/agents/keeper/learning");
+      assert.equal(read.body.error.message, LEARNING_READ);
       assert.ok(!read.bytes.toString().includes("Learned"), "no note is served");
     }
   }
@@ -201,7 +207,7 @@ test("a home path takes only plain segments, and a host-owned name in another sp
     for (const method of ["GET", "PUT", "DELETE"]) check(method, await raw(server, method, "keeper", encoded(path), method === "PUT" ? "x" : undefined));
   };
   // A segment holding a default-ignorable code point, or not in its NFC form, is no plain segment.
-  for (const path of ["learn\u200Cing/notes.md", "learn\u200Bing/notes.md", "learn\u00ADing/notes.md", "\uFEFFlearning/notes.md", "learnin\u0301g/x", "\u212Aeeper/x"]) {
+  for (const path of ["learn\u200Cing/notes.md", "learn\u200Bing/notes.md", "learn\u00ADing/notes.md", "\uFEFFlearning/notes.md", "learnin\u0301g/x", "\u212Aeeper/x", "a\u2060b/x", "a\u034Fb/x"]) {
     await each(path, (method, answer) => {
       assert.deepEqual(refused(answer), [400, "invalid_file_path"], `${method} ${JSON.stringify(path)}: ${JSON.stringify(answer.body)}`);
       assert.equal(answer.body.error.message, "a path segment must be plain text (NFC, no invisible characters)");
@@ -338,6 +344,6 @@ test("GET and PUT /agents/{id}/home stay the contract's 501, the new routes take
   assert.deepEqual(refused(await files({ ...server, token: "wrong-token" })), [401, "unauthenticated"]);
 
   const caps = (await server.api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.home, { disk: "local", host_owned: ["learning"], max_file_bytes: caps.limits.max_body_bytes, writes: process.platform === "linux" });
+  assert.deepEqual(caps.home, { disk: "local", host_owned: ["learning", "sign-ins"], max_file_bytes: caps.limits.max_body_bytes, writes: process.platform === "linux" });
   assert.deepEqual(caps.features.home, { export: false, import: false, check: false }, "the contract's packed home is still off");
 });

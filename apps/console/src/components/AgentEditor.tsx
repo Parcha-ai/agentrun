@@ -1,22 +1,29 @@
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { LearningField } from "@/components/LearningSwitch";
+import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
-import { type Agent, type AgentFields, createBody, DECISION, defaultTools, editBody, harnessOptions, isStarter, parseSkillBundle, readSkillFiles, reachesWeb, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, capOf, createBody, DECISION, defaultTools, editBody, harnessOptions, isStarter, parseSkillBundle, readSkillFiles, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { CodingAgentContext } from "@/lib/codingAgentHandoff";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
+import { newAgentPlace } from "@/lib/place";
+import type { Places } from "@/lib/place";
+import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
 /** `decisionProvider`: the decision provider a new decision agent's judge names (agentForm's decisionProvider); none when
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `modelSource`:
- *  capabilities' `models.source`, to read a gateway's routing prefix off its model ids. */
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; decisionProvider?: string; agents?: { create?: boolean; update?: boolean; revisions?: boolean }; archive?: boolean };
+ *  capabilities' `models.source`; `routePrefix`, its `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the
+ *  model the server runs for it when a definition names none (null: none). */
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; modelSource?: string; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; agents?: { create?: boolean; update?: boolean; revisions?: boolean }; archive?: boolean };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -37,8 +44,16 @@ export type EditorProps = {
   draft?: string;
   /** The server's check of a workflow as it is typed (POST /v2/workflows/validate). */
   validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
+  /** The capabilities with a provider choice (capabilities.tools): the Tools step's tool settings, for those the agent grants. */
+  providerChoices?: ToolChoice[];
+  /** Each tool's permission on this server (approvals/1), from capabilities: an agent's own is set over it. */
+  permissionGates?: ToolGate[];
+  /** A tool whose permission the Tools step opens on, focused (a start refused for it links here). */
+  focusTool?: string;
 };
 type Step = "context" | "workflow" | "tools" | "settings" | "history";
+/** The workflow in the form's text, when it parses; else undefined (the saved one stands). */
+const parsedWorkflow = (text: string | undefined): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
 
 /** A refused save's issues in the workflow: each 422 field under definition.workflow at its path, else the refusal's
  *  message for a workflow agent. */
@@ -59,19 +74,30 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [selectedStep, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
-  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [], ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
+  // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
+  const startPlace = creating ? newAgentPlace(caps.places) : undefined;
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // The form as it is now, for a save's answer to compare with what that save sent.
+  const formNow = useRef(f);
+  formNow.current = f;
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
+  // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays.
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
+  const placeKey = JSON.stringify(newAgentPlace(caps.places) ?? null);
   useEffect(() => {
-    if (creating && !toolsTouched) setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) }));
-  }, [toolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!creating) return;
+    setF((x) => {
+      const place = x.place ?? newAgentPlace(caps.places);
+      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
+    });
+  }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -84,7 +110,8 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
   // A workflow agent's past revision, opened from History as its read-only graph.
   const [viewing, setViewing] = useState<Revision | null>(null);
   const goTo = (s: Step) => { setViewing(null); setStep(s); };
-  const fieldError = (field: string) => (problem?.kind === "invalid" ? problem.fields[`definition.${field}`] : undefined);
+  // A refusal at the field, or at a part of it (`tools` takes `definition.tools[1]`), as its warnings are matched.
+  const fieldError = (field: string) => (problem?.kind === "invalid" ? Object.entries(problem.fields).filter(([k]) => k === `definition.${field}` || k.startsWith(`definition.${field}[`) || k.startsWith(`definition.${field}.`)).map(([, m]) => m).join(" ") || undefined : undefined);
   // What the save's answer said this host lacks to run the revision: all of it above the form, and each beside the field
   // it names (one the form does not show, such as a place, only above).
   const warnings = agent?.warnings ?? [];
@@ -105,7 +132,18 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
     if (!onSave || !maySave || saving || readingSkills) return;
     setSaving(true);
     // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
-    let fields: AgentFields = { ...f, workflowText: undefined };
+    let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
+    // The default cap, an agentic revision's only: the field's number. Emptied, an edit clears a saved cap with an explicit
+    // 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
+    if (!workflow && !starting) {
+      const cap = capOf(f.maxCostText);
+      if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
+      // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
+      // anyway would count as a change and make a revision the server refuses as unchanged.
+      const saved = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
+      const value = cap.value ?? 0;
+      if (value !== 0 || saved) fields = { ...fields, max_cost_usd: value };
+    }
     if (skillMode) {
       try {
         if (!creating && !skillConfirmed) throw new Error("Confirm that this complete bundle replaces the current revision's skill files.");
@@ -119,20 +157,31 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
     const p = await onSave(fields, note);
-    setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
+    // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
+    // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
+    const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
+    setSaving(false); setProblem(p); setSaved(!p && unchanged); if (!p) setNote("");
+    if (!p && unchanged) setF(({ tool_settings: _saved, ...rest }) => rest);
   };
-  // The tools that reach the web which this agent's harness runs here, for the notice when it has none of them.
   // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
   // off, the full id in a title.
-  const fallback = harnessDefault(f.harness ?? "pi", caps.defaultModel);
-  const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel }) : undefined;
+  const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses, caps.defaultModel);
+  const modelDefault = fallback ? modelLabel(fallback, { source: caps.modelSource, default: caps.defaultModel, route_prefix: caps.routePrefix }) : undefined;
+  // The tools that reach the web which this agent's harness runs here, for the Tools step's hint when it has none of them.
   const webHere = toolsFor(f.harness ?? "pi", caps.tools).filter((t) => reachesWeb([t.name])).map((t) => t.name);
   const handoff = (): CodingAgentContext => {
     let request: unknown;
     try {
-      const fields = { ...f, ...(workflow ? { workflow: JSON.parse(f.workflowText ?? "") } : {}), ...(skillMode ? { skillFiles: parseSkillBundle(skillText) } : {}) };
+      const fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined, ...(workflow ? { workflow: JSON.parse(f.workflowText ?? "") } : {}), ...(skillMode ? { skillFiles: parseSkillBundle(skillText) } : {}) };
+      if (!workflow && !starting) {
+        const cap = capOf(f.maxCostText);
+        if (!cap.ok) throw new Error(cap.message);
+        const savedCap = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
+        const value = cap.value ?? 0;
+        if (value !== 0 || savedCap) fields.max_cost_usd = value;
+      }
       if (agent) { const { unchanged: _unchanged, ...body } = editBody(agent, fields, note); request = body; }
-      else request = createBody({ name: f.name ?? "", description: f.description ?? "", instructions: f.instructions ?? "", harness: f.harness ?? "pi", tools: f.tools ?? [], thinking: f.thinking, model: f.model, decisionProvider: caps.decisionProvider, skillFiles: fields.skillFiles });
+      else request = createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model, tool_settings: fields.tool_settings, place: fields.place, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider, skillFiles: fields.skillFiles });
     } catch { request = { incomplete_draft: f, ...(skillMode ? { skill_files_json_draft: skillText } : {}) }; }
     return agent ? { kind: "edit", agentId: agent.agent_id, revision: agent.revision, request } : { kind: "create", request };
   };
@@ -141,11 +190,16 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
-        <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold">{creating ? "New agent" : d!.name}</h1>
-        {agent && <Chip>{agent.kind}</Chip>}
-        {agent && <span className="caps text-[11px] text-muted-foreground">{current ? `rev ${current.version} current · ` : ""}{agent.revisions} {agent.revisions === 1 ? "revision" : "revisions"}</span>}
+        <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
         {maySave && <CodingAgentHandoff context={handoff} serverUrl={serverUrl} />}
-        {agent && onArchive && caps.archive !== false && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
+        {/* The kind, revision count and Archive: a row of their own under the name on a phone, so the name keeps the width. */}
+        {agent && (
+          <div className="flex basis-full flex-wrap items-center gap-3 sm:basis-auto" role="group" aria-label="About this agent">
+            <Chip>{agent.kind}</Chip>
+            <span className="caps text-[11px] text-muted-foreground">{current ? `rev ${current.version} current · ` : ""}{agent.revisions} {agent.revisions === 1 ? "revision" : "revisions"}</span>
+            {onArchive && caps.archive !== false && <Button size="sm" variant={agent.archived_at ? "primary" : "outline"} onClick={() => onArchive(!agent.archived_at)}><Archive aria-hidden /> {agent.archived_at ? "Unarchive" : "Archive"}</Button>}
+          </div>
+        )}
       </header>
       {problem?.kind === "conflict" && (
         <div className="flex flex-wrap items-center gap-3 border-b bg-card px-5 py-3 md:px-8" role="alert">
@@ -163,13 +217,10 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
           </ul>
         </div>
       )}
-      {!workflow && !starting && !reachesWeb(f.tools ?? []) && (
-        <p className="border-b bg-card px-5 py-2.5 font-mono text-[12px] text-muted-foreground md:px-8">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
-      )}
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <ol className={cn("flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
+        <ol className={cn("relative flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
           {steps.map((s, i) => (
             <li key={s.id} className="shrink-0">
               <button type="button" aria-current={step === s.id ? "step" : undefined} onClick={() => goTo(s.id)}
@@ -181,7 +232,8 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
                   <span className="caps flex items-center gap-1.5 text-[12px]"><s.Icon className="size-3.5" aria-hidden /> {s.label}</span>
                   <span className="mt-0.5 block text-[11px] text-muted-foreground">{s.note}</span>
                 </span>
-                <span className="caps text-[12px] md:hidden">{s.label}</span>
+                {/* Below md the rail is a row across the top: step numbers only, so it fits a phone; the step's name heads the step. */}
+                <span className="sr-only md:hidden">{s.label}</span>
               </button>
             </li>
           ))}
@@ -192,11 +244,11 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
 
           {step === "context" && (
             <div className="max-w-3xl space-y-6">
-              <Field label="Name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
-                <input aria-label="Name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" className={cn(input, !creating && "text-muted-foreground")} />
+              <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
+                <input id="agent-name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
-              <Field label="Description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
-                <input aria-label="Description" value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
+              <Field label="Description" id="agent-description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
+                <input id="agent-description" value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
               {starting ? (
                 <Field label="Workflow">
@@ -209,10 +261,10 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
               ) : (
-                <Field label="Instructions" required error={fieldError("instructions")} warning={fieldWarning("instructions")}
+                <Field label="Instructions" id={preview ? undefined : "agent-instructions"} required error={fieldError("instructions")} warning={fieldWarning("instructions")}
                   aside={<span className="flex">{(["Preview", "Edit"] as const).map((m) => <button key={m} type="button" onClick={() => setPreview(m === "Preview")} className={cn("caps border px-2.5 py-1 text-[11px]", (m === "Preview") === preview ? "border-foreground bg-foreground text-background" : "text-muted-foreground")}>{m}</button>)}</span>}>
                   {preview ? <article className="report min-h-64 border p-4" dangerouslySetInnerHTML={{ __html: markdown(f.instructions || "") }} />
-                    : <textarea aria-label="Instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
+                    : <textarea id="agent-instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
                   <p className="mt-2 font-mono text-[11px] text-muted-foreground">{(f.instructions ?? "").length} characters</p>
                 </Field>
               )}
@@ -227,24 +279,42 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
           {step === "tools" && (
             <div className="max-w-3xl space-y-6">
               <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
-                <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
+                <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-2">
                   {caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name)).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
                     // names shows as such, to untick.
                     const runs = (workflow && t.call_only) || toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
                     const on = f.tools?.includes(t.name) ?? false;
-                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : !t.available ? `Needs ${(t.missing ?? []).join(", ")}` : undefined;
+                    // A tool the server's provider leaves unavailable runs here once this agent picks a provider of its own.
+                    const choice = providerChoices.find((c) => c.name === t.name);
+                    const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
+                    const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
+                    const why = t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? `Not on ${f.harness ?? "pi"} on this server` : sandboxReason(t, f.place ?? d?.place) ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
                     return (
                       <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
                         <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
                         <span className="min-w-0">{t.name}{why && <span className="ml-2 text-[11px] text-muted-foreground">{why}</span>}
-                          {t.summary && <span className="mt-0.5 line-clamp-2 block font-sans text-[11px] text-muted-foreground" title={t.summary}>{t.summary}</span>}</span>
+                          {t.summary && <Summary text={t.summary} />}</span>
                       </label></li>
                     );
                   })}
                 </ul>
+                {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
+                {!workflow && !reachesWeb(f.tools ?? []) && (
+                  <p className="mt-2 font-mono text-[12px] text-muted-foreground">This agent can't reach the web: {webHere.length ? `tick ${webHere.join(" or ")} in Tools.` : `${f.harness ?? "pi"} runs no web tool on this server.`}</p>
+                )}
               </Field>
+              {/* A workflow agent's tools have no provider here (a call node runs the tool as the server resolves it), but each
+                  one's permission is this agent's to set: a call node refused for a tool set to deny or ask is fixed here. */}
+              {(
+                <AgentToolSettings agent={agent} harness={f.harness ?? "pi"} model={f.model} tools={f.tools ?? []} choices={workflow ? [] : providerChoices} gates={permissionGates} focus={focusTool} callTools={workflow ? callNodeTools(parsedWorkflow(f.workflowText) ?? d?.workflow) : undefined}
+                  value={f.tool_settings ?? d?.tool_settings ?? {}} issues={problem?.kind === "invalid" ? problem.fields : {}}
+                  // Settings equal to the definition's are no change of the form's. While a save is under way the definition is
+                  // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
+                  onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? (setF(({ tool_settings: _gone, ...rest }) => rest), setSaved(false)) : set({ tool_settings: next }))} />
+              )}
               <Field label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
                 {d?.skills?.length ? <ul className="border">{d.skills.map((s) => <li key={s} className="border-b px-3 py-2 font-mono text-[13px] last:border-b-0">{s}</li>)}</ul>
                   : <p className="border px-3 py-4 font-mono text-[13px] text-muted-foreground">No skills.</p>}
@@ -277,13 +347,33 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
             <div className="max-w-3xl space-y-8">
               {!workflow && (
                 <Field label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
-                  <div className={cn("grid grid-cols-1 gap-3", COLUMNS[choices.length] ?? "sm:grid-cols-3")} role="radiogroup" aria-label="Harness">
-                    {choices.map((h) => (
-                      <label key={h.id} title={h.reason} className={cn("flex items-start gap-3 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border", h.available ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
-                        <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
-                        <span><span className="block font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : h.reason}</span></span>
-                      </label>
-                    ))}
+                  {/* Cards by a minimum width: they wrap to more rows in a narrow pane (a phone on its side), never squeezed. */}
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
+                    {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
+                        briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
+                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
+                    {choices.map((h) => {
+                      const row = (
+                        <>
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools, f.place) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
+                          <span className="min-w-0"><span className="block break-words font-mono text-[13px] font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
+                        </>
+                      );
+                      const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
+                      return h.available ? (
+                        <label key={h.id} className={cn(edge, "flex cursor-pointer items-start gap-3")}>{row}</label>
+                      ) : (
+                        <div key={h.id} className={cn(edge, "opacity-60")}>
+                          <label className="flex cursor-not-allowed items-start gap-3">{row}</label>
+                          {h.reason && (
+                            <details className="mt-2 font-mono text-[11px] text-muted-foreground">
+                              <summary className="cursor-pointer select-none hover:text-foreground">Why, and what to do</summary>
+                              <p className="mt-1 break-words leading-[1.6]">{h.reason}</p>
+                            </details>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </Field>
               )}
@@ -299,10 +389,17 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
                 </Field>
               )}
               {!workflow && !starting && (
-                <Field label="Model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
-                  <input aria-label="Model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
+                <Field label="Model" id="agent-model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
+                  <input id="agent-model" value={f.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} placeholder="provider/model" className={input} />
                 </Field>
               )}
+              {!workflow && !starting && (
+                <Field label="Default spend cap per run, $" id="agent-max-cost" optional note="A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none." error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                  <input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" className={input} />
+                </Field>
+              )}
+              {!workflow && !starting && caps.places && <PlaceSetting value={f.place} saved={d?.place} places={caps.places} tools={caps.tools} picked={f.tools ?? []} onChange={set} error={fieldError("place")} warning={fieldWarning("place")} />}
+              {!workflow && !starting && caps.learning && <LearningField fields={f} onFields={set} saved={d?.learning} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />}
             </div>
           )}
 
@@ -346,16 +443,17 @@ export function AgentEditor({ agent, revisions = [], caps, serverUrl, onSave, on
   );
 }
 
-/** The harness picker's columns on a wide screen, one per choice: literal class names, so Tailwind keeps them. */
-const COLUMNS: Record<number, string> = { 1: "sm:grid-cols-1", 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" };
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
-function Field({ label, required, optional, note, error, warning, aside, children }: { label: string; required?: boolean; optional?: boolean; note?: React.ReactNode; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
+function Field({ label, id, required, optional, note, error, warning, aside, children }: { label: string; id?: string; required?: boolean; optional?: boolean; note?: React.ReactNode; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
+  // `id`: the one input this field holds, which its label names. A field of several controls (a list, a radio group)
+  // names them its own way, so its heading is no label.
+  const Heading = id ? "label" : "span";
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="caps text-[12px] font-semibold">{label}{required && <span className="text-destructive-text"> *</span>}{optional && <span className="font-normal normal-case text-muted-foreground"> (optional)</span>}</span>
+        <Heading {...(id ? { htmlFor: id } : {})} className="caps text-[12px] font-semibold">{label}{required && <span className="text-destructive-text"> *</span>}{optional && <span className="font-normal normal-case text-muted-foreground"> (optional)</span>}</Heading>
         {aside}
       </div>
       {note && <p className="-mt-1 mb-2 text-[12px] text-muted-foreground">{note}</p>}
@@ -363,5 +461,19 @@ function Field({ label, required, optional, note, error, warning, aside, childre
       {error && <p className="mt-2 font-mono text-[12px] text-destructive-text" role="alert">{error}</p>}
       {warning && <p className="mt-2 font-mono text-[12px] text-warning-text">{warning}</p>}
     </div>
+  );
+}
+
+/** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
+ *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */
+function Summary({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="mt-0.5 block font-sans text-[11px] text-muted-foreground">
+      <span className={open ? undefined : "line-clamp-2"} title={text}>{text}</span>
+      {text.length > 120 && (
+        <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}>{open ? "less" : "more"}</button>
+      )}
+    </span>
   );
 }

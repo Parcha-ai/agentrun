@@ -6,10 +6,24 @@
 // file with a second hard link is refused, since it could be one of this server's own files linked in.
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
-import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { access, type FileHandle, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { dirname, extname, join, resolve } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
-import { syncDir, writeDurable } from "./files.js";
+import { RUN_META, syncDir, writeDurable } from "./files.js";
+import { remotePlace, storedPlace } from "./place.js";
+
+/** The type a file is served as, by its extension: a run's files, a home's, and an upload whose reservation names none.
+ *  A Map, so only its own extensions resolve: an object's would also give its prototype's (`.constructor`, `.__proto__`). */
+const TYPES: ReadonlyMap<string, string> = new Map(Object.entries({
+  txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
+  html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
+  mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac", m4a: "audio/mp4", ogg: "audio/ogg", oga: "audio/ogg", weba: "audio/webm",
+  mp4: "video/mp4", webm: "video/webm", ogv: "video/ogg",
+}));
+/** The document and image types served inline; PDF, media and unknown types are downloads. */
+export const INLINE_TYPES: ReadonlySet<string> = new Set([...TYPES.values()].filter((type) => type !== "application/pdf" && !type.startsWith("audio/") && !type.startsWith("video/")));
+/** The type of a file at `path`, by its extension; undefined for one the table does not know. */
+export const typeOf = (path: string): string | undefined => TYPES.get(extname(path).slice(1).toLowerCase());
 
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
  *  it has another hard link, it is larger than the reader takes, or it is unreadable to this server (a tool in the box
@@ -236,14 +250,18 @@ async function entryOf(pin: { entry: string }, refuse: (error: unknown) => never
  * Writes `bytes` to `rel` under `work` whole and durably (files.ts writeDurable), as a file of `mode`: through a temporary
  * file in the same directory, a dot-name of the server's own, renamed over the file. The directories on the way are made
  * when missing, and each is synced into its parent before this resolves. A link on the way or at the file, or a directory
- * there, is refused: never followed and never replaced. Answers the stats of the file this call wrote.
+ * there, is refused: never followed and never replaced. Answers the stats of the file this call wrote. `asTool`, a run's
+ * file tool writing a bound box's work/ (bound-files.ts): a file with another hard link is refused, a file already there
+ * keeps its mode, and a new one gets `mode` as given, whatever this process's umask.
  */
-export async function writeWorkFile(work: string, rel: string, bytes: Uint8Array, mode = 0o600): Promise<Stats> {
+export async function writeWorkFile(work: string, rel: string, bytes: Uint8Array, mode = 0o600, asTool = false): Promise<Stats> {
   const { pin, refuse, real, making } = await pinForWrite(work, rel, true);
   try {
-    await entryOf(pin, refuse, rel);
+    const before = await entryOf(pin, refuse, rel);
+    if (asTool && before && before.nlink !== 1) throw new WorkRefused(rel, "hard_link");
+    const kept = asTool && before ? before.mode & 0o777 : mode;
     // A link swapped in after that check is replaced by the rename, never written through.
-    const stats = await writeDurable(pin.entry, bytes, mode, `${pin.dir}/.agentrun-${process.pid}-${randomBytes(6).toString("hex")}.tmp`).catch(refuse);
+    const stats = await writeDurable(pin.entry, bytes, kept, `${pin.dir}/.agentrun-${process.pid}-${randomBytes(6).toString("hex")}.tmp`, asTool).catch(refuse);
     // writeDurable synced the file's own directory; a directory made above it survives a crash once its parent is synced.
     if (making) {
       let at = real;
@@ -281,4 +299,64 @@ export function assertHardlinkProtection(read = () => readFileSync("/proc/sys/fs
     throw new Error(`agentrun-serve: fs.protected_hardlinks cannot be read (${(error as Error).message}); a run's workspace could hold a link to this server's files`);
   }
   if (value !== "1") throw new Error(`agentrun-serve: fs.protected_hardlinks is ${value}, not 1; a run's workspace could hold a link to this server's files`);
+}
+
+const NO_LINK_DIR = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+const NEW_FILE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+
+/** Whether the run whose work/ is `work` runs in a box that binds it, by the place its start kept (serve.json beside
+ *  work/). A remote box's commands never reach this machine's work/: what comes back from it is pulled, and a pull writes
+ *  no link. */
+function boxedRun(work: string): boolean {
+  try {
+    const place = storedPlace((JSON.parse(readFileSync(join(dirname(work), RUN_META), "utf8")) as { place?: unknown }).place);
+    return place.mode === "sandbox" && !remotePlace(place);
+  } catch {
+    return false;
+  }
+}
+
+type Mirror = (path: string, data: string | Uint8Array) => Promise<void>;
+const mirrors = new Map<string, Mirror>();
+/** In a run's process whose box is remote: each file writeInWork files below `work` is copied into the box as well, at the
+ *  same path below its work/ (run-box.ts), so the run's tools there read what its host tools filed. */
+export function mirrorWrites(work: string, mirror: Mirror): void {
+  mirrors.set(resolve(work), mirror);
+}
+
+/** Writes `data` as a new file `name` in `dirs` below a run's `work`, never through a link: a box's command can plant one
+ *  there, and this process writes with the server's rights. Each directory is made when missing and opened without
+ *  following a link, the next reached through the one held before it (/proc/self/fd), and the file is created, never
+ *  replaced: a link in the way refuses the write (ELOOP, ENOTDIR or EEXIST). Where no handle is held (writesHeld: macOS
+ *  and any host without /proc/self/fd) each step is reached by its path, which a link swapped in between two steps could
+ *  turn: there a run whose place is a box gets no write (ENOTSUP), and a runner run, whose tools make no link, still
+ *  writes by path. */
+export async function writeInWork(work: string, dirs: readonly string[], name: string, data: string | Uint8Array): Promise<void> {
+  const byHandle = writesHeld();
+  if (!byHandle && boxedRun(work)) throw Object.assign(new Error("this host reaches a run's directories by path, which a box's command could turn through a link"), { code: "ENOTSUP" });
+  let dir = await open(work, NO_LINK_DIR);
+  let path = work;
+  const below = (part: string) => (byHandle ? `/proc/self/fd/${dir.fd}/${part}` : join(path, part));
+  try {
+    for (const part of dirs) {
+      await mkdir(below(part)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+      const next = await open(below(part), NO_LINK_DIR);
+      await dir.close();
+      [dir, path] = [next, join(path, part)];
+    }
+    const file = await open(below(name), NEW_FILE, 0o644);
+    try {
+      await file.writeFile(data);
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await dir.close();
+  }
+  // The box's copy is a convenience to its tools; the file filed here is the record, and stands whatever the copy does.
+  await mirrors.get(resolve(work))?.([...dirs, name].join("/"), data).catch((error: Error) => {
+    process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "box_mirror_failed", message: `${[...dirs, name].join("/")} was filed in work/ but not copied into the run's box: ${error?.message ?? String(error)}` })}\n`);
+  });
 }

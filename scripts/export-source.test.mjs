@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/learn': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/harness': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/learn': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/harness': {}, 'packages/agentrun': {},
   } }));
   await write('apps/console/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { 'public-ui': '1.0.0' } }, 'node_modules/public-ui': { version: '1.0.0', license: 'MIT' } } }));
   await write('docs/guide.md', '# Public fixture\n');
@@ -244,7 +244,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -264,12 +264,39 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
   assert.match(withRuntime.toString('utf8'), /runtime-lib/);
 });
 
+// OpenCode's per-platform binary packages publish no `license` field; their source, anomalyco/opencode at the pinned
+// release, is MIT, as `opencode-ai` itself declares. The inventory reads them as MIT by name AND version: a bumped
+// version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
+test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
+  const f = await fixture(t);
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
+    '': {},
+    ...workspaces,
+    'packages/serve': { optionalDependencies: { 'opencode-linux-x64': version } },
+    'node_modules/opencode-linux-x64': { version, optional: true },
+  } });
+  const inventory = async version => {
+    await f.write('package-lock.json', lock(version));
+    await f.run('--inventory-only');
+    return readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  };
+  const pinned = await inventory('1.19.5');
+  assert.deepEqual(
+    [/\| opencode-linux-x64 \| 1\.19\.5 \| MIT \|/.test(pinned), /opencode-linux-x64@1\.19\.5:\*\* UNKNOWN/.test(pinned)],
+    [true, false],
+    'the pinned binary reads MIT and is not flagged',
+  );
+  const bumped = await inventory('1.19.6');
+  assert.match(bumped, /opencode-linux-x64@1\.19\.6:\*\* UNKNOWN — Missing license metadata/, 'a bumped binary is read as its manifest says, and flagged until checked');
+});
+
 // An auth library names a test runner as an optional peer; the lock records the runner because the repository develops with it,
 // and the runner pulls a bundler whose CSS engine is MPL-2.0. No consumer of the library installs any of them. A workspace
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
   'packages/pi-vision': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },

@@ -26,7 +26,15 @@ assert.equal(lock.lockfileVersion, 3, 'Source inventory requires package-lock v3
 // names), and it ships only where a runtime dependency requires it, which that dependency's own edge reaches. A workspace
 // package's optional peers (the host it runs in, an adapter's SDK) are followed.
 const entries = lock.packages;
-const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
+// Licenses a package's manifest does not declare, read from its own published source, by name AND pinned version: a
+// bumped version is read as its manifest says again (UNKNOWN, flagged) until someone checks it and pins it here.
+// OpenCode's per-platform binaries (optional dependencies of `opencode-ai`, which declares MIT) publish no `license`;
+// they are built from anomalyco/opencode, MIT, at the release they are pinned to:
+// https://github.com/anomalyco/opencode/blob/810c0eba1a7348036f8bdf61e6632d0c36c6876c/LICENSE (v1.19.5).
+const OPENCODE_LICENSE = 'https://github.com/anomalyco/opencode/blob/810c0eba1a7348036f8bdf61e6632d0c36c6876c/LICENSE';
+const LICENSE_FROM_SOURCE = new Map(['darwin-arm64', 'darwin-x64', 'darwin-x64-baseline', 'linux-arm64', 'linux-arm64-musl', 'linux-x64', 'linux-x64-baseline', 'linux-x64-baseline-musl', 'linux-x64-musl', 'windows-arm64', 'windows-x64', 'windows-x64-baseline']
+  .map(platform => [`opencode-${platform}@1.19.5`, { license: 'MIT', source: OPENCODE_LICENSE }]));
+const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'];
 const inventory = new Map();
 const unresolved = [];
 function resolveDependency(from, name, packageEntries = entries) {
@@ -46,8 +54,9 @@ function inventoryConsumer(consumer, start, packageEntries = entries, prefix = '
     if (location.includes('node_modules/')) {
       const name = pkg.name ?? location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
       const key = `${name}@${pkg.version}`;
-      const row = inventory.get(key) ?? { name, version: pkg.version, license: pkg.license ?? 'UNKNOWN', consumers: new Set(), locations: new Set(), optional: true };
-      assert.equal(row.license, pkg.license ?? 'UNKNOWN', `Conflicting license metadata for ${key}`);
+      const license = pkg.license ?? LICENSE_FROM_SOURCE.get(key)?.license ?? 'UNKNOWN';
+      const row = inventory.get(key) ?? { name, version: pkg.version, license, consumers: new Set(), locations: new Set(), optional: true };
+      assert.equal(row.license, license, `Conflicting license metadata for ${key}`);
       row.consumers.add(consumer); row.locations.add(prefix + location); row.optional &&= pkg.optional === true;
       inventory.set(key, row);
     }
@@ -85,6 +94,7 @@ for (const app of (await readdir(join(root, 'apps'), { withFileTypes: true }).ca
   }
 }
 const flagged = [...rows, ...vendored.flatMap(row => row.licenses.map(license => ({ ...row, license })))].filter(row => !permissive.has(row.license)).map(row => ({ name: row.name, version: row.version, license: row.license, reason: row.license === 'UNKNOWN' ? 'Missing license metadata' : /GPL|AGPL|LGPL|SSPL|BUSL|BSL|UNLICENSED/i.test(row.license) ? 'Restrictive or reciprocal metadata needs release-owner review' : 'License expression needs release-owner review' }));
+const fromSource = rows.filter(row => !entries[row.locations[0]]?.license && LICENSE_FROM_SOURCE.has(`${row.name}@${row.version}`)).map(row => ({ ...row, source: LICENSE_FROM_SOURCE.get(`${row.name}@${row.version}`).source }));
 const missingOptional = [...new Map(unresolved.map(item => [`${item.from}:${item.dependency}`, item])).values()];
 const licenses = [...new Set(rows.map(row => row.license))].sort();
 const cell = value => String(value).replace(/\|/g, '\\|').replace(/\n/g, ' ');
@@ -101,6 +111,7 @@ ${rows.length} distinct third-party package/version pairs across ${rows.reduce((
 ## Release review
 
 ${flagged.length ? flagged.map(row => `- **${cell(row.name)}@${cell(row.version)}:** ${cell(row.license)} — ${row.reason}.`).join('\n') : 'No missing, restrictive, reciprocal, or unrecognized license identifiers were found in this runtime lockfile graph.'}
+${fromSource.length ? `\n${[...Map.groupBy(fromSource, row => `${row.license} ${row.source}`).values()].map(group => `Read from the packages' own source, their manifests declaring no license: ${group.map(row => `\`${cell(row.name)}@${cell(row.version)}\``).join(', ')}: ${cell(group[0].license)}, ${group[0].source}.`).join('\n')}\n` : ''}
 
 AgentRun's own license is declared in its package manifests, separately from this third-party inventory. This table records package metadata, not an approval to redistribute. The release owner must confirm source rights, inspect applicable license texts, and preserve required notices.
 
@@ -183,7 +194,7 @@ async function collect(relative = '') {
     if (entry.isDirectory()) { await collect(path); continue; }
     if (!entry.isFile()) throw new Error(`Source export refuses special file: ${path}`);
     const ext = extension(path);
-    const isText = /^apps\/console\/(?:LICENSE|NOTICE)$/.test(path) || entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser|pi-vision|pi-transport|pi-durable-agent|serve|pi-git-remote|pi-agent-learn|learn|decisions|run-adapters|run-adapters-claude-agent|run-adapters-codex|harness)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/serve/launcher/agentrun-serve' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'packages/serve/docker/Dockerfile' || path === '.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS' || /^packages\/run-adapters(?:-[a-z0-9-]+)?\/vendor\/durable-harness\/port\/patches\/[a-z0-9-]+\/\d{3}-[a-z0-9-]+\.patch$/.test(path);
+    const isText = /^apps\/console\/(?:LICENSE|NOTICE)$/.test(path) || entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser|pi-vision|pi-transport|pi-durable-agent|serve|pi-git-remote|pi-agent-learn|learn|decisions|run-adapters|run-adapters-claude-agent|run-adapters-codex|harness|agentrun)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/serve/launcher/agentrun-serve' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'packages/serve/docker/Dockerfile' || path === '.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS' || /^packages\/run-adapters(?:-[a-z0-9-]+)?\/vendor\/durable-harness\/port\/patches\/[a-z0-9-]+\/\d{3}-[a-z0-9-]+\.patch$/.test(path);
     if (!isText && !binaryExtensions.has(ext)) throw new Error(`Unreviewed source-export file type: ${path}`);
     const bytes = await readFile(join(root, path));
     if (ext === '.pdf' && !assetsLines.some(line => line.includes(`\`${path.split('/').at(-1)}\``) && line.includes(sha256(bytes)))) throw new Error(`Unreviewed PDF: ${path} is not in ASSETS.md with its SHA-256 ${sha256(bytes)} on its line`);

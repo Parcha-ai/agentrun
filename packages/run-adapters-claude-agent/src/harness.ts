@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search
+// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments, 008-tool-description-max, 009-tool-result-barrier-and-refusals, 010-served-tools-with-images, 011-session-skills, 013-recovery-note-system-prompt, 015-web-search, 016-mcp-output-tokens, 017-key-refused, 019-recovery-covers
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -35,7 +35,7 @@ import { durableEnv, nativeModelId } from './env.js';
 import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
-import { toolServer } from './host/tool-server.js';
+import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
@@ -455,6 +455,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         onCap: (cap) => {
           if (cap !== 'concurrency') ctx.halt?.(spendCapped(cap));
         },
+        // A refused key fails the turn at the provider's first 401, in the words the CLI would end on after its retries.
+        onKeyRefused: (detail) => ctx.halt?.(new Error(`Failed to authenticate. API Error: 401${detail ? ` ${detail}` : ''}`)),
         // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
         ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-agent gateway: ${message}`, fields) } : {}),
       });
@@ -668,6 +670,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
           ...(sandbox.env ? { extra: sandbox.env } : {}),
           toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
+          // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).
+          mcpOutputTokens: MCP_OUTPUT_TOKENS,
         });
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
@@ -726,7 +730,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const q = query({ prompt: input, options: queryOptions });
         const messages = q[Symbol.asyncIterator]();
 
-        const send = async (text: string, placed: Submission[], how: { synthetic?: string; priority?: 'next' | 'later' } = {}) => {
+        const send = async (text: string, placed: Submission[], how: { synthetic?: string; priority?: 'next' | 'later'; covers?: string[] } = {}) => {
           // The drive's first message says, once, what the sandbox told it (a lost Drive).
           if (notes) {
             if (!how.synthetic) store.message({ type: 'message', role: 'user', text: notes, synthetic: 'environment' });
@@ -748,6 +752,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // A new turn's spend is keyed by its first submission; a steer joins the turn it steers, and a recovery note keeps the key of the turn it resumes (set before).
           if (first && how.priority !== 'next' && !how.synthetic) ledger.turn(first);
           const uuid = !first ? randomUUID() : how.synthetic ? uuidFrom(`note:${first}`) : uuidFrom(first);
+          // A recovery message carries placed prompts' words: which, under its uuid, before it goes (lostPrompts reads it).
+          if (how.covers?.length) await ctx.effect(`covers:${uuid}`, { name: 'covers', replay: 'safe', input: { ids: how.covers } }, async () => true);
           outstanding.add(uuid);
           input.push({
             type: 'user',
@@ -869,7 +875,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             if (open) ledger.turn(open.placed[0] ?? `open:${open.since}`);
             // The CLI answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
             ctx.live(restartEvent(note.turn));
-            await send(recoveryUserTurn(ctx.state(), store, note.pending), note.pending, { synthetic: 'recovery' });
+            const covers = [...(open ? lostPrompts(ctx.state(), open.placed, store) : []), ...note.pending.map((s) => s.id)];
+            await send(recoveryUserTurn(ctx.state(), store, note.pending), note.pending, { synthetic: 'recovery', covers });
             await runTurn();
           }
           // The inbox, one submission per turn.
@@ -1019,8 +1026,10 @@ const RECOVERY_STATUS: Record<NonNullable<ReturnType<typeof recoveryNote>>['call
  */
 export function lostPrompts(state: SessionState, placed: string[], store: Pick<JournalSessionStore, 'hasUser'>): string[] {
   const said = new Set(state.submissions.filter((s) => s.kind === 'prompt' || s.kind === 'steer' || s.kind === 'followUp').map((s) => s.id));
+  // A prompt a recovery message carried (its cover, by the message's uuid) is recorded once the transcript holds that message.
+  const covered = new Set(state.effectOrder.filter((e) => e.name === 'covers' && e.key.startsWith('covers:') && store.hasUser(e.key.slice('covers:'.length))).flatMap((e) => (e.input as { ids?: string[] } | undefined)?.ids ?? []));
   return placed.filter((id) => {
-    if (!said.has(id)) return false;
+    if (!said.has(id) || covered.has(id)) return false;
     const placement = state.effectOrder.find((e) => e.name === 'place' && e.key.startsWith('place:') && e.placed.includes(id));
     const first = placement ? placement.key.slice('place:'.length) : id;
     return !store.hasUser(uuidFrom(first)) && !store.hasUser(uuidFrom(`note:${first}`));

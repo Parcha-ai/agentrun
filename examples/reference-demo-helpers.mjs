@@ -82,7 +82,8 @@ export const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).h
 
 export const BASELINE = new WeakMap();
 
-export async function run(t, spec, argv, env = {}) {
+/** `own`: demo options of the test's own (a place, say), over the fixture's. */
+export async function run(t, spec, argv, env = {}, own = {}) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-demo-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'demo.json');
@@ -98,7 +99,7 @@ export async function run(t, spec, argv, env = {}) {
   // The supervisor needs the same fakes and job the fixture runs (it serves the fake browser's pages): the fixture's own module, imported.
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const recording = join(tmp, 'recording');
-  const result = await fixtureDemo({ ...options, argv: ['--record', recording, ...argv] });
+  const result = await fixtureDemo({ ...options, ...own, argv: ['--record', recording, ...argv] });
   return { result, recording, tmp };
 }
 

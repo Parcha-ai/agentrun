@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import {
@@ -30,13 +34,53 @@ export type DockerBoxesOptions = {
 	readonly docker?: string;
 	/** Image for a spec that names none. Default `debian:bookworm-slim`. */
 	readonly image?: string;
+	/**
+	 * Every box drops every capability (`--cap-drop ALL`) and gains none (`--security-opt no-new-privileges`), for a host
+	 * whose boxes' programs never change user: a box run as root then cannot make a device node in a directory it binds,
+	 * and no setuid or file-capability program gives it a privilege. A box `attach` finds that was made without it (by an
+	 * older version) is ended, not attached, so the caller makes a new one. Default: Docker's own set, which a launcher
+	 * that drops from root to another user (setpriv, runuser) needs.
+	 */
+	readonly dropCapabilities?: boolean;
+	/**
+	 * The user every program of a box runs as, `uid:gid` or `uid` (Docker's `--user`). Default: the image's. A host that
+	 * binds its own directories in names its own ids, so what the box writes there stays the host's to manage.
+	 */
+	readonly user?: string;
+	/**
+	 * The CPUs a box may use, such as `2` or `1.5`, at least `0.01`, for a spec that names no `cpus`. Default: no limit. A
+	 * box's CPUs, these or the spec's, are the CFS quota `--cpus` would set (`--cpu-period 100000 --cpu-quota <cpus x
+	 * 100000>`), which Docker never checks against the CPUs it has: more than a VM's daemon has is no tighter than the VM,
+	 * and a host with no CPU controller (rootless Docker without it delegated) drops it with a warning, where `--cpus` fails.
+	 */
+	readonly cpus?: number;
+	/**
+	 * The memory a box may use, for a spec that names no `memoryMb`: a whole number of bytes, or Docker's own size, a
+	 * number and `b`, `k`, `m` or `g` (`512m`, `4g`; a `k` is 1024 bytes). Default: no limit. A box's memory, this or the
+	 * spec's, is also its memory and swap together (`--memory-swap` the same), so swap never adds to it.
+	 */
+	readonly memory?: number | string;
+	/**
+	 * The most processes and threads a box may have at once (`--pids-limit`), where a fork bomb stops: 1 to 4194304, the
+	 * kernel's most. Default: no limit.
+	 */
+	readonly pidsLimit?: number;
 };
 
 type Inspected = {
 	readonly Id: string;
 	readonly State: { readonly Running: boolean; readonly ExitCode: number };
 	readonly Config: { readonly Labels: Record<string, string> | null };
+	readonly HostConfig?: {
+		readonly CapDrop?: readonly string[] | null;
+		readonly SecurityOpt?: readonly string[] | null;
+	};
 };
+
+/** Whether a container was made as dropCapabilities makes one: every capability dropped, no new privilege. */
+const hardened = (inspected: Inspected): boolean =>
+	(inspected.HostConfig?.CapDrop ?? []).some((cap) => cap.toUpperCase() === "ALL") &&
+	(inspected.HostConfig?.SecurityOpt ?? []).some((opt) => /^no-new-privileges([:=]true)?$/.test(opt));
 
 /** A box that is one Docker container. Its first process is a sleep of the box's lifetime, so Docker ends it. */
 class DockerBox implements Box {
@@ -148,6 +192,41 @@ function parseFacts(label: string | undefined): BoxFacts | undefined {
 	}
 }
 
+/** A daemon address on this machine: a unix socket (or a Windows named pipe). */
+const LOCAL_HOST = /^(unix|npipe):\/\//;
+
+/**
+ * Where the docker CLI's daemon is: DOCKER_HOST, the context DOCKER_CONTEXT names, else the config's `currentContext`
+ * (`$DOCKER_CONFIG/config.json`, default `~/.docker`). No setting, a unix socket and the `default` context are this
+ * machine; any other address (tcp://, ssh://) is another one, and so is a context whose record
+ * (`contexts/meta/<sha256 of its name>/meta.json`) does not name a unix socket or cannot be read. With both DOCKER_HOST
+ * and DOCKER_CONTEXT set, both must be this machine. `named` is the setting that points away, and `fix` what brings it
+ * back.
+ */
+export function dockerDaemon(env: NodeJS.ProcessEnv): { local: true } | { local: false; named: string; fix: string } {
+	const host = env.DOCKER_HOST ?? "";
+	if (host !== "" && !LOCAL_HOST.test(host))
+		return { local: false, named: `DOCKER_HOST=${host}`, fix: "unset DOCKER_HOST" };
+	// DOCKER_HOST wins over the config's current context; with DOCKER_CONTEXT set too, CLI versions differ on which wins,
+	// so that context must be this machine as well.
+	if (host !== "" && !env.DOCKER_CONTEXT) return { local: true };
+	const config = env.DOCKER_CONFIG || join(homedir(), ".docker");
+	const read = (path: string): unknown => {
+		try {
+			return JSON.parse(readFileSync(path, "utf8"));
+		} catch {
+			return undefined;
+		}
+	};
+	const current = (read(join(config, "config.json")) as { currentContext?: unknown } | undefined)?.currentContext;
+	const name = env.DOCKER_CONTEXT || (typeof current === "string" ? current : "");
+	if (name === "" || name === "default") return { local: true };
+	const meta = read(join(config, "contexts", "meta", createHash("sha256").update(name).digest("hex"), "meta.json"));
+	const endpoint = (meta as { Endpoints?: { docker?: { Host?: unknown } } } | undefined)?.Endpoints?.docker?.Host;
+	if (typeof endpoint === "string" && LOCAL_HOST.test(endpoint)) return { local: true };
+	return { local: false, named: `docker context ${name}`, fix: "use the default docker context" };
+}
+
 /** `not_found` for a mount whose source this machine does not have, before Docker is asked: `-v` would make it an empty directory. */
 async function checkSources(mounts: readonly ParsedMount[]): Promise<BoxError | undefined> {
 	for (const { source } of mounts) {
@@ -166,6 +245,43 @@ async function checkSources(mounts: readonly ParsedMount[]): Promise<BoxError | 
 		}
 	}
 	return undefined;
+}
+
+/** The CFS period of a box's CPU quota, in µs: `--cpus`'s own. */
+const CPU_PERIOD_US = 100_000;
+/** The fewest CPUs a quota can give: the kernel's least quota is 1 ms of each period. */
+const MIN_CPUS = 0.01;
+/** CPUs a quota can give: at least 0.01, and few enough that the quota is a whole number of µs Docker reads. */
+const quotaCpus = (cpus: unknown): cpus is number =>
+	typeof cpus === "number" && cpus >= MIN_CPUS && Number.isSafeInteger(Math.round(cpus * CPU_PERIOD_US));
+/** The most processes a cgroup may be given (the kernel's PID_MAX_LIMIT): a larger `--pids-limit` fails the create. */
+const MAX_PIDS = 4_194_304;
+const MIB = 1024 * 1024;
+const SIZE_UNITS: Readonly<Record<string, number>> = { "": 1, b: 1, k: 1024, m: MIB, g: 1024 * MIB };
+
+/** `memory` in bytes, when it is a positive whole number of bytes or a size Docker reads (`512m`, `4g`), else `undefined`. */
+function memoryBytes(memory: number | string): number | undefined {
+	if (typeof memory === "number") return Number.isSafeInteger(memory) && memory > 0 ? memory : undefined;
+	if (typeof memory !== "string") return undefined;
+	const size = /^(\d+(?:\.\d+)?)([bkmg]?)$/i.exec(memory);
+	// Docker's own reading: the number times the unit, its fraction of a byte dropped.
+	const bytes = size ? Math.floor(Number(size[1]) * (SIZE_UNITS[(size[2] ?? "").toLowerCase()] ?? 1)) : 0;
+	return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+}
+
+/** A value as an error names it: a string as JSON, so an empty one shows; a number as JavaScript writes it. */
+const shown = (value: unknown): string => (typeof value === "string" ? JSON.stringify(value) : String(value));
+
+/** The memory option as Docker's flag and as the facts' MiB; throws for a value that is not one. */
+function memoryOption(memory: number | string | undefined): { flag: string; mb: number } | undefined {
+	if (memory === undefined) return undefined;
+	const bytes = memoryBytes(memory);
+	if (bytes === undefined) {
+		throw new Error(
+			`the docker memory ${shown(memory)} is not a positive whole number of bytes, nor a size such as 512m or 4g`,
+		);
+	}
+	return { flag: String(memory), mb: Math.floor(bytes / MIB) };
 }
 
 function createError(stderr: string): BoxError {
@@ -187,13 +303,33 @@ function createError(stderr: string): BoxError {
  * makes a missing source an empty directory: a source this machine does not have is refused with `not_found` before Docker is
  * asked. The paths go to Docker as given, never resolved here, so the caller passes canonical ones. The daemon must run on this
  * machine, where the sources are checked.
+ *
+ * The options' `cpus`, `memory` and `pidsLimit` bound every box (a CFS quota, `--memory` with `--memory-swap` the same,
+ * and `--pids-limit`); a spec's own `cpus` or `memoryMb` takes the place of the option's, and `facts()` says what a box got.
+ * A value out of its bounds (under 0.01 CPUs, a memory that is not a positive size, a `pidsLimit` outside 1 to 4194304)
+ * throws here, before any box.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
+	// Read once, as the docker CLI this provider runs reads them: a daemon on another machine binds none of this one's paths.
+	const daemon = dockerDaemon(process.env);
+	if (options.user !== undefined && !/^\d+(:\d+)?$/.test(options.user)) {
+		throw new Error(`the docker user ${options.user} is not uid or uid:gid`);
+	}
+	if (options.cpus !== undefined && !quotaCpus(options.cpus)) {
+		throw new Error(`the docker cpus ${shown(options.cpus)} is not a number of CPUs of at least ${MIN_CPUS}`);
+	}
+	const memory = memoryOption(options.memory);
+	if (
+		options.pidsLimit !== undefined &&
+		!(Number.isSafeInteger(options.pidsLimit) && options.pidsLimit > 0 && options.pidsLimit <= MAX_PIDS)
+	) {
+		throw new Error(`the docker pidsLimit ${shown(options.pidsLimit)} is not a whole number from 1 to ${MAX_PIDS}`);
+	}
 	const docker = new Docker(options.docker ?? "docker");
 
 	return {
 		name: "docker",
-		mounts: true,
+		mounts: daemon.local,
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
@@ -211,13 +347,27 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			const network = parseNetwork(spec.network) as { kind: "open" | "none" };
 			const mounts = parseMounts(spec.mounts);
 			if (mounts instanceof BoxError) return err(mounts);
+			// Checked again at each create: a `docker context use` since the provider was made moves every later call.
+			const now = dockerDaemon(process.env);
+			const away = !daemon.local ? daemon : !now.local ? now : undefined;
+			if (away !== undefined && mounts.length > 0) {
+				const { named, fix } = away;
+				const message = `the Docker daemon is not on this machine (${named}), so it cannot bind this machine's ${mounts[0]!.source}: ${fix} to run boxes on this machine's Docker`;
+				return err(new BoxError("unsupported", message));
+			}
 			const missing = await checkSources(mounts);
 			if (missing !== undefined) return err(missing);
+			const cpus = spec.cpus ?? options.cpus;
+			// A quota rounded to 0 is no limit at all: a spec's cpus too small to give one is refused, never dropped.
+			if (cpus !== undefined && !quotaCpus(cpus)) {
+				return err(new BoxError("invalid", `cpus ${shown(cpus)} is not a number of CPUs of at least ${MIN_CPUS}`));
+			}
+			const boxMemory = spec.memoryMb !== undefined ? { flag: `${spec.memoryMb}m`, mb: spec.memoryMb } : memory;
 			const facts: BoxFacts = {
 				provider: "docker",
 				isolation: "container",
-				cpus: spec.cpus ?? null,
-				memoryMb: spec.memoryMb ?? null,
+				cpus: cpus ?? null,
+				memoryMb: boxMemory?.mb ?? null,
 				gpu: spec.gpu ?? null,
 				workspace: spec.workspace ?? DEFAULT_WORKSPACE,
 				maxLifetimeMs: spec.maxLifetimeMs,
@@ -234,8 +384,14 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 			for (const [key, value] of Object.entries(spec.env ?? {})) args.push("--env", `${key}=${value}`);
 			if (network.kind === "none") args.push("--network", "none");
-			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
-			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
+			if (options.dropCapabilities === true) args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges");
+			if (options.user !== undefined) args.push("--user", options.user);
+			// The CFS quota `--cpus` sets, with no check against Docker's own CPU count (see DockerBoxesOptions.cpus).
+			if (cpus !== undefined)
+				args.push("--cpu-period", String(CPU_PERIOD_US), "--cpu-quota", String(Math.round(cpus * CPU_PERIOD_US)));
+			// Memory and swap together are the memory: swap never adds to it.
+			if (boxMemory !== undefined) args.push("--memory", boxMemory.flag, "--memory-swap", boxMemory.flag);
+			if (options.pidsLimit !== undefined) args.push("--pids-limit", String(options.pidsLimit));
 			if (spec.gpu !== undefined) args.push("--gpus", "all");
 			for (const { source, target, readOnly } of mounts) {
 				args.push("--mount", `type=bind,source=${source},target=${target}${readOnly ? ",readonly" : ""}`);
@@ -256,6 +412,21 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (inspected.value === undefined || !inspected.value.State.Running || labels == null) return ok(undefined);
 			const facts = parseFacts(labels[FACTS_LABEL]);
 			if (facts === undefined) return ok(undefined);
+			// A box made before dropCapabilities (an older version, its run resumed) is ended, not taken: what it still runs
+			// ends with it, and the caller makes a box that has none.
+			if (options.dropCapabilities === true && !hardened(inspected.value)) {
+				const removed = await docker.run(["rm", "--force", "--volumes", inspected.value.Id], context);
+				if (!removed.ok) return removed;
+				if (removed.value.exitCode !== 0 && !/no such container/i.test(removed.value.stderr)) {
+					return err(
+						new BoxError(
+							"unknown",
+							`could not remove the unhardened box ${inspected.value.Id}: ${removed.value.stderr.trim()}`,
+						),
+					);
+				}
+				return ok(undefined);
+			}
 			return ok(new DockerBox(docker, inspected.value.Id, facts));
 		},
 

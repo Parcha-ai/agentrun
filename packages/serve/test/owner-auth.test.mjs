@@ -156,7 +156,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract and health; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract and health; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note or answering a tool call's approval, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -170,6 +170,12 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
       if (route.name === "callMcp" && headers.cookie) assert.equal(res.status, 401, `${route.method} ${path} with the session alone: ${res.status} ${res.text}`);
+      // A webhook trigger's request is let in by its signature alone (trigger-secrets.ts): neither the session nor the
+      // token stands for it.
+      else if (route.name === "receiveHook") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
+      // Approving a note and answering a tool call's approval take the owner's session alone: a token, whoever holds it,
+      // is 403 (learn-pending.test.mjs, tool-gate.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "answerApproval") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       else assert.ok(![401, 403].includes(res.status), `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
     }
   }
@@ -187,8 +193,10 @@ test("accounts off: no owner file, no setup or sign-in routes (their old address
 test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with no public address, the code line with one, none with AGENTRUN_ACCOUNTS=0", { timeout: 60_000 }, async (t) => {
   const bin = async (env, done) => {
     const { spawn } = await import("node:child_process");
-    const data = join(await scratch(t), "agents");
-    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "", RENDER_EXTERNAL_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
+    const root = await scratch(t);
+    const data = join(root, "agents");
+    // A home of its own: a first start counts the sessions in its home for setup's offer, and this machine's are not the test's.
+    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: root, AGENTRUN_PUBLIC_URL: "", RENDER_EXTERNAL_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
     t.after(() => child.kill("SIGTERM"));
     let out = "";
     for await (const chunk of child.stdout) {
@@ -249,8 +257,10 @@ test("the sign-in limit keeps a bounded table: expired addresses are swept, a fu
 test("on Render the setup takes the code: with RENDER_EXTERNAL_URL and no AGENTRUN_PUBLIC_URL, setup with no code is a 403 and with the printed code a 201; AGENTRUN_PUBLIC_URL wins when both are set", { timeout: 60_000 }, async (t) => {
   const { spawn } = await import("node:child_process");
   const start = async (env) => {
-    const data = join(await scratch(t), "agents");
-    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
+    const root = await scratch(t);
+    const data = join(root, "agents");
+    // A home of its own: a first start counts the sessions in its home for setup's offer, and this machine's are not the test's.
+    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: root, AGENTRUN_PUBLIC_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
     t.after(() => child.kill("SIGTERM"));
     let out = "";
     for await (const chunk of child.stdout) {

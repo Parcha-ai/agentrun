@@ -11,7 +11,13 @@ npm run verify:packages
 
 `npm run build` builds the console (`apps/console`, outside the workspaces, with its own lockfile) before the packages, so the server's build carries it. It installs the console's dependencies when npm's record of them differs from its lockfile, and skips the console's build when `apps/console/dist` was built from the same sources (a hash of them, written beside the build).
 
+- `npm test` runs every workspace's tests, several workspaces at once, with at most one test file per core in all (`AGENTRUN_TEST_TOTAL=<n>` sets that total, `AGENTRUN_TEST_JOBS=<n>` how many workspaces, `1` one by one), and ends with each one's result and time.
+- `npm run test:changed` runs only the workspaces changed since `origin/main` (`npm run test:changed -- --base <ref>` for another base), and every workspace that depends on them.
+- `npm test -w @parcha/agentrun-dsl` runs one workspace's tests.
+
 Tests use scripted adapters and must not require model credentials. Package verification installs built tarballs into a separate application and needs network access to download dependencies. Live examples are opt-in.
+
+A test that fails twice on CI with no cause in the change is flaky. Its owner can quarantine it, which skips it on CI only, for at most 24 hours: `node scripts/quarantine.mjs --add <flake id> <file> <owner> "<test name>" "<why>"` lists it in `scripts/quarantine.json` and prints the `skip:` to put on the test. At most three tests are quarantined at once. Once an entry expires, `scripts/quarantine.test.mjs` fails every pull request until the test is fixed and its entry removed. Locally the test still runs, and `AGENTRUN_RUN_QUARANTINED=1` runs it on CI too.
 
 Keep provider configuration and application policy outside the interpreter. Integrate through `runNode`, `runJudge`, or `runEffect`. For a behavior change, add a test that reproduces the failure and checks the result a caller depends on. Keep expected outcomes independent of the implementation. Mock external services at adapter boundaries.
 

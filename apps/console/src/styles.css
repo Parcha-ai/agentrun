@@ -6,10 +6,11 @@
 @tailwind components;
 @tailwind utilities;
 
-/* AgentRun surfaces share dark neutrals, restrained orange and separate control, card and composer radii.
+/* AgentRun uses the browser's light or dark theme, restrained orange and separate control, card and composer radii.
    Color values are HSL triplets so host applications can supply their own theme. */
 @layer base {
   :root {
+    color-scheme: light;
     --ar-control-radius: 8px;
     --ar-card-radius: 12px;
     --ar-composer-radius: 14px;
@@ -38,6 +39,7 @@
     --run-error-surface: 0 85.7% 97.3%;
   }
   .dark {
+    color-scheme: dark;
     --background: 240 6% 9%;
     --foreground: 0 0% 95%;
     --card: 240 5% 12%;
@@ -64,6 +66,9 @@
   }
   * { @apply border-border; }
   html, body, #root { height: 100%; }
+  /* Before the script puts the theme on <html>, a dark OS's page is dark already (.dark's background), never a white
+     flash. */
+  @media (prefers-color-scheme: dark) { html:not(.light):not(.dark) { --background: 240 6% 9%; color-scheme: dark; } }
   body { @apply bg-background font-sans text-foreground antialiased; }
   :focus-visible { outline: 1px solid hsl(var(--ring)); outline-offset: 1px; }
   button, input, select, textarea { border-radius: var(--ar-control-radius); }
@@ -91,7 +96,9 @@
   .report table { @apply mb-4 w-full border-collapse text-sm; }
   .report th, .report td { @apply border px-3 py-2 text-left align-top; }
   .report th { @apply caps text-[11px] text-muted-foreground; }
-  .report a { @apply text-primary underline underline-offset-2; }
+  .report a, .report button[data-run-file] { @apply text-primary underline underline-offset-2; }
+  /* A run file the answer links (format.ts markdown): a button that opens it in the viewer, read as a link. */
+  .report button[data-run-file] { @apply cursor-pointer text-left; font: inherit; }
 }
 
 /* The workflow graph (src/lib/wfGraph.ts, after pi-durable-agent's serve page.css): who works colours a card's swatch, a

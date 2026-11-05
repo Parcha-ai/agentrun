@@ -17,9 +17,9 @@ package has `import` entries and no `require` entry.
 ## Install
 
 ```sh
-pi install npm:@parcha/pi-browser@beta    # the pi coding agent's extension
-npm install @parcha/pi-browser@beta       # the library: providers, driver, durable adapter
-npm install @parcha/pi-browser@beta @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
+pi install npm:@parcha/pi-browser@latest    # the pi coding agent's extension
+npm install @parcha/pi-browser@latest       # the library: providers, driver, durable adapter
+npm install @parcha/pi-browser@latest @earendil-works/pi-durable@1.3.0 @earendil-works/chord@1.3.0 @earendil-works/pi-ai@1.3.0   # a pi-durable host: its peers, pinned to 1.3.0 (unpinned, npm takes 1.4.0 and stops with ERESOLVE)
 ```
 
 `pi install` loads the extension. A Chrome starts on the model's first browser call, and not before. pi 1.4 is not supported yet; a later release widens the range.
@@ -203,7 +203,8 @@ the call's own while the provider can still be tried.
 `web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices; a search
 source's answer at the usage it reports, else the list search price). Session
 minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
-time since the last charge, and each released session's record carries its total.
+time since the last charge, and each released session's record carries its total. A host that books session time as spend
+passes `onCharge` (below), which hears each charge in the commit that bills it.
 
 
 ## Failures
@@ -268,8 +269,13 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
   budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and ranking a long page),
   `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard under the coding
   agent's HTTP backup is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })` and
-  `readPage(html, url)`, with `isPrivateAddress` and `pinnedLookup`. Outside Node's builtins and undici it loads only
-  node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan and for `readPage`.
+  `readPage(html, url, { deadlineMs?, signal? })`, with `isPrivateAddress` and `pinnedLookup`. `readPage` never holds
+  the event loop: it drops a page's script, style, svg, noscript and template blocks, cuts what is left at
+  `READ_MAX_CHARS` (`truncated`, with the page's length in `html_chars`), and converts it to markdown in a worker thread
+  within `READ_DEADLINE_MS`, falling back to the page's plain text (`converted: "text"`). `browser_read`'s markdown goes
+  the same way (of the page's first article, else main, else body, with the browser's own text as its fallback), and
+  its frame scan reads the page's first 2,000,000 characters in steps that yield the loop. Outside Node's builtins and
+  undici it loads only node-html-parser and node-html-markdown, on demand and in that worker thread.
 - `/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's own store (a create is
   committed before the provider is called, release is a durable task, reconcile runs at run open). `createWebExtension` is
   `web_fetch` and `web_search`.
@@ -396,6 +402,12 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
   when a request expires is the port's to decide). Absent, `browser_request_handoff` is not listed.
 - `prices`: your session price (for example from `BROWSERBASE_USD_PER_MINUTE`). It prices the session meter, so each session
   tool's result and each released session's record carry dollars. Without it the minutes are recorded unpriced.
+- `onCharge(charge, tx, call?)`: each charge of a session's time, `{ conversationId, tag, provider, at, seconds, usd,
+  final, state }`, called in the commit that writes it on the session's record, so a host that books it in `tx` books
+  exactly what the record bills: at a browser call (`call.callId`), what the session ran since its last charge; at its
+  release, or when custody gives up releasing it (`lost`) (`final`), the rest, topped up to `prices.sessionMinimumS`. A session already billed in full is never charged
+  again. `state` is `priced`, or `unpriced`/`invalid` with `usd` 0 (no price, not $0). It must not throw: a throw fails the
+  commit, and a call's charge is then carried by the session's next one.
 
 Per conversation, the host writes a `BrowserConfig` (`label`, `run`, and the policy: proxies, verified, captcha, geolocation,
 region, a raw context id, the session timeout, the idle release and the batch timeout; `DEFAULT_BROWSER_POLICY` holds the
@@ -407,7 +419,8 @@ is still made at the provider, and the record is left for the next run's reconci
 `handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
 after the extensions are installed and
 before anything resumes, it calls `handle.reconcile(harness, isActive, ctx)`, and every session a dead process left is bound,
-kept or released. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
+kept or released. A kept session's idle release is armed then, so one no call uses is released an idle window after the
+reopen. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
 the route.
 
 A policy's `navigation` is a restriction the host relies on, so a session that would not hold to it is never started. No

@@ -15,7 +15,8 @@ Auth: the API's routes take `Authorization: Bearer <token>`, all but `GET /v2/he
 - [OpenAPI document](/v2/openapi.json): every route and schema, the `agentrun.v2/0` contract with this server's own routes marked `x-agentrun-serve`.
 - [Capabilities](/v2/capabilities): the harnesses, tools, models and efforts this server has, and what it does not offer.
 - `POST /v2/agents` with `{definition: {name, instructions, tools, harness?, model?, thinking?}}` makes an agent (a workflow one holds `workflow` in place of `instructions`). A refusal is `422 input_invalid` naming each field. `PUT /v2/agents/{id}/definition` makes its next revision.
-- `POST /v2/agents/{id}/runs` with `{input, effort?, revision?}` starts a run, answered at once, queued. An agentic run's input is `{content: "the first message"}`. An `Idempotency-Key` header makes a retry safe.
+- `POST /v2/agents/{id}/runs` with `{input, file_ids?, effort?, revision?}` starts a run, answered at once, queued. An agentic run's input is `{content: "the first message"}`. An `Idempotency-Key` header makes a retry safe.
+- `POST /v2/files?path=notes.md` with the file's bytes as the body (`curl --data-binary @notes.md`) uploads a file, answered `201` with the file, ready, its `file_id` under `file`. Name it in a run's `file_ids`, and the run finds it at `inputs/notes.md`. `GET /v2/files` lists the uploads, `DELETE /v2/files/{id}` removes one.
 - `GET /v2/runs/{id}`: status (`queued`, `working`, `input_required`, `completed`, `failed`, `cancelled`, `paused`), `result` (`final_answer`, or a workflow's `output`), `error`, `cost` (`usd` is null while unknown, never $0).
 - `GET /v2/runs/{id}/timeline?after=0&limit=100` pages its steps; follow `next_after` until a page is `final` with `has_more` false.
 - `GET /v2/runs/{id}/files`, then `GET /v2/runs/{id}/files/{path}`: what it wrote.

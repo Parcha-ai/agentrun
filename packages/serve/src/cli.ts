@@ -5,31 +5,42 @@
 import { secret } from "./secrets.js";
 // Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { spawn } from "node:child_process";
+import { defaultData } from "./files.js";
+import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
+import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL]
        agentrun-serve reset-password [--data DIR]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
                     is the only lock, so put TLS in front of it
-  --port N          the port (default ${DEFAULT_PORT}; 0 is any free port)
+  --port N          the port (default: the first free one from ${DEFAULT_PORT}; 0 is any free port)
+  --open            open the console in this machine's browser once the server listens (not in CI, nor on Linux with no
+                    display)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
-  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else from this host's memory: (memory - 128 MiB)
-                    / 72 MiB, at least 1); over it a new run is 429
+  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory
+                    holds); each run also reserves its harness's memory, and over either a new run is 429
   --documents DIR   a read-only directory of documents a workflow's pdf_pages calls read by file name (default
                     AGENTRUN_SERVE_DOCUMENTS)
   --allow-code-nodes run workflows' code nodes, in the run's process with no sandbox (default off, or
                     AGENTRUN_SERVE_CODE_NODES=1); off, a workflow with one saves with a warning and its runs are refused
   --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
                     Docker's 10 s grace); a run cut off resumes at the next start
+  --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
+                    says learning: true starts from what that agent learned and adds to it; off, no run does
+  --learning-budget BYTES how much of what an agent learned its run's instructions hold (default
+                    AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the index and the
+                    notes changed last, whole, while they fit
+  --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
+                    strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -49,7 +60,8 @@ data directory is (inside the container) clears it and signs every browser out, 
 CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read but not continue. Nothing leaves this
 machine; the values of key-shaped environment variables are cut out of what is written. --dry-run lists what it would
 import; run again, it imports only what it has not. Sessions written in the last 10 minutes wait for the next import;
---all keeps projects whose directory is gone or temporary. Each run keeps what its session used (tokens, requests, tools,
+What is left out is counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a
+deleted worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
 time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
 session found, those imported before included, and the address to open the console at (--port as the server takes it).`;
 
@@ -61,7 +73,7 @@ if (process.argv[2] === "reset-password") {
     console.error(`${(error as Error).message}\n\n${USAGE}`);
     process.exit(2);
   }
-  const target = dir ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
+  const target = dir ?? defaultData();
   resetPassword(target);
   console.log(`The password is cleared and every browser is signed out (${target}). The next visit to the page sets a new one.`);
   process.exit(0);
@@ -81,12 +93,16 @@ try {
       data: { type: "string" },
       listen: { type: "string" },
       port: { type: "string" },
+      open: { type: "boolean", default: false },
       faux: { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
       documents: { type: "string" },
       "allow-code-nodes": { type: "boolean", default: false },
+      learning: { type: "string" },
+      "grade-model": { type: "string" },
+      "learning-budget": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -115,7 +131,12 @@ if (publicName) {
   }
   publicUrl = parsed.href.replace(/\/+$/, "");
 }
-const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
+const budget = values["learning-budget"];
+if (budget !== undefined && !/^\d+$/.test(budget)) {
+  console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
+  process.exit(2);
+}
+const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
@@ -123,10 +144,10 @@ const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
 let serve: Serve;
 try {
   serve = await startServe({
-    data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
-    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), log: (line) => void process.stdout.write(`${line}\n`),
-    ...(accounts ? { accounts, openSetup: !publicUrl, ...(publicUrl ? { publicUrl } : {}) } : {}),
+    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true, ...(publicUrl ? { publicUrl } : {}) } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -134,9 +155,12 @@ try {
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, accounts, boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 // With a public address the setup link and its code are printed as the code is made (owner.ts).
 if (serve.setupUrl && !publicUrl) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+// The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
+// and the browser's history.
+if (values.open && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

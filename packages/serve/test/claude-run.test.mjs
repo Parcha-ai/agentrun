@@ -100,7 +100,9 @@ async function filesUnder(dir, at = "") {
 test("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent"), { id: "claude-agent", available: true, steer: false });
+  // How many fit at once is this host's memory (admission.test.mjs).
+  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  assert.deepEqual(offer, { id: "claude-agent", available: true, steer: false, default_model: `anthropic/${MODEL}`, run_memory_mib: 288 });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
@@ -274,16 +276,22 @@ test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted),
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "priced at Anthropic's id in the catalog, never unknown for the dotted name");
 });
 
-test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's ceiling, it is refused before anything is sent", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's least, it is refused before anything is sent, in plain words, and the run pauses at its cap", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
   const { api } = await claudeServe(t, fake, {}, "claude-haiku-4.5");
-  // claude-haiku-4-5's output ceiling at $5 a million is well past a tenth of a cent.
+  // claude-haiku-4-5 at $5 a million output tokens: the least a request may be limited to, its answer's 1,024 tokens,
+  // costs $0.00512 before its input, past a tenth of a cent.
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 120_000 });
+  await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 120_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
+  assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
+  // Named as the catalog shows it, and nothing spent or held: the cap to raise to is the least.
+  const words = /^Not sent: this run's cap of \$0\.001 can't cover one Claude Haiku 4\.5 \(latest\) request \(at least \$(\d+\.\d\d)\)\. Raise the cap to at least \$(\d+\.\d\d) to run it\.$/.exec(ended.pending.said);
+  assert.ok(words, ended.pending.said);
+  assert.equal(words[2], words[1]);
+  assert.ok(Number(words[1]) >= 0.00512, `the least covers the answer's 1,024 tokens: $${words[1]}`);
   assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
 });
 
@@ -310,4 +318,57 @@ test("a claude-agent run's model proxy reports a refusal in the run's log: one h
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
   assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
   for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+});
+
+test("a refused key ends a claude-agent run at the provider's first 401: one request, no retries, and the run's error in plain words", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // The provider refuses the key on every request, as OpenRouter does a wrong one. The CLI retries a 401 a dozen times
+  // over about three minutes (QA, run 01a1a56c: 187 s while the run read Working); no retry can pass, so the run ends at
+  // the first, with the provider's words.
+  const fake = await fakeAnthropic({ reply: () => ({ error: { status: 401, type: "authentication_error", message: "User not found." } }) });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake);
+  const started = Date.now();
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 30_000 });
+  const took = Date.now() - started;
+  const paid = fake.messages().filter((r) => r.method === "POST" && r.path === "/v1/messages");
+  assert.equal(paid.length, 1, `one paid request reached the provider, not ${paid.length}`);
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(view.error?.message ?? "", /^\S+ refused ANTHROPIC_API_KEY \(401: User not found\): /, JSON.stringify(view.error));
+  assert.ok(took < 30_000, `it failed in ${took} ms`);
+});
+
+test("a refused key whose 401 body never ends still ends a claude-agent run within seconds, after one request", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  // A provider (or a proxy before it) that sends the 401's headers and part of its body, then holds the rest: the turn
+  // still ends at the first 401, with whatever words came, never waiting on a body that may not end.
+  const { createServer } = await import("node:http");
+  const asked = [];
+  const sockets = new Set();
+  const server = createServer((req, res) => {
+    asked.push(`${req.method} ${req.url}`);
+    req.resume();
+    res.writeHead(401, { "content-type": "application/json" });
+    res.write('{"type":"error","error":{"type":"authentication_error","message":"User not found."');
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+  });
+  const { api } = await claudeServe(t, { url: `http://127.0.0.1:${server.address().port}` });
+  const started = Date.now();
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 20_000 });
+  const took = Date.now() - started;
+  const paid = asked.filter((line) => /^POST \/v1\/messages(\?|$)/.test(line));
+  assert.equal(paid.length, 1, `one paid request reached the provider: ${JSON.stringify(asked)}`);
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.match(view.error?.message ?? "", /^\S+ refused ANTHROPIC_API_KEY \(401(: [^)]*)?\): /, JSON.stringify(view.error));
+  assert.ok(took < 20_000, `it failed in ${took} ms`);
 });

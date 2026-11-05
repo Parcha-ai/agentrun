@@ -9,16 +9,20 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
-import { hasVersionSection, loadFragments, unreleasedSection } from './changes.mjs';
+import { hasVersionSection, loadFragments, ownVersionPackages, unreleasedSection } from './changes.mjs';
 import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
-// packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent, and the reference host
+// packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent,
+// agentrun (`npx @parcha/agentrun`, on its own version line), which depends on serve at its exact version, and the reference host
 // (@parcha/agentrun-harness), which uses dsl, pi, pi-browser, pi-durable-disk and pi-vision, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', learn: '@parcha/agentrun-learn', decisions: '@parcha/agentrun-decisions', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', harness: '@parcha/agentrun-harness' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', learn: '@parcha/agentrun-learn', decisions: '@parcha/agentrun-decisions', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun', harness: '@parcha/agentrun-harness' };
 export const listedPackages = Object.keys(releasePackageNames);
+// The packages on a version line of their own (changes.mjs says why), checked and named at their manifest's version.
+export { ownVersionPackages };
+const releaseVersion = (directory, manifest, workspaceVersion) => (ownVersionPackages.includes(directory) ? manifest.version : workspaceVersion);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
 export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, adapters: true, harness: true, network: 'prohibited' };
@@ -60,7 +64,7 @@ async function command(file, args, cwd) {
   return (await exec(file, args, { cwd, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
 }
 
-export function checkManifest(manifest, directory, version, license) {
+export function checkManifest(manifest, directory, version, license, workspaceVersion = version) {
   assert.equal(manifest.name, releasePackageNames[directory], 'Unexpected package name');
   assert.equal(manifest.version, version, 'Package versions must match the workspace version');
   assert.equal(manifest.license, license, 'Every package must use the approved root license');
@@ -74,6 +78,8 @@ export function checkManifest(manifest, directory, version, license) {
   if (directory === 'jev' || directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
   if (directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-jev'], version, 'Pi must use the exact Jev release version');
   if (directory === 'pi-agent-learn') assert.equal(manifest.dependencies?.['@parcha/pi-git-remote'], version, 'pi-agent-learn must use the exact pi-git-remote release version');
+  // `npx @parcha/agentrun` installs the server it was released with: its one dependency, at this release's exact version.
+  if (directory === 'agentrun') assert.deepEqual(manifest.dependencies, { '@parcha/agentrun-serve': workspaceVersion }, `@parcha/agentrun must depend on @parcha/agentrun-serve at the release version ${workspaceVersion}, and on nothing else`);
   if (directory === 'harness') for (const dependency of ['@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-durable-disk', '@parcha/pi-vision']) assert.equal(manifest.dependencies?.[dependency], version, `The reference host must use the exact ${dependency} release version`);
 }
 
@@ -148,11 +154,12 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   try {
     for (const directory of releaseHere) {
       const manifest = await json(join(root, 'packages', directory, 'package.json'));
-      checkManifest(manifest, directory, workspace.version, workspace.license);
+      checkManifest(manifest, directory, releaseVersion(directory, manifest, workspace.version), workspace.license, workspace.version);
+      if (ownVersionPackages.includes(directory)) assert.match(manifest.version, /^\d+\.\d+\.\d+$/, `${manifest.name} is on its own version line, x.y.z; found ${manifest.version}`);
       const verified = receipt.packages.find(entry => entry.name === manifest.name);
       assert.ok(verified, `Missing verification receipt for ${manifest.name}`);
       assert.equal(verified.version, manifest.version);
-      const filename = `${manifest.name.slice(1).replace('/', '-')}-${workspace.version}.tgz`;
+      const filename = `${manifest.name.slice(1).replace('/', '-')}-${releaseVersion(directory, manifest, workspace.version)}.tgz`;
       assert.equal(verified.filename, filename, 'Unexpected verified archive filename');
       const archive = join(root, '.release/packages', filename);
       const bytes = await readFile(archive);

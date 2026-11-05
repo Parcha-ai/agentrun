@@ -1,0 +1,139 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/stats?agent=refund-finder"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "agents": 3,
+    "runs": {
+      "total": 6,
+      "active": 0,
+      "needs_input": 0,
+      "failed": 0,
+      "needs_review": 0,
+      "status_unknown": 0
+    },
+    "per_agent": [
+      {
+        "agent_id": "pr-reviewer",
+        "name": "PR reviewer",
+        "runs": 0
+      },
+      {
+        "agent_id": "refund-finder",
+        "name": "Refund policy finder",
+        "runs": 6
+      },
+      {
+        "agent_id": "release-notes",
+        "name": "Release notes writer",
+        "runs": 0
+      }
+    ],
+    "cost": {
+      "usd": 0.157052,
+      "basis": "estimate",
+      "unknown_runs": 0
+    },
+    "archived": {
+      "agents": 0,
+      "runs": 0
+    },
+    "analytics": {
+      "filter": {
+        "from": null,
+        "to": null,
+        "agent": "refund-finder"
+      },
+      "totals": {
+        "runs": 6,
+        "completed": 6,
+        "needs_review": 0,
+        "failed": 0,
+        "runs_with_metrics": 6,
+        "tokens": 55336,
+        "cost_usd": 0.157052,
+        "unknown_cost_runs": 0,
+        "input": 11512,
+        "cache_read": 27566,
+        "cache_write": 11522,
+        "output": 4736,
+        "requests": 28,
+        "unmetered": 0
+      },
+      "time": {
+        "ended_runs": 6,
+        "wall_ms": 37659,
+        "active_runs": 0,
+        "active_ms": 0
+      },
+      "by_harness_effort": [
+        {
+          "harness": "pi",
+          "effort": "medium",
+          "runs": 6,
+          "completed": 6,
+          "needs_review": 0,
+          "failed": 0,
+          "runs_with_metrics": 6,
+          "tokens": 55336,
+          "cost_usd": 0.157052,
+          "unknown_cost_runs": 0
+        }
+      ],
+      "by_day": [
+        {
+          "day": "2026-11-03",
+          "runs": 6,
+          "completed": 6,
+          "needs_review": 0,
+          "failed": 0,
+          "runs_with_metrics": 6,
+          "tokens": 55336,
+          "cost_usd": 0.157052,
+          "unknown_cost_runs": 0
+        }
+      ],
+      "by_source": [
+        {
+          "source": "live",
+          "runs": 6,
+          "completed": 6,
+          "needs_review": 0,
+          "failed": 0,
+          "runs_with_metrics": 6,
+          "tokens": 55336,
+          "cost_usd": 0.157052,
+          "unknown_cost_runs": 0
+        }
+      ],
+      "tools": [
+        {
+          "tool": "write",
+          "label": "Write files",
+          "calls": 9,
+          "errors": 0
+        },
+        {
+          "tool": "read",
+          "label": "Read files",
+          "calls": 7,
+          "errors": 0
+        }
+      ]
+    },
+    "learning": {
+      "runs": 6,
+      "merged": 2,
+      "dropped": {
+        "empty": 3,
+        "grader": 1
+      },
+      "in_progress": 0
+    }
+  }
+}

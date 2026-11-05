@@ -6,7 +6,7 @@ The graph starts from the runtime dependencies of `@parcha/agentrun-dsl`, `@parc
 
 The browser console is inventoried from its separate lockfile, including its distributed fonts. Its static build also emits `THIRD-PARTY-NOTICES.txt` with the license texts of bundled code and fonts. Build-only stylesheet tooling and development servers are excluded from the runtime graph.
 
-327 distinct third-party package/version pairs across 341 lockfile locations. Declared licenses: `(MPL-2.0 OR Apache-2.0)`, `0BSD`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `BlueOak-1.0.0`, `ISC`, `MIT`, `OFL-1.1`, `SEE LICENSE IN LICENSE.md`, `SEE LICENSE IN README.md`, `Unlicense`.
+371 distinct third-party package/version pairs across 385 lockfile locations. Declared licenses: `(MPL-2.0 OR Apache-2.0)`, `0BSD`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `BlueOak-1.0.0`, `ISC`, `MIT`, `OFL-1.1`, `SEE LICENSE IN LICENSE.md`, `SEE LICENSE IN README.md`, `Unlicense`.
 
 ## Release review
 
@@ -23,6 +23,9 @@ The browser console is inventoried from its separate lockfile, including its dis
 - **@fontsource/schibsted-grotesk@5.1.1:** OFL-1.1 — License expression needs release-owner review.
 - **dompurify@3.4.17:** (MPL-2.0 OR Apache-2.0) — License expression needs release-owner review.
 
+Read from the packages' own source, their manifests declaring no license: `opencode-darwin-arm64@1.19.5`, `opencode-darwin-x64-baseline@1.19.5`, `opencode-darwin-x64@1.19.5`, `opencode-linux-arm64-musl@1.19.5`, `opencode-linux-arm64@1.19.5`, `opencode-linux-x64-baseline-musl@1.19.5`, `opencode-linux-x64-baseline@1.19.5`, `opencode-linux-x64-musl@1.19.5`, `opencode-linux-x64@1.19.5`, `opencode-windows-arm64@1.19.5`, `opencode-windows-x64-baseline@1.19.5`, `opencode-windows-x64@1.19.5`: MIT, https://github.com/anomalyco/opencode/blob/810c0eba1a7348036f8bdf61e6632d0c36c6876c/LICENSE.
+
+
 AgentRun's own license is declared in its package manifests, separately from this third-party inventory. This table records package metadata, not an approval to redistribute. The release owner must confirm source rights, inspect applicable license texts, and preserve required notices.
 
 Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-validate`, `kerberos`, `@smithy/hash-node`, `encoding`, `@napi-rs/canvas`, `@cfworker/json-schema`. These are not counted as inventoried packages; adding them requires regenerating this inventory.
@@ -31,333 +34,377 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 
 | Package | Version | Declared license | Used by | Optional | Lock locations |
 | --- | --- | --- | --- | --- | --- |
-| @anthropic-ai/claude-agent-sdk-darwin-arm64 | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk-darwin-x64 | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk-linux-arm64-musl | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk-linux-arm64 | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk-linux-x64-musl | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk-linux-x64 | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk-win32-arm64 | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk-win32-x64 | 0.3.286 | SEE LICENSE IN LICENSE.md | run-adapters-claude-agent, serve | yes | 1 |
-| @anthropic-ai/claude-agent-sdk | 0.3.286 | SEE LICENSE IN README.md | run-adapters-claude-agent, serve | no | 1 |
-| @anthropic-ai/sdk | 0.129.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| @archildata/api-types | 0.0.54 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| @aws-sdk/client-bedrock-runtime | 3.1127.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/core | 3.978.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-env | 3.972.71 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-http | 3.972.73 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-ini | 3.973.16 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-login | 3.972.78 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-node | 3.972.83 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-process | 3.972.71 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-sso | 3.973.15 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/credential-provider-web-identity | 3.972.77 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/eventstream-handler-node | 3.972.34 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/middleware-eventstream | 3.972.29 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/middleware-websocket | 3.972.53 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/nested-clients | 3.997.45 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/signature-v4-multi-region | 3.996.46 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/token-providers | 3.1127.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/token-providers | 3.1129.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/types | 3.974.5 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws-sdk/xml-builder | 3.972.40 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @aws/lambda-invoke-store | 0.3.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @babel/runtime | 7.29.7 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| @browserbasehq/sdk | 2.21.0 | Apache-2.0 | harness, pi-browser, serve | no | 1 |
-| @browserbasehq/stagehand | 4.1.0 | MIT | harness, pi-browser, serve | no | 1 |
-| @clack/core | 1.5.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| @clack/prompts | 1.8.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| @earendil-works/chord | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @earendil-works/pi-agent-core | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| @earendil-works/pi-ai | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @earendil-works/pi-codemode | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| @earendil-works/pi-coding-agent | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| @earendil-works/pi-durable | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision, serve | no | 1 |
-| @earendil-works/pi-mcp | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| @earendil-works/pi-telemetry | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @earendil-works/pi-tui | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| @esbuild/aix-ppc64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/android-arm | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/android-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/android-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/darwin-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/darwin-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/freebsd-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/freebsd-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-arm | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-ia32 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-loong64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-mips64el | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-ppc64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-riscv64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-s390x | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/linux-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/netbsd-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/netbsd-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/openbsd-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/openbsd-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/openharmony-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/sunos-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/win32-arm64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/win32-ia32 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
-| @esbuild/win32-x64 | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-darwin-arm64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-darwin-x64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-linux-arm64-musl | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-linux-arm64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-linux-x64-musl | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-linux-x64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-win32-arm64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk-win32-x64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
+| @anthropic-ai/claude-agent-sdk | 0.3.286 | SEE LICENSE IN README.md | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| @anthropic-ai/sdk | 0.129.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| @archildata/api-types | 0.0.54 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| @aws-sdk/client-bedrock-runtime | 3.1127.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/core | 3.978.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-env | 3.972.71 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-http | 3.972.73 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-ini | 3.973.16 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-login | 3.972.78 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-node | 3.972.83 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-process | 3.972.71 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-sso | 3.973.15 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/credential-provider-web-identity | 3.972.77 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/eventstream-handler-node | 3.972.34 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/middleware-eventstream | 3.972.29 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/middleware-websocket | 3.972.53 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/nested-clients | 3.997.45 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/signature-v4-multi-region | 3.996.46 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/token-providers | 3.1127.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/token-providers | 3.1129.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/types | 3.974.5 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws-sdk/xml-builder | 3.972.40 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @aws/lambda-invoke-store | 0.3.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @babel/runtime | 7.29.7 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| @browserbasehq/sdk | 2.21.0 | Apache-2.0 | agentrun, harness, pi-browser, serve | no | 1 |
+| @browserbasehq/stagehand | 4.1.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| @clack/core | 1.5.1 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| @clack/prompts | 1.8.1 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| @earendil-works/chord | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @earendil-works/pi-agent-core | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| @earendil-works/pi-ai | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @earendil-works/pi-codemode | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| @earendil-works/pi-coding-agent | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| @earendil-works/pi-durable | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision, serve | no | 1 |
+| @earendil-works/pi-mcp | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| @earendil-works/pi-telemetry | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @earendil-works/pi-tui | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| @esbuild/aix-ppc64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/android-arm | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/android-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/android-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/darwin-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/darwin-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/freebsd-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/freebsd-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-arm | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-ia32 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-loong64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-mips64el | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-ppc64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-riscv64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-s390x | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/linux-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/netbsd-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/netbsd-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/openbsd-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/openbsd-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/openharmony-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/sunos-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/win32-arm64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/win32-ia32 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @esbuild/win32-x64 | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | yes | 1 |
+| @floating-ui/core | 1.8.0 | MIT | console | no | 1 |
+| @floating-ui/dom | 1.8.0 | MIT | console | no | 1 |
+| @floating-ui/react-dom | 2.1.9 | MIT | console | no | 1 |
+| @floating-ui/react | 0.26.28 | MIT | console | no | 1 |
+| @floating-ui/utils | 0.2.12 | MIT | console | no | 1 |
 | @fontsource/jetbrains-mono | 5.1.1 | OFL-1.1 | console | no | 1 |
 | @fontsource/schibsted-grotesk | 5.1.1 | OFL-1.1 | console | no | 1 |
-| @google/genai | 2.21.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @hono/node-server | 2.1.5 | MIT | run-adapters-claude-agent, serve | no | 1 |
+| @google/genai | 2.21.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @headlessui/react | 2.2.10 | MIT | console | no | 1 |
+| @hono/node-server | 2.1.5 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
 | @hyzyla/pdfium | 2.1.13 | MIT | harness, pi-vision | no | 1 |
-| @modelcontextprotocol/sdk | 1.32.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| @nodable/entities | 3.1.0 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| @openai/codex | 0.164.0 | Apache-2.0 | run-adapters-codex, serve | no | 1 |
-| @openai/codex | 0.164.0-darwin-arm64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
-| @openai/codex | 0.164.0-darwin-x64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
-| @openai/codex | 0.164.0-linux-arm64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
-| @openai/codex | 0.164.0-linux-x64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
-| @openai/codex | 0.164.0-win32-arm64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
-| @openai/codex | 0.164.0-win32-x64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
-| @opentelemetry/api | 1.9.1 | Apache-2.0 | harness, pi-browser, serve | no | 1 |
-| @opentelemetry/core | 2.9.0 | Apache-2.0 | harness, pi-browser, serve | no | 1 |
-| @opentelemetry/semantic-conventions | 1.43.0 | Apache-2.0 | harness, pi-browser, serve | no | 1 |
-| @protobufjs/aspromise | 1.1.2 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/base64 | 1.1.2 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/codegen | 2.0.5 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/eventemitter | 1.1.1 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/fetch | 1.1.1 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/float | 1.0.2 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/path | 1.1.2 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/pool | 1.1.0 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @protobufjs/utf8 | 1.1.2 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @silvia-odwyer/photon-node | 0.3.4 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, pi-vision, serve | no | 1 |
-| @smithy/core | 3.34.1 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @smithy/credential-provider-imds | 4.5.2 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @smithy/fetch-http-handler | 5.8.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @smithy/node-http-handler | 4.12.1 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @smithy/signature-v4 | 5.7.3 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @smithy/types | 4.18.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @stablelib/base64 | 1.0.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| @types/node-fetch | 2.6.13 | MIT | harness, pi-browser, serve | no | 1 |
-| @types/node | 18.19.130 | MIT | harness, pi-browser, serve | no | 1 |
-| @types/node | 22.20.4 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| @types/retry | 0.12.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @internationalized/date | 3.12.4 | Apache-2.0 | console | no | 1 |
+| @internationalized/number | 3.6.9 | Apache-2.0 | console | no | 1 |
+| @internationalized/string | 3.2.10 | Apache-2.0 | console | no | 1 |
+| @modelcontextprotocol/client | 2.4.0 | Apache-2.0 | agentrun, serve | no | 1 |
+| @modelcontextprotocol/core | 2.4.0 | Apache-2.0 | agentrun, serve | no | 1 |
+| @modelcontextprotocol/sdk | 1.32.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| @nodable/entities | 3.1.0 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| @openai/codex | 0.164.0 | Apache-2.0 | agentrun, run-adapters-codex, serve | no | 1 |
+| @openai/codex | 0.164.0-darwin-arm64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-darwin-x64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-linux-arm64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-linux-x64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-win32-arm64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-win32-x64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
+| @opentelemetry/api | 1.9.1 | Apache-2.0 | agentrun, harness, pi-browser, serve | no | 1 |
+| @opentelemetry/core | 2.9.0 | Apache-2.0 | agentrun, harness, pi-browser, serve | no | 1 |
+| @opentelemetry/semantic-conventions | 1.43.0 | Apache-2.0 | agentrun, harness, pi-browser, serve | no | 1 |
+| @protobufjs/aspromise | 1.1.2 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/base64 | 1.1.2 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/codegen | 2.0.5 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/eventemitter | 1.1.1 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/fetch | 1.1.1 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/float | 1.0.2 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/path | 1.1.2 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/pool | 1.1.0 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @protobufjs/utf8 | 1.1.2 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @react-aria/focus | 3.22.1 | Apache-2.0 | console | no | 1 |
+| @react-aria/interactions | 3.28.1 | Apache-2.0 | console | no | 1 |
+| @react-types/shared | 3.37.0 | Apache-2.0 | console | no | 1 |
+| @secretlint/core | 13.1.0 | MIT | agentrun, serve | no | 1 |
+| @secretlint/profiler | 13.1.0 | MIT | agentrun, serve | no | 1 |
+| @secretlint/secretlint-rule-preset-recommend | 13.1.0 | MIT | agentrun, serve | no | 1 |
+| @secretlint/types | 13.1.0 | MIT | agentrun, serve | no | 1 |
+| @silvia-odwyer/photon-node | 0.3.4 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, pi-vision, serve | no | 1 |
+| @smithy/core | 3.34.1 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @smithy/credential-provider-imds | 4.5.2 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @smithy/fetch-http-handler | 5.8.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @smithy/node-http-handler | 4.12.1 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @smithy/signature-v4 | 5.7.3 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @smithy/types | 4.18.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @stablelib/base64 | 1.0.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| @swc/helpers | 0.5.24 | Apache-2.0 | console | no | 1 |
+| @tanstack/react-virtual | 3.14.26 | MIT | console | no | 1 |
+| @tanstack/virtual-core | 3.19.11 | MIT | console | no | 1 |
+| @types/node-fetch | 2.6.13 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| @types/node | 18.19.130 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| @types/node | 22.20.4 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| @types/retry | 0.12.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | @types/trusted-types | 2.0.7 | MIT | console | yes | 1 |
-| @typesafe-ai/sdk | 0.7.0 | MIT | harness, jev, pi, pi-agent-learn, pi-durable-agent, serve | no | 1 |
+| @typesafe-ai/sdk | 0.7.0 | MIT | agentrun, harness, jev, pi, pi-agent-learn, pi-durable-agent, serve | no | 1 |
 | @xmldom/xmldom | 0.9.12 | MIT | harness, pi-vision | no | 1 |
-| abort-controller | 3.0.0 | MIT | harness, pi-browser, serve | no | 1 |
-| accepts | 2.0.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| agent-base | 7.1.4 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| agent-base | 9.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| agentkeepalive | 4.6.0 | MIT | harness, pi-browser, serve | no | 1 |
-| ajv-formats | 3.0.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| ajv | 8.18.0 | MIT | run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
-| anynum | 1.0.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| asynckit | 0.4.0 | MIT | harness, pi-browser, serve | no | 1 |
-| balanced-match | 4.0.4 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| base64-js | 1.5.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| bignumber.js | 9.3.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| body-parser | 2.4.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| boolbase | 1.0.0 | ISC | harness, pi-browser, serve | no | 1 |
-| bowser | 2.14.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| brace-expansion | 5.0.12 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| bytes | 3.1.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| call-bind-apply-helpers | 1.0.2 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| call-bound | 1.0.4 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| chalk | 6.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| abort-controller | 3.0.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| accepts | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| agent-base | 7.1.4 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| agent-base | 9.0.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| agentkeepalive | 4.6.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| ajv-formats | 3.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| ajv | 8.18.0 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| anynum | 1.0.1 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| aria-hidden | 1.2.6 | MIT | console | no | 1 |
+| asynckit | 0.4.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| balanced-match | 4.0.4 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| base64-js | 1.5.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| bignumber.js | 9.3.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| body-parser | 2.4.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| boolbase | 1.0.0 | ISC | agentrun, harness, pi-browser, serve | no | 1 |
+| boundary | 2.0.0 | BSD-2-Clause | agentrun, serve | no | 1 |
+| bowser | 2.14.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| brace-expansion | 5.0.12 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| bytes | 3.1.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| call-bind-apply-helpers | 1.0.2 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| call-bound | 1.0.4 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| chalk | 6.0.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| class-variance-authority | 0.7.1 | Apache-2.0 | console | no | 1 |
 | clsx | 2.1.1 | MIT | console | no | 1 |
-| combined-stream | 1.0.8 | MIT | harness, pi-browser, serve | no | 1 |
-| commander | 14.0.3 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| content-disposition | 2.0.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| content-type | 1.0.5 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| content-type | 2.1.0 | MIT | run-adapters-claude-agent, serve | no | 4 |
-| cookie-signature | 1.2.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| cookie | 0.7.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| cors | 2.8.6 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| cross-spawn | 7.0.6 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
-| css-select | 5.2.2 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
-| css-what | 6.2.2 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
-| data-uri-to-buffer | 4.0.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| debug | 4.4.3 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| delayed-stream | 1.0.0 | MIT | harness, pi-browser, serve | no | 1 |
-| depd | 2.0.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| diff | 8.0.4 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 2 |
-| disk | 1.9.0 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| dom-serializer | 2.0.0 | MIT | harness, pi-browser, serve | no | 1 |
-| domelementtype | 2.3.0 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
-| domhandler | 5.0.3 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
+| combined-stream | 1.0.8 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| commander | 14.0.3 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| content-disposition | 2.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| content-type | 1.0.5 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| content-type | 2.1.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 4 |
+| cookie-signature | 1.2.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| cookie | 0.7.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| cors | 2.8.6 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| croner | 11.0.0 | MIT | agentrun, serve | no | 1 |
+| cross-spawn | 7.0.6 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
+| css-select | 5.2.2 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
+| css-what | 6.2.2 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
+| data-uri-to-buffer | 4.0.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| debug | 4.4.3 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| delayed-stream | 1.0.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| depd | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| diff | 8.0.4 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 2 |
+| disk | 1.9.0 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| dom-serializer | 2.0.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| domelementtype | 2.3.0 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
+| domhandler | 5.0.3 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
 | dompurify | 3.4.17 | (MPL-2.0 OR Apache-2.0) | console | no | 1 |
-| domutils | 3.2.2 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
-| dunder-proto | 1.0.1 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| ecdsa-sig-formatter | 1.0.11 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| ee-first | 1.1.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| encodeurl | 2.0.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| entities | 4.5.0 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
+| domutils | 3.2.2 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
+| dunder-proto | 1.0.1 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| ecdsa-sig-formatter | 1.0.11 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| ee-first | 1.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| encodeurl | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| entities | 4.5.0 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
 | entities | 6.0.1 | BSD-2-Clause | harness | no | 1 |
-| es-define-property | 1.0.1 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| es-errors | 1.3.0 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| es-object-atoms | 1.1.2 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| es-set-tostringtag | 2.1.0 | MIT | harness, pi-browser, serve | no | 1 |
-| esbuild | 0.28.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| escape-html | 1.0.3 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| etag | 1.8.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| event-target-shim | 5.0.1 | MIT | harness, pi-browser, serve | no | 1 |
-| eventsource-parser | 3.1.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| eventsource | 3.0.7 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| express-rate-limit | 8.7.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| express | 5.3.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| extend | 3.0.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| fast-deep-equal | 3.1.3 | MIT | run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
-| fast-sha256 | 1.3.0 | Unlicense | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| fast-string-truncated-width | 3.0.3 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| fast-string-width | 3.0.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| fast-uri | 3.1.9 | BSD-3-Clause | run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
-| fast-wrap-ansi | 0.2.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| fast-xml-builder | 1.3.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| fast-xml-parser | 5.11.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| fetch-blob | 3.2.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| es-define-property | 1.0.1 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| es-errors | 1.3.0 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| es-object-atoms | 1.1.2 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| es-set-tostringtag | 2.1.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| esbuild | 0.28.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| escape-html | 1.0.3 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| etag | 1.8.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| event-target-shim | 5.0.1 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| eventsource-parser | 3.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| eventsource | 3.0.7 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| express-rate-limit | 8.7.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| express | 5.3.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| extend | 3.0.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| fast-deep-equal | 3.1.3 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| fast-sha256 | 1.3.0 | Unlicense | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| fast-string-truncated-width | 3.0.3 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| fast-string-width | 3.0.2 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| fast-uri | 3.1.9 | BSD-3-Clause | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| fast-wrap-ansi | 0.2.2 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| fast-xml-builder | 1.3.1 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| fast-xml-parser | 5.11.2 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| fetch-blob | 3.2.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | fflate | 0.8.3 | MIT | harness, pi-vision | no | 1 |
-| finalhandler | 2.1.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| form-data-encoder | 1.7.2 | MIT | harness, pi-browser, serve | no | 1 |
-| form-data | 4.0.6 | MIT | harness, pi-browser, serve | no | 1 |
-| formdata-node | 4.4.1 | MIT | harness, pi-browser, serve | no | 1 |
-| formdata-polyfill | 4.0.10 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| forwarded | 0.2.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| fresh | 2.0.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| function-bind | 1.1.2 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| gaxios | 7.3.1 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| gcp-metadata | 8.1.2 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| get-east-asian-width | 1.6.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| get-intrinsic | 1.3.0 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| get-proto | 1.0.1 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| google-auth-library | 10.9.1 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| google-logging-utils | 1.1.3 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| gopd | 1.2.0 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| graceful-fs | 4.2.11 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| grok-mermaid | 0.2.3 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| has-symbols | 1.1.0 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| has-tostringtag | 1.0.2 | MIT | harness, pi-browser, serve | no | 1 |
-| hasown | 2.0.4 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| he | 1.2.0 | MIT | harness, pi-browser, serve | no | 1 |
-| highlight.js | 10.7.3 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| hono | 4.13.14 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| hosted-git-info | 9.0.3 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| finalhandler | 2.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| form-data-encoder | 1.7.2 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| form-data | 4.0.6 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| formdata-node | 4.4.1 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| formdata-polyfill | 4.0.10 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| forwarded | 0.2.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| fresh | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| function-bind | 1.1.2 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| gaxios | 7.3.1 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| gcp-metadata | 8.1.2 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| get-east-asian-width | 1.6.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| get-intrinsic | 1.3.0 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| get-proto | 1.0.1 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| google-auth-library | 10.9.1 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| google-logging-utils | 1.1.3 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| gopd | 1.2.0 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| graceful-fs | 4.2.11 | ISC | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| grok-mermaid | 0.2.3 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| has-symbols | 1.1.0 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| has-tostringtag | 1.0.2 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| hasown | 2.0.4 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| he | 1.2.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| highlight.js | 10.7.3 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| hono | 4.13.14 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| hosted-git-info | 9.0.3 | ISC | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
 | htmlparser2 | 10.0.0 | MIT | harness | no | 1 |
-| http-errors | 2.0.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| http-proxy-agent | 9.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| https-proxy-agent | 7.0.6 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| https-proxy-agent | 9.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| humanize-ms | 1.2.1 | MIT | harness, pi-browser, serve | no | 1 |
-| iconv-lite | 0.7.3 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| ignore | 7.0.8 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| inherits | 2.0.4 | ISC | run-adapters-claude-agent, serve | no | 1 |
-| ip-address | 10.7.5 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| ipaddr.js | 1.9.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| is-promise | 4.0.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| is-unsafe | 2.0.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| isexe | 2.0.0 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
-| jiti | 2.7.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| jose | 6.2.13 | MIT | run-adapters-claude-agent, serve | no | 1 |
+| http-errors | 2.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| http-proxy-agent | 9.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| https-proxy-agent | 7.0.6 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| https-proxy-agent | 9.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| humanize-ms | 1.2.1 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| iconv-lite | 0.7.3 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| ignore | 7.0.8 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| inherits | 2.0.4 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| ip-address | 10.7.5 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| ipaddr.js | 1.9.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| is-promise | 4.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| is-unsafe | 2.0.2 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| isexe | 2.0.0 | ISC | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
+| jiti | 2.7.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| jose | 6.2.13 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
 | js-tokens | 4.0.0 | MIT | console | no | 1 |
-| json-bigint | 1.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| json-schema-to-ts | 3.1.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| json-schema-traverse | 1.0.0 | MIT | run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
-| json-schema-typed | 8.0.2 | BSD-2-Clause | run-adapters-claude-agent, serve | no | 1 |
-| jwa | 2.0.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| jws | 4.0.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| long | 5.3.2 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| json-bigint | 1.0.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| json-schema-to-ts | 3.1.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| json-schema-traverse | 1.0.0 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| json-schema-typed | 8.0.2 | BSD-2-Clause | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| jwa | 2.0.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| jws | 4.0.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| long | 5.3.2 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | loose-envify | 1.4.0 | MIT | console | no | 1 |
-| lru-cache | 11.5.3 | BlueOak-1.0.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| lru-cache | 11.5.3 | BlueOak-1.0.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
 | lucide-react | 0.468.0 | ISC | console | no | 1 |
 | marked | 15.0.6 | MIT | console | no | 1 |
-| marked | 18.0.11 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| math-intrinsics | 1.1.0 | MIT | harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
-| media-typer | 1.1.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| merge-descriptors | 2.0.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| mime-db | 1.52.0 | MIT | harness, pi-browser, serve | no | 1 |
-| mime-db | 1.54.0 | MIT | run-adapters-claude-agent, serve | no | 4 |
-| mime-types | 2.1.35 | MIT | harness, pi-browser, serve | no | 1 |
-| mime-types | 3.0.2 | MIT | run-adapters-claude-agent, serve | no | 4 |
-| minimatch | 10.2.6 | BlueOak-1.0.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| ms | 2.1.3 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| negotiator | 1.1.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| node-domexception | 1.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| node-fetch | 2.7.0 | MIT | harness, pi-browser, serve | no | 1 |
-| node-fetch | 3.3.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| node-html-markdown | 2.0.0 | MIT | harness, pi-browser, serve | no | 1 |
-| node-html-parser | 6.1.13 | MIT | harness, pi-browser, serve | no | 1 |
-| nth-check | 2.1.1 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
-| object-assign | 4.1.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| object-inspect | 1.13.4 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| on-finished | 2.4.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| once | 1.4.0 | ISC | run-adapters-claude-agent, serve | no | 1 |
-| openai | 7.19.0 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| openapi-fetch | 0.13.8 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| openapi-typescript-helpers | 0.0.15 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| p-retry | 4.6.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| parseurl | 1.3.3 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| partial-json | 0.1.7 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| path-expression-matcher | 1.6.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| path-key | 3.1.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
-| path-to-regexp | 8.4.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| pkce-challenge | 5.0.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| proper-lockfile | 4.1.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| protobufjs | 7.6.6 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| proxy-addr | 2.0.8 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| proxy-agent-negotiate | 1.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| qs | 6.17.0 | BSD-3-Clause | run-adapters-claude-agent, serve | no | 1 |
-| quickjs-wasi | 3.6.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| range-parser | 1.3.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| raw-body | 3.0.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
+| marked | 18.0.11 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| math-intrinsics | 1.1.0 | MIT | agentrun, harness, pi-browser, run-adapters-claude-agent, serve | no | 1 |
+| media-typer | 1.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| merge-descriptors | 2.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| mime-db | 1.52.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| mime-db | 1.54.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 4 |
+| mime-types | 2.1.35 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| mime-types | 3.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 4 |
+| minimatch | 10.2.6 | BlueOak-1.0.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| ms | 2.1.3 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| negotiator | 1.1.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| node-domexception | 1.0.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| node-fetch | 2.7.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| node-fetch | 3.3.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| node-html-markdown | 2.0.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| node-html-parser | 6.1.13 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| nth-check | 2.1.1 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
+| object-assign | 4.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| object-inspect | 1.13.4 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| on-finished | 2.4.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| once | 1.4.0 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| openai | 7.19.0 | Apache-2.0 | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| openapi-fetch | 0.13.8 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| openapi-typescript-helpers | 0.0.15 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| opencode-ai | 1.19.5 | MIT | agentrun, serve | no | 1 |
+| opencode-darwin-arm64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-darwin-x64-baseline | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-darwin-x64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-linux-arm64-musl | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-linux-arm64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-linux-x64-baseline-musl | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-linux-x64-baseline | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-linux-x64-musl | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-linux-x64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-windows-arm64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-windows-x64-baseline | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| opencode-windows-x64 | 1.19.5 | MIT | agentrun, serve | yes | 1 |
+| p-retry | 4.6.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| parseurl | 1.3.3 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| partial-json | 0.1.7 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| path-expression-matcher | 1.6.2 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| path-key | 3.1.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
+| path-to-regexp | 8.4.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| pkce-challenge | 5.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| proper-lockfile | 4.1.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| protobufjs | 7.6.6 | BSD-3-Clause | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| proxy-addr | 2.0.8 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| proxy-agent-negotiate | 1.1.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| qs | 6.17.0 | BSD-3-Clause | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| quickjs-wasi | 3.6.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| range-parser | 1.3.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| raw-body | 3.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| react-aria | 3.53.1 | Apache-2.0 | console | no | 1 |
 | react-dom | 18.3.1 | MIT | console | no | 1 |
+| react-stately | 3.51.0 | Apache-2.0 | console | no | 1 |
 | react | 18.3.1 | MIT | console | no | 1 |
-| require-from-string | 2.0.2 | MIT | run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
-| retry | 0.12.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| retry | 0.13.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| router | 2.2.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| safe-buffer | 5.2.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| safer-buffer | 2.1.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
+| require-from-string | 2.0.2 | MIT | agentrun, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| retry | 0.12.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| retry | 0.13.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| router | 2.2.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| safe-buffer | 5.2.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| safer-buffer | 2.1.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
 | scheduler | 0.23.2 | MIT | console | no | 1 |
-| semver | 7.8.5 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| send | 1.2.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| serve-static | 2.2.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| setprototypeof | 1.2.0 | ISC | run-adapters-claude-agent, serve | no | 1 |
-| shebang-command | 2.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
-| shebang-regex | 3.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
-| side-channel-list | 1.0.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| side-channel-map | 1.0.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| side-channel-weakmap | 1.0.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| side-channel | 1.1.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| signal-exit | 3.0.7 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| sisteransi | 1.0.5 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| standardwebhooks | 1.1.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| statuses | 2.0.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| strnum | 2.4.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| toidentifier | 1.0.1 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| tr46 | 0.0.3 | MIT | harness, pi-browser, serve | no | 1 |
-| ts-algebra | 2.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| tslib | 2.8.1 | 0BSD | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| type-is | 2.1.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| typebox | 1.3.27 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 5 |
-| typebox | 1.3.7 | MIT | decisions, dsl, harness, jev, learn, pi, pi-agent-learn, pi-durable-agent, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
-| undici-types | 5.26.5 | MIT | harness, pi-browser, serve | no | 1 |
-| undici-types | 6.21.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| undici | 6.29.1 | MIT | harness, pi-browser, serve | no | 1 |
-| undici | 8.12.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, serve | no | 1 |
+| semver | 7.8.5 | ISC | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| send | 1.2.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| serve-static | 2.2.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| setprototypeof | 1.2.0 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| shebang-command | 2.0.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
+| shebang-regex | 3.0.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
+| side-channel-list | 1.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| side-channel-map | 1.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| side-channel-weakmap | 1.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| side-channel | 1.1.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| signal-exit | 3.0.7 | ISC | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| sisteransi | 1.0.5 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| standardwebhooks | 1.1.1 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| statuses | 2.0.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| strnum | 2.4.2 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| structured-source | 4.0.0 | BSD-2-Clause | agentrun, serve | no | 1 |
+| tabbable | 6.5.1 | MIT | console | no | 1 |
+| toidentifier | 1.0.1 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| tr46 | 0.0.3 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| ts-algebra | 2.0.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
+| tslib | 2.8.1 | 0BSD | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| tslib | 2.9.1 | 0BSD | console | no | 1 |
+| type-is | 2.1.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| typebox | 1.3.27 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 5 |
+| typebox | 1.3.7 | MIT | agentrun, decisions, dsl, harness, jev, learn, pi, pi-agent-learn, pi-durable-agent, run-adapters, run-adapters-claude-agent, run-adapters-codex, serve | no | 1 |
+| undici-types | 5.26.5 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| undici-types | 6.21.0 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| undici | 6.29.1 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| undici | 8.12.2 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, serve | no | 1 |
 | unpdf | 1.8.1 | MIT | harness, pi-vision | no | 1 |
-| unpipe | 1.0.0 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| uuid | 11.1.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| vary | 1.1.2 | MIT | run-adapters-claude-agent, serve | no | 1 |
-| web-streams-polyfill | 3.3.3 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| web-streams-polyfill | 4.0.0-beta.3 | MIT | harness, pi-browser, serve | no | 1 |
-| webidl-conversions | 3.0.1 | BSD-2-Clause | harness, pi-browser, serve | no | 1 |
-| whatwg-url | 5.0.0 | MIT | harness, pi-browser, serve | no | 1 |
-| which | 2.0.2 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
-| wrappy | 1.0.2 | ISC | run-adapters-claude-agent, serve | no | 1 |
-| ws | 8.21.3 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| xml-naming | 0.3.0 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| yaml | 2.9.0 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| zod-to-json-schema | 3.25.2 | ISC | run-adapters-claude-agent, serve | no | 1 |
-| zod | 4.6.6 | MIT | harness, pi-browser, pi-durable-disk, run-adapters-claude-agent, serve | no | 1 |
+| unpipe | 1.0.0 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| use-sync-external-store | 1.7.0 | MIT | console | no | 1 |
+| uuid | 11.1.1 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| vary | 1.1.2 | MIT | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| web-streams-polyfill | 3.3.3 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| web-streams-polyfill | 4.0.0-beta.3 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| webidl-conversions | 3.0.1 | BSD-2-Clause | agentrun, harness, pi-browser, serve | no | 1 |
+| whatwg-url | 5.0.0 | MIT | agentrun, harness, pi-browser, serve | no | 1 |
+| which | 2.0.2 | ISC | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, run-adapters-claude-agent, serve | no | 1 |
+| wrappy | 1.0.2 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| ws | 8.21.3 | MIT | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| xml-naming | 0.3.0 | MIT | agentrun, harness, pi-durable-disk, serve | no | 1 |
+| yaml | 2.9.0 | ISC | agentrun, harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
+| zod-to-json-schema | 3.25.2 | ISC | agentrun, run-adapters-claude-agent, serve | no | 1 |
+| zod | 4.6.6 | MIT | agentrun, harness, pi-browser, pi-durable-disk, run-adapters-claude-agent, serve | no | 1 |
 
 ## Vendored code
 

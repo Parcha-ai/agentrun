@@ -5,7 +5,14 @@ import { NOTICES_FILE, noticesFor, packageDirOf } from './third-party-notices.mj
 /** Browser runtime dependencies are deliberately reviewed separately from development/build tooling. */
 export const RUNTIME_DEPENDENCIES = new Set([
   '@fontsource/jetbrains-mono', '@fontsource/schibsted-grotesk', 'clsx', 'dompurify',
-  'lucide-react', 'marked', 'react', 'react-dom',
+  'lucide-react', 'marked', 'react', 'react-dom', '@headlessui/react', 'class-variance-authority',
+]);
+const BUNDLED_DEPENDENCIES = new Set([
+  ...RUNTIME_DEPENDENCIES, 'scheduler', '@floating-ui/core', '@floating-ui/dom', '@floating-ui/react',
+  '@floating-ui/react-dom', '@floating-ui/utils', '@react-aria/focus', '@react-aria/interactions',
+  '@react-types/shared', '@swc/helpers', '@tanstack/react-virtual', '@tanstack/virtual-core',
+  '@internationalized/date', '@internationalized/number', '@internationalized/string',
+  'react-aria', 'react-stately', 'aria-hidden', 'tabbable', 'use-sync-external-store', 'tslib',
 ]);
 
 export function assertConsoleDependencies(manifest) {
@@ -15,7 +22,7 @@ export function assertConsoleDependencies(manifest) {
 }
 
 export function assertBundledPackage(name) {
-  if (!RUNTIME_DEPENDENCIES.has(name) && name !== 'scheduler') throw new Error(`Console bundled dependency is unreviewed: ${name}`);
+  if (!BUNDLED_DEPENDENCIES.has(name)) throw new Error(`Console bundled dependency is unreviewed: ${name}`);
 }
 
 const PRIVATE_BROWSER = /(?:\b(?:descope|posthog)\b|(?:grep\.ai|parcha\.dev|code\.run|northflank\.com)\b|\/grep\/agentrun\b|\/api\/v2\/control\b)/i;

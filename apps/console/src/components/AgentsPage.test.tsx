@@ -200,9 +200,9 @@ describe("AgentEditPage, a new agent", () => {
       Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")!.set!.call(el, value);
       el.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    type(host.querySelector('input[aria-label="Name"]') as HTMLInputElement, "Calc");
-    type(host.querySelector('input[aria-label="Description"]') as HTMLInputElement, "Checks arithmetic.");
-    type(host.querySelector('textarea[aria-label="Instructions"]') as HTMLTextAreaElement, "Answer.");
+    type(host.querySelector('input#agent-name') as HTMLInputElement, "Calc");
+    type(host.querySelector('input#agent-description') as HTMLInputElement, "Checks arithmetic.");
+    type(host.querySelector('textarea#agent-instructions') as HTMLTextAreaElement, "Answer.");
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create")!.click(); });
     expect(went).toEqual(["#/agents/calc"]);
     expect(v2.createAgent).toHaveBeenCalledWith({ definition: { version: 1, name: "Calc", description: "Checks arithmetic.", instructions: "Answer.", harness: "pi", skills: [], tools: [] } });

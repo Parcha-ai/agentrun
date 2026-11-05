@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { bounded, cost, CUT_NOTE, markdown, upTo } from "./format";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { clock, cost, markdown, runLabel, when } from "./format";
+import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
 
 // An unknown cost is never $0: the contract says "Null while unknown. A client shows null as unknown, never as $0."
@@ -88,57 +89,67 @@ describe("cost in the runs list", () => {
   });
 });
 
-describe("cost, by whose number it is (cost.source)", () => {
-  it("a cost every part of which a provider reported reads plainly, though its basis is estimate", () => {
-    expect(cost({ usd: 0.00003, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("<$0.0001");
-    expect(cost({ usd: 1.5, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("$1.50");
-  });
-  it("an estimated cost reads est., whatever its basis says", () => {
-    expect(cost({ usd: 1.5, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-    expect(cost({ usd: 1.5, basis: "charge", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
-  });
-  it("an older server that says no source: the basis decides, as before", () => {
+describe("cost, by its basis", () => {
+  it("an estimate reads est., a charge reads plainly", () => {
     expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
     expect(cost({ usd: 1.5, basis: "charge", charge_state: null, cap_usd: null })).toBe("$1.50");
   });
-  it("an unknown cost is Unknown whatever its source says", () => {
-    expect(cost({ usd: null, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("Unknown");
-  });
 });
 
-// A cost unknown because requests were cut, each with a recorded figure, reads as its bound: "≤ $x", never a bare "$x".
-describe("a cost bounded by cut requests (at_most_usd)", () => {
-  const base = (unpriced as { body: { cost: { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null } } }).body.cost;
-  it("reads ≤ the bound, rounded up so it never reads below it, never a bare $x and never Unknown", () => {
-    expect(base.usd).toBeNull();
-    // Under a cent, in $0.0001 steps; from a cent up, in cents, as a known cost is said: each rounded up.
-    expect(cost({ ...base, at_most_usd: 0.00123 })).toBe("≤ $0.0013");
-    expect(cost({ ...base, at_most_usd: 0.0049 })).toBe("≤ $0.0049");
-    expect(cost({ ...base, at_most_usd: 0.01234 })).toBe("≤ $0.02");
-    expect(cost({ ...base, at_most_usd: 1.231 })).toBe("≤ $1.24");
-    expect(cost({ ...base, at_most_usd: 2 })).toBe("≤ $2.00");
-    expect(bounded({ ...base, at_most_usd: 0.5 })).toBe(true);
-    expect(upTo(0.00001)).toBe("$0.0001");
-    expect(CUT_NOTE).toBe("some requests were cut");
+// A cost the server can't give whole says what it knows (costsofar/1): the charges priced so far, and how many have no
+// price. "Unknown" stays only when the server says neither.
+describe("a cost known so far (so_far_usd, unpriced)", () => {
+  const unknown = { usd: null, basis: null, charge_state: null, cap_usd: null } as unknown as Cost;
+  it("says so far, and how many charges have no price, in place of Unknown", () => {
+    expect(cost({ ...unknown, so_far_usd: 0.0123, unpriced: 1 })).toBe("so far $0.0123 · 1 not priced");
+    expect(cost({ ...unknown, so_far_usd: 0.0123, unpriced: 3 })).toBe("so far $0.0123 · 3 not priced");
+    expect(cost({ ...unknown, so_far_usd: 1.5, unpriced: 2 })).toBe("so far $1.50 · 2 not priced");
+    // Up to four places under a dollar, as the usage row says it, with no zeros past the cents.
+    expect([0.07, 0.012, 0.5, 0.00004, 0].map((usd) => cost({ ...unknown, so_far_usd: usd, unpriced: 1 }))).toEqual(
+      ["so far $0.07 · 1 not priced", "so far $0.012 · 1 not priced", "so far $0.50 · 1 not priced", "so far <$0.0001 · 1 not priced", "so far $0.00 · 1 not priced"]);
   });
-  it("without the field, or with it null, reads as it always did: Unknown", () => {
-    expect(cost(base)).toBe("Unknown");
-    expect(cost({ ...base, at_most_usd: null })).toBe("Unknown");
-    expect(bounded(base)).toBe(false);
+  it("says est. when the charges priced so far are a local estimate, as a priced run does", () => {
+    expect(cost({ ...unknown, basis: "estimate", so_far_usd: 0.0123, unpriced: 1 })).toBe("so far $0.0123 est. · 1 not priced");
   });
-  it("a known cost is its figure, whatever a bound beside it says", () => {
-    expect(cost({ ...base, usd: 0.5, at_most_usd: 0.9 })).toBe("$0.50 est.");
-    expect(bounded({ ...base, usd: 0.5, at_most_usd: 0.9 })).toBe(false);
+  it("a priced run shows its figure as before, and a null usd with neither field reads Unknown", () => {
+    expect(cost({ ...unknown, usd: 0.5, basis: "estimate" })).toBe("$0.50 est.");
+    expect(cost(unknown)).toBe("Unknown");
+    expect(cost({ ...unknown, so_far_usd: 0.0123 } as Cost)).toBe("Unknown");
+    expect(cost({ ...unknown, unpriced: 1 } as Cost)).toBe("Unknown");
   });
-  it("the runs list says the bound and why, under it", async () => {
+  it("the runs list says it too, not Unknown", async () => {
     const { renderToStaticMarkup } = await import("react-dom/server");
     const { createElement } = await import("react");
     const { RunsList } = await import("../components/RunsList");
     const run = (unpriced as unknown as { body: Parameters<typeof RunsList>[0]["runs"] extends (infer R)[] | null ? R : never }).body;
-    const html = renderToStaticMarkup(createElement(RunsList, { runs: [{ ...run, cost: { ...run.cost!, at_most_usd: 0.03 } }], agentName: () => "Meeting notes", onOpen: () => {} }));
-    expect(html).toContain("≤ $0.03");
-    expect(html).toContain(CUT_NOTE);
+    const html = renderToStaticMarkup(createElement(RunsList, { runs: [{ ...run, cost: { ...run.cost!, usd: null, so_far_usd: 0.0123, unpriced: 1 } }], agentName: () => "Meeting notes", onOpen: () => {} }));
+    expect(html).toContain("so far $0.0123");
+    expect(html).toContain("1 not priced");
     expect(html).not.toContain("Unknown");
   });
 });
 
+// Times read in the viewer's own zone: the browser's, never UTC. A run that started at 20:50:47Z reads 4:50 PM in
+// Puerto Rico (UTC-4) and 5:50 AM the next day in Tokyo (UTC+9).
+describe("when and clock, in the viewer's zone", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+  const AT = "2026-11-04T20:50:47Z";
+  it("reads a time in Puerto Rico's zone there", () => {
+    vi.stubEnv("TZ", "America/Puerto_Rico");
+    expect(when(AT)).toBe("Nov 4, 4:50 PM");
+    expect(clock(AT)).toBe("04:50 PM");
+  });
+  it("reads the same instant in Tokyo's zone there, on the next day", () => {
+    vi.stubEnv("TZ", "Asia/Tokyo");
+    expect(when(AT)).toBe("Nov 5, 5:50 AM");
+    expect(clock(AT)).toBe("05:50 AM");
+  });
+});
+
+// One short label for a run everywhere: the id's random tail, so runs started in the same second differ.
+describe("runLabel", () => {
+  it("is the last 8 characters of the id, different for two UUIDv7s of the same millisecond", () => {
+    expect(runLabel("01a1a869-ce4e-7cf5-abf8-c5407893934a")).toBe("7893934a");
+    expect(runLabel("01a1a869-ce4e-7d11-9a02-3f6b0e21d7c5")).toBe("0e21d7c5");
+  });
+});

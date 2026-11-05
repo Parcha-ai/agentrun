@@ -136,23 +136,31 @@ test('an ids directory a later run uses again (the same --box-ids) holds the ear
 });
 
 test('a box ids directory the supervisor cannot read at its final pass fails the run by name: the receipts it still owes are never dropped without a note', { timeout: 300_000 }, async (t) => {
-  const { mkdirSync, watch, writeFileSync } = await import('node:fs');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { readFile, readdir } = await import('node:fs/promises');
+  const { localPlace } = await import('@parcha/agentrun-harness');
   const own = await mkdtemp(join(tmpdir(), 'box-ids-damaged-'));
   t.after(() => rm(own, { recursive: true, force: true }));
   const shared = join(own, 'ids');
   mkdirSync(shared);
-  // Once the run's last box has ended (its file says so), a damaged file lands beside it: after every write the run's
-  // process makes, before the supervisor's last read.
+  // The local place, with a damaged file landing beside the labels when the run's process has exited: after every write that process makes, and before
+  // the supervisor reads the directory again (it waits for the exit). The run-file reads let a place of the demo's own sit beside providers.
   let damaged = false;
-  const watcher = watch(shared, (_event, name) => {
-    if (damaged || name !== 'box-2.json') return;
-    try { if (JSON.parse(readFileSync(join(shared, name), 'utf8')).receipt !== 'ended') return; } catch { return; }
-    damaged = true;
-    writeFileSync(join(shared, 'box-9.json'), '{ not a ledger entry');
-  });
-  t.after(() => watcher.close());
-  await assert.rejects(run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' }), /box ids file .*box-9\.json cannot be read/);
-  assert.ok(damaged, 'the damage landed while the run went on');
+  const place = ({ paths, self, requestFile }) => {
+    const inner = localPlace({ self, paths, requestFile });
+    const missing = (error) => error.code === 'ENOENT';
+    return {
+      ...inner,
+      start: async (order) => {
+        const runner = await inner.start(order);
+        return { ...runner, exited: runner.exited.then((exit) => { damaged = true; writeFileSync(join(shared, 'box-9.json'), '{ not a ledger entry'); return exit; }) };
+      },
+      readRunFile: async (path) => { try { return new Uint8Array(await readFile(join(paths.root, path))); } catch (error) { if (missing(error)) return null; throw error; } },
+      listRunFiles: async (dir) => { try { return (await readdir(join(paths.root, dir))).sort(); } catch (error) { if (missing(error)) return []; throw error; } },
+    };
+  };
+  await assert.rejects(run(t, {}, ['--json', '--box-ids', shared], { DEMO_PROVIDERS: '1' }, { place }), /box ids file .*box-9\.json cannot be read/);
+  assert.ok(damaged, 'the damage landed after the run\'s process exited');
 });
 
 test('a run whose place makes boxes and whose tools make boxes too is refused: one labeller, never two box-1s', async (t) => {

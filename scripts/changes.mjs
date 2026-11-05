@@ -14,6 +14,12 @@ import { isMain } from './is-main.mjs';
 const exec = promisify(execFile);
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const kinds = ['breaking', 'feature', 'fix', 'ci', 'docs'];
+// The packages on a version line of their own, published at their manifest's version and not the workspace's: @parcha/agentrun (the
+// `npx @parcha/agentrun` command) starts at 0.3.0, above the hosted-API SDK's 0.2.x that the same npm name published from another
+// repository. The release sets its version, and every release moves it: its manifest pins the server at the release's version.
+// `--check` refuses a pull request that moves it, and a release commit that changes a file it ships and keeps it (a release that
+// finds the version published with other bytes stops). Bumping it alone is not a release commit.
+export const ownVersionPackages = ['agentrun'];
 const fragmentName = /^[a-z0-9][a-z0-9-]*\.md$/;
 
 /** The workspace package names (`@parcha/...`) by directory, read from the manifests under `root`. */
@@ -311,10 +317,12 @@ export async function fold(root, version, date, base) {
   return { folded: fragments.length, files: changed };
 }
 
-/** The workspace packages whose manifest version differs from the merge base's. A package the base does not have is new, not bumped. */
+/** The workspace packages whose manifest version differs from the merge base's. A package the base does not have is new, not bumped,
+ *  and one on its own version line (`ownVersionPackages`) is not a release's bump. */
 async function bumpedPackages(root, mergeBase) {
   const bumped = [];
   for (const directory of (await workspacePackages(root)).keys()) {
+    if (ownVersionPackages.includes(directory)) continue;
     const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
     if (was === null) continue;
     const is = JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).version;
@@ -334,6 +342,41 @@ export async function releaseRace(root, base) {
   return { release: bumped.length > 0, bumped, unfolded: bumped.length > 0 ? names : [] };
 }
 
+/** The packages on their own version line whose shipped files (the manifest, its `files`, a README, LICENSE or NOTICE) differ from
+ *  the merge base's while the version does not: the release would find that version published with other bytes and stop. */
+export async function staleOwnVersions(root, base) {
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const stale = [];
+  for (const directory of ownVersionPackages) {
+    const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
+    const now = await readOptional(join(root, 'packages', directory, 'package.json'));
+    if (was === null || now === null) continue;
+    const manifest = JSON.parse(now);
+    if (JSON.parse(was).version !== manifest.version) continue;
+    const shipped = path => path === 'package.json' || /^(README|LICENSE|LICENCE|NOTICE)(\.|$)/i.test(path)
+      || (manifest.files ?? []).some(entry => path === entry || path.startsWith(`${entry.replace(/\/$/, '')}/`));
+    const changed = (await git(root, ['diff', '--name-only', mergeBase, '--', `packages/${directory}`])).split('\n').filter(Boolean)
+      .map(path => path.slice(`packages/${directory}/`.length));
+    if (changed.some(shipped)) stale.push(directory);
+  }
+  return stale;
+}
+
+/** The packages on their own version line whose version differs from the merge base's, `[{ directory, was, now }]`. Only the release
+ *  sets it; a package the base does not have is new. */
+export async function movedOwnVersions(root, base) {
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const moved = [];
+  for (const directory of ownVersionPackages) {
+    const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
+    const now = await readOptional(join(root, 'packages', directory, 'package.json'));
+    if (was === null || now === null) continue;
+    const [before, after] = [JSON.parse(was).version, JSON.parse(now).version];
+    if (before !== after) moved.push({ directory, was: before, now: after });
+  }
+  return moved;
+}
+
 /** Whether a changelog's text has the section for `version`. */
 export const hasVersionSection = (text, version) => text.split('\n').some(line => isVersionHeading(line, version));
 
@@ -347,8 +390,14 @@ async function main() {
     if (!base || /^0+$/.test(base)) { console.log(`Changes: ${fragments.length} fragment(s) valid. No base commit given, so the Unreleased sections were not compared.`); return; }
     const { fold: isFold, edited } = await unreleasedEdits(root, base);
     assert.deepEqual(edited, [], `An Unreleased section is edited in ${edited.join(', ')}. Add a fragment in changes/ instead (see CONTRIBUTING.md); only the release fold edits it.`);
-    const { unfolded } = await releaseRace(root, base);
+    const { release, unfolded } = await releaseRace(root, base);
     if (unfolded.length) throw new Error(`release commit carries unfolded fragments: ${unfolded.join(', ')}; refold on current main`);
+    if (!release) {
+      const moved = await movedOwnVersions(root, base);
+      if (moved.length) throw new Error(moved.map(({ directory, was, now }) => `packages/${directory} moved its version from ${was} to ${now}; the release sets it (docs/releasing.md), so a pull request leaves it at ${was}`).join('\n'));
+    }
+    const stale = release ? await staleOwnVersions(root, base) : [];
+    if (stale.length) throw new Error(`${stale.map(directory => `packages/${directory}`).join(', ')} changed the files it publishes and kept its version; the release sets its next version in its package.json (it is published at its own version, and a release stops on a version already published with other bytes)`);
     console.log(`Changes: ${fragments.length} fragment(s) valid; no Unreleased section edited${isFold ? ' (the fold)' : ''}.`);
   } else if (args[0] === '--fold') {
     const version = args[1];

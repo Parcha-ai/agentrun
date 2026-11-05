@@ -52,7 +52,7 @@ async function processOf(path) {
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
 
 /** serve with codex on a copy of the stand-in (its process found by that copy's path), its model through `gw`. */
-async function codexServe(t, gw) {
+async function codexServe(t, gw, model = "gpt-test") {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyFile(STAND_IN, standIn);
@@ -65,7 +65,7 @@ async function codexServe(t, gw) {
     AGENTRUN_CODEX_STANDIN: "1",
     AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
     AGENT_MODEL_BASE_URL: gw.origin,
-    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL: model,
     AGENT_MODEL_API_KEY: GATEWAY_KEY,
     AGENT_MODEL_PRICE: "1,2,0.5",
   });
@@ -74,16 +74,21 @@ async function codexServe(t, gw) {
   return { api, standIn, data };
 }
 
-test("a codex run whose cap is below one request's ceiling is refused before anything reaches the gateway: failed, spend_cap_reached, at $0", { timeout: 90_000 }, async (t) => {
+test("a codex run whose cap can't cover one request's least is refused before anything reaches the gateway: paused at its cap, at $0, in plain words", { timeout: 90_000 }, async (t) => {
   const gw = await gateway(t);
   gw.release();
   const { api } = await codexServe(t, gw);
-  // The gateway's model may answer 32k tokens at $2 a million: $0.064, past a $0.01 cap before anything is spent.
-  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.01 });
+  // The gateway's model answers at $2 a million output tokens: the least a request may be limited to, its answer's 1,024
+  // tokens, costs $0.002048 before its input, past a $0.001 cap.
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 60_000 });
+  await follow(api, run.body.run_id, ["input_required", "failed"], { deadlineMs: 60_000 });
   const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
-  assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
+  assert.deepEqual([ended.status, ended.state, ended.error, ended.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(ended));
+  const words = /^Not sent: this run's cap of \$0\.001 can't cover one .+ request \(at least \$(\d+\.\d+)\)\. Raise the cap to at least \$(\d+\.\d+) to run it\.$/.exec(ended.pending.said);
+  assert.ok(words, ended.pending.said);
+  assert.equal(words[2], words[1], "nothing spent or held: the cap to raise to is the least");
+  assert.ok(Number(words[1]) >= 0.002048, `the least covers the answer's 1,024 tokens: $${words[1]}`);
   assert.equal(gw.seen.length, 0, "no request reached the gateway");
   assert.equal(ended.cost.usd, 0);
 });
@@ -91,7 +96,9 @@ test("a codex run whose cap is below one request's ceiling is refused before any
 test("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
   const { api, standIn, data } = await codexServe(t, gw);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex"), { id: "codex", available: true, steer: false });
+  // How many fit at once is this host's memory (admission.test.mjs).
+  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  assert.deepEqual(offer, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test", run_memory_mib: 192 });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   // Mid-turn, with the gateway holding its answer: Codex's process and its rights.
@@ -125,6 +132,23 @@ test("through a gateway, codex sends the model id the revision names whole, as p
   gw.release();
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].body.model, "openai/gpt-4o", "the gateway gets the name it was configured with");
+});
+
+test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the gateway's own string, a namespaced one (team/model) included", { timeout: 90_000 }, async (t) => {
+  const gw = await gateway(t);
+  const { api } = await codexServe(t, gw, "team/model");
+  const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  assert.equal(offer.available, true, JSON.stringify(offer));
+  assert.equal(offer.default_model, "agent-model/team/model");
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  for (let i = 0; gw.seen.length === 0; i++) {
+    assert.ok(i < 300, "the turn's model request reaches the gateway");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  gw.release();
+  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(gw.seen[0].body.model, "team/model", "the gateway gets its own id, as configured");
 });
 
 /** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */

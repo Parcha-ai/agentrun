@@ -2,6 +2,14 @@
 
 **Experimental.** The API changes without notice between releases.
 
+> **Deprecated, removed in 0.1.0-beta.31:** the session home (`./home`); the launcher (`./launch`, `Box.launcher` and
+> `BoxLauncher`); the placer (`./place`, and from the root `jevPlacer`, `jevClassifier`, `environmentFacts`,
+> `PlacementsDoc`, `writePlacement`, `isPlacementRecord`, `PlacementError` and the `Placement*` and `Placer` types); the
+> move, restore, store and replay checks of `./testing` (`registerMoveConformance`, `registerRestoreConformance`,
+> `registerStoreConformance`, `replayClassifier` and what they take) and its `FakeLaunch`; and the `home`, `auto` and
+> `purpose` config keys, which from 0.1.0-beta.31 fail to parse. To run an agent in a box, use `@parcha/agentrun-serve`:
+> it uses this package's boxes, `./hands` and `./sync`, which stay.
+
 A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it. [Jev](https://docs.typesafe.ai/) is TypeSafe's typed-decision model: it answers a question about a step with a choice and a probability, and writes no prose.
 
 Tool calls can also run as serverless calls on an Archil disk (`archilExecBoxes`).
@@ -21,6 +29,7 @@ tool calls go to the box. Every provider is behind one `Box` interface:
 
 Jev places a call from each environment's one-line `purpose`: the host asks `jevPlacer`, Jev reads the step and those
 lines and says where it should run, and the host points its tools there.
+The placer is deprecated and removed in 0.1.0-beta.31.
 
 The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
 [where tools run](#where-tools-run-is-a-line-of-config),
@@ -38,7 +47,7 @@ boxes, finds them again by id and lists them by label.
 Install the package with its pi peers, pinned. pi 1.4 is not supported yet; a later release widens the range.
 
 ```sh
-npm install @parcha/pi-transport@beta @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
+npm install @parcha/pi-transport@latest @earendil-works/pi-durable@1.3.0 @earendil-works/pi-ai@1.3.0 @earendil-works/chord@1.3.0
 ```
 
 The example below needs Docker; `localBoxes({ root: "./boxes" })` from `@parcha/pi-transport/box/local` runs it with
@@ -95,7 +104,8 @@ choose the size by naming a snapshot. A box that outlives `maxLifetimeMs` is end
 at about 65 to 70 s for a one-minute lifetime). Daytona's label index trails a create and answers each query shape on
 its own schedule, so `list` always asks Daytona for the `pi-transport` label alone and filters the other labels itself,
 and `create` returns only once that listing shows the box. A listing therefore pages through every box this package
-made in the organization. The default workspace is `/tmp/workspace`. Programs run through the toolbox with their input
+made in the organization. The default workspace is `/tmp/workspace`; one the sandbox's user may not create (below `/run`) is
+made with `sudo -n` and given to that user, and a snapshot without a passwordless sudo fails the create naming the path. Programs run through the toolbox with their input
 and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default sandbox is a container on the host
 kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
 snapshot could not be created in the test organization), so treat it as untested.
@@ -166,9 +176,15 @@ absent is `false`; `network` absent is unknown (a caller that needs `none` or an
 unknown, not none (a caller that must be sure no port is exposed must refuse; `noPortExposed` is true only for a list that is
 empty); `ptraceScope` absent is unknown (do not assume 1 or more); `diskGb` and `startedAt` absent are unknown (a receipt falls back to
 the time the create call answered). Only Modal reports all of them and can restrict a network to an allowlist, expose ports or give
-`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest; local reports `network: "open"`
-and `startedAt`, Daytona `diskGb` and `startedAt`, the Archil exec box `startedAt`, and the three refuse everything but `open` as
-`unsupported`.
+`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest. Daytona takes `network: "none"`
+(`networkBlockAll`) and reports `network: "none"` only once the sandbox's own read says Daytona blocked it; a sandbox it did not block
+(an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. It takes an
+allowlist of domains (a `*.` wildcard allowed) as Daytona's domain list (`domainAllowList`, which Daytona's egress proxy enforces,
+re-signing TLS with its own CA) and reports `network: "allowlist"`, with the hosts in `allow`, only once the sandbox's own read
+carries that list (comma-separated, or a list of hosts); a sandbox without it, or with a value that is neither, is deleted and
+the create refused as `unsupported` the same way. A CIDR in the list is refused. Daytona also
+reports `diskGb` and `startedAt`. Local reports `network: "open"` and `startedAt`, the Archil exec box `startedAt`, and those two
+and Daytona refuse every other network, ports and capabilities as `unsupported`.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
@@ -178,8 +194,24 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 
 `dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
-container every GPU of the host.
+container every GPU of the host. `dockerBoxes({ user: "1000:1000" })` runs every program of its boxes as that uid:gid
+(`--user`), so what a box writes in a bound directory stays the host user's. `dockerBoxes({ cpus: 2, memory: "4g",
+pidsLimit: 1024 })` bounds every box: `--cpu-period 100000 --cpu-quota 200000`, `--memory 4g` with `--memory-swap 4g` (so
+swap never adds to it) and `--pids-limit 1024`. CPUs, the option's or a spec's, are the CFS quota `--cpus` would set,
+which Docker never checks against its own CPU count (a VM's, under Docker Desktop) and drops with a warning where it has no
+CPU controller; `--cpus` fails in both. `cpus` is at least `0.01`, `memory` is bytes or Docker's size (`512m`, `4g`), and
+`pidsLimit` is at most 4194304. A spec's own `cpus` or `memoryMb` takes the option's place, and `facts()` says what the box
+got. With none of them a box has no limit.
 It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
+`dockerBoxes({ dropCapabilities: true })` runs every box with `--cap-drop ALL` and `--security-opt no-new-privileges`, for a
+host whose boxes' programs never change user: as root a box then cannot make a device node in a directory it binds. With
+it, `attach` ends a box that was made without it (by an older version) instead of taking it, so the caller makes a new
+one. A launcher that drops from root to another user (setpriv, runuser) needs Docker's default set, so it stays the
+default. The daemon is the one the docker CLI reaches: when `DOCKER_HOST`, or the docker context, names another machine
+(tcp://, ssh://) rather than a unix socket, `provider.mounts` is false and a spec with mounts is refused as `unsupported`,
+since that daemon would bind its own paths, not this machine's. With both `DOCKER_HOST` and `DOCKER_CONTEXT` set, both
+must be this machine, and every create checks again, so a `docker context use` after the provider was made refuses the
+next spec with mounts.
 
 ### Archil exec
 
@@ -286,6 +318,9 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   and only when a kill call failed. When the group could not be confirmed gone, the error is a `StoppedCommandError`: its
   `killUnconfirmed` is `true`, and the command stays tracked, so `cleanup()` ends it with the rest. `killUnconfirmed` is
   absent when the group was confirmed gone, which is the normal case.
+- A host that dies leaves its commands running (ending a `docker exec` client does not end its program), and its
+  `cleanup()` with it. `endLeftCommands(box, context)`, from `@parcha/pi-transport/hands`, kills every command
+  group an environment wrote down in the box: the host that takes a box over calls it once, before its first command.
 - The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
   box's search path, so a `PATH` with no shell in it still runs a program named by its path.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
@@ -416,6 +451,9 @@ node --experimental-strip-types examples/01-hands.ts examples/hands.local.json '
 ```
 
 ## Moving a home: a store and a workspace
+
+> **Deprecated:** `@parcha/pi-transport/home`, with these movers, is removed in 0.1.0-beta.31. To run an agent in a box,
+> use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 `@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
 nothing of sessions beyond "a SQLite file and a directory". Node only.
@@ -558,6 +596,9 @@ The box needs `sh`, GNU `tar` and `find`, and `split`, `sha256sum`, `cut`, `wc` 
 movers do. No name is ever put in a shell string: the box reads the list on its standard input.
 
 ## A home: the session runs somewhere, and can stop without a cut
+
+> **Deprecated:** `@parcha/pi-transport/home`, with everything in this section, is removed in 0.1.0-beta.31. To run an
+> agent in a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
 
@@ -853,16 +894,20 @@ the runner's process: `runMain(app, { recording })`, with `@parcha/agentrun-pi/d
 
 ### Where a session runs: the placer
 
+> **Deprecated:** The placer, with the `auto` and `purpose` config keys, is removed in 0.1.0-beta.31. To run an agent in
+> a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
+
 A config whose `home` is `auto` lets Jev place the session. Each environment then has a `purpose`, the author's one
 line on what it is for, which is what Jev reads for it (required when auto places the session, never made up from the
 facts); `auto.rest` is where the session goes back when nothing needs it elsewhere (default the first declared
 environment) and `auto.threshold` how sure Jev must be (default 0.5).
 
 `jevPlacer(models, auto.classifier, { rest, threshold })` asks Jev through pi-ai's `Models.classify` (provider
-`typesafe`, model `jev-latest`): one call a decision, two questions. `need` is whether the step needs something `rest`
-cannot do, wherever the session is now; `where` is a choice among the environments, each by its purpose. Jev reads
-the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities, isolation, region; not the
-provider, which names how a box is made). The session
+`typesafe`, model `jev-latest`, on `TYPESAFE_API_KEY`; or Jev through OpenRouter's System One, provider `openrouter`,
+model `~typesafe/jev-latest`, on `OPENROUTER_API_KEY`): one call a decision, two questions. `need` is whether the
+step needs something `rest` cannot do, wherever the session is now; `where` is a choice among the environments, each
+by its purpose. Jev reads the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities,
+isolation, region; not the provider, which names how a box is made). The session
 moves only for a need: `need` at least the threshold and `where` elsewhere. A session away from rest stays while its
 next step needs that place, and goes back to rest at a turn's end when nothing does, by the config. Code checks only
 structure: the judgment is Jev's.
@@ -872,17 +917,23 @@ structure: the judgment is Jev's.
   keeps the session where it is and says why in `error`.
 - **No stand-in.** `jevPlacer` refuses to build without the classifier model (`no_classifier`) or its provider's key
   (`no_key`).
+- **On the key you have.** `jevClassifier(process.env)` picks the classifier as serve's decisions do: TypeSafe's own
+  API when `TYPESAFE_API_KEY` is set, else Jev through OpenRouter when `OPENROUTER_API_KEY` is, else `undefined`. The
+  host's `Models` holds pi-ai's `typesafeProvider()` and `openrouterProvider()`.
 - **Kept with the session.** `HomeHandle.recordPlacement(record)` writes the decision into the session's store
   (`transport.placements`, keyed by its id) in a commit of its runner: it travels with the session, and with the
   record stream it reaches the host's log. A record whose `by` is anything else is refused (`invalid`).
 - **Cost.** A decision's usage counts tokens; `costUsd` is `null` when the classifier has no price (pi-ai's catalog
-  gives TypeSafe none): unknown, not 0.
+  gives TypeSafe's own API none, and prices Jev through OpenRouter): unknown, not 0.
 
 `./testing` has `replayClassifier`, TypeSafe as a replay set keyed by the canonical question (an unknown question is
 an error, never an answer), and `recordingClassifications` to record one. This package's set, 40 decisions recorded
 against Jev, replays in its tests offline.
 
 ## Ownership: one writer per session
+
+> **Deprecated:** `@parcha/pi-transport/home`, with its lease, is removed in 0.1.0-beta.31. To run an agent in a box,
+> use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 `@parcha/pi-transport/home` holds the lease that says which home may write a session. It is a numbered epoch, not a
 timer: the epoch changes only when a host takes, so a slow home is never taken over because a clock ran out.
@@ -917,6 +968,9 @@ const taken = await lease.take("session-1", { environment: "gpu", provider: "mod
   making the value current.
 
 ## A session's place in a box (`./place`)
+
+> **Deprecated:** `@parcha/pi-transport/place` is removed in 0.1.0-beta.31. To run an agent in a box, use
+> `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 `boxPlace({ session, provider, spec, environment, ownership, program, models, vault, ... })` is where one session
 lives in a box, for a supervisor that starts, kills and restarts it: the place a reference entry's `demo()` drives.
@@ -993,6 +1047,9 @@ given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 
 for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
 ## Launch: a program kept alive in a box
+
+> **Deprecated:** `@parcha/pi-transport/launch`, with `Box.launcher`, is removed in 0.1.0-beta.31. To run an agent in a
+> box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 A box has no init system, and a host's `exec` ends when the host goes away. `launch` keeps one program running in a box
 whatever happens to the host. It uploads a small `sh` supervisor and starts it in its own session, so the program
@@ -1163,7 +1220,8 @@ provider.script.on({ op: "create" }, { fail: "unknown", leakBox: true }); // fai
   scripted `exit`, a box that goes `gone` in the middle of an exec, a `refuse`. A match names the op, a box, the nth call, a command
   or any predicate over the call. `fakeClock()` moves time only when a test says (`advance`): delays, `timeoutMs` and a box's
   `maxLifetimeMs` all run on it.
-- Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`)
+- Deprecated, removed in 0.1.0-beta.31 with the launcher: `FakeLaunch` and the launcher half of the fake that this
+  bullet describes. Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`)
   run over it with no exec of a launcher program. A launch has a scriptable state (`phase`, `incarnation`, `restarts`, `lastExit`),
   restarts under the spec's policy (`restart`, `restartDelayMs`, `restartLimit`, `terminalExits`), the stdin replayed to every
   incarnation, `secrets` on the program's secrets channel, and a stop that drains, runs the `beforeStop` program, then kills. The

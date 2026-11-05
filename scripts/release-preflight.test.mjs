@@ -4,12 +4,12 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -30,10 +30,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.\n`;
-const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
+const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version: ownVersionPackages.includes(directory) ? '0.3.0' : version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
   repository: { type: 'git', url: 'git+https://github.com/Parcha-ai/agentrun.git', directory: `packages/${directory}` },
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
-  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' || directory === 'pi-transport' || directory === 'pi-durable-agent' || directory === 'pi-git-remote' ? {} : directory === 'serve' ? { dependencies: { '@parcha/pi-durable-agent': version, '@parcha/pi-durable-disk': version } } : directory === 'pi-agent-learn' ? { dependencies: { '@parcha/pi-git-remote': version } } : directory === 'harness' ? { dependencies: { '@parcha/agentrun-dsl': version, '@parcha/agentrun-pi': version, '@parcha/pi-browser': version, '@parcha/pi-durable-disk': version, '@parcha/pi-vision': version } } : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
+  ...(directory === 'agentrun' ? { dependencies: { '@parcha/agentrun-serve': version } } : directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' || directory === 'pi-transport' || directory === 'pi-durable-agent' || directory === 'pi-git-remote' ? {} : directory === 'serve' ? { dependencies: { '@parcha/pi-durable-agent': version, '@parcha/pi-durable-disk': version } } : directory === 'pi-agent-learn' ? { dependencies: { '@parcha/pi-git-remote': version } } : directory === 'harness' ? { dependencies: { '@parcha/agentrun-dsl': version, '@parcha/agentrun-pi': version, '@parcha/pi-browser': version, '@parcha/pi-durable-disk': version, '@parcha/pi-vision': version } } : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 let baseline;
@@ -52,13 +52,28 @@ before(async () => {
   }
   await recordPackages(baseline);
 });
+// npm pack, once per listed package: 18 packs, 13 times in this file, which took most of its 257 s on CI one after another. They
+// run side by side, at most one per CPU, and the receipt keeps the release map's order.
+const packOne = async (root, directory) => {
+  const [packed] = JSON.parse((await exec('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', join(root, '.release/packages')], { cwd: join(root, 'packages', directory) })).stdout);
+  const sha256 = createHash('sha256').update(await readFile(join(root, '.release/packages', packed.filename))).digest('hex');
+  return { name: packed.name, version: packed.version, filename: packed.filename, sha256 };
+};
 async function recordPackages(root) {
-  const packages = [];
-  for (const directory of listedPackages) {
-    const [packed] = JSON.parse((await exec('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', join(root, '.release/packages')], { cwd: join(root, 'packages', directory) })).stdout);
-    const sha256 = createHash('sha256').update(await readFile(join(root, '.release/packages', packed.filename))).digest('hex');
-    packages.push({ name: packed.name, version, filename: packed.filename, sha256 });
-  }
+  const packages = new Array(listedPackages.length);
+  let next = 0;
+  let failed = false;
+  // After a failed pack no worker takes another, and every pack still running ends before the error goes on: the fixture's
+  // cleanup must not remove a directory a pack is still writing.
+  const worker = async () => {
+    while (!failed && next < listedPackages.length) {
+      const at = next++;
+      try { packages[at] = await packOne(root, listedPackages[at]); } catch (error) { failed = true; throw error; }
+    }
+  };
+  const settled = await Promise.allSettled(Array.from({ length: Math.min(availableParallelism(), listedPackages.length) }, worker));
+  const refused = settled.find((outcome) => outcome.status === 'rejected');
+  if (refused) throw refused.reason;
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
     runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, decisions: true, adapters: true, harness: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
@@ -94,8 +109,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-pi-durable-agent-${version}.tgz`, `parcha-pi-git-remote-${version}.tgz`, `parcha-pi-agent-learn-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-pi-durable-agent-${version}.tgz`, `parcha-pi-git-remote-${version}.tgz`, `parcha-pi-agent-learn-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -129,7 +144,7 @@ test('even a hash-matching verified archive is refused without its license', () 
   await exec('tar', ['-czf', archive, '-C', staging, 'package']);
   const receiptPath = join(root, '.release/verification.json');
   const receipt = JSON.parse(await readFile(receiptPath));
-  receipt.packages[0].sha256 = createHash('sha256').update(await readFile(archive)).digest('hex');
+  receipt.packages.find(pkg => pkg.name === '@parcha/agentrun-dsl').sha256 = createHash('sha256').update(await readFile(archive)).digest('hex');
   await putJson(receiptPath, receipt);
   await assert.rejects(preflight(root), /LICENSE/);
 }));
@@ -213,7 +228,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/pi-git-remote', '@parcha/pi-agent-learn', '@parcha/agentrun-decisions', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -260,7 +275,7 @@ test('the root README\'s status column says published exactly for the packages a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'serve', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on dsl, pi, pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'serve', 'agentrun', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on dsl, pi, pi-durable-disk and pi-durable-agent, the npx command, which depends on serve, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -372,6 +387,38 @@ test('a held package is checked at the workspace version, never published', () =
   await assert.rejects(preflight(root), /Held package .* must be at the workspace version 0\.1\.0-beta\.1, found 0\.1\.0-beta\.2/);
   await putJson(path, { ...current, version });
   assert.equal((await preflight(root)).packages.length, releasePackages.length);
+}));
+
+test('a package on its own version line is checked, named and published at its own plain version, after the server it depends on; any other off the workspace version still stops the release', () => fixture(async root => {
+  const plan = await preflight(root);
+  const order = plan.packages.map(pkg => pkg.directory);
+  assert.ok(order.indexOf('agentrun') > order.indexOf('serve'), 'npx cannot install the command before the server it depends on is published');
+  assert.ok(releaseLayers(releasePackages).findIndex(layer => layer.includes('agentrun')) > releaseLayers(releasePackages).findIndex(layer => layer.includes('serve')), 'a layer after the server\'s');
+  const entry = plan.packages.find(pkg => pkg.directory === 'agentrun');
+  assert.deepEqual([entry.name, entry.version, entry.filename], ['@parcha/agentrun', '0.3.0', 'parcha-agentrun-0.3.0.tgz']);
+  await putJson(join(root, 'packages', 'agentrun', 'package.json'), { ...manifest('agentrun'), version: '0.3.1-beta.1' });
+  await recordPackages(root);
+  await assert.rejects(preflight(root), /@parcha\/agentrun is on its own version line, x\.y\.z; found 0\.3\.1-beta\.1/);
+  await putJson(join(root, 'packages', 'agentrun', 'package.json'), manifest('agentrun'));
+  await putJson(join(root, 'packages', 'jev', 'package.json'), { ...manifest('jev'), version: '0.3.0' });
+  await recordPackages(root);
+  await assert.rejects(preflight(root), /Package versions must match the workspace version/);
+}));
+
+test('npx @parcha/agentrun installs the server it was released with: its one dependency is @parcha/agentrun-serve at the release version', () => fixture(async root => {
+  const pinned = manifest('agentrun');
+  assert.doesNotThrow(() => checkManifest(pinned, 'agentrun', '0.3.0', 'MIT', version));
+  for (const dependencies of [undefined, { '@parcha/agentrun-serve': '0.1.0-beta.0' }, { '@parcha/agentrun-serve': `^${version}` }, { '@parcha/agentrun-serve': 'latest' }, { '@parcha/agentrun-serve': version, 'left-pad': '1.0.0' }]) {
+    const { dependencies: _, ...bare } = pinned;
+    assert.throws(() => checkManifest({ ...bare, ...(dependencies ? { dependencies } : {}) }, 'agentrun', '0.3.0', 'MIT', version), /@parcha\/agentrun must depend on @parcha\/agentrun-serve at the release version 0\.1\.0-beta\.1, and on nothing else/, JSON.stringify(dependencies));
+  }
+  // The release preflight checks it on the tree: a release that bumps the workspace and not the command's pin stops.
+  await putJson(join(root, 'packages', 'agentrun', 'package.json'), { ...pinned, dependencies: { '@parcha/agentrun-serve': '0.1.0-beta.0' } });
+  await recordPackages(root);
+  await assert.rejects(preflight(root), /@parcha\/agentrun must depend on @parcha\/agentrun-serve at the release version 0\.1\.0-beta\.1/);
+  // This repository's own command pins its own server.
+  const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  checkManifest(repoManifest('agentrun'), 'agentrun', repoManifest('agentrun').version, workspace.license, workspace.version);
 }));
 
 test('the vision package is published: listed, not held, a release manifest at the workspace version, and in the plan after pi-durable-disk', () => fixture(async root => {

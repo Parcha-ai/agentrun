@@ -19,10 +19,10 @@ const skip = pinned instanceof Error && env.AGENTRUN_CODEX_REQUIRE_BINARY !== "1
 const codexOf = async (given) => (await harnessOffers(given)).find((h) => h.id === "codex");
 
 test("codex is offered on the pinned build: available with a model key, unavailable for the key it names without one", { skip }, async () => {
-  assert.deepEqual(await codexOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "codex", available: true, steer: false });
+  assert.deepEqual(await codexOf({ OPENAI_API_KEY: "fake-test-key" }), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6.1-sol", run_memory_mib: 192 }, "on the key's default model (model.ts MODEL_KEYS)");
   const keyless = await codexOf({});
   assert.equal(keyless.available, false);
-  assert.match(keyless.reason, /^codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL\.$/);
+  assert.match(keyless.reason, /^codex needs OPENAI_API_KEY, OPENROUTER_API_KEY \(OpenAI's models through OpenRouter\), or a gateway in AGENT_MODEL_BASE_URL\.$/);
 });
 
 // verifyCodex finds the binary through CODEX_BIN before the platform package, so a script there stands in for an
@@ -42,5 +42,6 @@ test("a Codex that is not the pinned build is unavailable as that, with the inst
   const offer = await codexOf({ OPENAI_API_KEY: "fake-test-key" });
   assert.equal(offer.available, false, JSON.stringify(offer));
   assert.match(offer.reason, /is not the pinned build: its binary sha256 is [0-9a-f]{64}, not [0-9a-f]{64}/);
-  assert.match(offer.reason, /\(npm install @parcha\/agentrun-harness-codex @openai\/codex@0\.164\.0\)$/);
+  // The offers are the start's, so the reason ends saying to restart AgentRun once the pinned build is installed.
+  assert.match(offer.reason, /\(npm install @parcha\/agentrun-harness-codex @openai\/codex@0\.164\.0\); once the pinned build is installed, restart AgentRun\.$/);
 });

@@ -5,8 +5,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { after, test } from 'node:test';
+import { modelPortFor } from '@parcha/agentrun-kernel';
 import * as host from '@parcha/agentrun-kernel/host';
-import { codexPolicy, usageOf } from '../dist/host/policy.js';
+import { codexPolicy, usageOf, webSearchUsd, withWebSearches } from '../dist/host/policy.js';
 
 const { startModelProxy } = host;
 
@@ -17,18 +18,20 @@ const RECORDED_STREAM = fixture('responses-stream-gpt-5.4-mini.sse');
 const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
 const completed = (usage, extra = {}) => ({ type: 'response.completed', response: { object: 'response', status: 'completed', ...extra, usage } });
 
-/** A proxy on the Codex policy whose provider answers each request with `answer()` (a Response). */
-async function proxy({ tools = ['lookup'], announce, answer = () => new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }) } = {}) {
+/** A proxy on the Codex policy whose provider answers each request with `answer()` (a Response). With `webSearch`, the
+ *  price adds each search, as the session's machine wires it. */
+async function proxy({ tools = ['lookup'], announce, webSearch, model = 'session-model', hooks, answer = () => new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }) } = {}) {
   const forwarded = [];
   const asked = [];
   const reports = [];
+  const tokens = (_model, u) => (u.input + u.output + u.cacheRead) / 1e6;
   const p = await startModelProxy({
-    policy: codexPolicy({ model: 'session-model', tools, ...(announce ? { announce } : {}) }),
-    hooks: { beforeRequest: async (r) => { asked.push(r); }, afterRequest: async (u) => { reports.push(u); } },
-    model: 'session-model',
+    policy: codexPolicy({ model, tools, ...(announce ? { announce } : {}), ...(webSearch ? { webSearch } : {}) }),
+    hooks: hooks ?? { beforeRequest: async (r) => { asked.push(r); }, afterRequest: async (u) => { reports.push(u); } },
+    model,
     origin: 'https://provider.invalid',
     credential: () => 'provider-secret',
-    price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
+    price: webSearch ? withWebSearches(tokens) : tokens,
     fetch: async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body), raw: init.body }); return answer(); },
   }, KEY);
   after(() => p.close());
@@ -63,7 +66,8 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   assert.deepEqual([f.body.model, f.body.store, f.body.max_output_tokens, f.body.include], ['session-model', false, 32_000, ['reasoning.encrypted_content']]);
   // web search, the CLI's built-ins and its multi-agent namespace are not the session's: only `lookup` is offered.
   assert.deepEqual(f.body.tools.map((t) => `${t.type}:${t.name}`), ['function:lookup']);
-  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8') }], "the runner is asked about the applied body's model, with its input bound: the sent body's bytes");
+  // With the output the body asks for (the policy's clamp, 32,000) and the least it may be limited to and still answer.
+  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8'), outputTokensAsked: 32_000, outputTokensLeast: 1_024 }], "the runner is asked about the applied body's model, with its input bound (the sent body's bytes), its output and its least");
   const sent = JSON.stringify(f);
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
 });
@@ -479,4 +483,299 @@ test("exec is offered after a script that finished when Codex's header and the p
   const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input } });
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(offered(forwarded), ['exec', 'wait']);
+});
+
+// Codex's own web search, live: the request the pinned CLI sent with `web_search = "live"` on the session's generated
+// config, recorded behind a loopback server with its ids replaced (test/fixtures/responses-request-web-search-live.json).
+const LIVE_REQUEST = JSON.parse(fixture('responses-request-web-search-live.json'));
+const LIVE_TOOL = LIVE_REQUEST.tools.find((t) => t.type === 'web_search');
+const LOOKUP = { type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } };
+const streamed = (text) => () => new Response(text, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+/** The recorded stream, its completed event saying the response ran `n` web searches (`tool_usage.web_search.num_requests`). */
+const searched = (n) => RECORDED_STREAM.split('\n').map((line) => {
+  if (!line.startsWith('data: {"type":"response.completed"')) return line;
+  const event = JSON.parse(line.slice(6));
+  event.response.tool_usage.web_search.num_requests = n;
+  return `data: ${JSON.stringify(event)}`;
+}).join('\n');
+/** The recorded stream's tokens at the helper's price. */
+const TOKENS_USD = 13907 / 1e6;
+
+test('web search off: the live web search tool the CLI sends is dropped, a tool_choice naming it refused, and the usage booked as before', async () => {
+  const { p, forwarded, reports } = await proxy({ model: 'gpt-5.4-mini', answer: streamed(searched(2)) });
+  assert.equal((await send(p.url, { body: { ...LIVE_REQUEST, tools: [...LIVE_REQUEST.tools, LOOKUP] } })).status, 200);
+  assert.deepEqual(forwarded[0].body.tools, [LOOKUP]);
+  assert.equal((await send(p.url, { body: { ...LIVE_REQUEST, tool_choice: { type: 'web_search' } } })).status, 400);
+  await settled();
+  assert.deepEqual(reports, [{ input: 13902, output: 5, cacheRead: 0, cacheWrite: 0, usd: TOKENS_USD, estimated: true }], 'no search is read or priced');
+});
+
+test('web search live: the recorded request reaches the provider with exactly its live web search tool, and a tool_choice naming it passes', async () => {
+  const policy = codexPolicy({ model: 'gpt-5.4-mini', tools: ['lookup'], webSearch: 'live' });
+  assert.deepEqual([policy.serverInputOverhead({ tools: [LIVE_TOOL] }), policy.serverInputOverhead({ tools: [LOOKUP] })], [undefined, 0], 'no bound with web search, as the policy says it: no failure');
+  const { p, forwarded, asked } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini' });
+  assert.deepEqual(LIVE_TOOL, { type: 'web_search', external_web_access: true });
+  const r = await send(p.url, { body: { ...LIVE_REQUEST, tools: [...LIVE_REQUEST.tools, LOOKUP] } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(forwarded[0].body.tools, [LIVE_TOOL, LOOKUP], "the CLI's request_user_input is dropped; its live web search passes as sent");
+  assert.equal((await send(p.url, { body: { ...LIVE_REQUEST, tool_choice: { type: 'web_search' } } })).status, 200);
+  assert.deepEqual(forwarded[1].body.tool_choice, { type: 'web_search' });
+  // A search's content is input the body does not carry, with no stated bound: unmeasured, so a cap treats it as unknown.
+  assert.deepEqual(asked.map((a) => 'inputTokensMax' in a && a.inputTokensMax), [undefined, undefined]);
+});
+
+test('web search live: any other web search tool is refused, web_search_preview still dropped, every other hosted tool refused, echoing nothing', async () => {
+  const { p, forwarded } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini' });
+  const secret = 'value-from-the-request-x9';
+  const refused = [{ ...LIVE_TOOL, search_context_size: 'high' }, { ...LIVE_TOOL, filters: { allowed_domains: [secret] } }, { ...LIVE_TOOL, external_web_access: false }, { ...LIVE_TOOL, indexed_web_access: true }, { type: 'web_search' }, { type: 'file_search' }, { type: secret }];
+  for (const tool of refused) {
+    const r = await send(p.url, { body: { ...LIVE_REQUEST, tools: [LIVE_TOOL, tool] } });
+    assert.equal(r.status, 403, JSON.stringify(tool));
+    assert.ok(!r.text.includes(secret), r.text);
+  }
+  for (const tool_choice of [{ type: 'web_search', external_web_access: true }, { type: 'web_search_preview' }, { type: 'file_search' }]) {
+    assert.equal((await send(p.url, { body: { ...LIVE_REQUEST, tool_choice } })).status, 400, JSON.stringify(tool_choice));
+  }
+  assert.equal(forwarded.length, 0);
+  assert.equal((await send(p.url, { body: { ...LIVE_REQUEST, tools: [LIVE_TOOL, { type: 'web_search_preview' }] } })).status, 200);
+  assert.deepEqual(forwarded[0].body.tools, [LIVE_TOOL]);
+});
+
+test("web search live: each search response.completed reports is booked at OpenAI's $0.01 a call, streamed, whole, or past the window", async () => {
+  const { p, reports } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(searched(3)) });
+  assert.equal((await send(p.url, { body: LIVE_REQUEST })).status, 200);
+  await settled();
+  assert.deepEqual(reports.map(({ usd, ...u }) => u), [{ input: 13902, output: 5, cacheRead: 0, cacheWrite: 0, webSearches: 3, estimated: true }]);
+  assert.ok(Math.abs(reports[0].usd - (TOKENS_USD + 3 * 0.01)) < 1e-12, String(reports[0].usd));
+  const usage = { input_tokens: 10, output_tokens: 2 };
+  const live = codexPolicy({ model: 'gpt-5.4-mini', tools: [], webSearch: 'live' });
+  assert.equal(live.usageOf(JSON.stringify({ object: 'response', usage, tool_usage: { web_search: { num_requests: 2 } } })).webSearches, 2, 'a whole JSON body');
+  assert.ok(!('webSearches' in codexPolicy({ model: 'gpt-5.4-mini', tools: [] }).usageOf(searched(2))), 'off, no search is read');
+  // A completed event longer than the window the proxy keeps (its encrypted reasoning): the count is read from the tail.
+  const reasoning = { type: 'reasoning', encrypted_content: 'e'.repeat(200 * 1024), summary: [] };
+  const long = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(sse([{ type: 'response.created', response: { usage: null } }, completed(usage, { output: [reasoning], tool_usage: { web_search: { num_requests: 4 } } })])) });
+  assert.equal((await send(long.p.url, { body: LIVE_REQUEST })).status, 200);
+  await settled();
+  assert.equal(long.reports[0].webSearches, 4);
+  assert.ok(Math.abs(long.reports[0].usd - (12 / 1e6 + 0.04)) < 1e-12, String(long.reports[0].usd));
+});
+
+test('web search live: a model with no known search price, or an answer that does not say how many searches it ran, is an unknown cost, never $0', async () => {
+  assert.deepEqual(['gpt-5.4-mini', 'gpt-5.5', 'gpt-5', 'o3', 'o4-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4.1-mini', 'openai/gpt-5.4-mini', 'claude-sonnet-4-5'].map(webSearchUsd), [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, undefined, undefined, undefined, undefined]);
+  const u = { input: 1, output: 1, cacheRead: 0 };
+  const price = withWebSearches(() => 0.5);
+  assert.deepEqual([price('gpt-5.4-mini', { ...u, webSearches: 2 }), price('gpt-4o-mini', { ...u, webSearches: 1 }), price('gpt-4o-mini', { ...u, webSearches: 0 }), price('gpt-5.4-mini', { ...u, webSearches: null }), withWebSearches(() => null)('gpt-5.4-mini', { ...u, webSearches: 0 })], [0.52, null, 0.5, null, null]);
+  const unknown = await proxy({ webSearch: 'live', model: 'gateway/some-model', answer: streamed(searched(1)) });
+  const silent = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(sse([completed({ input_tokens: 10, output_tokens: 2 })])) });
+  for (const q of [unknown, silent]) assert.equal((await send(q.p.url, { body: LIVE_REQUEST })).status, 200);
+  await settled();
+  assert.deepEqual([unknown.reports[0].webSearches, unknown.reports[0].usd, silent.reports[0].webSearches, silent.reports[0].usd], [1, null, null, null]);
+});
+
+test("web search live: the runner books each search into the session's spend, and the host's cap refuses the next request once it is crossed", async () => {
+  // A cap of $0.03: the recorded answer's tokens ($0.0139) are under it, and with two searches ($0.02) over it.
+  const session = async (searches) => {
+    const booking = await modelPortFor({}, { key: 'k', budgetUsd: 0.03, records: [], append: async () => {}, beforeRequest: ({ spentUsd, budgetUsd }) => (spentUsd === null || spentUsd >= budgetUsd ? { refuse: 'over the cap' } : undefined) });
+    const { p, forwarded } = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', hooks: booking.models, answer: streamed(searched(searches)) });
+    const statuses = [];
+    for (let i = 0; i < 2; i++) statuses.push((await send(p.url, { body: LIVE_REQUEST })).status);
+    await settled();
+    return { statuses, forwarded: forwarded.length, spent: booking.spentUsd() };
+  };
+  const none = await session(0);
+  assert.deepEqual([none.statuses, none.forwarded], [[200, 200], 2]);
+  const two = await session(2);
+  assert.deepEqual([two.statuses, two.forwarded], [[200, 400], 1]);
+  assert.ok(Math.abs(two.spent - (TOKENS_USD + 0.02)) < 1e-12, String(two.spent));
+});
+
+test("web search live: the count is the terminal event's own; an earlier event's 0 never stands in for one the window cut or the event left out", async () => {
+  const usage = { input_tokens: 10, output_tokens: 2 };
+  const pad = 'e'.repeat(100 * 1024);
+  const reasoning = { type: 'reasoning', encrypted_content: pad, summary: [] };
+  // The response's first events carry a tool_usage of their own, with no search yet.
+  const started = { object: 'response', status: 'in_progress', usage: null, tool_usage: { web_search: { num_requests: 0 } } };
+  const book = async (response) => {
+    const events = [{ type: 'response.created', response: started }, { type: 'response.in_progress', response: started }, { type: 'response.completed', response: { object: 'response', status: 'completed', ...response, usage } }];
+    const q = await proxy({ webSearch: 'live', model: 'gpt-5.4-mini', answer: streamed(`${sse(events)}data: [DONE]\n\n`) });
+    assert.equal((await send(q.p.url, { body: LIVE_REQUEST })).status, 200);
+    await settled();
+    const [{ input, output, webSearches, usd }] = q.reports;
+    return { input, output, webSearches, usd: usd === null ? null : Math.round(usd * 1e9) / 1e9 };
+  };
+  const unknown = { input: 10, output: 2, webSearches: null, usd: null };
+  const two = { input: 10, output: 2, webSearches: 2, usd: 0.020012 };
+  // A completed event longer than the window, its count between the two windows the proxy keeps: unknown.
+  assert.deepEqual(await book({ output: [reasoning], tool_usage: { web_search: { num_requests: 3 } }, instructions: pad }), unknown);
+  // Its count readable, whole or at the end of a line longer than the window: N searches at $0.01.
+  assert.deepEqual(await book({ tool_usage: { web_search: { num_requests: 2 } } }), two);
+  assert.deepEqual(await book({ output: [reasoning], tool_usage: { web_search: { num_requests: 2 } } }), two);
+  // A completed event with no tool_usage, whole or longer than the window: unknown.
+  assert.deepEqual(await book({}), unknown);
+  assert.deepEqual(await book({ output: [reasoning] }), unknown);
+});
+
+test("a stopped Responses request's hidden reasoning, as the policy reads it from the body: its effort's budget; with no effort (or no reasoning object), its max_output_tokens, the conservative side; with effort none, none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const hidden = (body) => policy.reasoningHidden?.(body);
+  assert.deepEqual(
+    [hidden({ reasoning: { effort: 'minimal' } }), hidden({ reasoning: { effort: 'low' } }), hidden({ reasoning: { effort: 'medium', summary: 'auto' } }), hidden({ reasoning: { effort: 'high' } }), hidden({ reasoning: { effort: 'xhigh' } })],
+    [1_024, 2_048, 8_192, 16_384, 16_384],
+    'each effort, its budget',
+  );
+  assert.equal(hidden({ reasoning: { effort: 'none' } }), 0, 'effort none: no reasoning');
+  assert.equal(hidden({ reasoning: { summary: 'auto' }, max_output_tokens: 32_000 }), 32_000, 'no effort: its output limit');
+  assert.equal(hidden({ max_output_tokens: 20_000 }), 20_000, 'no reasoning object: its output limit, as the model may reason at its default');
+});
+
+test("the reasoning a Responses stream shows, as the policy reads each event: a reasoning summary's or reasoning text's delta counts its bytes; answer text, a function call's arguments and every other event count none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.reasoningBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: 'Weighing é ✓' })),
+      bytes(event('response.reasoning_text.delta', { item_id: 'rs_1', delta: 'step two' })),
+      bytes(event('response.output_text.delta', { item_id: 'msg_1', delta: 'The answer' })),
+      bytes(event('response.function_call_arguments.delta', { item_id: 'fc_1', delta: '{"q":"x"}' })),
+      bytes(event('response.completed', { response: {} })),
+    ],
+    [Buffer.byteLength('Weighing é ✓'), Buffer.byteLength('step two'), 0, 0, 0],
+  );
+});
+
+test("a Codex request whose hidden reasoning (a short summary) came before 8,000 bytes of answer text, then stopped, counts all it was sent and the reasoning budget its summary left unseen: the text does not stand in for the reasoning", async () => {
+  const summary = 'Weighing the layouts and the totals. '.repeat(8);
+  const text = 'The ledger balances once the March entries move to April. '.repeat(140).slice(0, 8_000);
+  const sse = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
+  const stream = sse('response.created', { response: { id: 'resp_1' } }) + sse('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: summary })
+    + Array.from({ length: 8 }, (_, i) => sse('response.output_text.delta', { item_id: 'msg_1', delta: text.slice(i * 1_000, (i + 1) * 1_000) })).join('');
+  const reports = [];
+  let reported;
+  const done = new Promise((resolve) => (reported = resolve));
+  // The provider holds the stream open after the text, until the proxy aborts it (the client left).
+  const p = await startModelProxy({
+    policy: codexPolicy({ model: 'session-model', tools: ['lookup'] }),
+    hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { reports.push(u); reported(); } },
+    model: 'session-model',
+    origin: 'https://provider.invalid',
+    credential: () => 'provider-secret',
+    price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
+    fetch: async (_url, init) => new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  }, KEY);
+  after(() => p.close());
+  await new Promise((resolve) => {
+    const { hostname, port } = new URL(p.url);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}`, accept: 'text/event-stream' } }, (res) => {
+      let read = 0;
+      // The person stops once the text has reached the harness.
+      res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, reasoning: { effort: 'medium', summary: 'auto' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] }));
+  });
+  await done;
+  const [booked] = reports;
+  // The host's figure for a stop, as serve's cap counts it on a gpt-5-class model: 20,000 input tokens at $1.25 a million,
+  // and what it counts of output plus 1,024 tokens at $10 a million, within the 32,000 the request was sent with.
+  const stoppedUsd = (tokens) => 20_000 * 1.25 / 1e6 + Math.min(32_000, tokens + 1_024) * 10 / 1e6;
+  const store = (await import('@parcha/agentrun-kernel/testing')).memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:text'), { key: 'chat:text', beforeRequest: () => ({ holdUsd: stoppedUsd(32_000), stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'session-model' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  // All it was sent, and medium's 8,192-token budget less the summary's bytes.
+  assert.deepEqual(
+    { streamed: booked.stoppedAfterBytes, hidden: booked.stoppedHiddenTokens, reasoning: booked.stoppedReasoningBytes, counted: nano(booking.spentUsd()) },
+    { streamed: Buffer.byteLength(summary) + Buffer.byteLength(text), hidden: 8_192, reasoning: Buffer.byteLength(summary), counted: nano(stoppedUsd(Buffer.byteLength(summary) + Buffer.byteLength(text) + 8_192 - Buffer.byteLength(summary))) },
+    'the summary and the text it sent, and the unseen reasoning, count',
+  );
+});
+
+test("the content a Responses stream shows, as the policy reads each event: answer text, reasoning and tool call arguments count their delta's bytes; the wire's own fields and every other event count none", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: [] });
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}`;
+  const bytes = (e) => policy.contentBytesOf?.(e);
+  assert.deepEqual(
+    [
+      bytes(event('response.output_text.delta', { sequence_number: 9, item_id: 'msg_1', output_index: 1, content_index: 0, delta: 'The answer é', logprobs: [], obfuscation: 'Xk3a9QwE' })),
+      bytes(event('response.reasoning_summary_text.delta', { item_id: 'rs_1', delta: 'Weighing' })),
+      bytes(event('response.reasoning_text.delta', { item_id: 'rs_1', delta: 'step two' })),
+      bytes(event('response.function_call_arguments.delta', { item_id: 'fc_1', delta: '{"q":"x"}' })),
+      bytes(event('response.custom_tool_call_input.delta', { item_id: 'ct_1', delta: 'ls -la' })),
+      bytes(event('response.created', { response: { id: 'resp_1' } })),
+      bytes(event('response.completed', { response: {} })),
+    ],
+    [Buffer.byteLength('The answer é'), 8, 8, 9, 6, 0, 0],
+  );
+});
+
+/** The #1592 walk on codex, as the provider streams it: a response.created and a response.in_progress that each echo the
+ *  request (its instructions and tool definitions, several kB), then answer text a few characters a delta in the
+ *  Responses API's own framing (sequence number, item id, indexes, logprobs, obfuscation), then the person's stop. The
+ *  cap holds the request at what is left (5,000 tokens of output here), counts the stop at what it streamed plus 1,024
+ *  tokens, and refuses the next request unless 1,024 tokens fit. */
+async function codexWalk({ perMillion, cap, chars }) {
+  const tools = Array.from({ length: 6 }, (_, i) => ({ type: 'function', name: `tool_${i}`, description: `Tool ${i}: ${'reads a page of the ledger and returns its rows with their dates and amounts. '.repeat(12)}`, parameters: { type: 'object', properties: { path: { type: 'string' }, page: { type: 'number' } }, required: ['path'] } }));
+  const echoed = { id: 'resp_1', object: 'response', status: 'in_progress', model: 'session-model', instructions: 'You are a careful bookkeeper. '.repeat(20), tools, reasoning: { effort: 'none' }, output: [], usage: null };
+  const text = 'The quarterly figures reconcile once the deferred revenue moves into the period it was earned in. '.repeat(14).slice(0, chars);
+  let seq = 0;
+  const event = (type, extra) => `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: seq++, ...extra })}\n\n`;
+  const stream = event('response.created', { response: echoed }) + event('response.in_progress', { response: echoed })
+    + event('response.output_item.added', { output_index: 1, item: { id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', type: 'message', status: 'in_progress', content: [], role: 'assistant' } })
+    + event('response.content_part.added', { item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, part: { type: 'output_text', annotations: [], logprobs: [], text: '' } })
+    + Array.from({ length: Math.ceil(text.length / 3) }, (_, i) => event('response.output_text.delta', { item_id: 'msg_0a1b2c3d4e5f60718293a4b5c6d7e8f9', output_index: 1, content_index: 0, delta: text.slice(i * 3, i * 3 + 3), logprobs: [], obfuscation: 'Xk3a9QwEr' })).join('');
+  const reports = [];
+  let reported;
+  const done = new Promise((resolve) => (reported = resolve));
+  const p = await startModelProxy({
+    policy: codexPolicy({ model: 'session-model', tools: ['lookup'] }),
+    hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { reports.push(u); reported(); } },
+    model: 'session-model',
+    origin: 'https://provider.invalid',
+    credential: () => 'provider-secret',
+    price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
+    fetch: async (_url, init) => new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(stream)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  }, KEY);
+  after(() => p.close());
+  await new Promise((resolve) => {
+    const { hostname, port } = new URL(p.url);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}`, accept: 'text/event-stream' } }, (res) => {
+      let read = 0;
+      // The person stops once these characters have reached the harness.
+      res.on('data', (chunk) => { read += chunk.length; if (read >= Buffer.byteLength(stream)) { req.destroy(); resolve(); } });
+      res.on('error', resolve);
+      res.on('close', resolve);
+    });
+    req.on('error', resolve);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, reasoning: { effort: 'none' }, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] }));
+  });
+  await done;
+  const [booked] = reports;
+  const price = (tokens) => tokens * perMillion / 1e6;
+  const stoppedUsd = (tokens) => price(Math.min(5_000, tokens + 1_024));
+  const store = (await import('@parcha/agentrun-kernel/testing')).memorySessionStore();
+  const booking = await modelPortFor(await store.open('chat:walk'), { key: 'chat:walk', beforeRequest: (r) => (r.spentUsd === null || r.spentUsd + price(1_024) > cap ? { refuse: 'spend_cap_reached' } : { holdUsd: cap - r.spentUsd, stoppedUsd }) });
+  await booking.models.beforeRequest({ model: 'session-model' });
+  await booking.models.afterRequest(booked);
+  const nano = (usd) => Math.round(usd * 1e9) / 1e9;
+  const goOn = await booking.models.beforeRequest({ model: 'session-model' }).then(() => 'admitted', (error) => `refused: ${error?.message ?? error}`);
+  return { wire: Buffer.byteLength(stream), text: Buffer.byteLength(text), seen: { streamed: booked.stoppedAfterBytes, counted: nano(booking.spentUsd()), goOn }, want: { streamed: Buffer.byteLength(text), counted: nano(stoppedUsd(Buffer.byteLength(text))), goOn: 'admitted' } };
+}
+
+test("the #1592 walk on codex: a request at $100 a million output tokens under a $0.50 cap, stopped after 1,146 characters of answer text after the stream's echo of the request, counts that text and the allowance, not its whole hold, and the next request ('Go on.') is admitted", async () => {
+  const run = await codexWalk({ perMillion: 100, cap: 0.5, chars: 1_146 });
+  assert.ok(run.wire > 10 * run.text, `setup: the wire is the provider's framing and echo, ${run.wire} bytes for ${run.text} of text`);
+  assert.deepEqual(run.seen, run.want, 'the text it showed and the allowance, $0.217 of the $0.50 cap, and "Go on." goes');
+});
+
+test("the #1592 walk on codex at a catalog price: $10 a million output tokens under a $0.05 cap, stopped after 1,170 characters after the echo, counts that text and the allowance, far below its hold, and 'Go on.' is admitted", async () => {
+  const run = await codexWalk({ perMillion: 10, cap: 0.05, chars: 1_170 });
+  assert.deepEqual(run.seen, run.want, 'the text and the allowance, $0.02194 of the $0.05 cap, and "Go on." goes');
 });

@@ -2,8 +2,9 @@
 // writes its entry), never leaving the turn waiting; an aborted one marks its end, with the provider's id.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { markRequests } from "../dist/request-start.js";
+import { sideRequests } from "../dist/cap.js";
 
 /** Until `list` holds `n` items, or a second passes: the end mark follows the answer, which a terminal event settles. */
 const until = async (list, n) => {
@@ -29,7 +30,9 @@ test("a model stream that throws while it is read ends as an error, never a hang
   assert.notEqual(result, "hung", "the request ended");
   assert.equal(result.stopReason, "error");
   assert.match(result.errorMessage, /the connection reset/);
-  assert.deepEqual(kinds, [REQUEST_STARTED], "an error is pi's to write as the request's entry");
+  // Its start event came first, so its response had begun: its end is marked (`error`) before the result settles, and
+  // the error stays pi's to write as the request's entry (cap-error.test.mjs).
+  assert.deepEqual(kinds, [REQUEST_STARTED, REQUEST_ENDED], "its end marked before pi has its result");
 });
 
 test("a request cut before its first content, after the provider named it, ends with the provider's id on its end mark", async () => {
@@ -91,7 +94,7 @@ test("an aborted compaction summary is closed with its end, never priced: the ru
   assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction" } }], "no cost written");
   const answered = { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop", usage: { input: 1, output: 1, cost: { total: 0.01 } } }] };
   const usage = timelineOf([{ kind: REQUEST_STARTED, data: {} }, answered, ...marks]).at(-1).usage;
-  assert.deepEqual(usage, { usd: null, requests: 2 });
+  assert.deepEqual(usage, { usd: null, requests: 2, so_far_usd: 0.01, unpriced: 1 });
 });
 
 test("a cancelled run sends no summary request either: the model is never called, and nothing is marked", async () => {
@@ -109,7 +112,7 @@ test("a cancelled run's request waits for the cancel to reach the run and ends a
   const { marks, run } = store();
   let called = 0;
   const models = { streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }), completeSimple: async () => (called++, {}) };
-  const { models: marked, open } = await markRequests(models, () => true, { refusalWaitMs: 30_000 });
+  const { models: marked, open } = await markRequests(models, () => true);
   open(run);
   /** A streamed request's events and its message. */
   const streamed = async (signal) => {
@@ -134,12 +137,20 @@ test("a cancelled run's request waits for the cancel to reach the run and ends a
   assert.deepEqual(marks, [], "nothing to count or skip");
 });
 
-test("a cancelled run's request that no abort reaches ends, after a bounded wait, as the refusal the timeline skips", async () => {
+test("a cancelled run's request that no abort reaches ends, after a bounded wait, as the refusal the timeline skips", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const { marks, run } = store();
-  const { models: marked, open } = await markRequests({ streamSimple: () => ({}) }, () => true, { refusalWaitMs: 20 });
+  const { models: marked, open } = await markRequests({ streamSimple: () => ({}) }, () => true);
   open(run);
-  const result = await Promise.race([marked.streamSimple(summaryModel, { messages: [] }, { signal: new AbortController().signal }).result(), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 40))]);
-  assert.notEqual(result, "still waiting", "it ends within twice its wait");
+  let result;
+  void marked.streamSimple(summaryModel, { messages: [] }, { signal: new AbortController().signal }).result().then((r) => (result = r));
+  const settled = () => new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(59_999);
+  await settled();
+  assert.equal(result, undefined, "it waits a minute for the cancel's abort");
+  t.mock.timers.tick(1);
+  await settled();
+  assert.notEqual(result, undefined, "and then ends");
   assert.equal(result.stopReason, "error");
   assert.match(result.errorMessage, /cancelled/);
   assert.deepEqual(marks, [{ kind: REQUEST_REFUSED, data: {} }]);
@@ -148,7 +159,7 @@ test("a cancelled run's request that no abort reaches ends, after a bounded wait
 test("a cancelled run's request whose abort came before it was refused ends aborted at once: nothing to wait for, nothing sent", async () => {
   const { marks, run } = store();
   let called = 0;
-  const { models: marked, open } = await markRequests({ streamSimple: () => (called++, {}), completeSimple: async () => (called++, {}) }, () => true, { refusalWaitMs: 30_000 });
+  const { models: marked, open } = await markRequests({ streamSimple: () => (called++, {}), completeSimple: async () => (called++, {}) }, () => true);
   open(run);
   const stop = new AbortController();
   stop.abort(new Error("cancelled"));
@@ -169,7 +180,7 @@ test("a run cancelled while its request's start mark waits sends no model reques
   const { marks, run } = store();
   let called = 0;
   let cancelled = false;
-  const { models, open } = await markRequests({ streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) }, () => cancelled, { refusalWaitMs: 20 });
+  const { models, open } = await markRequests({ streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) }, () => cancelled);
   const stream = models.streamSimple(summaryModel, { messages: [] }, {});
   cancelled = true;
   open(run);
@@ -188,7 +199,7 @@ test("a run cancelled while its summary's start mark waits sends no summary requ
   const { marks, run } = store();
   let called = 0;
   let cancelled = false;
-  const { models, open } = await markRequests({ completeSimple: async () => (called++, {}) }, () => cancelled, { refusalWaitMs: 20 });
+  const { models, open } = await markRequests({ completeSimple: async () => (called++, {}) }, () => cancelled);
   const summary = models.completeSimple(summaryModel, { messages: [] }, {});
   cancelled = true;
   open(run);
@@ -197,4 +208,18 @@ test("a run cancelled while its summary's start mark waits sends no summary requ
   assert.equal(result.stopReason, "error");
   assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction", unsent: true } }]);
   assert.deepEqual(timelineOf([{ kind: REQUEST_STARTED, data: {} }, priced, ...marks], { settled: true }).at(-1).usage, { usd: 0.01, requests: 1 });
+});
+
+test("a tool's own request is marked under its label, and booked with its fee on top of its tokens, on the answer the cap counts too", async () => {
+  const answer = { role: "assistant", content: [{ type: "text", text: "found" }], api: "faux", provider: "faux", model: "m", stopReason: "stop", timestamp: 0, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0025 } } };
+  const entries = [];
+  const run = { harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void entries.push(entry) }) } };
+  const { models, open } = await markRequests({ completeSimple: async () => structuredClone(answer) });
+  open(run);
+  const context = { messages: [{ role: "user", content: "Search the web for: widgets", timestamp: 0 }] };
+  sideRequests.set(context, { label: "web_search", extraInputTokens: 125_000, maxFeeUsd: 0.05, feeUsd: () => 0.02 });
+  const result = await models.completeSimple({ api: "faux", provider: "faux", id: "m" }, context, {});
+  assert.equal(result.usage.cost.total, 0.0225, "the answer carries its fee");
+  assert.deepEqual(entries.map((entry) => [entry.kind, entry.data]), [[REQUEST_STARTED, { request: "web_search" }], [REQUEST_COST, { request: "web_search", usd: 0.0225, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0 } }]], "its tokens with it, as a summary's");
+  assert.deepEqual(timelineOf(entries).at(-1).usage, { usd: 0.0225, requests: 1 }, "the run's cost counts it once");
 });

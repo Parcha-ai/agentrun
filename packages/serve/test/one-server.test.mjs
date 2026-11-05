@@ -55,7 +55,8 @@ test("one server offers pi, claude-agent and codex, each on its own settings: a 
     ANTHROPIC_BASE_URL: anthropic.url,
   });
   const { api } = await serve(t, { faux: undefined });
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses, [{ id: "pi", available: true, steer: true }, { id: "claude-agent", available: true, steer: false }, { id: "codex", available: true, steer: false }]);
+  // Each entry's memory and count (harness/2) are this host's: admission.test.mjs reads them.
+  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map(({ run_memory_mib, max_concurrent_runs, ...offer }) => offer), [{ id: "pi", available: true, steer: true, default_model: "agent-model/gpt-test" }, { id: "claude-agent", available: true, steer: false, default_model: "anthropic/claude-sonnet-5-5" }, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test" }, { id: "opencode", available: true, steer: false, default_model: "agent-model/gpt-test" }]);
   assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
   const claude = await api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${CLAUDE_MODEL}` }));
   assert.equal(claude.status, 201);

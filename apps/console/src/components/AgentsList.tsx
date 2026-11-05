@@ -1,5 +1,6 @@
 import { Archive, ArchiveRestore, Bot, History, Pencil, Plus, Search, Workflow } from "lucide-react";
 import { useState } from "react";
+import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Agent } from "@/lib/agentForm";
@@ -18,14 +19,15 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <label className="flex h-11 min-w-0 flex-1 items-center gap-3 border px-3">
           <Search className="size-4 text-muted-foreground" aria-hidden />
+          {/* On a narrow portrait screen only its first letter fitted: there the magnifier says it, and the name stays. */}
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents by name or description..." aria-label="Search agents"
-            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
+            className="min-w-0 flex-1 bg-transparent font-mono text-[13px] outline-none placeholder:text-muted-foreground max-sm:portrait:placeholder:text-transparent" />
         </label>
         {permissions.archive !== false && <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>}
         {!archived && permissions.create !== false && <Button size="lg" variant="primary" onClick={actions.onNew}><Plus aria-hidden /> New agent</Button>}
       </div>
       {error && <p className="mb-4 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>}
-      {!agents ? (error ? null : <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading agents...</p>)
+      {!agents ? (error ? null : <ListSkeleton label="Loading the agents" rows={6} />)
         : !shown.length ? (
           <div className="border px-4 py-12 text-center">
             <p className="font-mono text-[13px] text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>

@@ -1,17 +1,23 @@
 // The boxes this server can give a run: Docker, Daytona and a VM provider, each a pi-transport provider built from the
-// server's settings and probed once at its start. bwrap comes later. No run uses a box yet: the registry says which boxes
-// this server has, why it lacks the others, and hands out an available box's provider.
+// server's settings and probed once at its start. bwrap comes later. The registry says which boxes this server has, why
+// it lacks the others, and hands out an available box's provider (and the VM box's client, for the box relay).
 //
-// AGENTRUN_BOXES lists the boxes to set up. A box it does not list is never probed and is unavailable; a name in it that
-// is no box refuses the start. pi-transport is an optional peer of this package and the VM provider's SDK is the host's,
-// so each is loaded by the probe that needs it, and a box whose module is not installed says what to install. The keys
-// are the server's own: the launcher hands them over with its other secrets (secrets.ts), the probes read them here, and
-// no run's process is handed one (SERVER_ONLY in runs.ts).
+// AGENTRUN_BOXES lists the boxes to set up. A box it does not list is never probed and is unavailable, its reason naming
+// the setting that lists it; a name in it that is no box refuses the start. Every reason says what to do next.
+// pi-transport is an optional peer of this package and the VM provider's SDK is the host's, so each is loaded by the
+// probe that needs it, and a box whose module is not installed says what to install. The keys are the server's own: the
+// launcher hands them over with its other secrets (secrets.ts), the probes read them here, and no run's process is
+// handed one (SERVER_ONLY in runs.ts).
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { BoxProvider } from "@parcha/pi-transport";
+import { withoutSecrets } from "./secrets.js";
 
+/** Why the VM box has no network, said in capabilities whenever the server's host list is set: its provider's SDK takes
+ *  a domain list at a sandbox's create, but has no read of a sandbox's network back, so the server could not check that
+ *  a box holds the list it asked for (as it does Daytona's), and it never leaves the provider's open default either. */
+export const VM_NO_LIST = "the Modal sandbox takes a host list, but this server cannot read a sandbox's list back to check that it holds, so the Modal sandbox has no network";
 /** The VM provider: its box id, which is also its SDK's npm name, the SDK's client class and the token's names. */
 export const VM_PROVIDER = { id: "modal", client: "ModalClient", keys: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] } as const;
 const VM = VM_PROVIDER.id;
@@ -20,8 +26,18 @@ const VM = VM_PROVIDER.id;
 export const BOX_IDS = ["bwrap", "docker", VM, "daytona"] as const;
 export type BoxId = (typeof BOX_IDS)[number];
 
-/** One box: whether this server has it, and why when not (or how it was checked). */
-export type BoxOffer = { id: BoxId; available: boolean; reason?: string };
+/** One box: whether this server has it, and why when not (or how it was checked). `state`, set where the server knows
+ *  more than the probe did (box-image.ts): `preparing` is available, its image still coming. */
+/** A box as capabilities show it. `network`: what an available box reaches (BOX_NETWORKS), with `network_reason` when
+ *  it is available and has none for a cause of its own (a Docker in a VM, a daemon elsewhere; a Daytona that could not
+ *  keep its domain list). */
+export type BoxOffer = { id: BoxId; available: boolean; state?: BoxState; reason?: string; network?: BoxNetwork; network_reason?: string };
+/** What an available box reaches: the hosts of `places.allow` (`allowlist`), or nothing (`none`). */
+export const BOX_NETWORKS = ["allowlist", "none"] as const;
+export type BoxNetwork = (typeof BOX_NETWORKS)[number];
+/** A box's state in capabilities: ready, preparing (available; a run's first box waits for its image), or unavailable. */
+export const BOX_STATES = ["ready", "preparing", "unavailable"] as const;
+export type BoxState = (typeof BOX_STATES)[number];
 
 /** The boxes this server set up at its start. */
 export type BoxRegistry = {
@@ -29,7 +45,12 @@ export type BoxRegistry = {
   offers(): BoxOffer[];
   /** An available box's provider; undefined for any other. */
   provider(id: BoxId): BoxProvider | undefined;
+  /** The VM box's SDK client, when it is available: the box relay makes a run's calls with it (box-relay-vm.ts). */
+  vmClient(): unknown;
 };
+/** What boxRegistry takes beyond the environment: the probes' bound, and, for tests only, the module that stands in for
+ *  the VM provider's SDK (startServe's `fauxVm`, under --faux). */
+export type BoxRegistryOptions = { timeoutMs?: number; vmSdk?: () => Promise<Record<string, unknown>> };
 
 /** The setting that lists the boxes to set up: a comma list of box ids. */
 export const BOXES_ENV = "AGENTRUN_BOXES";
@@ -37,20 +58,30 @@ export const BOXES_ENV = "AGENTRUN_BOXES";
 export const BOX_APP_ENV = "AGENTRUN_BOX_APP";
 const DEFAULT_BOX_APP = "agentrun";
 const DAYTONA_KEY = "DAYTONA_API_KEY";
+/** Daytona's API when DAYTONA_API_URL names none: pi-transport's own default. */
+export const DAYTONA_API_URL = "https://app.daytona.io/api";
+
+/** Daytona's API and this server's key for it, from its environment (its secrets readable); undefined without a key. The
+ *  key goes to the server's Daytona provider and its box relay, never further (box-relay.ts). */
+export function daytonaApi(env: NodeJS.ProcessEnv): { apiKey: string; apiUrl: string } | undefined {
+  const apiKey = env[DAYTONA_KEY];
+  return apiKey ? { apiKey, apiUrl: env.DAYTONA_API_URL || DAYTONA_API_URL } : undefined;
+}
 /** The boxes' keys: secrets the server holds and the probes read, which no run's process is handed (runs.ts). */
 export const BOX_KEYS: readonly string[] = [DAYTONA_KEY, ...VM_PROVIDER.keys];
 
 /** How long one box's probe may take; the probes run at once, so this bounds them all. */
 export const PROBE_TIMEOUT_MS = 5_000;
 
-const NOT_ENABLED = "not enabled on this server";
-const NOT_YET = "the bwrap box is not in this release yet";
+/** Why box `id` is unavailable when AGENTRUN_BOXES does not list it: the setting that does, keeping what it lists now. */
+const notEnabled = (id: BoxId, enabled: ReadonlySet<BoxId>) => `not enabled on this server: start AgentRun with ${BOXES_ENV}=${BOX_IDS.filter((box) => box === id || enabled.has(box)).join(",")}`;
+const NOT_YET = "the bwrap box is not in this release yet: use the docker box";
 const NOT_PROBED = "configured; not probed at start";
 const TRANSPORT = "@parcha/pi-transport";
 
-type Probed = { offer: BoxOffer; provider?: BoxProvider };
+type Probed = { offer: BoxOffer; provider?: BoxProvider; client?: unknown };
 const unavailable = (id: BoxId, reason: string): Probed => ({ offer: { id, available: false, reason } });
-const available = (id: BoxId, provider: BoxProvider, reason?: string): Probed => ({ offer: { id, available: true, ...(reason ? { reason } : {}) }, provider });
+const available = (id: BoxId, provider: BoxProvider, reason?: string, client?: unknown): Probed => ({ offer: { id, available: true, ...(reason ? { reason } : {}) }, provider, ...(client === undefined ? {} : { client }) });
 
 /** The boxes `env` lists in AGENTRUN_BOXES; a name that is no box throws, naming it. */
 export function enabledBoxes(env: NodeJS.ProcessEnv): Set<BoxId> {
@@ -63,19 +94,20 @@ export function enabledBoxes(env: NodeJS.ProcessEnv): Set<BoxId> {
 /** The boxes `env` (the server's environment, its secrets readable) lists, each probed once, all at once, each within
  *  `timeoutMs`. Rejects only for a name that is no box: a probe that fails, throws or takes too long leaves its box
  *  unavailable, with a short reason that holds no key and no answer's body. */
-export async function boxRegistry(env: NodeJS.ProcessEnv, options: { timeoutMs?: number } = {}): Promise<BoxRegistry> {
+export async function boxRegistry(env: NodeJS.ProcessEnv, options: BoxRegistryOptions = {}): Promise<BoxRegistry> {
   const enabled = enabledBoxes(env);
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   const probed = await Promise.all(
     BOX_IDS.map((id) => {
       if (id === "bwrap") return unavailable(id, NOT_YET);
-      if (!enabled.has(id)) return unavailable(id, NOT_ENABLED);
-      return bounded(id, timeoutMs, (signal) => PROBES[id](env, signal));
+      if (!enabled.has(id)) return unavailable(id, notEnabled(id, enabled));
+      return bounded(id, timeoutMs, (signal) => PROBES[id](env, signal, options));
     }),
   );
   return {
     offers: () => probed.map(({ offer }) => ({ ...offer })),
     provider: (id) => probed.find(({ offer }) => offer.id === id && offer.available)?.provider,
+    vmClient: () => probed.find(({ offer }) => offer.id === VM && offer.available)?.client,
   };
 }
 
@@ -121,22 +153,24 @@ async function load<T>(name: string, importer: () => Promise<T>): Promise<Loaded
   }
 }
 
-const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: AbortSignal) => Promise<Probed>> = {
+const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: AbortSignal, options: BoxRegistryOptions) => Promise<Probed>> = {
   /** `docker version` names the daemon's version: the CLI is on PATH and its daemon answers this user. */
   async docker(env, signal) {
     const boxes = await load(TRANSPORT, () => import("@parcha/pi-transport/box/docker").then((module) => module.dockerBoxes));
     if (!boxes.ok) return unavailable("docker", boxes.reason);
-    // Its environment is the server's without the boxes' keys; the server's other secrets do not enumerate (withSecrets).
-    const dockerEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !BOX_KEYS.includes(name)));
+    // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
+    // name shaped like a key.
+    const dockerEnv = withoutSecrets(env);
     const answer = await new Promise<{ failed?: string; out: string }>((resolve) =>
       execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout) => {
         const code = (error as { code?: unknown } | null)?.code;
         resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error) } : {}), out: String(stdout) });
       }),
     );
-    if (answer.failed === "ENOENT") return unavailable("docker", "no docker command on this server's PATH");
-    if (answer.failed) return unavailable("docker", `docker version failed (${answer.failed}): is the Docker daemon running, and open to this server's user?`);
-    if (!answer.out.trim()) return unavailable("docker", "docker version named no Docker daemon");
+    // The probe runs once, at the start: each fix takes a restart.
+    if (answer.failed === "ENOENT") return unavailable("docker", "no docker command on this server's PATH: install Docker, then restart this server");
+    if (answer.failed) return unavailable("docker", `docker version failed (${answer.failed}): start Docker, or add this server's user to the docker group, then restart this server`);
+    if (!answer.out.trim()) return unavailable("docker", "docker version named no Docker daemon: start Docker, then restart this server");
     return available("docker", boxes.value());
   },
 
@@ -158,7 +192,7 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
 
   /** The SDK is installed and the token is set; nothing is asked of the provider at start. The client gets the token as
    *  arguments: the server's environment does not hold it (secrets.ts). */
-  async [VM](env) {
+  async [VM](env, _signal, options) {
     const missing = VM_PROVIDER.keys.filter((name) => !env[name]);
     if (missing.length) return unavailable(VM, `needs ${missing.join(" and ")}`);
     const boxes = await load(TRANSPORT, () => import("@parcha/pi-transport/box/modal").then((module) => module.modalBoxes));
@@ -166,7 +200,7 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
     const vmBoxes = boxes.value;
     type Sdk = Parameters<typeof vmBoxes>[0];
     // The SDK is not a dependency of this package (the host installs it), so its name is a value here, not a literal import.
-    const sdk = await load(VM, () => import(VM) as Promise<Record<string, unknown>>);
+    const sdk = await load(VM, options.vmSdk ?? (() => import(VM) as Promise<Record<string, unknown>>));
     if (!sdk.ok) return unavailable(VM, sdk.reason);
     const Client = sdk.value[VM_PROVIDER.client];
     if (typeof Client !== "function") return unavailable(VM, `the installed ${VM} package has no ${VM_PROVIDER.client}`);
@@ -177,6 +211,6 @@ const PROBES: Record<Exclude<BoxId, "bwrap">, (env: NodeJS.ProcessEnv, signal: A
     } catch (error) {
       return unavailable(VM, `its SDK's client did not start (${errorName(error)})`);
     }
-    return available(VM, vmBoxes(client, { appName: env[BOX_APP_ENV] || DEFAULT_BOX_APP }), NOT_PROBED);
+    return available(VM, vmBoxes(client, { appName: env[BOX_APP_ENV] || DEFAULT_BOX_APP }), NOT_PROBED, client);
   },
 };

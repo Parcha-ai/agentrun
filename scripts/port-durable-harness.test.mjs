@@ -104,7 +104,7 @@ test('a patch that changes nothing is named, and dropping a patch that others ar
   const cascaded = await portPackage(packageDir, { drop: ['001-begin-reservation'], cascade: true });
   assert.ok(!cascaded.files.get('src/process/builtins.ts').includes('private async again('), 'without 001 there is no reservation');
   assert.deepEqual((await readPatches(join(packageDir, PORT_DIR), 'harness-process')).map((p) => p.name), [
-    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk', '008-tool-images', '009-recovery-system-note', '010-recovery-note-statuses-only',
+    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk', '008-tool-images', '009-recovery-system-note', '010-recovery-note-statuses-only', '011-result-bound',
   ]);
   for (const patch of await readPatches(join(packageDir, PORT_DIR), 'harness-process')) assert.ok(patch.Reason.length > 20, `${patch.name} says why`);
   // The fix offered upstream is the Codex harness's 012 (repairOutput); 001's begin() is ours (relabelled when offers got their own
@@ -154,7 +154,7 @@ test('the Codex port is what the pristine files, the Codex patches and the one i
   const fake = files.get('test/fake-app-server.mjs').split('\n');
   assert.equal(fake[0], '#!/usr/bin/env node');
   assert.match(fake[1], /^\/\/ Copyright 2026 Vercel Inc\./);
-  assert.equal(fake[3], '// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments');
+  assert.match(fake[3], /^\/\/ Changed by Parcha, patches: 005-fake-app-server-script, 006-comments(?:, \d{3}-[a-z-]+)*$/);
   assert.match(files.get('src/harness.ts').split('\n')[2], /^\/\/ Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments(?:, \d{3}-[a-z-]+)*$/);
   for (const patch of await readPatches(join(codex, PORT_DIR), 'harness-codex')) {
     const without = await portPackage(codex, { drop: [patch.name], cascade: true });

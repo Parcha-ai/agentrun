@@ -1,12 +1,12 @@
-/** `capabilities.models`: where the models come from (`gateway`, `providers`, `faux`) and each tier's model id. */
-export type ModelsInfo = { source?: string; default?: string | null };
+/** `capabilities.models`: where the models come from (`gateway`, `providers`, `faux`), each tier's model id, and
+ *  `route_prefix`, the routing prefix the server puts before a gateway's model ids (null with no gateway). */
+export type ModelsInfo = { source?: string; default?: string | null; route_prefix?: string | null };
 
-/** The routing prefix a gateway puts before every model id it serves (serve names them `<prefix>/<id>`): the provider
- *  part of the server's default, read from capabilities, never named here. None unless the models come from a gateway. */
+/** The routing prefix to take off a model id: exactly the one the server names (`models.route_prefix`), never one read
+ *  off an id, so a gateway id with no routing prefix (`anthropic/claude-x`) keeps its provider. None when the server
+ *  names none. */
 export function gatewayPrefix(models: ModelsInfo | undefined): string | undefined {
-  if (models?.source !== "gateway" || !models.default) return undefined;
-  const slash = models.default.indexOf("/");
-  return slash > 0 ? models.default.slice(0, slash) : undefined;
+  return models?.route_prefix || undefined;
 }
 
 /** A model id as a person reads it: without the gateway's routing prefix, the full id kept for a title. Any other id
@@ -16,8 +16,18 @@ export function modelLabel(id: string, models: ModelsInfo | undefined): { text: 
   return prefix && id.startsWith(`${prefix}/`) && id.length > prefix.length + 1 ? { text: id.slice(prefix.length + 1), title: id } : { text: id };
 }
 
-/** The model a harness runs when a definition names none, as far as the console can tell: which harnesses take the
- *  server's default is the server's to say, and capabilities do not say it yet. So the default is offered for pi, the
- *  harness it is defined for, and none for another (a claude-agent run never takes a gateway's model). */
-export const harnessDefault = (harness: string, defaultModel: string | undefined): string | undefined => (harness === "pi" ? defaultModel : undefined);
-export const NO_DEFAULT = "No default for this harness: choose a model.";
+/** A harness as capabilities list it: `default_model`, the model it runs when a definition names none (null for none). */
+/** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
+ *  the server's `reason`, when it doesn't). */
+export type HarnessInfo = { id: string; default_model?: string | null; available?: boolean; reason?: string };
+
+/** The model a harness runs when a definition names none, as the server says (`harnesses[].default_model`). A server
+ *  that does not say offers its default for pi alone, the harness it is defined for. */
+export function harnessDefault(harness: string, harnesses: readonly HarnessInfo[] | undefined, defaultModel: string | undefined): string | undefined {
+  const offer = harnesses?.find((h) => h.id === harness);
+  if (offer && "default_model" in offer) return offer.default_model ?? undefined;
+  return harness === "pi" ? defaultModel : undefined;
+}
+export const NO_DEFAULT = "No default for this harness yet: add a model key in Settings → Model keys, or choose a model here.";
+/** The agent page's Model fact for an agent that names no model on a harness with no default here: the same fix. */
+export const NO_MODEL_YET = "none yet: add a model key in Settings → Model keys";

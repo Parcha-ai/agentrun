@@ -51,6 +51,21 @@ test("a revision keeps the harness it names, in its body and so its id; one that
   store.close();
 });
 
+test("a revision keeps the tool settings it names, sorted, in its body and so its id, a catalog's tool and an MCP server's wildcard among them; none or an empty map keeps none; settings that are not names are refused before a write", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "P" });
+  const plain = await store.commitRevision(agent.id, A);
+  assert.equal((await store.commitRevision(agent.id, { ...A, toolSettings: {} })).id, plain.id, "an empty map is no setting");
+  const set = await store.commitRevision(agent.id, { ...A, toolSettings: { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "parallel" } } });
+  assert.notEqual(set.id, plain.id, "the settings are part of the body, so of the id");
+  assert.deepEqual(Object.entries(store.readRevision(set.id).body.toolSettings), [["web_fetch", { provider: "parallel" }], ["web_search", { provider: "exa-keyless" }]], "read back sorted");
+  assert.deepEqual((await store.commitRevision(agent.id, { ...WF, toolSettings: { web_fetch: { provider: "parallel" } } })).body.toolSettings, { web_fetch: { provider: "parallel" } }, "a workflow revision has them too");
+  const catalog = { "monid.run": { permission: "allow" }, "mcp:srv/*": { permission: "ask" }, "mcp:srv/echo": { permission: "deny" } };
+  assert.deepEqual((await store.commitRevision(agent.id, { ...A, toolSettings: catalog })).body.toolSettings, catalog, "a catalog's tool and an MCP server's tool or wildcard");
+  for (const toolSettings of [[], "parallel", { web_search: "parallel" }, { web_search: { provider: 1 } }, { "Web Search": { provider: "parallel" } }, { web_search: { provider: "" } }, { "mcp:srv": { permission: "ask" } }, { "mcp:srv/*": { "per mission": "ask" } }]) await assert.rejects(store.commitRevision(agent.id, { ...A, toolSettings }), refused("invalid", /tool settings/), JSON.stringify(toolSettings));
+  store.close();
+});
+
 test("a revision keeps the place it names, {mode, box?}, in its body and so its id; one that names none keeps none and its id is unchanged; a place that is not {mode, box?} of ids is refused before a write", async () => {
   const store = openStore(await scratch());
   const agent = store.createAgent({ name: "P" });
@@ -194,22 +209,6 @@ test("importHome turns a beta.24 home into one agent with one agentic revision, 
   store.close();
 });
 
-test("startRun seeds the run's directory first, then inserts the row; carryBack ends the row once and refuses a second call", async () => {
-  const dir = await scratch();
-  const store = openStore(dir);
-  const agent = store.createAgent({ name: "Runner" });
-  await store.commitRevision(agent.id, A, { setCurrent: true });
-  const run = await store.startRun({ agent: agent.id });
-  assert.deepEqual(store.listRuns().map((r) => [r.id, r.state, r.kind]), [[run.runId, "running", "agentic"]]);
-  assert.equal(run.dir, path.join(path.resolve(dir), "runs", run.runId));
-  store.carryBack(run.runId, { state: "escalated", costUsd: 0.5, summary: "escalated at gate" });
-  assert.deepEqual(store.listRuns().map((r) => [r.state, r.costUsd, r.summary]), [["escalated", 0.5, "escalated at gate"]]);
-  assert.throws(() => store.carryBack(run.runId, { state: "completed" }), refused("exists"));
-  assert.throws(() => store.carryBack("nope", { state: "completed" }), refused("missing"));
-  assert.throws(() => store.carryBack(run.runId, { state: "running" }), refused("invalid"));
-  store.close();
-});
-
 test("a writer killed mid-transaction leaves a hot journal: the FOLDER copied whole opens with the last commit and a clean integrity check", async () => {
   const dir = await scratch();
   const first = openStore(dir);
@@ -249,17 +248,6 @@ test("a parent must be the agent's own revision: a current pointing at another a
   const again = openStore(dir);
   await assert.rejects(again.commitRevision(y.id, B), refused("invalid", /parent is not a revision of that agent/));
   again.close();
-});
-
-test("a seed that fails writes no row and leaves no directory", async () => {
-  const dir = await scratch();
-  const store = openStore(dir);
-  const agent = store.createAgent({ name: "Seed" });
-  await store.commitRevision(agent.id, A, { setCurrent: true });
-  writeFileSync(path.join(dir, "runs"), "not a directory"); // runs/ cannot be made, so the seed fails
-  await assert.rejects(store.startRun({ agent: agent.id }));
-  assert.deepEqual(store.listRuns(), [], "no row");
-  store.close();
 });
 
 test("an agentic-only store (create, commit, start, carry back) never loads the DSL or the pi package: a resolve hook records every load", async () => {

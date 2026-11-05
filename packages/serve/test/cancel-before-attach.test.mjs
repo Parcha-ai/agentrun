@@ -17,37 +17,28 @@ test("a cancel that lands before the run's process sends anything: no request le
   const gate = join(dir, "gate");
   const sent = join(dir, "sent");
   withEnv(t, { FAUX_GATE: gate, FAUX_SENT: sent });
-  const { api } = await serve(t, { faux: GATED });
+  const { api, data } = await serve(t, { faux: GATED });
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
-  // The process is up and waiting on its model, its door not open yet: the cancel lands first, and while the server
-  // waits to reach the door, the model loads and the run would send its first request.
-  await sleep(1_500);
+  // The guard the run's process reads before each request.
+  const guard = cancelledIn(join(data, "runs", run.run_id));
+  assert.equal(guard(), false, "a run not cancelled sends its requests");
+  // The process is started and waiting on its model, its door not open yet: the cancel lands first, and while the
+  // server waits to reach the door, the model loads and the run would send its first request.
   const cancelled = api("POST", `/runs/${run.run_id}/cancel`);
-  await sleep(300);
+  for (let i = 0; !guard(); i++) {
+    assert.ok(i < 400, "the mark serve writes is the one the run's process reads");
+    await sleep(25);
+  }
   await writeFile(gate, "");
   assert.equal((await cancelled).status, 202);
+  assert.equal(guard(), true);
   const ended = await follow(api, run.run_id, ["cancelled"], { deadlineMs: 60_000 });
   assert.equal(existsSync(sent) ? readFileSync(sent, "utf8").split("\n").filter(Boolean).length : 0, 0, "no request was sent");
   const view = (await api("GET", `/runs/${run.run_id}`)).body;
   assert.equal(view.status, "cancelled");
   assert.ok(view.cost.usd === 0, JSON.stringify(view.cost));
   assert.ok(!ended.rows.some((r) => r.kind === "final_answer"), "nothing answered");
-});
-
-test("serve's cancel and the run's guard meet: once a run is cancelled through serve, the guard its process reads says so", { timeout: 90_000 }, async (t) => {
-  const dir = await scratch(t);
-  const gate = join(dir, "gate");
-  withEnv(t, { FAUX_GATE: gate, FAUX_SENT: join(dir, "sent") });
-  const { api, data } = await serve(t, { faux: GATED });
-  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
-  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
-  const guard = cancelledIn(join(data, "runs", run.run_id));
-  assert.equal(guard(), false, "a run not cancelled sends its requests");
-  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
-  assert.equal(guard(), true, "the mark serve wrote is the one the run's process reads");
-  await writeFile(gate, "");
-  await follow(api, run.run_id, ["cancelled"], { deadlineMs: 60_000 });
 });
 
 test("the run's app reads that guard: built on a cancelled run's directory, its models send nothing, and the faux model is never called", { timeout: 90_000 }, async (t) => {
@@ -66,7 +57,8 @@ test("the run's app reads that guard: built on a cancelled run's directory, its 
   withEnv(t, { AGENTRUN_SERVE_FAUX: GATED, FAUX_GATE: gate, FAUX_SENT: join(dir, "sent-in-test") });
   const { default: app } = await import("../dist/app.js");
   const options = await app({ ref: { id: run.run_id }, root, work: join(root, "work"), store: join(root, "store") });
-  await options.onOpen({ harness: { commit: async (change) => change({ appendEntry: async () => ({ id: 1 }) }) } });
+  // No conversation yet: the tool gate reads none of its requests (tool-gate.ts).
+  await options.onOpen({ harness: { commit: async (change) => change({ appendEntry: async () => ({ id: 1 }) }), conversation: async () => undefined } });
   const ref = options.root.agent.model;
   const result = await options.models.streamSimple(options.models.getModel(ref.provider, ref.modelId), { messages: [] }, {}).result();
   assert.match(result.errorMessage ?? "", /cancelled/);

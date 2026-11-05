@@ -36,11 +36,14 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
 export type FauxAction =
   | { say: string; usd?: number | null }
   | { call: string; args?: unknown; usd?: number | null }
-  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls. */
-  | { calls: { call: string; args?: unknown }[]; usd?: number | null }
+  /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
+   *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
+   *  response, so a call can end before the request that asked for it is paid. */
+  | { calls: { call: string; args?: unknown }[]; usd?: number | null; bookAfter?: boolean }
   | { submit: unknown; usd?: number | null }
-  /** The reply ends the turn without a submission. */
-  | { end: true; usd?: number | null }
+  /** The reply ends the turn without a submission: `completed`, or the status `turn` names (a harness that ends its own
+   *  turn interrupted, with no stop asked for, ends it so). */
+  | { end: true; usd?: number | null; turn?: TurnStatus }
   /** The request fails: the turn ends failed. */
   | { fail: string }
   /** The process stops here: nothing resolves until the session's signal aborts. */
@@ -48,7 +51,10 @@ export type FauxAction =
   /** The harness halts the drive with this reason (a spend cap, a mirror it cannot keep): the turn ends failed, naming it. */
   | { halt: string }
   /** A paid request leaves (its beforeRequest passes) and the process dies before it answers: nothing more resolves. */
-  | { cut: true };
+  | { cut: true }
+  /** A paid request leaves and holds unanswered until the turn is stopped: the stop cuts it, and its cost (what had
+   *  streamed) is still booked, as a provider bills a response cut short. */
+  | { cutBooked: true; usd?: number | null };
 
 export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result" } as const;
 
@@ -96,7 +102,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       let cursor = records.filter((r) => r.kind === FAUX_RECORDS.request).length;
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
       const turnsEnded = records.filter((r) => r.kind === FAUX_RECORDS.turnEnd).length;
-      const state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
+      let state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
       stats.opened.push({ key: spec.key, state });
       // A call whose intent is recorded and whose outcome is not: a crash cut it off. It is answered interrupted, once.
       const results = new Set(records.filter((r) => r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
@@ -130,15 +136,25 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
-            await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
+            const ticket = await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
+            if ("cutBooked" in action) {
+              stats.requests += 1;
+              await append(FAUX_RECORDS.request, { index: cursor++ });
+              try { return await hang(signal); } finally { await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd }); }
+            }
             stats.requests += 1;
             const index = cursor++;
-            await append(FAUX_RECORDS.request, { index });
+            // The output limit it was admitted with (what is left of a spend cap can buy), as a real adapter's proxy would
+            // write it into the body: filed, for a test to see.
+            const limit = ticket ? ticket.outputTokensMax : undefined;
+            await append(FAUX_RECORDS.request, { index, ...(limit === undefined ? {} : { outputTokensMax: limit }) });
             if ("fail" in action) return await end("failed", action.fail);
-            await io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const book = () => io.models.afterRequest({ input: 10, output: 5, usd: action.usd === undefined ? 0.001 : action.usd });
+            const bookAfter = "calls" in action && action.bookAfter === true;
+            if (!bookAfter) await book();
             if ("say" in action) io.onEvent({ type: "text", delta: action.say });
-            else if ("end" in action) return await end("completed");
+            else if ("end" in action) return await end(action.turn ?? "completed");
             else {
               const asked = "calls" in action ? action.calls.map((c) => ({ name: c.call, args: c.args ?? {} }))
                 : [{ name: "call" in action ? action.call : "submit", args: "call" in action ? action.args ?? {} : { value: action.submit } }];
@@ -152,6 +168,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                 await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
                 io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
               }
+              if (bookAfter) await book();
             }
           }
         } catch (error) {
@@ -171,14 +188,22 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         void run();
       };
       const session: AdapterSession = {
-        state,
+        get state() { return state; },
         async send(text) {
+          state = "idle";
           await append(FAUX_RECORDS.user, { text });
           prompt.push(text);
           await append(FAUX_RECORDS.turn, { n: turnsStarted + 1 });
           begin();
         },
-        async recover() { begin(); },
+        async recover() { state = "idle"; begin(); },
+        // The open turn ends in the session's records, as a turn's end is written (end()), and nothing runs. Its end is the
+        // kernel's for the session's own stop (abortedOutcome of its SessionHalt), as an interrupted turn's is here.
+        async settleOpenTurn() {
+          if (state !== "open_turn") throw new Error("faux: there is no turn to settle");
+          await append(FAUX_RECORDS.turnEnd, { status: abortedOutcome(AbortSignal.abort(new SessionHalt("interrupted"))).status });
+          state = "idle";
+        },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
         async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); },

@@ -132,26 +132,67 @@ export interface paths {
   "/agents/{agent_id}/home/files": {
     /**
      * Every file in the agent's home
-     * @description The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A path of `capabilities.home.host_owned` that is there (`learning`) is one entry, `{path, host_owned: true}`, with none of what is in it.
+     * @description The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A path of `capabilities.home.host_owned` that is there (`learning`, `sign-ins`) is one entry, `{path, host_owned: true}`, with none of what is in it.
      */
     get: operations["listHomeFiles"];
   };
   "/agents/{agent_id}/home/files/{path}": {
     /**
      * One file of the agent's home, raw
-     * @description Raw bytes with the file's content type, as a run's file is read (`GET /runs/{run_id}/files/{path}`): `nosniff`, a CSP on HTML, `?download=1` for an attachment. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized, folded and by identity on disk, is `403 system_file_forbidden` with `details.reason` `host_owned`: read it through `/v2/agents/{agent_id}/learning`. A link on the way is `404 not_found`.
+     * @description Raw bytes with the file's content type, as a run's file is read (`GET /runs/{run_id}/files/{path}`): `nosniff`, a CSP on HTML, `?download=1` for an attachment. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`), as normalized, folded and by identity on disk, is `403 system_file_forbidden` with `details.reason` `host_owned`. Its message names the learning API (`/v2/agents/{agent_id}/learning`) on a server that has that route, and says this server has none on one that does not. A link on the way is `404 not_found`.
      */
     get: operations["readHomeFile"];
     /**
      * Write one file of the agent's home
-     * @description The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (0600), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over `capabilities.home.max_file_bytes` is `413 payload_too_large`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
+     * @description The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (0600), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over `capabilities.home.max_file_bytes` is `413 payload_too_large`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
      */
     put: operations["writeHomeFile"];
     /**
      * Delete one file of the agent's home
-     * @description Removes the file; a directory it leaves empty stays. A file that is not there is `404 not_found`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
+     * @description Removes the file; a directory it leaves empty stays. A file that is not there is `404 not_found`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
      */
     delete: operations["deleteHomeFile"];
+  };
+  "/agents/{agent_id}/learning": {
+    /**
+     * What the agent has learned: its index, notes, log of changes and counts
+     * @description Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null and every page empty. An archived agent's is readable.
+     */
+    get: operations["getAgentLearning"];
+  };
+  "/agents/{agent_id}/learning/files/{file}": {
+    /**
+     * One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag
+     * @description A note, MEMORY.md, a SKILL.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`.
+     */
+    get: operations["readLearningFile"];
+    /**
+     * Edit a note (If-Match) or create one (If-None-Match: *)
+     * @description The body is the note's whole text, front matter included; a person may set any field, `status` too (an active note is in the index), except that a note waiting for its owner's OK stays waiting: an edit of a `pending` note that drops or changes its status is 400 `bad_request` with the rule `status`, and only an approval makes it active. With neither header, 428. As a person, with no grader: one host commit on main in the agent's queue, `learning: <edited|created|retired> by a person: <file>` with a `Changed-By: user` trailer, MEMORY.md rebuilt from the active notes, and the folder's files brought in line. A note that fails the structural checks a run's notes pass (front matter, the 4 KB cap, UTF-8, hidden characters, text shaped like a secret or holding one of the host's) is 400 `bad_request` with `problems`, and nothing is written; so is an index past 200 lines. MEMORY.md is 400: the server builds it. Answers the note as it now is, with its new ETag. An archived agent's notes are written as its definition is.
+     */
+    put: operations["writeLearningFile"];
+  };
+  "/agents/{agent_id}/learning/files/{file}/approve": {
+    /**
+     * Approve a note, a skill or a workflow draft that waits for its owner's OK
+     * @description A skill (its SKILL.md) or a workflow draft (its README.md) that waits is made active the same way, by the same session, in one commit that drops its `status: pending` line and changes nothing else: every later run is given it. Makes a pending note active: in MEMORY.md, read by every later run, and each note it supersedes that is active still marked superseded. One host commit on main, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and `Approved-Via: console`; the log shows it as `by: {user: true, via: "console"}` at the commit's time, and never the note's text. Only the owner, signed in with their password, approves: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 `forbidden` to every token, the server's own included, since an agent's MCP client, the MCP endpoint's tools or a script may hold one, to a run's door token, and to every request on a server with accounts off, whose page cookie the token mints (`capabilities.learning.approve` is false there, with `approve_needs: "password"`); with no credential at all it is 401, as every route. A run that uses bash on the host runs as the server's user and can read its files, so for untrusted tasks use the sandbox. A note that is not pending is 400 `bad_request`. Under If-Match, as a retire: a stale ETag is 412, none 428.
+     */
+    post: operations["approveLearningFile"];
+  };
+  "/agents/{agent_id}/learning/files/{file}/retire": {
+    /**
+     * Retire a note, a skill or a workflow draft: out of every later run, kept in history
+     * @description A learned skill (its `skills/<name>/SKILL.md`) or a workflow draft (its `workflows/<name>/README.md`; its workflow.json is 400) is retired the same way: `status: retired` last in its front matter, one host commit `learning: retired by a person: <file>` that changes that file alone, listed `retired`, and no later run is given it; one already retired is answered as it is. Sets `status: retired` (and drops `superseded_by`), on an active note or one that waits for its owner's OK (`pending`); any other note is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 `bad_request` with `problems` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. As a person, with no grader: one host commit on main in the agent's queue, `learning: <edited|created|retired> by a person: <file>` with a `Changed-By: user` trailer, MEMORY.md rebuilt from the active notes, and the folder's files brought in line. A note that fails the structural checks a run's notes pass (front matter, the 4 KB cap, UTF-8, hidden characters, text shaped like a secret or holding one of the host's) is 400 `bad_request` with `problems`, and nothing is written; so is an index past 200 lines. MEMORY.md is 400: the server builds it. Answers the note as it now is, with its new ETag. An archived agent's notes are written as its definition is.
+     */
+    post: operations["retireLearningFile"];
+  };
+  "/agents/{agent_id}/learning/log": {
+    /** A page of the changes on the agent's main, newest first */
+    get: operations["listLearningLog"];
+  };
+  "/agents/{agent_id}/learning/notes": {
+    /** A page of the agent's notes */
+    get: operations["listLearningNotes"];
   };
   "/agents/{agent_id}/revisions": {
     /** The agent's revisions, newest first */
@@ -169,6 +210,7 @@ export interface paths {
      * quote when one is named (`409 quote_invalid`), then the run's spend authority, the least of the run cap, the
      * account and key caps left this month and the balance (`402 spend_cap_reached`, `402 insufficient_credits`).
      * A local server checks only the first.
+     * Here a create's `Idempotency-Key` is also kept with the run it started, written in the agent store with the run itself: the same key and body replays that run, as it reads now, for as long as the run exists (after any restart, and past `limits.idempotency_ttl_s`, which bounds the other creates' keys); another body under the key is `409 idempotency_mismatch`.
      */
     post: operations["createRun"];
     parameters: {
@@ -176,6 +218,13 @@ export interface paths {
         agent_id: components["parameters"]["AgentId"];
       };
     };
+  };
+  "/agents/{agent_id}/sign-ins/{key}": {
+    /**
+     * Forget one of the agent's saved sign-ins
+     * @description Deletes the browser vendor's object the sign-in points to (a Browserbase context, a Kernel profile), then the sealed pointer this server kept; GET /agents/{agent_id} lists it no more, and the agent's next run with the browser starts signed out, on a new one. Best effort at the vendor: a delete it does not answer, or refuses, is said in `removed[].message` (`at_vendor: not_deleted`), and the pointer is forgotten all the same. 404 for a key the agent has no sign-in under; 409 `sign_in_held` while a run holds its save lease (`details.held_by`), until that run ends.
+     */
+    delete: operations["forgetSignIn"];
   };
   "/agents/{agent_id}/unarchive": {
     /** Show the archived agent in the lists again */
@@ -190,6 +239,11 @@ export interface paths {
   };
   "/files": {
     /**
+     * This server's uploads, newest first
+     * @description Every file reserved or sent here, pending or ready, a page at a time, so a file whose id was lost is found again. A run that copied a file keeps its copy whatever happens to the upload.
+     */
+    get: operations["listFiles"];
+    /**
      * Reserve an upload
      * @description Reserves a file for a run's input and answers where to send its bytes (`upload`). The file is `pending`
      * until its bytes arrive. Its `path` is relative and keeps its folders: a run sees the file at the same path
@@ -202,11 +256,21 @@ export interface paths {
   };
   "/files/{file_id}": {
     /**
+     * An upload's record
+     * @description The file as POST /files answered it, with its status now: `pending` until its bytes arrive, then `ready` with their `sha256`.
+     */
+    get: operations["getFile"];
+    /**
      * Send a reserved file's bytes
      * @description The body is the file's bytes. Its length must equal the reserved `size_bytes`, and its SHA-256 the reserved
      * `sha256` when one was given (`422 input_invalid`). Sending the same bytes again is a no-op.
      */
     put: operations["uploadFile"];
+    /**
+     * Delete an upload
+     * @description Removes the file and its bytes, pending or ready. A run that already copied it into its workspace keeps its copy; a run started after names it in vain (`422` at `file_ids`).
+     */
+    delete: operations["deleteFile"];
     parameters: {
       path: {
         file_id: components["parameters"]["FileId"];
@@ -219,6 +283,13 @@ export interface paths {
      * @description Readable without a credential: the store opens and the data directory's disk is above its floor. 503 with the same shape when either fails.
      */
     get: operations["getHealth"];
+  };
+  "/hooks/{trigger_id}": {
+    /**
+     * Fire a webhook trigger: a request signed by its secret, no token
+     * @description This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. It follows the Standard Webhooks spec, so a sender signs with any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space; the firing's idempotency key), `webhook-timestamp` (Unix seconds, within 300 s of this server's clock either way) and `webhook-signature`, space-separated `v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">` under the secret's 32 bytes (at most 2048 characters in all), any one of which may match. The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it); its first 16 KiB reach the agent inside `<trigger-payload source="webhook" untrusted>`. A bad or missing signature, a stale or future timestamp, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. The first request with a webhook-id answers 202 once its firing is recorded, and its run starts after; the same webhook-id again, for a day after, answers 200 with that firing and starts nothing. A trigger holds at most 20 firings due (a message_run firing waits while its run works): past them a new webhook-id answers 429 `rate_limited` with Retry-After and records nothing, so the sender sends it again later.
+     */
+    post: operations["receiveHook"];
   };
   "/mcp": {
     /**
@@ -253,11 +324,23 @@ export interface paths {
      * @description Answers at once. To wait for a change, long-poll the timeline.
      */
     get: operations["getRun"];
+    /**
+     * Raise a run's spend cap
+     * @description Raises `max_cost_usd` of an agentic run that named one; only a raise: the new cap is above the run's current cap, its last raise included (422 otherwise, and for a run with no cap or a workflow run); the same raise sent again (a retry) changes nothing and answers as the first did. The run's serve.json keeps it before anything else, so its next process and a server started again run under it. A run paused at its cap (`pending.kind` budget) goes on: the answer comes at once (`resumed` true, its `message_id`), and once its process has been let go the server sends it one follow-up turn under that id, "The cap was raised to $X; continue the task.", which runs under the new cap; it is sent once, by a server started again if this one stopped before it went. A second raise before it goes answers the same `message_id`; one that cannot be sent is tried again, then the run ends failed, saying why. Caps within 1e-9 are the same cap. A run working keeps the cap its process was opened with until its next process (`note` says so). 409 not_continuable for an ended run.
+     */
+    patch: operations["raiseRunCap"];
     parameters: {
       path: {
         run_id: components["parameters"]["RunId"];
       };
     };
+  };
+  "/runs/{run_id}/approvals/{approval_id}": {
+    /**
+     * Answer a tool call that waits for the owner's approval
+     * @description A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's result. allow runs the call once, then resumes the session with one message that names the call and carries its result; deny resumes it with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run resumes in one turn with the refusal and their words, its row reads `Declined by your message`, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.
+     */
+    post: operations["answerApproval"];
   };
   "/runs/{run_id}/archive": {
     /** Archive the run: hidden from the lists, kept with its history */
@@ -269,6 +352,7 @@ export interface paths {
      * @description Records the intent to cancel and signals the run. The run reaches `cancelled` when it has stopped; read the
      * status for the final truth. Cancelling a run that already ended answers `already_terminal: true`.
      * Usage consumed before the cancel is billed.
+     * Here an agentic run reads `cancelled` from the 202 on, `final` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads `cancelled` once its workflow has stopped.
      */
     post: operations["cancelRun"];
     parameters: {
@@ -329,6 +413,17 @@ export interface paths {
         run_id: components["parameters"]["RunId"];
       };
     };
+  };
+  "/runs/{run_id}/learning": {
+    /** The run's learning whole: its seed, merge, verdict, problems and cost */
+    get: operations["getRunLearning"];
+  };
+  "/runs/{run_id}/learning/diff": {
+    /**
+     * What the run proposed, file by file
+     * @description 404 for a run that does not learn, or whose merge is not in its agent's folder.
+     */
+    get: operations["getRunLearningDiff"];
   };
   "/runs/{run_id}/messages": {
     /**
@@ -423,6 +518,38 @@ export interface paths {
     /** Show the archived run in the lists again */
     post: operations["unarchiveRun"];
   };
+  "/settings/mcp-servers": {
+    /**
+     * The remote MCP servers saved here, with their tools; never a credential
+     * @description When the saved-servers file does not read (damaged, or another format), `servers` is empty and `file_unreadable` is true; every other route on it is 409 store_unreadable, and nothing writes over it.
+     */
+    get: operations["listMcpServers"];
+  };
+  "/settings/mcp-servers/{name}": {
+    /** One saved MCP server; never its credential */
+    get: operations["getMcpServer"];
+    /**
+     * Preview a remote MCP server, then save it with the tools listed and its credential sealed
+     * @description Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and `auth.type` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth. Connects with the official MCP SDK client: `server/discover` (2026-07-28) first, a 2025-era server by its `initialize`; then `tools/list`, every page. No redirect is followed: a 3xx is 422 input_invalid (field `url`, reason `redirect`, naming where it points), so a credential goes only where it is sent. A server that asks for a credential (401 or 403) is 422 `auth_required`, `details.auth` `oauth` when it names protected-resource metadata (its WWW-Authenticate or `/.well-known/oauth-protected-resource`), else `bearer`; a URL whose answers hold no JSON-RPC reply is 422 `not_mcp`; a server listing more than 500 tools, or more than 1 MiB of them (names, descriptions, schemas), is 422 input_invalid (field `url`, reason `too_many_tools` or `tools_too_large`), the listing stopped at that page; any other failure is 424. Nothing is saved unless the listing succeeds.
+     */
+    put: operations["saveMcpServer"];
+    /** Forget a saved MCP server and its credential */
+    delete: operations["deleteMcpServer"];
+  };
+  "/settings/mcp-servers/{name}/refresh": {
+    /**
+     * List a saved MCP server's tools again, keep them, and say what changed
+     * @description With its saved URL and sealed credential. `added` and `removed` are tool names; `changed` names a tool whose title, description, schemas or annotations differ. Connects with the official MCP SDK client: `server/discover` (2026-07-28) first, a 2025-era server by its `initialize`; then `tools/list`, every page. No redirect is followed: a 3xx is 422 input_invalid (field `url`, reason `redirect`, naming where it points), so a credential goes only where it is sent. A server that asks for a credential (401 or 403) is 422 `auth_required`, `details.auth` `oauth` when it names protected-resource metadata (its WWW-Authenticate or `/.well-known/oauth-protected-resource`), else `bearer`; a URL whose answers hold no JSON-RPC reply is 422 `not_mcp`; a server listing more than 500 tools, or more than 1 MiB of them (names, descriptions, schemas), is 422 input_invalid (field `url`, reason `too_many_tools` or `tools_too_large`), the listing stopped at that page; any other failure is 424.
+     */
+    post: operations["refreshMcpServer"];
+  };
+  "/settings/mcp-servers/preview": {
+    /**
+     * Connect to a remote MCP server and list its tools, storing nothing
+     * @description `{url, auth}`, or `{name}` for a saved server with its sealed credential (409 no_sealing_key when it does not open for want of a seal key; 422 when it does not open otherwise). Connects with the official MCP SDK client: `server/discover` (2026-07-28) first, a 2025-era server by its `initialize`; then `tools/list`, every page. No redirect is followed: a 3xx is 422 input_invalid (field `url`, reason `redirect`, naming where it points), so a credential goes only where it is sent. A server that asks for a credential (401 or 403) is 422 `auth_required`, `details.auth` `oauth` when it names protected-resource metadata (its WWW-Authenticate or `/.well-known/oauth-protected-resource`), else `bearer`; a URL whose answers hold no JSON-RPC reply is 422 `not_mcp`; a server listing more than 500 tools, or more than 1 MiB of them (names, descriptions, schemas), is 422 input_invalid (field `url`, reason `too_many_tools` or `tools_too_large`), the listing stopped at that page; any other failure is 424.
+     */
+    post: operations["previewMcpServer"];
+  };
   "/settings/tool-keys": {
     /** The tool keys a person may save, and which are set: names only, never a value */
     get: operations["listToolKeys"];
@@ -430,7 +557,7 @@ export interface paths {
   "/settings/tool-keys/{key_id}": {
     /**
      * Save a tool key's fields, sealed
-     * @description Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. 422 for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.
+     * @description Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.
      */
     put: operations["saveToolKey"];
     /**
@@ -439,12 +566,24 @@ export interface paths {
      */
     delete: operations["deleteToolKey"];
   };
+  "/settings/tools": {
+    /**
+     * The server's tool settings
+     * @description Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (codex's own search or, on pi, the model provider's hosted one, else Parallel where the server holds its key, which bills it, else Exa's keyless search; claude-agent's own search only as native), native (that alone), exa-keyless (that alone) or parallel; web_fetch kernel or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.
+     */
+    get: operations["getToolSettings"];
+    /**
+     * Set the providers of web_search, web_fetch and browser, and each tool's permission
+     * @description Replaces the settings: a tool the body leaves out takes its defaults. Kept in the data directory, and capabilities say so at once. A provider is read by every run launched from then on; a permission by the tool gate at each call, live runs' included (a claude-agent or codex run's own web search takes a change of web_search's at its next launch). An MCP server's wildcard, mcp:<server>/*, sets each of its tools, under a tool's own key. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider, and so does a browser vendor picked without its key. An unknown tool, a provider not offered for it and a permission not offered for it are refused.
+     */
+    put: operations["putToolSettings"];
+  };
   "/settings/webhook": {
     /** The webhook this server POSTs run notices to, if one is set; never its secret */
     get: operations["getWebhook"];
     /**
      * Set the webhook's URL
-     * @description Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to `url` as JSON `{type, timestamp, data}`: `run.needs_input` when a run comes to need its person (status input_required; `data.pending.kind` `question` for an ask_person question, `stopped` for a stopped turn) and `run.ended` when it ends (completed, failed or cancelled), with `data: {run_id, agent_id, status, title, url}`, `url` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: `webhook-id` (the same on every try, the receiver's idempotency key), `webhook-timestamp` (Unix seconds) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.
+     * @description Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to `url` as JSON `{type, timestamp, data}`: `run.needs_input` when a run comes to need its person (status input_required; `data.pending.kind` `question` for an ask_person question, `approval` for a tool call that waits for a person's approval, `stopped` for a stopped turn, `budget` for a run paused at its spend cap) and `run.ended` when it ends (completed, failed or cancelled), with `data: {run_id, agent_id, status, title, url}`, `url` the run on the page; and `trigger.failed` when a trigger's firing could not start its run (/triggers), with `data: {trigger_id, name, firing_key, nominal_at, error: {code, message}, auto_paused}`, `auto_paused` true when it was the 5th in a row and turned the trigger off, its `webhook-id` the same for the same firing, after a restart too; never a tool's arguments, an output or an input, which the API reads. Headers: `webhook-id` (the same on every try, the receiver's idempotency key), `webhook-timestamp` (Unix seconds) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.
      */
     put: operations["saveWebhook"];
     /** Remove the webhook; its pending messages are dropped, the log of attempts is kept */
@@ -471,9 +610,50 @@ export interface paths {
   "/stats": {
     /**
      * Counts and cost over every agent and run
-     * @description Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` only; every other number is the whole store's.
+     * @description Read from the agent store's aggregates, and `learning` from the runs this server holds and its learning ledger, where each run's learning end is written: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` and `learning` only; every other number is the whole store's.
      */
     get: operations["getStats"];
+  };
+  "/triggers": {
+    /**
+     * The triggers: schedules that start an agent's capped runs
+     * @description 409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.
+     */
+    get: operations["listTriggers"];
+    /**
+     * Make a trigger: a schedule or a signed webhook that starts a capped run of an agent, or messages a run
+     * @description Each firing starts one run of `target.agent_id` with `target.input` and its `max_cost_usd` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's `trigger` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last 200 firings are kept. A `webhook` source fires on each request to /hooks/{trigger_id} signed by its secret, which this answer holds (`secret`) this once: a retry under the same Idempotency-Key answers the same trigger with a `note` in its place, as the key's record never keeps a secret. A `message_run` target sends each firing's input to one run, under the firing's key, which the run's store takes once. 422 for another source kind, a start_run target with no max_cost_usd whose agent has no default one, an agent that is a workflow or does not take the input, or a run that is a workflow's; 409 no_sealing_key for a webhook trigger on a server handed no seal key.
+     */
+    post: operations["createTrigger"];
+  };
+  "/triggers/{trigger_id}": {
+    /** One trigger */
+    get: operations["getTrigger"];
+    /** Delete a trigger and its firings; the runs it started stay */
+    delete: operations["deleteTrigger"];
+    /**
+     * Change a trigger, or turn it off and on
+     * @description Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.
+     */
+    patch: operations["updateTrigger"];
+  };
+  "/triggers/{trigger_id}/fire": {
+    /**
+     * Run it now: one firing per Idempotency-Key
+     * @description A firing now, on or off, under the same overlap rule as a scheduled one; it is driven before the answer. The same key again answers its firing as it stands (200, `Idempotent-Replayed: true`), and starts no second run, for `limits.idempotency_ttl_s` after it fired, even once the firing has left the history; past that it is a new firing, which a run the key started still answers. A firing never moves `last_run_id` back to an older run. 400 with no Idempotency-Key. 429 `rate_limited`, with Retry-After, while the trigger holds 20 firings due.
+     */
+    post: operations["fireTrigger"];
+  };
+  "/triggers/{trigger_id}/firings": {
+    /** The trigger's last 200 firings, newest first */
+    get: operations["listTriggerFirings"];
+  };
+  "/triggers/{trigger_id}/secret": {
+    /**
+     * A webhook trigger's new secret, shown once; the old one signs nothing from now on
+     * @description 422 for a trigger that is not a webhook's; 409 no_sealing_key when the server was handed no seal key.
+     */
+    post: operations["rotateTriggerSecret"];
   };
   "/usage": {
     /**
@@ -523,6 +703,32 @@ export interface components {
       skills: components["schemas"]["SkillFileInfo"][];
       /** @description The repo commit the home was last refreshed from. */
       source: components["schemas"]["Source"] | null;
+      /** @description Each tool the agent's current revision grants, in capabilities.tools' order, with its permission (permission, where it came from as permission_from, default_permission, permissions). A tool with a provider choice (web_search, web_fetch, and fetch_page, web_fetch's legacy name; browser) carries the provider in force (provider), where it came from (provider_from: agent, its own tool_settings; server, the server's settings; default, the built-in default), the one that applies when the agent sets none (default_provider, the server's), and what it resolves to on the agent's harness and model (resolved). Only GET /agents/{agent_id} answers it. */
+      tools?: ({
+          /**
+           * @description The one that applies when the agent sets none: the server's, else the owner's default.
+           * @enum {unknown}
+           */
+          default_permission: "allow" | "ask" | "deny";
+          default_provider?: string;
+          name: string;
+          /**
+           * @description The permission in force: the agent's own (tool_settings), else the server's, else the owner's default.
+           * @enum {unknown}
+           */
+          permission: "allow" | "ask" | "deny";
+          /**
+           * @description Where the permission came from: agent, its own tool_settings (the tool's key, or its MCP server's wildcard); server, the server's settings; default, the owner's default.
+           * @enum {unknown}
+           */
+          permission_from: "agent" | "server" | "default";
+          /** @description The permissions it may be set to. */
+          permissions: ("allow" | "ask" | "deny")[];
+          provider?: string;
+          /** @enum {unknown} */
+          provider_from?: "agent" | "server" | "default";
+          resolved?: string;
+        })[];
       updated_at: components["schemas"]["Timestamp"];
     };
     AgentCreate: {
@@ -547,12 +753,18 @@ export interface components {
       /** @description The contract this backend serves. This document is `agentrun.v2/0`. */
       contract: string;
       features: components["schemas"]["Features"];
-      /** @description Each harness a revision may name, and whether this server runs it; when not, why. */
+      /** @description Each harness a revision may name, and whether this server runs it; when not, why. A harness whose one run needs more memory than this server has for runs is unavailable, its reason naming the numbers, and its runs are 409 agent_not_runnable. */
       harnesses?: ({
           available: boolean;
+          /** @description The model this server runs for the harness when a definition names none (provider/model-id), or null when it runs none: the harness does not run here, or no default model here runs on it. */
+          default_model: string | null;
           /** @enum {unknown} */
-          id: "pi" | "claude-agent" | "codex";
+          id: "pi" | "claude-agent" | "codex" | "opencode";
+          /** @description The most runs of this harness alone at once here: by memory and by the cap on the count, whichever is fewer. 0 when one never fits. `limits.max_concurrent_runs` is pi's, the smallest run. */
+          max_concurrent_runs: number;
           reason?: string;
+          /** @description The memory a run of this harness reserves while its process lives, in MiB, measured. A start is admitted while the runs going and it fit in this server's memory less its own; over that, 429 rate_limited with retry-after, as over `limits.max_concurrent_runs`. */
+          run_memory_mib: number;
           /** @description Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`. */
           steer: boolean;
         })[];
@@ -570,6 +782,23 @@ export interface components {
         /** @description Whether PUT and DELETE write a home's files here. True only where this server reaches its held directory handles through /proc/self/fd (Linux), probed once at start, the probe its confinement walks by; false elsewhere (macOS), where both answer 501 `unsupported_here` and nothing is written or removed. The list and reads work either way. */
         writes: boolean;
       };
+      /** @description How this server judges what a run proposes to learn, and who approves what waits. */
+      learning?: {
+        /** @description Whether this caller can approve a note that waits for its owner's OK: true only for the owner's password session in the console. A token (the server's own included), a run, and every caller on a server with accounts off (AGENTRUN_ACCOUNTS=0) read false. */
+        approve: boolean;
+        /**
+         * @description Present when `approve` is false: what approving needs, the owner's password sign-in (set one in Settings, or sign in with it).
+         * @enum {string}
+         */
+        approve_needs?: "password";
+        /** @description The model that grades what a run proposes to learn: `--grade-model` (AGENTRUN_SERVE_GRADE_MODEL), else the strong tier (AGENT_MODEL_STRONG), named as the strong tier takes one; null when the server names none, and each run is graded on its agent's own model. */
+        grade_model: string | null;
+        /**
+         * @description A risky rule, one a run's user asked for or one the run worked out (to trust a site or a seller, skip or loosen an approval or a check, or send money or data somewhere), is kept to wait for its owner's OK: committed as a note with status `pending`, in no MEMORY.md and read by no run. Its owner approves it (POST /agents/{agent_id}/learning/files/{file}/approve) or retires it.
+         * @constant
+         */
+        pending: true;
+      };
       limits: components["schemas"]["Limits"];
       /** @description This document's address. */
       links?: {
@@ -581,24 +810,63 @@ export interface components {
         default?: string | null;
         /** @description `provider/model` of the fast tier, when one is fixed. */
         fast?: string | null;
-        /** @enum {string} */
-        source: "managed" | "chatgpt" | "env" | "faux" | "providers" | "gateway";
+        /**
+         * @description When `ready` is false, what would make it true: `key`, a model provider's key (none is here, or the default model's provider has none); `model`, another default model (`AGENT_MODEL` names one this server does not know). Null when ready.
+         * @enum {unknown}
+         */
+        needs?: "key" | "model" | "";
+        /** @description Whether a revision that names no model runs here: the host names a default (`AGENT_MODEL`), or a model provider's key is here, saved (`PUT /settings/tool-keys/{key_id}`, a `model` key) or the server's own, and gives its default model, the first of anthropic, openai, openrouter that has one. */
+        ready?: boolean;
+        /** @description With `source` `gateway`, the routing prefix this server puts before the gateway's model ids (`agent-model`): every tier's model and every harness's `default_model` here is the prefix, a slash and the gateway's own id. Null with any other source, where ids are shown whole. */
+        route_prefix?: string | null;
+        /**
+         * @description Where this server's models come from. `gateway`: every model through the OpenAI-compatible gateway at `AGENT_MODEL_BASE_URL`, its ids under `route_prefix`. `providers`: each model from its own provider, with that provider's key. `faux`: a scripted model, with no key and no network. `managed`, `chatgpt` and `env` are the hosted API's.
+         * @enum {string}
+         */
+        source: "managed" | "chatgpt" | "env" | "faux" | "gateway" | "providers";
         /** @description `provider/model` of the strong tier, when one is fixed. */
         strong?: string | null;
       };
-      /** @description The places a revision may name, this host's default, and each box: whether this server has it, and when not, why. */
+      /** @description The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach. */
       places?: {
+        /** @description The hosts a box whose `network` is `allowlist` may reach: AGENTRUN_BOX_ALLOW's, else the package registries and GitHub; empty when it is `none`. */
+        allow: string[];
         boxes: ({
             available: boolean;
             /** @enum {unknown} */
             id: "bwrap" | "docker" | "modal" | "daytona";
+            /**
+             * @description What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.
+             * @enum {unknown}
+             */
+            network?: "allowlist" | "none";
+            /** @description Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list. */
+            network_reason?: string;
+            /** @description Why the box is unavailable, or what a preparing one waits for. */
             reason?: string;
+            /**
+             * @description `ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`.
+             * @enum {unknown}
+             */
+            state: "ready" | "preparing" | "unavailable";
           })[];
         /**
-         * @description The mode a revision that names no place runs in here.
+         * @description Where a revision that names no place runs: `runner`. It stays `runner` because a revision saved with no place (an agent made before new agents were given a box, or where docker was unavailable, or a workflow) keeps running where it ran. What a NEW agent gets is `default_place`.
          * @enum {unknown}
          */
         default: "runner" | "sandbox";
+        /** @description The place a NEW agentic agent that names none is saved with, written on its revision at its create: the Docker box (`{"mode": "sandbox", "box": "docker"}`) where this server has docker, ready or preparing (its first run waits for the image, with a timeline row), with tools ["bash"] when the definition names no tools; else the runner, with `default_reason`. It is not `default`: that one is where a revision saved with no place runs, and stays `runner`, so an agent made before keeps running where it ran. */
+        default_place?: OneOf<[{
+          /** @constant */
+          mode: "runner";
+        }, {
+          /** @enum {unknown} */
+          box: "bwrap" | "docker" | "modal" | "daytona";
+          /** @constant */
+          mode: "sandbox";
+        }]>;
+        /** @description Why a new agent is not given a box here, when `default_place` is the runner, in docker's own words: `new agents run on the runner, because the docker box is unavailable here: <docker's reason>`. */
+        default_reason?: string;
         modes: ("runner" | "sandbox")[];
       };
       regions: components["schemas"]["Region"][];
@@ -619,18 +887,64 @@ export interface components {
         platform?: string;
         version: string;
       };
-      /** @description Every tool a revision may name (this server's closed table): whether a workflow's model nodes may use it (`nodes`), whether its code may call it (`calls`), and whether it runs here, else the variables it is missing. */
+      /** @description Every tool a revision may name (this server's closed table): whether a workflow's model nodes may use it (`nodes`), whether its code may call it (`calls`), and whether it runs here, else the variables it is missing; and its permission (the server's, its default and those offered). */
       tools?: ({
+          /**
+           * @description Present on a server with accounts off (AGENTRUN_ACCOUNTS=0), on each tool ask is offered for: an approval takes the owner's password sign-in, which this server has none of, so an ask is refused at each call (`needs the owner's approval, and this server has accounts off`), never parked. Absent with accounts on.
+           * @constant
+           */
+          ask_needs?: "password";
           available: boolean;
           /** @description Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it. */
           call_only?: boolean;
           calls: boolean;
+          /**
+           * @description The owner's default: allow for this server's tools, ask for a catalog tool.
+           * @enum {unknown}
+           */
+          default_permission: "allow" | "ask" | "deny";
+          /** @description A tool with a provider choice: the built-in default. */
+          default_provider?: string;
           /** @description The harnesses that run the tool here; a revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable. */
-          harnesses: ("pi" | "claude-agent" | "codex")[];
+          harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+          /**
+           * @description The tool key that unlocks it (GET /settings/tool-keys' id; the browser's, its vendor's: kernel where Kernel is picked or resolved, else browserbase): saved there, it is read by name like a secret the server is started with, and the tool's `missing` goes at once. Absent when no tool key does.
+           * @enum {unknown}
+           */
+          key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
           missing?: string[];
           name: string;
           nodes: boolean;
+          /**
+           * @description The server's permission of the tool: its setting, else the owner's default.
+           * @enum {unknown}
+           */
+          permission: "allow" | "ask" | "deny";
+          /** @description The permissions it may be set to. */
+          permissions: ("allow" | "ask" | "deny")[];
+          /** @description A tool with a provider choice: the server's, its default where it sets none. */
+          provider?: string;
+          /** @description A tool with a provider choice: the providers offered for it, its default first. */
+          providers?: string[];
+          /** @description Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing; for a sandbox-only tool (bash, the background tools) that no box this server has can run, `no box is set up on this server: …` with each box's own reason (`places.boxes`). */
+          reason?: string;
+          /** @description What the tool resolves to on each harness: native (the harness's own tool, or on pi one request to the model provider's hosted search), kernel (the guarded direct fetch; on browser, Kernel's hosted browser), exa-keyless (Exa's keyless MCP search), parallel, browserbase (Browserbase's hosted browser), or unavailable: <reason>. */
+          resolves?: {
+            "claude-agent": string;
+            codex: string;
+            opencode: string;
+            pi: string;
+          };
+          /** @description Only an agent whose place is a sandbox names it (bash, and the background tools bash_background, bash_output, bash_input, bash_signal and bash_list): it runs in the box, and a runner has no shell. */
+          sandbox_only?: boolean;
           summary: string;
+          /** @description Why the tool resolves as it does on each harness, one plain sentence each, made by the same resolution as resolves: the harness's or model provider's own search (`Codex's own search`), what leaves none and what serves instead (`behind a gateway Codex has no own search; your Parallel key (saved)`, where saved is a key saved on Tool keys and server the server's own), a pick (`keyless Exa, picked in settings: Exa's free search, no key`), or `turned off in settings`. A client shows it as is. */
+          why?: {
+            "claude-agent": string;
+            codex: string;
+            opencode: string;
+            pi: string;
+          };
         })[];
       /** @description What a workflow revision's run gets: the model nodes it runs, the tools they may name, the adapters it binds, and the decision providers its typed questions run on. */
       workflows?: {
@@ -664,6 +978,10 @@ export interface components {
        * @enum {string|null}
        */
       charge_state?: "held" | "settled" | "released" | null;
+      /** @description Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them. */
+      so_far_usd?: number;
+      /** @description Set only while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut). */
+      unpriced?: number;
       /** @description Null while unknown. A client shows null as "unknown", never as $0. */
       usd: number | null;
     };
@@ -679,11 +997,16 @@ export interface components {
        * @description The harness that runs the revision. Absent on a request, pi; every answer names it. One this server does not run saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.harnesses).
        * @enum {unknown}
        */
-      harness?: "pi" | "claude-agent" | "codex";
+      harness?: "pi" | "claude-agent" | "codex" | "opencode";
       id?: components["schemas"]["Id"];
       /** @description A JSON Schema for a run's `input`. */
       input_schema?: components["schemas"]["JsonObject"];
       instructions: string;
+      /**
+       * @description Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.
+       * @default false
+       */
+      learning?: boolean;
       /** @description The default cap of each run, in US dollars. */
       max_cost_usd?: number;
       /** @description `provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none. */
@@ -691,7 +1014,7 @@ export interface components {
       name: string;
       /** @description A JSON Schema for a run's `result.output`. */
       output_schema?: components["schemas"]["JsonObject"];
-      /** @description Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent, this host's default (capabilities.places.default), and an answer shows none; a revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). */
+      /** @description Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent on a create of an agentic revision, the place this server gives a new agent (capabilities.places.default_place): the Docker box where this server has docker, ready or preparing, written on the revision so an answer shows it, with tools ["bash"] when the definition names no tools (a list it names, an empty one included, is kept as named); where docker is unavailable, or the definition names a tool a box refuses (browser), none, as before. A revision saved with no place (before this, where docker was unavailable, or a workflow) runs on the runner (capabilities.places.default), whatever this server has now. A revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash` or a background tool (`bash_background`, `bash_output`, `bash_input`, `bash_signal`, `bash_list`); a workflow revision's place is runner or none (a sandbox place is 422). */
       place?: OneOf<[{
         /** @constant */
         mode: "runner";
@@ -707,12 +1030,149 @@ export interface components {
        * @enum {unknown}
        */
       thinking?: "low" | "medium" | "high" | "xhigh" | "max";
+      /** @description The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider. */
+      tool_settings?: {
+        ask_person?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "deny";
+        };
+        bash?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+        };
+        browser?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "deny";
+          /**
+           * @description Default auto.
+           * @enum {unknown}
+           */
+          provider?: "auto" | "browserbase" | "kernel" | "chrome";
+        };
+        edit?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+        };
+        llm?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "deny";
+        };
+        pdf_pages?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "deny";
+        };
+        read?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+        };
+        web_fetch?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+          /**
+           * @description Default kernel.
+           * @enum {unknown}
+           */
+          provider?: "kernel" | "parallel";
+        };
+        web_search?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+          /**
+           * @description Default auto.
+           * @enum {unknown}
+           */
+          provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        };
+        write?: {
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+        };
+        [key: string]: (({
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+        }) | ({
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "deny";
+        }) | ({
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+          /**
+           * @description Default kernel.
+           * @enum {unknown}
+           */
+          provider?: "kernel" | "parallel";
+        }) | ({
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "ask" | "deny";
+          /**
+           * @description Default auto.
+           * @enum {unknown}
+           */
+          provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        }) | ({
+          /**
+           * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+           * @enum {unknown}
+           */
+          permission?: "allow" | "deny";
+          /**
+           * @description Default auto.
+           * @enum {unknown}
+           */
+          provider?: "auto" | "browserbase" | "kernel" | "chrome";
+        })) | undefined;
+      };
       tools: string[];
       version: number;
       /** @description An AgentRun workflow document (no model in it). */
       workflow?: components["schemas"]["JsonObject"];
     };
-    /** @enum {string} */
+    /**
+     * @description How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
+     * @enum {string}
+     */
     Effort: "low" | "medium" | "high";
     Error: {
       error: components["schemas"]["ErrorBody"];
@@ -732,6 +1192,12 @@ export interface components {
       /** @description One plain sentence for a person. Never parse it. */
       message: string;
       next_action?: components["schemas"]["NextAction"];
+      /** @description `bad_request` from a write of a learning note only: each structural check it fails, printable (never a secret). */
+      problems?: {
+          detail: string;
+          path?: string;
+          rule: string;
+        }[];
       request_id?: string;
       retry_after_ms?: number;
       /** @description The same request may succeed later, unchanged. */
@@ -771,7 +1237,7 @@ export interface components {
      *
      * @enum {string}
      */
-    ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "key_set_by_server" | "no_sealing_key" | "webhook_off";
+    ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "key_set_by_server" | "budget_reached" | "no_sealing_key" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "store_unreadable" | "sign_in_held";
     /** @description Every flag is present, so a client never guesses. An off feature answers `501 unsupported_here`. */
     Features: {
       agents: {
@@ -789,8 +1255,11 @@ export interface components {
         routes: string[];
         runs: boolean;
       };
-      /** @enum {string} */
-      browser: "browserbase" | "chrome" | "none";
+      /**
+       * @description The browser a run's `browser` tool drives here: the vendor it resolves to under the server's tool settings (`browserbase` or `kernel`) when `tools[]` lists `browser` as available, else `none`.
+       * @enum {string}
+       */
+      browser: "browserbase" | "chrome" | "none" | "kernel";
       /** @description The `effort` values a run takes here. The host maps each to its model and thinking level. */
       efforts: components["schemas"]["Effort"][];
       files: {
@@ -804,6 +1273,19 @@ export interface components {
         check: boolean;
         export: boolean;
         import: boolean;
+      };
+      /**
+       * @description This server's learning switch (`--learning`): `on`, a run of an agent whose definition says `learning: true` starts from what its agent learned and adds to it; `off`, no run this server starts does, whatever its agent says, and its `learning` is null.
+       * @enum {unknown}
+       */
+      learning?: "on" | "off";
+      /** @description /settings/mcp-servers: remote MCP servers over Streamable HTTP, previewed and saved with the auth types listed; a credential kept `sealed` under the seal key the server was handed, `unavailable` with none, when only servers that take no credential are kept. */
+      mcp_client?: {
+        /** @enum {unknown} */
+        at_rest: "sealed" | "unavailable";
+        auth: ("none" | "bearer" | "headers")[];
+        routes: boolean;
+        transports: "streamable-http"[];
       };
       /** @description Which modes `POST /runs/{run_id}/messages` takes here. */
       messages: {
@@ -848,6 +1330,28 @@ export interface components {
         at_rest: "sealed" | "unavailable";
         routes: boolean;
       };
+      /** @description Whether a tool setting may carry a permission (allow, ask, deny), which the tool gate holds every tool call to. */
+      tool_permissions?: boolean;
+      /** @description /triggers: schedules that start an agent's capped runs: the source and target kinds this server takes, what a firing does while the last run is active, the shortest interval, how many firings each trigger keeps, the default catch-up window, and how many failed firings in a row turn a trigger off. */
+      triggers?: {
+        catchup_window_s: number;
+        failures_to_pause: number;
+        history_kept: number;
+        min_every_s: number;
+        overlap: "skip"[];
+        routes: boolean;
+        sources: ("schedule" | "webhook")[];
+        targets: ("start_run" | "message_run")[];
+        webhook: {
+          /** @enum {unknown} */
+          at_rest: "sealed" | "unavailable";
+          max_body_bytes: number;
+          payload_kept_bytes: number;
+          /** @constant */
+          signing: "standard-webhooks/v1";
+          tolerance_s: number;
+        };
+      };
       usage: {
         /** @enum {string} */
         basis: "charge" | "estimate";
@@ -858,7 +1362,7 @@ export interface components {
       webhooks?: {
         /** @enum {unknown} */
         at_rest: "sealed" | "unavailable";
-        events: ("run.needs_input" | "run.ended")[];
+        events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
         routes: boolean;
         /** @constant */
         signing: "standard-webhooks/v1";
@@ -1037,7 +1541,7 @@ export interface components {
       status: components["schemas"]["RunStatus"];
     };
     /** @enum {string} */
-    Meter: "tokens" | "agent_time" | "browser_time" | "disk";
+    Meter: "tokens" | "agent_time" | "browser_time" | "disk" | "tools" | "learning";
     /** @description The exact next step, so a client never infers the protocol. A request it can make, or a page a person opens. */
     NextAction: components["schemas"]["RequestAction"] | components["schemas"]["PersonAction"];
     PersonAction: {
@@ -1143,6 +1647,78 @@ export interface components {
        * @enum {unknown}
        */
       kind?: "agentic" | "workflow";
+      /**
+       * Format: date-time
+       * @description While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.
+       */
+      last_progress_at?: string | null;
+      /** @description What the run learns from and what it learned: a run of an agent whose `learning` is true starts from its active notes, whole, in its instructions within the learning budget (past it, the index and the notes changed last, whole), and from the notes in `.learning/` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, which answers with the notes it would keep (no tool is needed, and nothing the run writes in `.learning/` counts); what it answers is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. Null for a run that does not learn: its agent's `learning` is not true, the server's learning was off when it started (`capabilities.features.learning`), or it is a workflow's or an imported run. */
+      learning?: OneOf<[{
+        /**
+         * Format: date-time
+         * @description When the state last changed.
+         */
+        at: string;
+        /** @description Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a note's name or the grader's reason in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: "Started from 2 notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: <note's name> (replaces 1 older note)", "Learned: <note's name>. Waiting for your OK: <note's name>.", "Nothing new to remember from this run.", "Not kept: <the grader's reason, its first sentence>", "Not kept: its notes weren't in the expected format.", "Not kept: learning stopped (<why>)." and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change. */
+        detail: string | null;
+        /** @description The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise. */
+        learned?: {
+            /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+            name: string;
+            /** @description The older notes it replaced, each now `superseded` by it; empty when it replaced none. */
+            supersedes: string[];
+          }[];
+        /** @description The notes this run's merge holds for the owner's OK (status `pending` in the folder: a risky rule, the user's or the run's own), in no index and read by no run until approved, never among `learned`: present once `state` is `merged` and one waits, absent otherwise. */
+        pending?: {
+            /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+            name: string;
+          }[];
+        /**
+         * @description Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships. `seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned. `no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown. `no_write_tool`, `tool_denied`: older runs only, from before the end-of-run turn answered with its notes (an agent with no `write` tool, or one a tool gate denied it); no run gets them now. `cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error. `empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git. `screen`, `screen_down`: no longer produced (the injection screen is gone; the grader's Planted question decides); older runs may still hold them. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.
+         * @enum {unknown}
+         */
+        reason: "seed_failed" | "no_budget" | "unknown_cost" | "no_write_tool" | "tool_denied" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "screen" | "screen_down" | "grader" | "grade_failed" | "";
+        /** @description The skill this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise. */
+        skills?: {
+            /** @description Its SKILL.md, `skills/<name>/SKILL.md`; `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The skill's folder name, `[redacted]` as `file` is. */
+            name: string;
+            /**
+             * @description Present while it waits for the owner's OK: no run is given it until approved.
+             * @constant
+             */
+            pending?: true;
+          }[];
+        /**
+         * @description `seeded` when the run started from what its agent learned; `reflecting` while its end-of-run turn runs, and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `proposed` once the new notes passed the checks, while they are graded; `merged` once they are on the folder's main; `dropped` when learning was skipped or refused, with `reason`.
+         * @enum {unknown}
+         */
+        state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
+        /** @description The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none. */
+        used?: {
+            /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+            name: string;
+          }[];
+        /** @description The workflow draft this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise. */
+        workflows?: {
+            /** @description Its draft, `workflows/<name>/workflow.json`; `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The workflow's folder name, `[redacted]` as `file` is. */
+            name: string;
+            /**
+             * @description Present while it waits for the owner's OK.
+             * @constant
+             */
+            pending?: true;
+          }[];
+      }, null]>;
       /** @description What the run waits on, told apart by kind; null when it waits on nothing. A run read from its stored row alone has ended, so null. */
       pending?: OneOf<[{
         /** Format: date-time */
@@ -1151,7 +1727,49 @@ export interface components {
         kind: "question";
         /** @description What it asked, at most 2000 characters. */
         question: string;
+      }, {
+        /** @description The call's arguments as JSON, cut at 2048 bytes. */
+        args_preview: string;
+        /** @description The call's id, as its tool_result row's tool_use_id. */
+        call_id: string;
+        /** @description Answered at POST /runs/{run_id}/approvals/{id}; the same for the same call after a restart. */
+        id: string;
+        /** @constant */
+        kind: "approval";
+        /** @description What the call costs, in USD, where its tool declares a price; "not metered" for an unpriced MCP call. Absent when the tool names none. */
+        price?: number | "not metered";
+        /** Format: date-time */
+        requested_at: string;
+        tool: string;
+      }, {
+        /**
+         * Format: date-time
+         * @description When the request was refused.
+         */
+        at: string;
+        /** @description The run's cap (`max_cost_usd`). */
+        cap_usd: number;
+        /** @constant */
+        kind: "budget";
+        /** @description The least the refused request needs. A cap above `spent_usd` + `needs_usd` sends it. Absent with `spent_usd`. */
+        needs_usd?: number;
+        /** @description The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters. */
+        said: string;
+        /** @description What the cap counted as taken when it refused: spent, and held for requests still answering; once the paused process is gone, the store's spend when that is lower (those requests settled). Absent for a refusal written before the figures were kept. */
+        spent_usd?: number;
+        /** @description The raise this run is offered: `spent_usd` + 10 × `needs_usd`, rounded up to a whole dollar, and always above `cap_usd`, so `PATCH /runs/{run_id}` with it as `max_cost_usd` is a raise that resumes the run. Absent with `spent_usd`. */
+        suggested_cap_usd?: number;
       }, null]>;
+      /** @description Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server. The Modal sandbox (box `modal`, Modal's default gVisor runtime, not a VM) never has a network: Modal takes a host list, but this server cannot read a sandbox's list back to check that it holds, so each is made blocked, and capabilities.places.boxes says so in its network_reason (unless AGENTRUN_BOX_ALLOW is none). */
+      place?: OneOf<[{
+        /** @constant */
+        mode: "runner";
+      }, {
+        /** @enum {unknown} */
+        box: "bwrap" | "docker" | "modal" | "daytona";
+        /** @constant */
+        mode: "sandbox";
+      }]>;
       /** @description When to look again. */
       poll_after_ms: number;
       /** @description Set when `completed`. */
@@ -1179,6 +1797,13 @@ export interface components {
       status: components["schemas"]["RunStatus"];
       /** @description The first message or input, on one line. */
       title: string;
+      /** @description The trigger that started the run, and its firing; null for a run a caller started. */
+      trigger?: OneOf<[{
+        /** @description The firing that started it. */
+        firing_key: string;
+        /** @description The trigger (GET /triggers/{trigger_id}); it may have been deleted since. */
+        id: string;
+      }, null]>;
       updated_at: components["schemas"]["Timestamp"];
     };
     RunCreate: {
@@ -1197,10 +1822,10 @@ export interface components {
     /** @description Why a run failed, and what to do next. */
     RunError: {
       code: components["schemas"]["RunErrorCode"];
-      /** @description Why the run failed, when its code alone does not say: `server_lost_at_launch`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again. */
+      /** @description Why the run failed, when its code alone does not say: `server_lost_at_launch`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again; `server_lost_at_setup`, the server went down after the run was made and before it was set up, so it never started. */
       details?: {
         /** @enum {unknown} */
-        reason: "server_lost_at_launch";
+        reason: "server_lost_at_launch" | "server_lost_at_setup";
       };
       message: string;
       next_action?: components["schemas"]["NextAction"];
@@ -1294,6 +1919,65 @@ export interface components {
        * @enum {unknown}
        */
       kind?: "agentic" | "workflow";
+      /** @description The run's learning, in short (GET /runs/{run_id} has it whole, with its whole detail and its time). Null for a run that does not learn: its agent's `learning` is not true, the server's learning was off when it started (`capabilities.features.learning`), or it is a workflow's or an imported run. */
+      learning?: OneOf<[{
+        /** @description Run.learning's detail, in the same words, cut short: at most 140 characters, ending in an ellipsis when cut (a grader's long reason). Cut of the host's secrets first, so none is ever shown in part. */
+        detail: string | null;
+        /** @description The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise. */
+        learned?: {
+            /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+            name: string;
+            /** @description The older notes it replaced, each now `superseded` by it; empty when it replaced none. */
+            supersedes: string[];
+          }[];
+        /** @description The notes this run's merge holds for the owner's OK (status `pending` in the folder: a risky rule, the user's or the run's own), in no index and read by no run until approved, never among `learned`: present once `state` is `merged` and one waits, absent otherwise. */
+        pending?: {
+            /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+            name: string;
+          }[];
+        /**
+         * @description Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships. `seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned. `no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown. `no_write_tool`, `tool_denied`: older runs only, from before the end-of-run turn answered with its notes (an agent with no `write` tool, or one a tool gate denied it); no run gets them now. `cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error. `empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git. `screen`, `screen_down`: no longer produced (the injection screen is gone; the grader's Planted question decides); older runs may still hold them. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.
+         * @enum {unknown}
+         */
+        reason: "seed_failed" | "no_budget" | "unknown_cost" | "no_write_tool" | "tool_denied" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "screen" | "screen_down" | "grader" | "grade_failed" | "";
+        /** @description The skill this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise. */
+        skills?: {
+            /** @description Its SKILL.md, `skills/<name>/SKILL.md`; `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The skill's folder name, `[redacted]` as `file` is. */
+            name: string;
+            /**
+             * @description Present while it waits for the owner's OK: no run is given it until approved.
+             * @constant
+             */
+            pending?: true;
+          }[];
+        /** @enum {unknown} */
+        state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
+        /** @description The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none. */
+        used?: {
+            /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+            name: string;
+          }[];
+        /** @description The workflow draft this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise. */
+        workflows?: {
+            /** @description Its draft, `workflows/<name>/workflow.json`; `[redacted]` when it holds one of the host's secrets as they are now. */
+            file: string;
+            /** @description The workflow's folder name, `[redacted]` as `file` is. */
+            name: string;
+            /**
+             * @description Present while it waits for the owner's OK.
+             * @constant
+             */
+            pending?: true;
+          }[];
+      }, null]>;
       /** @description What the run waits on, told apart by kind; null when it waits on nothing. A run read from its stored row alone has ended, so null. */
       pending?: OneOf<[{
         /** Format: date-time */
@@ -1302,6 +1986,38 @@ export interface components {
         kind: "question";
         /** @description What it asked, at most 2000 characters. */
         question: string;
+      }, {
+        /** @description The call's arguments as JSON, cut at 2048 bytes. */
+        args_preview: string;
+        /** @description The call's id, as its tool_result row's tool_use_id. */
+        call_id: string;
+        /** @description Answered at POST /runs/{run_id}/approvals/{id}; the same for the same call after a restart. */
+        id: string;
+        /** @constant */
+        kind: "approval";
+        /** @description What the call costs, in USD, where its tool declares a price; "not metered" for an unpriced MCP call. Absent when the tool names none. */
+        price?: number | "not metered";
+        /** Format: date-time */
+        requested_at: string;
+        tool: string;
+      }, {
+        /**
+         * Format: date-time
+         * @description When the request was refused.
+         */
+        at: string;
+        /** @description The run's cap (`max_cost_usd`). */
+        cap_usd: number;
+        /** @constant */
+        kind: "budget";
+        /** @description The least the refused request needs. A cap above `spent_usd` + `needs_usd` sends it. Absent with `spent_usd`. */
+        needs_usd?: number;
+        /** @description The cap's refusal, in its words: what was spent, what the refused request needs at the least, and the cap that would run it. At most 2000 characters. */
+        said: string;
+        /** @description What the cap counted as taken when it refused: spent, and held for requests still answering; once the paused process is gone, the store's spend when that is lower (those requests settled). Absent for a refusal written before the figures were kept. */
+        spent_usd?: number;
+        /** @description The raise this run is offered: `spent_usd` + 10 × `needs_usd`, rounded up to a whole dollar, and always above `cap_usd`, so `PATCH /runs/{run_id}` with it as `max_cost_usd` is a raise that resumes the run. Absent with `spent_usd`. */
+        suggested_cap_usd?: number;
       }, null]>;
       /** @description Whether a result is recorded, without its content. Null when availability cannot be established from the saved metadata. */
       result_available?: boolean | null;
@@ -1327,6 +2043,13 @@ export interface components {
       state: components["schemas"]["RunState"];
       status: components["schemas"]["RunStatus"];
       title: string;
+      /** @description The trigger that started the run, and its firing; null for a run a caller started. */
+      trigger?: OneOf<[{
+        /** @description The firing that started it. */
+        firing_key: string;
+        /** @description The trigger (GET /triggers/{trigger_id}); it may have been deleted since. */
+        id: string;
+      }, null]>;
     };
     /**
      * @description One saved sign-in, by its profile key. Never its `ref`, which opens a signed-in session. A profile with an
@@ -1340,8 +2063,11 @@ export interface components {
       key: string;
       /** @description e.g. `browserbase`. */
       provider: string;
-      /** @enum {string} */
-      state: "ready" | "held";
+      /**
+       * @description `held` while a run holds its save lease, else `ready`. `unreadable` (this server's own): its pointer does not open under this server's seal key (none now, or another), so runs start signed out and none is made in its place until it is forgotten (DELETE /agents/{agent_id}/sign-ins/{key}); its `held_by` names a run that still holds its lease, else null.
+       * @enum {string}
+       */
+      state: "ready" | "held" | "unreadable";
       verified_at?: components["schemas"]["Timestamp"] | null;
     };
     SkillFileInfo: {
@@ -1376,7 +2102,7 @@ export interface components {
      * @description #572 `TimelineKind`: Grep's ten kinds, then `user_message`, `waiting` and `usage`.
      * @enum {string}
      */
-    TimelineKind: "thinking" | "text_block" | "tool_use" | "tool_result" | "phase" | "subagent_started" | "subagent_progress" | "subagent_completed" | "final_answer" | "error" | "user_message" | "waiting" | "usage";
+    TimelineKind: "thinking" | "text_block" | "tool_use" | "tool_result" | "phase" | "subagent_started" | "subagent_progress" | "subagent_completed" | "final_answer" | "error" | "user_message" | "waiting" | "usage" | "decision" | "tool_approval_requested" | "learning";
     TimelinePage: {
       cost: components["schemas"]["Cost"];
       /** @description Ids of rows removed after `after`. A live row is replaced this way by its committed row. */
@@ -1415,6 +2141,22 @@ export interface components {
       created_at: components["schemas"]["Timestamp"];
       id: string;
       kind: components["schemas"]["TimelineKind"];
+      /** @description On a row of kind `learning` alone, labelled `learning`: where the run's learning ended (proposed, merged or dropped, `seed_failed` included), and why: one row, changed in place as it moves. Its `summary` and `text` are its `detail` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled `learning` too, its message and answer included, and are never the run's answer. */
+      learning?: {
+        detail: string | null;
+        /**
+         * @description Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships. `seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned. `no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown. `no_write_tool`, `tool_denied`: older runs only, from before the end-of-run turn answered with its notes (an agent with no `write` tool, or one a tool gate denied it); no run gets them now. `cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error. `empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git. `screen`, `screen_down`: no longer produced (the injection screen is gone; the grader's Planted question decides); older runs may still hold them. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.
+         * @enum {unknown}
+         */
+        reason: "seed_failed" | "no_budget" | "unknown_cost" | "no_write_tool" | "tool_denied" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "screen" | "screen_down" | "grader" | "grade_failed" | "";
+        /** @enum {unknown} */
+        state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
+      };
+      /**
+       * @description On the row of a message the server wrote into the run (a raised cap's follow-up, an approval's resume): a `phase` row, "AgentRun: <its first line>", where a person's message would be a `user_message` one. It counts, as a person's does, as the message its turn took. Absent on every other row.
+       * @constant
+       */
+      origin?: "server";
       /** @description A nested call's caller, or a subagent's spawning call. */
       parent_tool_use_id?: string;
       /** @description The file a "Saved" phase row is about. */
@@ -1439,6 +2181,10 @@ export interface components {
     };
     TimelineUsage: {
       requests: number;
+      /** @description Set only while `usd` is null: the sum of the charges whose cost is known (model requests, a workflow's decisions, paid tool calls). Never the cost: the charges counted in `unpriced` are not in it, and nothing bounds them. */
+      so_far_usd?: number;
+      /** @description Set only while `usd` is null: how many charges have no known cost (a model request cut, stopped, still pending or with no price; a decision whose cost is unknown; a paid tool call charged an unknown amount or cut). */
+      unpriced?: number;
       usd: number | null;
     };
     /** Format: date-time */
@@ -1988,7 +2734,7 @@ export interface operations {
   };
   /**
    * Every file in the agent's home
-   * @description The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A path of `capabilities.home.host_owned` that is there (`learning`) is one entry, `{path, host_owned: true}`, with none of what is in it.
+   * @description The agent's home is a directory of its own on this server's disk, kept across its runs (runs do not see it yet). Every regular file in it, recursively, listed as a run's files are (`GET /runs/{run_id}/files`): reached through no link, a name that starts with `.` left out. A home never written to lists none. A path of `capabilities.home.host_owned` that is there (`learning`, `sign-ins`) is one entry, `{path, host_owned: true}`, with none of what is in it.
    */
   listHomeFiles: {
     parameters: {
@@ -2017,7 +2763,7 @@ export interface operations {
                 unreadable?: true;
               }, {
                 /**
-                 * @description A path of `capabilities.home.host_owned`: only the server writes it, and what is in it is read through `/v2/agents/{agent_id}/learning`, never listed or served here.
+                 * @description A path of `capabilities.home.host_owned`: only the server writes it, and what is in it is never listed or served here: `learning` is read through the learning API (`/v2/agents/{agent_id}/learning`, on a server that has it), `sign-ins` (sealed pointers) only as GET /agents/{agent_id}'s `sign_ins`, never a pointer.
                  * @constant
                  */
                 host_owned: true;
@@ -2037,7 +2783,7 @@ export interface operations {
   };
   /**
    * One file of the agent's home, raw
-   * @description Raw bytes with the file's content type, as a run's file is read (`GET /runs/{run_id}/files/{path}`): `nosniff`, a CSP on HTML, `?download=1` for an attachment. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path at or under one of `capabilities.home.host_owned` (`learning/`), as normalized, folded and by identity on disk, is `403 system_file_forbidden` with `details.reason` `host_owned`: read it through `/v2/agents/{agent_id}/learning`. A link on the way is `404 not_found`.
+   * @description Raw bytes with the file's content type, as a run's file is read (`GET /runs/{run_id}/files/{path}`): `nosniff`, a CSP on HTML, `?download=1` for an attachment. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`), as normalized, folded and by identity on disk, is `403 system_file_forbidden` with `details.reason` `host_owned`. Its message names the learning API (`/v2/agents/{agent_id}/learning`) on a server that has that route, and says this server has none on one that does not. A link on the way is `404 not_found`.
    */
   readHomeFile: {
     parameters: {
@@ -2073,7 +2819,7 @@ export interface operations {
   };
   /**
    * Write one file of the agent's home
-   * @description The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (0600), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over `capabilities.home.max_file_bytes` is `413 payload_too_large`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
+   * @description The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (0600), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over `capabilities.home.max_file_bytes` is `413 payload_too_large`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
    */
   writeHomeFile: {
     parameters: {
@@ -2119,7 +2865,7 @@ export interface operations {
   };
   /**
    * Delete one file of the agent's home
-   * @description Removes the file; a directory it leaves empty stays. A file that is not there is `404 not_found`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
+   * @description Removes the file; a directory it leaves empty stays. A file that is not there is `404 not_found`. A path with an empty, `.` or `..` segment, a backslash, a NUL or a leading `/`, a segment that is not plain text (not its own NFC form, or holding a default-ignorable code point), or over 1024 characters, is `400 invalid_file_path`; a segment that starts with `.` is `403 system_file_forbidden`. A path more than 16 directories deep, past where the list goes, is `400 invalid_file_path`. A path at or under one of `capabilities.home.host_owned` (`learning/`, `sign-ins/`) is `403 system_file_forbidden` with `details.reason` `host_owned`: matched on the path as normalized, by its first segment folded (compatibility form, any case, no combining marks), so `./Learning/x` too, and by identity (the same device and inode) where that segment and the host-owned path are both on disk. A link on the way, or as the file, is `403 system_file_forbidden` with `details.reason` `link`: never followed. A path that names a directory, or runs through a file, is `400 invalid_file_path`. An archived agent's home is written as any other's. Where `capabilities.home.writes` is false (no /proc/self/fd, as on macOS), the write or delete is `501 unsupported_here`.
    */
   deleteHomeFile: {
     parameters: {
@@ -2141,6 +2887,469 @@ export interface operations {
       429: components["responses"]["RateLimited"];
       500: components["responses"]["Internal"];
       501: components["responses"]["Unsupported"];
+    };
+  };
+  /**
+   * What the agent has learned: its index, notes, log of changes and counts
+   * @description Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null and every page empty. An archived agent's is readable.
+   */
+  getAgentLearning: {
+    parameters: {
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+      };
+    };
+    responses: {
+      /** @description The agent's learning. */
+      200: {
+        content: {
+          "application/json": {
+            agent: string;
+            /** @description How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`, counted as it counts them, from the runs this server holds and its learning ledger, no run's files opened. */
+            counts: {
+              /** @description By reason (Run.learning.reason): only reasons with one run or more. */
+              dropped: {
+                [key: string]: number;
+              };
+              /** @description Seeded, reflecting or proposed: runs this server holds. */
+              in_progress: number;
+              merged: number;
+            };
+            /** @description What learning changed for the agent: its completed agentic runs that started from at least one active note (`after`) against those that started before its first note (`before`: before the earlier of its first merge and the start of its first run that started from a note, so a person's first note counts too). A later run with learning off, or seeded with no note (every note retired), an imported and an archived run are on neither side. Null unless both sides count 2 runs or more: say it "on N runs", N `after.runs`. Read from the runs' rows and the learning ledger, no run's files opened. */
+            impact: OneOf<[{
+              after: {
+                /** @description Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of. */
+                cost_runs: number;
+                /** @description The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is. */
+                median_cost_usd: number | null;
+                /** @description Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before it looks back (a run that does not look back: to its end). */
+                median_duration_s: number;
+                /** @description The median of what learning itself cost a run, its end-of-run turn and its grade (the grade's is on GET /usage's `learning` meter), over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off). */
+                median_learning_usd: number | null;
+                /** @description The completed runs that started from at least one active note. */
+                runs: number;
+              };
+              before: {
+                /** @description Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of. */
+                cost_runs: number;
+                /** @description The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is. */
+                median_cost_usd: number | null;
+                /** @description Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before it looks back (a run that does not look back: to its end). */
+                median_duration_s: number;
+                /** @description The median of what learning itself cost a run, its end-of-run turn and its grade (the grade's is on GET /usage's `learning` meter), over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off). */
+                median_learning_usd: number | null;
+                /** @description The completed runs that started before the agent's first note. */
+                runs: number;
+              };
+            }, null]>;
+            /** @description MEMORY.md on main: what the agent's next run reads, one line per active note, built by the server. */
+            index: string;
+            /** @description The first 20 changes on main, newest first. GET .../learning/log for more. */
+            log: {
+              items: {
+                  /** Format: date-time */
+                  at: string;
+                  /** @description A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval). */
+                  by: OneOf<[{
+                    run: string;
+                  }, {
+                    /** @constant */
+                    user: true;
+                    /** @description On an approval: how it came, `console` (the owner's signed-in page). */
+                    via?: string;
+                  }]>;
+                  commit: string;
+                  /** @description The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`. */
+                  files: string[];
+                  /** @description A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`. */
+                  reason: string;
+                }[];
+              /** @description The next page, read at the same commit of main as this one: opaque. Null on the last. */
+              next_cursor: string | null;
+              /** @description How many there are in all, at the commit the page was read at. */
+              total: number;
+            };
+            /** @description Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty. */
+            main: string | null;
+            /** @description The first 50 notes: active first, then by their newest change, newest first. GET .../learning/notes for more. */
+            notes: {
+              items: ({
+                  description: string;
+                  /** @description The note's version on main, the same ETag as `GET .../learning/files/{file}` answers: send it as `If-Match` to edit or retire the version shown, and a 412 means it changed since. */
+                  etag: string;
+                  /** @description The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name). */
+                  file: string;
+                  name: string;
+                  /**
+                   * @description `you`: kept from what the user asked in their own words; `run`: what the run worked out (absent from older notes: `run`).
+                   * @enum {unknown}
+                   */
+                  origin: "you" | "run";
+                  /**
+                   * @description Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the grader held as risky, the user's or the run's own, to wait for its owner's OK; no run reads it.
+                   * @enum {unknown}
+                   */
+                  status: "active" | "superseded" | "retired" | "pending";
+                  /** @description The note that superseded it, on a superseded note; `[redacted]` as `file` is. */
+                  superseded_by: string | null;
+                  /** @description The note's whole file, front matter included. */
+                  text: string;
+                  /** @enum {unknown} */
+                  type: "user" | "feedback" | "project" | "reference";
+                })[];
+              /** @description The next page, read at the same commit of main as this one: opaque. Null on the last. */
+              next_cursor: string | null;
+              /** @description How many there are in all, at the commit the page was read at. */
+              total: number;
+            };
+            /** @description Every skill on main, `skills/<name>/SKILL.md`, by name: what a later run is given as a skill once it is active. Empty when there is none. */
+            skills: ({
+                /** @description The size of its SKILL.md on main. */
+                bytes: number;
+                /** @description What its SKILL.md's front matter says it is for, cut of the host's secrets. */
+                description: string;
+                /** @description The version of its SKILL.md on main, as its file's GET answers it: an approval sends it as If-Match. */
+                etag: string;
+                /** @description Its SKILL.md, `skills/<name>/SKILL.md`: GET .../learning/files/{file}, percent-encoded, reads it. */
+                file: string;
+                /** @description The skill's folder name; `[redacted]` when it holds one of the host's secrets as they are now. */
+                name: string;
+                /** @description The run whose merge last changed it; null when no merge names one. */
+                run: string | null;
+                /**
+                 * @description `pending`: the grader held it as risky to wait for its owner's OK (`status: pending` in its SKILL.md), and no run is given it until it is approved (POST .../learning/files/{file}/approve on its SKILL.md). `retired`: a person retired it (POST .../learning/files/{file}/retire on its SKILL.md), and no later run is given it.
+                 * @enum {unknown}
+                 */
+                status: "active" | "pending" | "retired";
+              })[];
+            /** @description Every workflow draft on main, `workflows/<name>/workflow.json` with its README.md, by name. Empty when there is none. */
+            workflows: ({
+                /** @description The size of its workflow.json on main. */
+                bytes: number;
+                /** @description What its README.md's front matter says it is for, cut of the host's secrets. */
+                description: string;
+                /** @description The version of its README.md on main, as its file's GET answers it: an approval sends it as If-Match. */
+                etag: string;
+                /** @description Its draft, `workflows/<name>/workflow.json`: GET .../learning/files/{file}, percent-encoded, reads it as JSON. */
+                file: string;
+                /** @description The workflow's folder name; `[redacted]` when it holds one of the host's secrets as they are now. */
+                name: string;
+                /** @description Its README.md, which the server writes from the description the run gave: the file that says whether it waits, and the one an approval names. */
+                readme: string;
+                /** @description The run whose merge last changed it; null when no merge names one. */
+                run: string | null;
+                /**
+                 * @description `pending`: the grader held it as risky to wait for its owner's OK (`status: pending` in its README.md), and no run is given it until it is approved (POST .../learning/files/{file}/approve on its README.md). `retired`: a person retired it (POST .../learning/files/{file}/retire on its README.md), and no later run is given it.
+                 * @enum {unknown}
+                 */
+                status: "active" | "pending" | "retired";
+              })[];
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag
+   * @description A note, MEMORY.md, a SKILL.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`.
+   */
+  readLearningFile: {
+    parameters: {
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+        /** @description A note's file name at the folder's top (`<slug>.md`), percent-encoded; on a read, `MEMORY.md` too, and a skill's `skills/<name>/SKILL.md` or a draft's `workflows/<name>/workflow.json` or `README.md`, its slashes percent-encoded (`skills%2F<name>%2FSKILL.md`); on an approval, a skill's SKILL.md or a draft's README.md. Any other name is 400, and so is a skill's or a draft's file on an edit, which is for notes; on a retire, a skill's SKILL.md or a draft's README.md too; a path with a bare `/` is no route (404). */
+        file: string;
+      };
+    };
+    responses: {
+      /** @description The file's text, cut of the host's secrets. */
+      200: {
+        headers: {
+          /** @description The note's version on main: its git blob id, quoted. If-Match on a write takes it. */
+          ETag?: string;
+          "X-Content-Type-Options": components["headers"]["NoSniff"];
+        };
+        content: {
+          "application/json": unknown;
+          "text/markdown": string;
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Edit a note (If-Match) or create one (If-None-Match: *)
+   * @description The body is the note's whole text, front matter included; a person may set any field, `status` too (an active note is in the index), except that a note waiting for its owner's OK stays waiting: an edit of a `pending` note that drops or changes its status is 400 `bad_request` with the rule `status`, and only an approval makes it active. With neither header, 428. As a person, with no grader: one host commit on main in the agent's queue, `learning: <edited|created|retired> by a person: <file>` with a `Changed-By: user` trailer, MEMORY.md rebuilt from the active notes, and the folder's files brought in line. A note that fails the structural checks a run's notes pass (front matter, the 4 KB cap, UTF-8, hidden characters, text shaped like a secret or holding one of the host's) is 400 `bad_request` with `problems`, and nothing is written; so is an index past 200 lines. MEMORY.md is 400: the server builds it. Answers the note as it now is, with its new ETag. An archived agent's notes are written as its definition is.
+   */
+  writeLearningFile: {
+    parameters: {
+      header?: {
+        /** @description The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412. */
+        "If-Match"?: string;
+        /** @description `*`: create the note, only if the name is not taken, else 412. */
+        "If-None-Match"?: "*";
+      };
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+        /** @description A note's file name at the folder's top (`<slug>.md`), percent-encoded; on a read, `MEMORY.md` too, and a skill's `skills/<name>/SKILL.md` or a draft's `workflows/<name>/workflow.json` or `README.md`, its slashes percent-encoded (`skills%2F<name>%2FSKILL.md`); on an approval, a skill's SKILL.md or a draft's README.md. Any other name is 400, and so is a skill's or a draft's file on an edit, which is for notes; on a retire, a skill's SKILL.md or a draft's README.md too; a path with a bare `/` is no route (404). */
+        file: string;
+      };
+    };
+    /** @description The note's whole text: as text, or as JSON `{text}`, the form the console's page sends under its session (a write from the page is JSON from its own origin). A JSON body that is not an object is 400; a missing or wrong `text`, or another field, is 422 by field. */
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @description The note's whole text, front matter included. */
+          text: string;
+        };
+        "text/markdown": string;
+        "text/plain": string;
+      };
+    };
+    responses: {
+      /** @description Edited: the note as it now is. */
+      200: {
+        headers: {
+          /** @description The note's version on main: its git blob id, quoted. If-Match on a write takes it. */
+          ETag?: string;
+          "X-Content-Type-Options": components["headers"]["NoSniff"];
+        };
+        content: {
+          "text/markdown": string;
+        };
+      };
+      /** @description Created: the note. */
+      201: {
+        headers: {
+          /** @description The note's version on main: its git blob id, quoted. If-Match on a write takes it. */
+          ETag?: string;
+          "X-Content-Type-Options": components["headers"]["NoSniff"];
+        };
+        content: {
+          "text/markdown": string;
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      412: components["responses"]["PreconditionFailed"];
+      413: components["responses"]["PayloadTooLarge"];
+      415: components["responses"]["UnsupportedMediaType"];
+      422: components["responses"]["Unprocessable"];
+      /** @description `precondition_required`: the write names no version it read: If-Match with the note's ETag (an edit or a retire), or If-None-Match: * (a new note). If-Match: * is not one. */
+      428: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Approve a note, a skill or a workflow draft that waits for its owner's OK
+   * @description A skill (its SKILL.md) or a workflow draft (its README.md) that waits is made active the same way, by the same session, in one commit that drops its `status: pending` line and changes nothing else: every later run is given it. Makes a pending note active: in MEMORY.md, read by every later run, and each note it supersedes that is active still marked superseded. One host commit on main, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and `Approved-Via: console`; the log shows it as `by: {user: true, via: "console"}` at the commit's time, and never the note's text. Only the owner, signed in with their password, approves: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 `forbidden` to every token, the server's own included, since an agent's MCP client, the MCP endpoint's tools or a script may hold one, to a run's door token, and to every request on a server with accounts off, whose page cookie the token mints (`capabilities.learning.approve` is false there, with `approve_needs: "password"`); with no credential at all it is 401, as every route. A run that uses bash on the host runs as the server's user and can read its files, so for untrusted tasks use the sandbox. A note that is not pending is 400 `bad_request`. Under If-Match, as a retire: a stale ETag is 412, none 428.
+   */
+  approveLearningFile: {
+    parameters: {
+      header?: {
+        /** @description The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412. */
+        "If-Match"?: string;
+      };
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+        /** @description A note's file name at the folder's top (`<slug>.md`), percent-encoded; on a read, `MEMORY.md` too, and a skill's `skills/<name>/SKILL.md` or a draft's `workflows/<name>/workflow.json` or `README.md`, its slashes percent-encoded (`skills%2F<name>%2FSKILL.md`); on an approval, a skill's SKILL.md or a draft's README.md. Any other name is 400, and so is a skill's or a draft's file on an edit, which is for notes; on a retire, a skill's SKILL.md or a draft's README.md too; a path with a bare `/` is no route (404). */
+        file: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": Record<string, never>;
+      };
+    };
+    responses: {
+      /** @description The note, approved. */
+      200: {
+        headers: {
+          /** @description The note's version on main: its git blob id, quoted. If-Match on a write takes it. */
+          ETag?: string;
+          "X-Content-Type-Options": components["headers"]["NoSniff"];
+        };
+        content: {
+          "text/markdown": string;
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      412: components["responses"]["PreconditionFailed"];
+      /** @description `precondition_required`: the write names no version it read: If-Match with the note's ETag (an edit or a retire), or If-None-Match: * (a new note). If-Match: * is not one. */
+      428: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Retire a note, a skill or a workflow draft: out of every later run, kept in history
+   * @description A learned skill (its `skills/<name>/SKILL.md`) or a workflow draft (its `workflows/<name>/README.md`; its workflow.json is 400) is retired the same way: `status: retired` last in its front matter, one host commit `learning: retired by a person: <file>` that changes that file alone, listed `retired`, and no later run is given it; one already retired is answered as it is. Sets `status: retired` (and drops `superseded_by`), on an active note or one that waits for its owner's OK (`pending`); any other note is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 `bad_request` with `problems` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. As a person, with no grader: one host commit on main in the agent's queue, `learning: <edited|created|retired> by a person: <file>` with a `Changed-By: user` trailer, MEMORY.md rebuilt from the active notes, and the folder's files brought in line. A note that fails the structural checks a run's notes pass (front matter, the 4 KB cap, UTF-8, hidden characters, text shaped like a secret or holding one of the host's) is 400 `bad_request` with `problems`, and nothing is written; so is an index past 200 lines. MEMORY.md is 400: the server builds it. Answers the note as it now is, with its new ETag. An archived agent's notes are written as its definition is.
+   */
+  retireLearningFile: {
+    parameters: {
+      header?: {
+        /** @description The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412. */
+        "If-Match"?: string;
+      };
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+        /** @description A note's file name at the folder's top (`<slug>.md`), percent-encoded; on a read, `MEMORY.md` too, and a skill's `skills/<name>/SKILL.md` or a draft's `workflows/<name>/workflow.json` or `README.md`, its slashes percent-encoded (`skills%2F<name>%2FSKILL.md`); on an approval, a skill's SKILL.md or a draft's README.md. Any other name is 400, and so is a skill's or a draft's file on an edit, which is for notes; on a retire, a skill's SKILL.md or a draft's README.md too; a path with a bare `/` is no route (404). */
+        file: string;
+      };
+    };
+    responses: {
+      /** @description The note, retired. */
+      200: {
+        headers: {
+          /** @description The note's version on main: its git blob id, quoted. If-Match on a write takes it. */
+          ETag?: string;
+          "X-Content-Type-Options": components["headers"]["NoSniff"];
+        };
+        content: {
+          "text/markdown": string;
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      412: components["responses"]["PreconditionFailed"];
+      /** @description `precondition_required`: the write names no version it read: If-Match with the note's ETag (an edit or a retire), or If-None-Match: * (a new note). If-Match: * is not one. */
+      428: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /** A page of the changes on the agent's main, newest first */
+  listLearningLog: {
+    parameters: {
+      query?: {
+        /** @description `next_cursor` from the previous page: opaque. */
+        cursor?: string;
+        /** @description At most 200. */
+        limit?: number;
+      };
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+      };
+    };
+    responses: {
+      /** @description One page of changes. */
+      200: {
+        content: {
+          "application/json": {
+            items: {
+                /** Format: date-time */
+                at: string;
+                /** @description A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval). */
+                by: OneOf<[{
+                  run: string;
+                }, {
+                  /** @constant */
+                  user: true;
+                  /** @description On an approval: how it came, `console` (the owner's signed-in page). */
+                  via?: string;
+                }]>;
+                commit: string;
+                /** @description The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`. */
+                files: string[];
+                /** @description A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`. */
+                reason: string;
+              }[];
+            /** @description The next page, read at the same commit of main as this one: opaque. Null on the last. */
+            next_cursor: string | null;
+            /** @description How many there are in all, at the commit the page was read at. */
+            total: number;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /** A page of the agent's notes */
+  listLearningNotes: {
+    parameters: {
+      query?: {
+        /** @description `next_cursor` from the previous page: opaque, read at the commit the first page was. */
+        cursor?: string;
+        /** @description At most 200. */
+        limit?: number;
+        /** @description Only notes with this status. */
+        status?: "active" | "superseded" | "retired" | "pending";
+      };
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+      };
+    };
+    responses: {
+      /** @description One page of notes. */
+      200: {
+        content: {
+          "application/json": {
+            items: ({
+                description: string;
+                /** @description The note's version on main, the same ETag as `GET .../learning/files/{file}` answers: send it as `If-Match` to edit or retire the version shown, and a 412 means it changed since. */
+                etag: string;
+                /** @description The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name). */
+                file: string;
+                name: string;
+                /**
+                 * @description `you`: kept from what the user asked in their own words; `run`: what the run worked out (absent from older notes: `run`).
+                 * @enum {unknown}
+                 */
+                origin: "you" | "run";
+                /**
+                 * @description Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the grader held as risky, the user's or the run's own, to wait for its owner's OK; no run reads it.
+                 * @enum {unknown}
+                 */
+                status: "active" | "superseded" | "retired" | "pending";
+                /** @description The note that superseded it, on a superseded note; `[redacted]` as `file` is. */
+                superseded_by: string | null;
+                /** @description The note's whole file, front matter included. */
+                text: string;
+                /** @enum {unknown} */
+                type: "user" | "feedback" | "project" | "reference";
+              })[];
+            /** @description The next page, read at the same commit of main as this one: opaque. Null on the last. */
+            next_cursor: string | null;
+            /** @description How many there are in all, at the commit the page was read at. */
+            total: number;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
     };
   };
   /** The agent's revisions, newest first */
@@ -2217,6 +3426,7 @@ export interface operations {
    * quote when one is named (`409 quote_invalid`), then the run's spend authority, the least of the run cap, the
    * account and key caps left this month and the balance (`402 spend_cap_reached`, `402 insufficient_credits`).
    * A local server checks only the first.
+   * Here a create's `Idempotency-Key` is also kept with the run it started, written in the agent store with the run itself: the same key and body replays that run, as it reads now, for as long as the run exists (after any restart, and past `limits.idempotency_ttl_s`, which bounds the other creates' keys); another body under the key is `409 idempotency_mismatch`.
    */
   createRun: {
     parameters: {
@@ -2253,6 +3463,41 @@ export interface operations {
       429: components["responses"]["RateLimited"];
       500: components["responses"]["Internal"];
       503: components["responses"]["Unavailable"];
+    };
+  };
+  /**
+   * Forget one of the agent's saved sign-ins
+   * @description Deletes the browser vendor's object the sign-in points to (a Browserbase context, a Kernel profile), then the sealed pointer this server kept; GET /agents/{agent_id} lists it no more, and the agent's next run with the browser starts signed out, on a new one. Best effort at the vendor: a delete it does not answer, or refuses, is said in `removed[].message` (`at_vendor: not_deleted`), and the pointer is forgotten all the same. 404 for a key the agent has no sign-in under; 409 `sign_in_held` while a run holds its save lease (`details.held_by`), until that run ends.
+   */
+  forgetSignIn: {
+    parameters: {
+      path: {
+        agent_id: components["parameters"]["AgentId"];
+        /** @description The sign-in's key, as GET /agents/{agent_id} lists it (`default`). */
+        key: string;
+      };
+    };
+    responses: {
+      /** @description Forgotten: what was deleted at each vendor. */
+      200: {
+        content: {
+          "application/json": {
+            key: string;
+            removed: ({
+                /** @enum {unknown} */
+                at_vendor: "deleted" | "not_deleted";
+                message?: string;
+                provider: string;
+              })[];
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
     };
   };
   /** Show the archived agent in the lists again */
@@ -2292,6 +3537,33 @@ export interface operations {
     };
   };
   /**
+   * This server's uploads, newest first
+   * @description Every file reserved or sent here, pending or ready, a page at a time, so a file whose id was lost is found again. A run that copied a file keeps its copy whatever happens to the upload.
+   */
+  listFiles: {
+    parameters: {
+      query?: {
+        limit?: components["parameters"]["Limit"];
+        cursor?: components["parameters"]["Cursor"];
+      };
+    };
+    responses: {
+      /** @description One page of files, newest first. */
+      200: {
+        content: {
+          "application/json": {
+            files: components["schemas"]["File"][];
+            next_cursor: string | null;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
    * Reserve an upload
    * @description Reserves a file for a run's input and answers where to send its bytes (`upload`). The file is `pending`
    * until its bytes arrive. Its `path` is relative and keeps its folders: a run sees the file at the same path
@@ -2302,17 +3574,28 @@ export interface operations {
    */
   createFile: {
     parameters: {
+      query?: {
+        /** @description With the file's bytes as the body: the file's path (FilePathString). Its presence makes the body the file. */
+        path?: components["schemas"]["FilePathString"];
+        /** @description With `path`: the file's type. Absent, the request's own type when it names one (not application/octet-stream, not application/x-www-form-urlencoded), else the path's extension's, else application/octet-stream. */
+        content_type?: string;
+        /** @description With `path`: the hash the bytes must have (`422 input_invalid` at sha256 when they do not). */
+        sha256?: string;
+      };
       header?: {
         "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
       };
     };
+    /** @description Without `path` in the query: the contract's JSON reservation (application/json, FileCreate), its bytes sent after with PUT /files/{file_id}. With `path` in the query: the file's bytes themselves, in any type, application/json included (a multipart form is 415), sent in one call, the length the body's and the hash its own. */
     requestBody: {
       content: {
+        "*/*": string;
         "application/json": components["schemas"]["FileCreate"];
+        "application/octet-stream": string;
       };
     };
     responses: {
-      /** @description The reserved file and where to send its bytes. */
+      /** @description The file and where to send its bytes; sent in one call, the file is ready. `upload.url` is a path from the server's root (`/v2/files/{file_id}`): resolve it against the server's address, do not append it to the `/v2` base. */
       201: {
         headers: {
           "Idempotent-Replayed": components["headers"]["IdempotentReplayed"];
@@ -2325,10 +3608,34 @@ export interface operations {
       401: components["responses"]["Unauthenticated"];
       409: components["responses"]["Conflict"];
       413: components["responses"]["PayloadTooLarge"];
+      415: components["responses"]["UnsupportedMediaType"];
       422: components["responses"]["Unprocessable"];
       429: components["responses"]["RateLimited"];
       500: components["responses"]["Internal"];
       501: components["responses"]["Unsupported"];
+    };
+  };
+  /**
+   * An upload's record
+   * @description The file as POST /files answered it, with its status now: `pending` until its bytes arrive, then `ready` with their `sha256`.
+   */
+  getFile: {
+    parameters: {
+      path: {
+        file_id: components["parameters"]["FileId"];
+      };
+    };
+    responses: {
+      /** @description The file. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["File"];
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
     };
   };
   /**
@@ -2363,6 +3670,27 @@ export interface operations {
       429: components["responses"]["RateLimited"];
       500: components["responses"]["Internal"];
       501: components["responses"]["Unsupported"];
+    };
+  };
+  /**
+   * Delete an upload
+   * @description Removes the file and its bytes, pending or ready. A run that already copied it into its workspace keeps its copy; a run started after names it in vain (`422` at `file_ids`).
+   */
+  deleteFile: {
+    parameters: {
+      path: {
+        file_id: components["parameters"]["FileId"];
+      };
+    };
+    responses: {
+      /** @description Deleted. */
+      204: {
+        content: never;
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
     };
   };
   /**
@@ -2403,6 +3731,118 @@ export interface operations {
           };
         };
       };
+    };
+  };
+  /**
+   * Fire a webhook trigger: a request signed by its secret, no token
+   * @description This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. It follows the Standard Webhooks spec, so a sender signs with any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space; the firing's idempotency key), `webhook-timestamp` (Unix seconds, within 300 s of this server's clock either way) and `webhook-signature`, space-separated `v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">` under the secret's 32 bytes (at most 2048 characters in all), any one of which may match. The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it); its first 16 KiB reach the agent inside `<trigger-payload source="webhook" untrusted>`. A bad or missing signature, a stale or future timestamp, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. The first request with a webhook-id answers 202 once its firing is recorded, and its run starts after; the same webhook-id again, for a day after, answers 200 with that firing and starts nothing. A trigger holds at most 20 firings due (a message_run firing waits while its run works): past them a new webhook-id answers 429 `rate_limited` with Retry-After and records nothing, so the sender sends it again later.
+   */
+  receiveHook: {
+    parameters: {
+      path: {
+        trigger_id: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "*/*": unknown;
+      };
+    };
+    responses: {
+      /** @description This webhook-id's firing, as it stands. */
+      200: {
+        content: {
+          "application/json": {
+            /**
+             * Format: date-time
+             * @description When it was recorded.
+             */
+            at: string;
+            attempts?: number;
+            /**
+             * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+             * @enum {unknown}
+             */
+            by: "schedule" | "manual" | "webhook";
+            /**
+             * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+             * @constant
+             */
+            catch_up?: true;
+            /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+            count?: number;
+            error: OneOf<[{
+              code: string;
+              message: string;
+            }, null]>;
+            /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+            key: string;
+            /**
+             * Format: date-time
+             * @description The time it fires for, to the second; a run now's is when it was asked.
+             */
+            nominal_at: string;
+            reason: string | null;
+            /** Format: date-time */
+            retry_at?: string;
+            run_id: string | null;
+            /**
+             * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+             * @enum {unknown}
+             */
+            status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+          };
+        };
+      };
+      /** @description Recorded: its run starts (or its message goes) after this answer. */
+      202: {
+        content: {
+          "application/json": {
+            /**
+             * Format: date-time
+             * @description When it was recorded.
+             */
+            at: string;
+            attempts?: number;
+            /**
+             * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+             * @enum {unknown}
+             */
+            by: "schedule" | "manual" | "webhook";
+            /**
+             * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+             * @constant
+             */
+            catch_up?: true;
+            /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+            count?: number;
+            error: OneOf<[{
+              code: string;
+              message: string;
+            }, null]>;
+            /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+            key: string;
+            /**
+             * Format: date-time
+             * @description The time it fires for, to the second; a run now's is when it was asked.
+             */
+            nominal_at: string;
+            reason: string | null;
+            /** Format: date-time */
+            retry_at?: string;
+            run_id: string | null;
+            /**
+             * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+             * @enum {unknown}
+             */
+            status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      413: components["responses"]["PayloadTooLarge"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
     };
   };
   /**
@@ -2615,6 +4055,88 @@ export interface operations {
       500: components["responses"]["Internal"];
     };
   };
+  /**
+   * Raise a run's spend cap
+   * @description Raises `max_cost_usd` of an agentic run that named one; only a raise: the new cap is above the run's current cap, its last raise included (422 otherwise, and for a run with no cap or a workflow run); the same raise sent again (a retry) changes nothing and answers as the first did. The run's serve.json keeps it before anything else, so its next process and a server started again run under it. A run paused at its cap (`pending.kind` budget) goes on: the answer comes at once (`resumed` true, its `message_id`), and once its process has been let go the server sends it one follow-up turn under that id, "The cap was raised to $X; continue the task.", which runs under the new cap; it is sent once, by a server started again if this one stopped before it went. A second raise before it goes answers the same `message_id`; one that cannot be sent is tried again, then the run ends failed, saying why. Caps within 1e-9 are the same cap. A run working keeps the cap its process was opened with until its next process (`note` says so). 409 not_continuable for an ended run.
+   */
+  raiseRunCap: {
+    parameters: {
+      path: {
+        run_id: components["parameters"]["RunId"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @description The new cap, above the run's current cap. */
+          max_cost_usd: number;
+        };
+      };
+    };
+    responses: {
+      /** @description The run, its cap raised. */
+      200: {
+        content: {
+          "application/json": {
+            max_cost_usd: number;
+            /** @description That follow-up's id, when `resumed`. */
+            message_id?: string;
+            /** @description Said when the run's live process keeps its old cap until its next process. */
+            note?: string;
+            /** @description A run paused at its cap goes on: its follow-up turn is sent once its process has been let go. */
+            resumed: boolean;
+            run_id: string;
+            state: components["schemas"]["RunState"];
+            status: components["schemas"]["RunStatus"];
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["Unprocessable"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Answer a tool call that waits for the owner's approval
+   * @description A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's result. allow runs the call once, then resumes the session with one message that names the call and carries its result; deny resumes it with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run resumes in one turn with the refusal and their words, its row reads `Declined by your message`, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.
+   */
+  answerApproval: {
+    parameters: {
+      path: {
+        run_id: components["parameters"]["RunId"];
+        /** @description The run's pending.id. */
+        approval_id: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @enum {unknown} */
+          decision: "allow" | "deny";
+          /** @description Why: with deny, the refusal's reason the model is told. */
+          note?: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Answered: the run goes on. */
+      204: {
+        content: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      415: components["responses"]["UnsupportedMediaType"];
+      422: components["responses"]["Unprocessable"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
   /** Archive the run: hidden from the lists, kept with its history */
   archiveRun: {
     parameters: {
@@ -2640,6 +4162,7 @@ export interface operations {
    * @description Records the intent to cancel and signals the run. The run reaches `cancelled` when it has stopped; read the
    * status for the final truth. Cancelling a run that already ended answers `already_terminal: true`.
    * Usage consumed before the cancel is billed.
+   * Here an agentic run reads `cancelled` from the 202 on, `final` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads `cancelled` once its workflow has stopped.
    */
   cancelRun: {
     parameters: {
@@ -2897,6 +4420,174 @@ export interface operations {
       501: components["responses"]["Unsupported"];
     };
   };
+  /** The run's learning whole: its seed, merge, verdict, problems and cost */
+  getRunLearning: {
+    parameters: {
+      path: {
+        run_id: components["parameters"]["RunId"];
+      };
+    };
+    responses: {
+      /** @description The run's learning, or null. */
+      200: {
+        content: {
+          "application/json": OneOf<[{
+            /** Format: date-time */
+            at: string;
+            cost_usd: {
+              /** @description The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals. */
+              grade: number | null;
+            };
+            /** @description Run.learning's detail, the same words: at most 300 characters, cut of the host's secrets as they are now before it is cut short. */
+            detail: string | null;
+            /** @description The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise. */
+            learned?: {
+                /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+                file: string;
+                /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+                name: string;
+                /** @description The older notes it replaced, each now `superseded` by it; empty when it replaced none. */
+                supersedes: string[];
+              }[];
+            /** @description Its merge commit on main, once merged. */
+            merged: string | null;
+            /** @description The merge's notes that wait for the owner's OK (status `pending` on main), in no index and read by no run until approved; empty when none. */
+            pending: {
+                file: string;
+                name: string;
+              }[];
+            /** @description The checker's, when the reason is `checker`; otherwise, the items the checks left out while the rest went on to the grader (on a merge, a grader's drop or a grade that failed). */
+            problems: {
+                detail: string;
+                path?: string;
+                rule: string;
+              }[];
+            /**
+             * @description Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships. `seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned. `no_budget`: the run's cap left no room for the end-of-run turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown. `no_write_tool`, `tool_denied`: older runs only, from before the end-of-run turn answered with its notes (an agent with no `write` tool, or one a tool gate denied it); no run gets them now. `cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error. `empty`: the turn's answer gave no note. `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git. `screen`, `screen_down`: no longer produced (the injection screen is gone; the grader's Planted question decides); older runs may still hold them. `grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.
+             * @enum {unknown}
+             */
+            reason: "seed_failed" | "no_budget" | "unknown_cost" | "no_write_tool" | "tool_denied" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "screen" | "screen_down" | "grader" | "grade_failed" | "";
+            run: string;
+            /** @description The commit of main the run started from; null when its seed failed. */
+            seed: string | null;
+            /** @description The skill this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise. */
+            skills?: {
+                /** @description Its SKILL.md, `skills/<name>/SKILL.md`; `[redacted]` when it holds one of the host's secrets as they are now. */
+                file: string;
+                /** @description The skill's folder name, `[redacted]` as `file` is. */
+                name: string;
+                /**
+                 * @description Present while it waits for the owner's OK: no run is given it until approved.
+                 * @constant
+                 */
+                pending?: true;
+              }[];
+            /** @enum {unknown} */
+            state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
+            tokens: {
+              /** @description The grade's tokens; `input` excludes cached input. */
+              grade: OneOf<[{
+                cache_read: number;
+                cache_write: number;
+                input: number;
+                output: number;
+              }, null]>;
+            };
+            /** @description The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none. */
+            used?: {
+                /** @description The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now. */
+                file: string;
+                /** @description The note's front-matter `name`, cut of the host's secrets as they are now. */
+                name: string;
+              }[];
+            /** @description The grader's, once it judged; null when no grade ran. */
+            verdict: OneOf<[{
+              /** @description One for each new note the run proposed. */
+              items: ({
+                  /** @description The new note's file name; `[redacted]` when it holds one of the host's secrets as they are now. */
+                  file: string;
+                  /** @description Whether the rubric keeps the note: true for one that waits for the owner's OK too. */
+                  keep: boolean;
+                  /**
+                   * @description On a kept note: `you`, from what the user asked in their own words, or `run`.
+                   * @enum {unknown}
+                   */
+                  origin?: "you" | "run";
+                  /**
+                   * @description Present on a note kept to wait for the owner's OK: a risky rule, the user's or the run's own (its question is Risky).
+                   * @constant
+                   */
+                  pending?: true;
+                  /** @description The rubric's question the note failed (General, Planted, Secret, Duplicate or Contradicts) when it is not kept, or Risky when it waits. */
+                  question?: string;
+                  /** @description One sentence, the grader's, cut of the host's secrets. */
+                  why: string;
+                })[];
+              merge: boolean;
+              reason: string;
+            }, null]>;
+            /** @description The workflow draft this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise. */
+            workflows?: {
+                /** @description Its draft, `workflows/<name>/workflow.json`; `[redacted]` when it holds one of the host's secrets as they are now. */
+                file: string;
+                /** @description The workflow's folder name, `[redacted]` as `file` is. */
+                name: string;
+                /**
+                 * @description Present while it waits for the owner's OK.
+                 * @constant
+                 */
+                pending?: true;
+              }[];
+          }, null]>;
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * What the run proposed, file by file
+   * @description 404 for a run that does not learn, or whose merge is not in its agent's folder.
+   */
+  getRunLearningDiff: {
+    parameters: {
+      path: {
+        run_id: components["parameters"]["RunId"];
+      };
+    };
+    responses: {
+      /** @description The run's diff. */
+      200: {
+        content: {
+          "application/json": {
+            /** @description A merged run's merge's parent; else the commit the run's proposal was checked against (its seed). */
+            base: string | null;
+            files: ({
+                /** @description The file's unified diff as git writes it, hunks only: from the first `@@` line, 3 lines of context. An added file diffs against nothing (`@@ -0,0 +1,N @@`). */
+                patch?: string;
+                /** @description The file's name; `[redacted]` when it holds one of the host's secrets. */
+                path: string;
+                /** @enum {unknown} */
+                status: "added" | "modified" | "deleted";
+                /**
+                 * @description Set instead of `patch` when the file is not shown: its patch is over 64 KiB, or holds one of the host's secrets.
+                 * @enum {unknown}
+                 */
+                withheld?: "too_large" | "secret";
+              })[];
+            /** @description A merged run's merge commit; null before (the proposal is in the run's own folder, not a commit). */
+            head: string | null;
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
   /**
    * Send the run a message
    * @description One route for every message a person or a program sends a run. The run's state decides what it does, and
@@ -3115,6 +4806,412 @@ export interface operations {
       500: components["responses"]["Internal"];
     };
   };
+  /**
+   * The remote MCP servers saved here, with their tools; never a credential
+   * @description When the saved-servers file does not read (damaged, or another format), `servers` is empty and `file_unreadable` is true; every other route on it is 409 store_unreadable, and nothing writes over it.
+   */
+  listMcpServers: {
+    responses: {
+      /** @description Each server, by name. */
+      200: {
+        content: {
+          "application/json": {
+            /**
+             * @description Present when the saved-servers file does not read.
+             * @constant
+             */
+            file_unreadable?: true;
+            servers: ({
+                auth: {
+                  /** @description For `headers`: the names of the headers kept (lowercase), never a value. */
+                  headers?: string[];
+                  /** @enum {unknown} */
+                  type: "none" | "bearer" | "headers";
+                };
+                /**
+                 * @description `sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value.
+                 * @enum {unknown}
+                 */
+                credential: "sealed" | "seal_key_missing" | "unreadable" | "";
+                /** @description The server's instructions for its client, when it gives any. */
+                instructions?: string;
+                /**
+                 * Format: date-time
+                 * @description When its tools were last listed (a PUT or a refresh).
+                 */
+                listed_at: string;
+                name: string;
+                /** @description The MCP revision agreed: `2026-07-28` with a server that speaks it, else the 2025-era revision its `initialize` agreed. */
+                protocol: string;
+                /** @description The server's name and version, as it gave them. */
+                server_info: Record<string, never> | null;
+                /** @description Every tool it lists, all pages. */
+                tools: {
+                    /** @description The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked. */
+                    annotations?: Record<string, never>;
+                    description?: string;
+                    /** @description The JSON Schema of the tool's arguments, as the server gave it. */
+                    input_schema: Record<string, never>;
+                    name: string;
+                    /** @description The JSON Schema of its structured result, when the server gives one. */
+                    output_schema?: Record<string, never>;
+                    title?: string;
+                  }[];
+                /**
+                 * Format: date-time
+                 * @description When it was last saved.
+                 */
+                updated_at: string;
+                /** Format: uri */
+                url: string;
+              })[];
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /** One saved MCP server; never its credential */
+  getMcpServer: {
+    parameters: {
+      path: {
+        /** @description The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`. */
+        name: string;
+      };
+    };
+    responses: {
+      /** @description The server. */
+      200: {
+        content: {
+          "application/json": {
+            auth: {
+              /** @description For `headers`: the names of the headers kept (lowercase), never a value. */
+              headers?: string[];
+              /** @enum {unknown} */
+              type: "none" | "bearer" | "headers";
+            };
+            /**
+             * @description `sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value.
+             * @enum {unknown}
+             */
+            credential: "sealed" | "seal_key_missing" | "unreadable" | "";
+            /** @description The server's instructions for its client, when it gives any. */
+            instructions?: string;
+            /**
+             * Format: date-time
+             * @description When its tools were last listed (a PUT or a refresh).
+             */
+            listed_at: string;
+            name: string;
+            /** @description The MCP revision agreed: `2026-07-28` with a server that speaks it, else the 2025-era revision its `initialize` agreed. */
+            protocol: string;
+            /** @description The server's name and version, as it gave them. */
+            server_info: Record<string, never> | null;
+            /** @description Every tool it lists, all pages. */
+            tools: {
+                /** @description The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked. */
+                annotations?: Record<string, never>;
+                description?: string;
+                /** @description The JSON Schema of the tool's arguments, as the server gave it. */
+                input_schema: Record<string, never>;
+                name: string;
+                /** @description The JSON Schema of its structured result, when the server gives one. */
+                output_schema?: Record<string, never>;
+                title?: string;
+              }[];
+            /**
+             * Format: date-time
+             * @description When it was last saved.
+             */
+            updated_at: string;
+            /** Format: uri */
+            url: string;
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Preview a remote MCP server, then save it with the tools listed and its credential sealed
+   * @description Each credential header's value is sealed under the server's seal key and bound to the server's name and the header, and kept in the data directory as ciphertext alone. 409 no_sealing_key when the server was handed no seal key and `auth.type` is not none (nothing is contacted). A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. 422 too for a bad name, URL or auth. Connects with the official MCP SDK client: `server/discover` (2026-07-28) first, a 2025-era server by its `initialize`; then `tools/list`, every page. No redirect is followed: a 3xx is 422 input_invalid (field `url`, reason `redirect`, naming where it points), so a credential goes only where it is sent. A server that asks for a credential (401 or 403) is 422 `auth_required`, `details.auth` `oauth` when it names protected-resource metadata (its WWW-Authenticate or `/.well-known/oauth-protected-resource`), else `bearer`; a URL whose answers hold no JSON-RPC reply is 422 `not_mcp`; a server listing more than 500 tools, or more than 1 MiB of them (names, descriptions, schemas), is 422 input_invalid (field `url`, reason `too_many_tools` or `tools_too_large`), the listing stopped at that page; any other failure is 424. Nothing is saved unless the listing succeeds.
+   */
+  saveMcpServer: {
+    parameters: {
+      path: {
+        /** @description The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`. */
+        name: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @description Absent: none. A PUT that sends no `token` (no `headers`) keeps the sealed credential, when the type and the URL's origin are unchanged. */
+          auth?: {
+            /** @description Header names a credential may go in: not Host, Content-Type, Accept, Content-Length, Connection, Transfer-Encoding, Last-Event-ID or an Mcp- header the transport sets. */
+            headers?: {
+              [key: string]: string;
+            };
+            token?: string;
+            /**
+             * @description `none`; `bearer` (`token`, sent as `Authorization: Bearer <token>`); `headers` (each named header and its value). `oauth` is refused: 422 input_invalid, reason not_yet.
+             * @enum {unknown}
+             */
+            type: "none" | "bearer" | "headers" | "oauth";
+          };
+          /**
+           * Format: uri
+           * @description The server's Streamable HTTP endpoint: https, or http on a loopback address of this machine; no user or password.
+           */
+          url: string;
+        };
+      };
+    };
+    responses: {
+      /** @description The server, as saved. */
+      200: {
+        content: {
+          "application/json": {
+            auth: {
+              /** @description For `headers`: the names of the headers kept (lowercase), never a value. */
+              headers?: string[];
+              /** @enum {unknown} */
+              type: "none" | "bearer" | "headers";
+            };
+            /**
+             * @description `sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value.
+             * @enum {unknown}
+             */
+            credential: "sealed" | "seal_key_missing" | "unreadable" | "";
+            /** @description The server's instructions for its client, when it gives any. */
+            instructions?: string;
+            /**
+             * Format: date-time
+             * @description When its tools were last listed (a PUT or a refresh).
+             */
+            listed_at: string;
+            name: string;
+            /** @description The MCP revision agreed: `2026-07-28` with a server that speaks it, else the 2025-era revision its `initialize` agreed. */
+            protocol: string;
+            /** @description The server's name and version, as it gave them. */
+            server_info: Record<string, never> | null;
+            /** @description Every tool it lists, all pages. */
+            tools: {
+                /** @description The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked. */
+                annotations?: Record<string, never>;
+                description?: string;
+                /** @description The JSON Schema of the tool's arguments, as the server gave it. */
+                input_schema: Record<string, never>;
+                name: string;
+                /** @description The JSON Schema of its structured result, when the server gives one. */
+                output_schema?: Record<string, never>;
+                title?: string;
+              }[];
+            /**
+             * Format: date-time
+             * @description When it was last saved.
+             */
+            updated_at: string;
+            /** Format: uri */
+            url: string;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      409: components["responses"]["Conflict"];
+      415: components["responses"]["UnsupportedMediaType"];
+      422: components["responses"]["Unprocessable"];
+      /** @description `upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one. */
+      424: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /** Forget a saved MCP server and its credential */
+  deleteMcpServer: {
+    parameters: {
+      path: {
+        /** @description The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`. */
+        name: string;
+      };
+    };
+    responses: {
+      /** @description Forgotten. */
+      204: {
+        content: never;
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * List a saved MCP server's tools again, keep them, and say what changed
+   * @description With its saved URL and sealed credential. `added` and `removed` are tool names; `changed` names a tool whose title, description, schemas or annotations differ. Connects with the official MCP SDK client: `server/discover` (2026-07-28) first, a 2025-era server by its `initialize`; then `tools/list`, every page. No redirect is followed: a 3xx is 422 input_invalid (field `url`, reason `redirect`, naming where it points), so a credential goes only where it is sent. A server that asks for a credential (401 or 403) is 422 `auth_required`, `details.auth` `oauth` when it names protected-resource metadata (its WWW-Authenticate or `/.well-known/oauth-protected-resource`), else `bearer`; a URL whose answers hold no JSON-RPC reply is 422 `not_mcp`; a server listing more than 500 tools, or more than 1 MiB of them (names, descriptions, schemas), is 422 input_invalid (field `url`, reason `too_many_tools` or `tools_too_large`), the listing stopped at that page; any other failure is 424.
+   */
+  refreshMcpServer: {
+    parameters: {
+      path: {
+        /** @description The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` and `monid` are reserved for AgentRun's own tools: a PUT under either is 422 input_invalid, field `name`, reason `reserved`. */
+        name: string;
+      };
+    };
+    responses: {
+      /** @description What changed, and the server now. */
+      200: {
+        content: {
+          "application/json": {
+            added: string[];
+            changed: string[];
+            removed: string[];
+            server: {
+              auth: {
+                /** @description For `headers`: the names of the headers kept (lowercase), never a value. */
+                headers?: string[];
+                /** @enum {unknown} */
+                type: "none" | "bearer" | "headers";
+              };
+              /**
+               * @description `sealed`: kept sealed and opens here; `seal_key_missing`: the server was handed no seal key, so it does not open; `unreadable`: sealed under another seal key, or damaged: a PUT with the credential seals it again. Null for `auth.type` none. Never a value.
+               * @enum {unknown}
+               */
+              credential: "sealed" | "seal_key_missing" | "unreadable" | "";
+              /** @description The server's instructions for its client, when it gives any. */
+              instructions?: string;
+              /**
+               * Format: date-time
+               * @description When its tools were last listed (a PUT or a refresh).
+               */
+              listed_at: string;
+              name: string;
+              /** @description The MCP revision agreed: `2026-07-28` with a server that speaks it, else the 2025-era revision its `initialize` agreed. */
+              protocol: string;
+              /** @description The server's name and version, as it gave them. */
+              server_info: Record<string, never> | null;
+              /** @description Every tool it lists, all pages. */
+              tools: {
+                  /** @description The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked. */
+                  annotations?: Record<string, never>;
+                  description?: string;
+                  /** @description The JSON Schema of the tool's arguments, as the server gave it. */
+                  input_schema: Record<string, never>;
+                  name: string;
+                  /** @description The JSON Schema of its structured result, when the server gives one. */
+                  output_schema?: Record<string, never>;
+                  title?: string;
+                }[];
+              /**
+               * Format: date-time
+               * @description When it was last saved.
+               */
+              updated_at: string;
+              /** Format: uri */
+              url: string;
+            };
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["Unprocessable"];
+      /** @description `upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one. */
+      424: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+      503: components["responses"]["Unavailable"];
+    };
+  };
+  /**
+   * Connect to a remote MCP server and list its tools, storing nothing
+   * @description `{url, auth}`, or `{name}` for a saved server with its sealed credential (409 no_sealing_key when it does not open for want of a seal key; 422 when it does not open otherwise). Connects with the official MCP SDK client: `server/discover` (2026-07-28) first, a 2025-era server by its `initialize`; then `tools/list`, every page. No redirect is followed: a 3xx is 422 input_invalid (field `url`, reason `redirect`, naming where it points), so a credential goes only where it is sent. A server that asks for a credential (401 or 403) is 422 `auth_required`, `details.auth` `oauth` when it names protected-resource metadata (its WWW-Authenticate or `/.well-known/oauth-protected-resource`), else `bearer`; a URL whose answers hold no JSON-RPC reply is 422 `not_mcp`; a server listing more than 500 tools, or more than 1 MiB of them (names, descriptions, schemas), is 422 input_invalid (field `url`, reason `too_many_tools` or `tools_too_large`), the listing stopped at that page; any other failure is 424.
+   */
+  previewMcpServer: {
+    requestBody: {
+      content: {
+        "application/json": OneOf<[{
+          /** @description Absent: none. A PUT that sends no `token` (no `headers`) keeps the sealed credential, when the type and the URL's origin are unchanged. */
+          auth?: {
+            /** @description Header names a credential may go in: not Host, Content-Type, Accept, Content-Length, Connection, Transfer-Encoding, Last-Event-ID or an Mcp- header the transport sets. */
+            headers?: {
+              [key: string]: string;
+            };
+            token?: string;
+            /**
+             * @description `none`; `bearer` (`token`, sent as `Authorization: Bearer <token>`); `headers` (each named header and its value). `oauth` is refused: 422 input_invalid, reason not_yet.
+             * @enum {unknown}
+             */
+            type: "none" | "bearer" | "headers" | "oauth";
+          };
+          /**
+           * Format: uri
+           * @description The server's Streamable HTTP endpoint: https, or http on a loopback address of this machine; no user or password.
+           */
+          url: string;
+        }, {
+          name: string;
+        }]>;
+      };
+    };
+    responses: {
+      /** @description What the server offers. */
+      200: {
+        content: {
+          "application/json": {
+            /** @description The server's instructions for its client, when it gives any. */
+            instructions?: string;
+            /** @description The MCP revision agreed: `2026-07-28` with a server that speaks it, else the 2025-era revision its `initialize` agreed. */
+            protocol: string;
+            /** @description The server's name and version, as it gave them. */
+            server_info: Record<string, never> | null;
+            /** @description Every tool it lists, all pages. */
+            tools: {
+                /** @description The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked. */
+                annotations?: Record<string, never>;
+                description?: string;
+                /** @description The JSON Schema of the tool's arguments, as the server gave it. */
+                input_schema: Record<string, never>;
+                name: string;
+                /** @description The JSON Schema of its structured result, when the server gives one. */
+                output_schema?: Record<string, never>;
+                title?: string;
+              }[];
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      415: components["responses"]["UnsupportedMediaType"];
+      422: components["responses"]["Unprocessable"];
+      /** @description `upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one. */
+      424: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
   /** The tool keys a person may save, and which are set: names only, never a value */
   listToolKeys: {
     responses: {
@@ -3123,6 +5220,36 @@ export interface operations {
         content: {
           "application/json": {
             keys: ({
+                /** @description Whether the key (its first field) was checked against its provider, with one call that costs nothing: a key stored here when it was saved (`accepted`, or `not_checked` and why; a key the provider refuses is never saved, PUT's 422), a tool's key the server is started with once as it starts (`accepted`, `not_checked`, or `refused`). Null when the key is not set, or is the server's and its check has not answered yet. */
+                check: OneOf<[{
+                  /**
+                   * Format: date-time
+                   * @description When it was saved and checked; the server's own key, when the server started and checked it.
+                   */
+                  at: string;
+                  /** @constant */
+                  state: "accepted";
+                }, {
+                  /**
+                   * Format: date-time
+                   * @description When the server started and checked it.
+                   */
+                  at: string;
+                  /** @description The server's own key only (a saved one the provider refuses is never kept): who refused which key, in the provider's first sentence (never any of the key), and what to do. The tools that need it read unavailable in capabilities, with the same words. */
+                  reason: string;
+                  /** @constant */
+                  state: "refused";
+                }, {
+                  /**
+                   * Format: date-time
+                   * @description When it was saved. Absent for a key saved before this server checked keys.
+                   */
+                  at?: string;
+                  /** @description Why, in plain words: the provider would not answer the check (403: the key may still work for its tools), did not answer in 5 s, could not be reached, answered a redirect (never followed, so the key goes nowhere else), or answered neither yes nor no (its status and first sentence); it has no call that costs nothing to check a key with; or the key was saved before this server checked keys. */
+                  reason: string;
+                  /** @constant */
+                  state: "not_checked";
+                }, null]>;
                 fields: ({
                     name: string;
                     set: boolean;
@@ -3137,10 +5264,15 @@ export interface operations {
                      */
                     stored_unreadable?: true;
                   })[];
-                /** @description The harnesses that run the tools in `unlocks`: the union of their `harnesses` in capabilities' `tools`. */
-                harnesses: ("pi" | "claude-agent" | "codex")[];
+                /** @description The harnesses that run the tools in `unlocks`: the union of their `harnesses` in capabilities' `tools`. A `model` key's: pi and the provider's own harness (OpenRouter's, all three), of those capabilities' `harnesses` say this server runs or would run once the key is set: one unavailable only for want of a model key is listed before the key is saved. */
+                harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
                 /** @enum {unknown} */
-                id: "parallel" | "monid" | "browserbase";
+                id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+                /**
+                 * @description `tool`: it unlocks tools, and reaches only the runs that name one; `model`: a model provider's key, which every run gets, and which gives the default model when the host names none (`capabilities.models`).
+                 * @enum {unknown}
+                 */
+                kind: "tool" | "model";
                 label: string;
                 /** @description What the key unlocks on this server: tools capabilities' `tools` lists, and `decisions.<id>` for a provider its `workflows.decisions.providers` lists. Empty when the key unlocks nothing this server binds. */
                 unlocks: string[];
@@ -3161,7 +5293,7 @@ export interface operations {
   };
   /**
    * Save a tool key's fields, sealed
-   * @description Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. 422 for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.
+   * @description Each value is sealed under the server's seal key and kept in the data directory as ciphertext alone; the key's other fields stay as they are. The key (the first field) is first checked against its provider with one call that costs nothing, given 5 s: a key the provider refuses (401) is 422 input_invalid, its field's reason `refused_by_provider` and the message in plain words with the provider's first sentence (never any of the key), and nothing is kept; otherwise it is kept, and GET's `check` says `accepted` or `not_checked` and why (a 403 is not_checked: a key scoped away from the check's call may still work for its tools). A save whose check is still waiting when the server begins to close keeps nothing (503 unavailable, while its connection lasts). 422 also for an unknown key or field, or a value that is empty, holds a control character or is over 1024 bytes; 409 key_set_by_server for a field the server is started with; 409 no_sealing_key when the server was handed no seal key.
    */
   saveToolKey: {
     parameters: {
@@ -3191,6 +5323,7 @@ export interface operations {
       422: components["responses"]["Unprocessable"];
       429: components["responses"]["RateLimited"];
       500: components["responses"]["Internal"];
+      503: components["responses"]["Unavailable"];
     };
   };
   /**
@@ -3211,6 +5344,298 @@ export interface operations {
       };
       401: components["responses"]["Unauthenticated"];
       409: components["responses"]["Conflict"];
+      422: components["responses"]["Unprocessable"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * The server's tool settings
+   * @description Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (codex's own search or, on pi, the model provider's hosted one, else Parallel where the server holds its key, which bills it, else Exa's keyless search; claude-agent's own search only as native), native (that alone), exa-keyless (that alone) or parallel; web_fetch kernel or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent.
+   */
+  getToolSettings: {
+    responses: {
+      /** @description Each capability's provider. */
+      200: {
+        content: {
+          "application/json": {
+            browser: {
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "browserbase" | "kernel" | "chrome";
+            };
+            web_fetch: {
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "kernel" | "parallel";
+            };
+            web_search: {
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+            };
+            [key: string]: ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission: "allow" | "ask" | "deny";
+            }) | ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+            }) | ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "kernel" | "parallel";
+            }) | ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "browserbase" | "kernel" | "chrome";
+            });
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Set the providers of web_search, web_fetch and browser, and each tool's permission
+   * @description Replaces the settings: a tool the body leaves out takes its defaults. Kept in the data directory, and capabilities say so at once. A provider is read by every run launched from then on; a permission by the tool gate at each call, live runs' included (a claude-agent or codex run's own web search takes a change of web_search's at its next launch). An MCP server's wildcard, mcp:<server>/*, sets each of its tools, under a tool's own key. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider, and so does a browser vendor picked without its key. An unknown tool, a provider not offered for it and a permission not offered for it are refused.
+   */
+  putToolSettings: {
+    requestBody: {
+      content: {
+        "application/json": {
+          ask_person?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "deny";
+          };
+          bash?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+          };
+          browser?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "deny";
+            /**
+             * @description Default auto.
+             * @enum {unknown}
+             */
+            provider?: "auto" | "browserbase" | "kernel" | "chrome";
+          };
+          edit?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+          };
+          llm?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "deny";
+          };
+          pdf_pages?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "deny";
+          };
+          read?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+          };
+          web_fetch?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+            /**
+             * @description Default kernel.
+             * @enum {unknown}
+             */
+            provider?: "kernel" | "parallel";
+          };
+          web_search?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+            /**
+             * @description Default auto.
+             * @enum {unknown}
+             */
+            provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+          };
+          write?: {
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+          };
+          [key: string]: (({
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+          }) | ({
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "deny";
+          }) | ({
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+            /**
+             * @description Default kernel.
+             * @enum {unknown}
+             */
+            provider?: "kernel" | "parallel";
+          }) | ({
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "ask" | "deny";
+            /**
+             * @description Default auto.
+             * @enum {unknown}
+             */
+            provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+          }) | ({
+            /**
+             * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+             * @enum {unknown}
+             */
+            permission?: "allow" | "deny";
+            /**
+             * @description Default auto.
+             * @enum {unknown}
+             */
+            provider?: "auto" | "browserbase" | "kernel" | "chrome";
+          })) | undefined;
+        };
+      };
+    };
+    responses: {
+      /** @description Each capability's provider now. */
+      200: {
+        content: {
+          "application/json": {
+            browser: {
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "browserbase" | "kernel" | "chrome";
+            };
+            web_fetch: {
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "kernel" | "parallel";
+            };
+            web_search: {
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+            };
+            [key: string]: ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission: "allow" | "ask" | "deny";
+            }) | ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+            }) | ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "kernel" | "parallel";
+            }) | ({
+              /**
+               * @description What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, fetch_page, web_fetch, web_search) and for catalog tools; any other is allow or deny.
+               * @enum {unknown}
+               */
+              permission?: "allow" | "ask" | "deny";
+              /** @enum {unknown} */
+              provider: "auto" | "browserbase" | "kernel" | "chrome";
+            });
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      415: components["responses"]["UnsupportedMediaType"];
       422: components["responses"]["Unprocessable"];
       429: components["responses"]["RateLimited"];
       500: components["responses"]["Internal"];
@@ -3252,7 +5677,7 @@ export interface operations {
   };
   /**
    * Set the webhook's URL
-   * @description Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to `url` as JSON `{type, timestamp, data}`: `run.needs_input` when a run comes to need its person (status input_required; `data.pending.kind` `question` for an ask_person question, `stopped` for a stopped turn) and `run.ended` when it ends (completed, failed or cancelled), with `data: {run_id, agent_id, status, title, url}`, `url` the run on the page; never a tool's arguments, an output or an input, which the API reads. Headers: `webhook-id` (the same on every try, the receiver's idempotency key), `webhook-timestamp` (Unix seconds) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.
+   * @description Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to `url` as JSON `{type, timestamp, data}`: `run.needs_input` when a run comes to need its person (status input_required; `data.pending.kind` `question` for an ask_person question, `approval` for a tool call that waits for a person's approval, `stopped` for a stopped turn, `budget` for a run paused at its spend cap) and `run.ended` when it ends (completed, failed or cancelled), with `data: {run_id, agent_id, status, title, url}`, `url` the run on the page; and `trigger.failed` when a trigger's firing could not start its run (/triggers), with `data: {trigger_id, name, firing_key, nominal_at, error: {code, message}, auto_paused}`, `auto_paused` true when it was the 5th in a row and turned the trigger off, its `webhook-id` the same for the same firing, after a restart too; never a tool's arguments, an output or an input, which the API reads. Headers: `webhook-id` (the same on every try, the receiver's idempotency key), `webhook-timestamp` (Unix seconds) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT keeps it, turns the webhook on again and answers 200. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters; 409 no_sealing_key when the server was handed no seal key to keep the secret under.
    */
   saveWebhook: {
     requestBody: {
@@ -3356,7 +5781,7 @@ export interface operations {
                 /** @description The receiver's answer; null when it was not reached. */
                 status_code: number | null;
                 /** @enum {unknown} */
-                type: "run.needs_input" | "run.ended" | "webhook.test";
+                type: "run.needs_input" | "run.ended" | "trigger.failed" | "webhook.test";
                 /** @description The message's `webhook-id`: the same on each of its tries, and on a redelivery. */
                 webhook_id: string;
               })[];
@@ -3399,7 +5824,7 @@ export interface operations {
             /** @description The receiver's answer; null when it was not reached. */
             status_code: number | null;
             /** @enum {unknown} */
-            type: "run.needs_input" | "run.ended" | "webhook.test";
+            type: "run.needs_input" | "run.ended" | "trigger.failed" | "webhook.test";
             /** @description The message's `webhook-id`: the same on each of its tries, and on a redelivery. */
             webhook_id: string;
           };
@@ -3437,7 +5862,7 @@ export interface operations {
             /** @description The receiver's answer; null when it was not reached. */
             status_code: number | null;
             /** @enum {unknown} */
-            type: "run.needs_input" | "run.ended" | "webhook.test";
+            type: "run.needs_input" | "run.ended" | "trigger.failed" | "webhook.test";
             /** @description The message's `webhook-id`: the same on each of its tries, and on a redelivery. */
             webhook_id: string;
           };
@@ -3452,7 +5877,7 @@ export interface operations {
   };
   /**
    * Counts and cost over every agent and run
-   * @description Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` only; every other number is the whole store's.
+   * @description Read from the agent store's aggregates, and `learning` from the runs this server holds and its learning ledger, where each run's learning end is written: no run's files are opened. Archived agents and runs are left out of every number but their own counts. `from`, `to` and `agent` bound `analytics` and `learning` only; every other number is the whole store's.
    */
   getStats: {
     parameters: {
@@ -3594,13 +6019,25 @@ export interface operations {
             /** @description Over the runs not archived: `usd` sums the cost of each run that ended with one; every other run (running, or ended with no cost) is in `unknown_runs`. */
             cost: {
               /**
-               * @description `estimate` (the model cost the runs report) when `usd` is a number; null when it is null.
+               * @description `estimate` (what the runs report: their model requests' cost and their paid tools' charges) when `usd` is a number; null when it is null.
                * @enum {string|null}
                */
               basis: "estimate" | null;
               unknown_runs: number;
               /** @description The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown. */
               usd: number | null;
+            };
+            /** @description How the runs that tried to learn fared, over the runs not archived that `from`, `to` and `agent` pick, as `analytics` counts them. */
+            learning: {
+              /** @description The dropped runs, by reason (Run.learning.reason): only reasons with one run or more. */
+              dropped: {
+                [key: string]: number;
+              };
+              /** @description Seeded, reflecting or proposed: runs this server holds. */
+              in_progress: number;
+              merged: number;
+              /** @description Runs that tried to learn: each with a `learning` block. A run with learning off, a workflow's or an imported one has none. */
+              runs: number;
             };
             /** @description Each agent not archived, by name then id, with how many of its runs are not archived; an agent with no runs is listed with 0. */
             per_agent: {
@@ -3622,6 +6059,992 @@ export interface operations {
       };
       400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthenticated"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * The triggers: schedules that start an agent's capped runs
+   * @description 409 store_unreadable when triggers.json in the data directory does not read: nothing fires, and nothing is written over it.
+   */
+  listTriggers: {
+    responses: {
+      /** @description Each trigger, oldest first, with its last firing. */
+      200: {
+        content: {
+          "application/json": {
+            triggers: ({
+                /** @description How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one `missed` firing. 0: a missed time never fires. Default 3600. */
+                catchup_window_s: number;
+                /** Format: date-time */
+                created_at: string;
+                /** @description Why it is off, when the server turned it off: `auto_paused`, 5 failed firings in a row; `source_unreadable`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for `source_unreadable` takes a new source. */
+                disabled: OneOf<[{
+                  /** Format: date-time */
+                  at: string;
+                  /** @constant */
+                  reason: "auto_paused";
+                }, {
+                  /** Format: date-time */
+                  at: string;
+                  /** @description Why the source no longer reads. */
+                  detail: string;
+                  /** @constant */
+                  reason: "source_unreadable";
+                }, null]>;
+                enabled: boolean;
+                /** @description Failed firings since the last that started a run; at 5 the trigger turns itself off (`disabled`). Turned on again, it counts from 0. */
+                failures_in_a_row: number;
+                id: string;
+                last_firing: OneOf<[{
+                  /**
+                   * Format: date-time
+                   * @description When it was recorded.
+                   */
+                  at: string;
+                  attempts?: number;
+                  /**
+                   * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+                   * @enum {unknown}
+                   */
+                  by: "schedule" | "manual" | "webhook";
+                  /**
+                   * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+                   * @constant
+                   */
+                  catch_up?: true;
+                  /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+                  count?: number;
+                  error: OneOf<[{
+                    code: string;
+                    message: string;
+                  }, null]>;
+                  /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+                  key: string;
+                  /**
+                   * Format: date-time
+                   * @description The time it fires for, to the second; a run now's is when it was asked.
+                   */
+                  nominal_at: string;
+                  reason: string | null;
+                  /** Format: date-time */
+                  retry_at?: string;
+                  run_id: string | null;
+                  /**
+                   * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+                   * @enum {unknown}
+                   */
+                  status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+                }, null]>;
+                /** @description The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts. */
+                last_run_id: string | null;
+                name: string;
+                /**
+                 * Format: date-time
+                 * @description When it fires next; null while it is off.
+                 */
+                next_at: string | null;
+                /**
+                 * @description What a firing does while the trigger's last run is active (working, or waiting on a person): `skip`, recorded as a skipped firing with why. Never queued: a firing queued behind a run parked on a person would wait as long as the person does.
+                 * @enum {unknown}
+                 */
+                overlap: "skip";
+                /** @description When it fires: a cron line in a zone, one time, every N seconds (60 or more), or a signed request to /hooks/{trigger_id} (`webhook`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one `missed` firing with their count, and the schedule goes on from now. */
+                source: OneOf<[{
+                  /** @description Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap. */
+                  cron: string;
+                  /** @constant */
+                  kind: "schedule";
+                  /**
+                   * @description The IANA zone the cron line is read in.
+                   * @default UTC
+                   */
+                  timezone?: string;
+                }, {
+                  /**
+                   * Format: date-time
+                   * @description Once, at this time (to the second, in the future); the trigger turns itself off after.
+                   */
+                  at: string;
+                  /** @constant */
+                  kind: "schedule";
+                }, {
+                  /** @description Every this many seconds, on the grid from start_at. */
+                  every_s: number;
+                  /** @constant */
+                  kind: "schedule";
+                  /**
+                   * Format: date-time
+                   * @description The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made.
+                   */
+                  start_at?: string;
+                }, {
+                  /** @constant */
+                  kind: "webhook";
+                }]>;
+                /** @description What each firing does: start a run of an agent, capped, or send a message to one run. */
+                target: OneOf<[{
+                  /** @description The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here. */
+                  agent_id: string;
+                  effort?: components["schemas"]["Effort"];
+                  /** @description The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone. */
+                  input: Record<string, never>;
+                  /** @constant */
+                  kind: "start_run";
+                  /** @description Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails. */
+                  max_cost_usd?: number;
+                }, {
+                  /** @description The message: its content, then a webhook's payload marked untrusted, then a line naming the trigger and when it fired. */
+                  input: {
+                    content: string;
+                  };
+                  /** @constant */
+                  kind: "message_run";
+                  /** @description The run each firing messages, as POST /runs/{run_id}/messages would: a steer while it works, a follow-up after it ended (a completed run opens again), under its own cap, which it must have (422 otherwise). A firing never answers a run that waits on its person (a question, an approval, its cap): it is skipped. */
+                  run_id: string;
+                }]>;
+                /** Format: date-time */
+                updated_at: string;
+              })[];
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Make a trigger: a schedule or a signed webhook that starts a capped run of an agent, or messages a run
+   * @description Each firing starts one run of `target.agent_id` with `target.input` and its `max_cost_usd` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's `trigger` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last 200 firings are kept. A `webhook` source fires on each request to /hooks/{trigger_id} signed by its secret, which this answer holds (`secret`) this once: a retry under the same Idempotency-Key answers the same trigger with a `note` in its place, as the key's record never keeps a secret. A `message_run` target sends each firing's input to one run, under the firing's key, which the run's store takes once. 422 for another source kind, a start_run target with no max_cost_usd whose agent has no default one, an agent that is a workflow or does not take the input, or a run that is a workflow's; 409 no_sealing_key for a webhook trigger on a server handed no seal key.
+   */
+  createTrigger: {
+    parameters: {
+      header?: {
+        "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @default 3600 */
+          catchup_window_s?: number;
+          /**
+           * @description Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up.
+           * @default true
+           */
+          enabled?: boolean;
+          /** @description Default the trigger's id. */
+          name?: string;
+          /** @description When it fires: a cron line in a zone, one time, every N seconds (60 or more), or a signed request to /hooks/{trigger_id} (`webhook`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one `missed` firing with their count, and the schedule goes on from now. */
+          source: OneOf<[{
+            /** @description Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap. */
+            cron: string;
+            /** @constant */
+            kind: "schedule";
+            /**
+             * @description The IANA zone the cron line is read in.
+             * @default UTC
+             */
+            timezone?: string;
+          }, {
+            /**
+             * Format: date-time
+             * @description Once, at this time (to the second, in the future); the trigger turns itself off after.
+             */
+            at: string;
+            /** @constant */
+            kind: "schedule";
+          }, {
+            /** @description Every this many seconds, on the grid from start_at. */
+            every_s: number;
+            /** @constant */
+            kind: "schedule";
+            /**
+             * Format: date-time
+             * @description The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made.
+             */
+            start_at?: string;
+          }, {
+            /** @constant */
+            kind: "webhook";
+          }]>;
+          /** @description What each firing does: start a run of an agent, capped, or send a message to one run. */
+          target: OneOf<[{
+            /** @description The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here. */
+            agent_id: string;
+            effort?: components["schemas"]["Effort"];
+            /** @description The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone. */
+            input: Record<string, never>;
+            /** @constant */
+            kind: "start_run";
+            /** @description Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails. */
+            max_cost_usd?: number;
+          }, {
+            /** @description The message: its content, then a webhook's payload marked untrusted, then a line naming the trigger and when it fired. */
+            input: {
+              content: string;
+            };
+            /** @constant */
+            kind: "message_run";
+            /** @description The run each firing messages, as POST /runs/{run_id}/messages would: a steer while it works, a follow-up after it ended (a completed run opens again), under its own cap, which it must have (422 otherwise). A firing never answers a run that waits on its person (a question, an approval, its cap): it is skipped. */
+            run_id: string;
+          }]>;
+        };
+      };
+    };
+    responses: {
+      /** @description Made; a webhook trigger's first answer holds its `secret`, this once. */
+      201: {
+        content: {
+          "application/json": {
+            /** @description How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one `missed` firing. 0: a missed time never fires. Default 3600. */
+            catchup_window_s: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Why it is off, when the server turned it off: `auto_paused`, 5 failed firings in a row; `source_unreadable`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for `source_unreadable` takes a new source. */
+            disabled: OneOf<[{
+              /** Format: date-time */
+              at: string;
+              /** @constant */
+              reason: "auto_paused";
+            }, {
+              /** Format: date-time */
+              at: string;
+              /** @description Why the source no longer reads. */
+              detail: string;
+              /** @constant */
+              reason: "source_unreadable";
+            }, null]>;
+            enabled: boolean;
+            /** @description Failed firings since the last that started a run; at 5 the trigger turns itself off (`disabled`). Turned on again, it counts from 0. */
+            failures_in_a_row: number;
+            id: string;
+            last_firing: OneOf<[{
+              /**
+               * Format: date-time
+               * @description When it was recorded.
+               */
+              at: string;
+              attempts?: number;
+              /**
+               * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+               * @enum {unknown}
+               */
+              by: "schedule" | "manual" | "webhook";
+              /**
+               * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+               * @constant
+               */
+              catch_up?: true;
+              /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+              count?: number;
+              error: OneOf<[{
+                code: string;
+                message: string;
+              }, null]>;
+              /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+              key: string;
+              /**
+               * Format: date-time
+               * @description The time it fires for, to the second; a run now's is when it was asked.
+               */
+              nominal_at: string;
+              reason: string | null;
+              /** Format: date-time */
+              retry_at?: string;
+              run_id: string | null;
+              /**
+               * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+               * @enum {unknown}
+               */
+              status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+            }, null]>;
+            /** @description The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts. */
+            last_run_id: string | null;
+            name: string;
+            /**
+             * Format: date-time
+             * @description When it fires next; null while it is off.
+             */
+            next_at: string | null;
+            /** @description On a retry under the same Idempotency-Key, in place of a webhook trigger's secret: it was shown once, and POST /triggers/{trigger_id}/secret makes a new one. */
+            note?: string;
+            /**
+             * @description What a firing does while the trigger's last run is active (working, or waiting on a person): `skip`, recorded as a skipped firing with why. Never queued: a firing queued behind a run parked on a person would wait as long as the person does.
+             * @enum {unknown}
+             */
+            overlap: "skip";
+            /** @description A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it. */
+            secret?: string;
+            /** @description When it fires: a cron line in a zone, one time, every N seconds (60 or more), or a signed request to /hooks/{trigger_id} (`webhook`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one `missed` firing with their count, and the schedule goes on from now. */
+            source: OneOf<[{
+              /** @description Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap. */
+              cron: string;
+              /** @constant */
+              kind: "schedule";
+              /**
+               * @description The IANA zone the cron line is read in.
+               * @default UTC
+               */
+              timezone?: string;
+            }, {
+              /**
+               * Format: date-time
+               * @description Once, at this time (to the second, in the future); the trigger turns itself off after.
+               */
+              at: string;
+              /** @constant */
+              kind: "schedule";
+            }, {
+              /** @description Every this many seconds, on the grid from start_at. */
+              every_s: number;
+              /** @constant */
+              kind: "schedule";
+              /**
+               * Format: date-time
+               * @description The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made.
+               */
+              start_at?: string;
+            }, {
+              /** @constant */
+              kind: "webhook";
+            }]>;
+            /** @description What each firing does: start a run of an agent, capped, or send a message to one run. */
+            target: OneOf<[{
+              /** @description The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here. */
+              agent_id: string;
+              effort?: components["schemas"]["Effort"];
+              /** @description The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone. */
+              input: Record<string, never>;
+              /** @constant */
+              kind: "start_run";
+              /** @description Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails. */
+              max_cost_usd?: number;
+            }, {
+              /** @description The message: its content, then a webhook's payload marked untrusted, then a line naming the trigger and when it fired. */
+              input: {
+                content: string;
+              };
+              /** @constant */
+              kind: "message_run";
+              /** @description The run each firing messages, as POST /runs/{run_id}/messages would: a steer while it works, a follow-up after it ended (a completed run opens again), under its own cap, which it must have (422 otherwise). A firing never answers a run that waits on its person (a question, an approval, its cap): it is skipped. */
+              run_id: string;
+            }]>;
+            /** Format: date-time */
+            updated_at: string;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      409: components["responses"]["Conflict"];
+      415: components["responses"]["UnsupportedMediaType"];
+      422: components["responses"]["Unprocessable"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /** One trigger */
+  getTrigger: {
+    parameters: {
+      path: {
+        trigger_id: string;
+      };
+    };
+    responses: {
+      /** @description The trigger. */
+      200: {
+        content: {
+          "application/json": {
+            /** @description How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one `missed` firing. 0: a missed time never fires. Default 3600. */
+            catchup_window_s: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Why it is off, when the server turned it off: `auto_paused`, 5 failed firings in a row; `source_unreadable`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for `source_unreadable` takes a new source. */
+            disabled: OneOf<[{
+              /** Format: date-time */
+              at: string;
+              /** @constant */
+              reason: "auto_paused";
+            }, {
+              /** Format: date-time */
+              at: string;
+              /** @description Why the source no longer reads. */
+              detail: string;
+              /** @constant */
+              reason: "source_unreadable";
+            }, null]>;
+            enabled: boolean;
+            /** @description Failed firings since the last that started a run; at 5 the trigger turns itself off (`disabled`). Turned on again, it counts from 0. */
+            failures_in_a_row: number;
+            id: string;
+            last_firing: OneOf<[{
+              /**
+               * Format: date-time
+               * @description When it was recorded.
+               */
+              at: string;
+              attempts?: number;
+              /**
+               * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+               * @enum {unknown}
+               */
+              by: "schedule" | "manual" | "webhook";
+              /**
+               * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+               * @constant
+               */
+              catch_up?: true;
+              /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+              count?: number;
+              error: OneOf<[{
+                code: string;
+                message: string;
+              }, null]>;
+              /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+              key: string;
+              /**
+               * Format: date-time
+               * @description The time it fires for, to the second; a run now's is when it was asked.
+               */
+              nominal_at: string;
+              reason: string | null;
+              /** Format: date-time */
+              retry_at?: string;
+              run_id: string | null;
+              /**
+               * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+               * @enum {unknown}
+               */
+              status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+            }, null]>;
+            /** @description The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts. */
+            last_run_id: string | null;
+            name: string;
+            /**
+             * Format: date-time
+             * @description When it fires next; null while it is off.
+             */
+            next_at: string | null;
+            /**
+             * @description What a firing does while the trigger's last run is active (working, or waiting on a person): `skip`, recorded as a skipped firing with why. Never queued: a firing queued behind a run parked on a person would wait as long as the person does.
+             * @enum {unknown}
+             */
+            overlap: "skip";
+            /** @description When it fires: a cron line in a zone, one time, every N seconds (60 or more), or a signed request to /hooks/{trigger_id} (`webhook`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one `missed` firing with their count, and the schedule goes on from now. */
+            source: OneOf<[{
+              /** @description Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap. */
+              cron: string;
+              /** @constant */
+              kind: "schedule";
+              /**
+               * @description The IANA zone the cron line is read in.
+               * @default UTC
+               */
+              timezone?: string;
+            }, {
+              /**
+               * Format: date-time
+               * @description Once, at this time (to the second, in the future); the trigger turns itself off after.
+               */
+              at: string;
+              /** @constant */
+              kind: "schedule";
+            }, {
+              /** @description Every this many seconds, on the grid from start_at. */
+              every_s: number;
+              /** @constant */
+              kind: "schedule";
+              /**
+               * Format: date-time
+               * @description The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made.
+               */
+              start_at?: string;
+            }, {
+              /** @constant */
+              kind: "webhook";
+            }]>;
+            /** @description What each firing does: start a run of an agent, capped, or send a message to one run. */
+            target: OneOf<[{
+              /** @description The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here. */
+              agent_id: string;
+              effort?: components["schemas"]["Effort"];
+              /** @description The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone. */
+              input: Record<string, never>;
+              /** @constant */
+              kind: "start_run";
+              /** @description Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails. */
+              max_cost_usd?: number;
+            }, {
+              /** @description The message: its content, then a webhook's payload marked untrusted, then a line naming the trigger and when it fired. */
+              input: {
+                content: string;
+              };
+              /** @constant */
+              kind: "message_run";
+              /** @description The run each firing messages, as POST /runs/{run_id}/messages would: a steer while it works, a follow-up after it ended (a completed run opens again), under its own cap, which it must have (422 otherwise). A firing never answers a run that waits on its person (a question, an approval, its cap): it is skipped. */
+              run_id: string;
+            }]>;
+            /** Format: date-time */
+            updated_at: string;
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /** Delete a trigger and its firings; the runs it started stay */
+  deleteTrigger: {
+    parameters: {
+      path: {
+        trigger_id: string;
+      };
+    };
+    responses: {
+      /** @description Deleted. */
+      204: {
+        content: never;
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Change a trigger, or turn it off and on
+   * @description Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.
+   */
+  updateTrigger: {
+    parameters: {
+      path: {
+        trigger_id: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @default 3600 */
+          catchup_window_s?: number;
+          /**
+           * @description Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up.
+           * @default true
+           */
+          enabled?: boolean;
+          /** @description Default the trigger's id. */
+          name?: string;
+          /** @description When it fires: a cron line in a zone, one time, every N seconds (60 or more), or a signed request to /hooks/{trigger_id} (`webhook`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one `missed` firing with their count, and the schedule goes on from now. */
+          source?: OneOf<[{
+            /** @description Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap. */
+            cron: string;
+            /** @constant */
+            kind: "schedule";
+            /**
+             * @description The IANA zone the cron line is read in.
+             * @default UTC
+             */
+            timezone?: string;
+          }, {
+            /**
+             * Format: date-time
+             * @description Once, at this time (to the second, in the future); the trigger turns itself off after.
+             */
+            at: string;
+            /** @constant */
+            kind: "schedule";
+          }, {
+            /** @description Every this many seconds, on the grid from start_at. */
+            every_s: number;
+            /** @constant */
+            kind: "schedule";
+            /**
+             * Format: date-time
+             * @description The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made.
+             */
+            start_at?: string;
+          }, {
+            /** @constant */
+            kind: "webhook";
+          }]>;
+          /** @description What each firing does: start a run of an agent, capped, or send a message to one run. */
+          target?: OneOf<[{
+            /** @description The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here. */
+            agent_id: string;
+            effort?: components["schemas"]["Effort"];
+            /** @description The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone. */
+            input: Record<string, never>;
+            /** @constant */
+            kind: "start_run";
+            /** @description Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails. */
+            max_cost_usd?: number;
+          }, {
+            /** @description The message: its content, then a webhook's payload marked untrusted, then a line naming the trigger and when it fired. */
+            input: {
+              content: string;
+            };
+            /** @constant */
+            kind: "message_run";
+            /** @description The run each firing messages, as POST /runs/{run_id}/messages would: a steer while it works, a follow-up after it ended (a completed run opens again), under its own cap, which it must have (422 otherwise). A firing never answers a run that waits on its person (a question, an approval, its cap): it is skipped. */
+            run_id: string;
+          }]>;
+        };
+      };
+    };
+    responses: {
+      /** @description Changed. */
+      200: {
+        content: {
+          "application/json": {
+            /** @description How late a missed time may still fire, once: of the times that came while the server was down (or its timer was late), the latest fires if it is this recent, under its own key, and the rest are one `missed` firing. 0: a missed time never fires. Default 3600. */
+            catchup_window_s: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Why it is off, when the server turned it off: `auto_paused`, 5 failed firings in a row; `source_unreadable`, its cron line or zone no longer reads here (a newer cron library or time zone data refuses it), found at a start or when it came due, and only this trigger is turned off. Null once it is on again, which for `source_unreadable` takes a new source. */
+            disabled: OneOf<[{
+              /** Format: date-time */
+              at: string;
+              /** @constant */
+              reason: "auto_paused";
+            }, {
+              /** Format: date-time */
+              at: string;
+              /** @description Why the source no longer reads. */
+              detail: string;
+              /** @constant */
+              reason: "source_unreadable";
+            }, null]>;
+            enabled: boolean;
+            /** @description Failed firings since the last that started a run; at 5 the trigger turns itself off (`disabled`). Turned on again, it counts from 0. */
+            failures_in_a_row: number;
+            id: string;
+            last_firing: OneOf<[{
+              /**
+               * Format: date-time
+               * @description When it was recorded.
+               */
+              at: string;
+              attempts?: number;
+              /**
+               * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+               * @enum {unknown}
+               */
+              by: "schedule" | "manual" | "webhook";
+              /**
+               * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+               * @constant
+               */
+              catch_up?: true;
+              /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+              count?: number;
+              error: OneOf<[{
+                code: string;
+                message: string;
+              }, null]>;
+              /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+              key: string;
+              /**
+               * Format: date-time
+               * @description The time it fires for, to the second; a run now's is when it was asked.
+               */
+              nominal_at: string;
+              reason: string | null;
+              /** Format: date-time */
+              retry_at?: string;
+              run_id: string | null;
+              /**
+               * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+               * @enum {unknown}
+               */
+              status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+            }, null]>;
+            /** @description The run its last firing that started one started; while that run is active (working, or waiting on a person), each firing is skipped. Null until one starts. */
+            last_run_id: string | null;
+            name: string;
+            /**
+             * Format: date-time
+             * @description When it fires next; null while it is off.
+             */
+            next_at: string | null;
+            /**
+             * @description What a firing does while the trigger's last run is active (working, or waiting on a person): `skip`, recorded as a skipped firing with why. Never queued: a firing queued behind a run parked on a person would wait as long as the person does.
+             * @enum {unknown}
+             */
+            overlap: "skip";
+            /** @description When it fires: a cron line in a zone, one time, every N seconds (60 or more), or a signed request to /hooks/{trigger_id} (`webhook`). Each next time is reckoned from the last nominal one, never from when the timer woke. Times missed while the server was down, or more than a minute late, are one `missed` firing with their count, and the schedule goes on from now. */
+            source: OneOf<[{
+              /** @description Five fields, minute hour day-of-month month day-of-week, as cron reads them (croner): at most once a minute. A time a clock change repeats fires once, at its first pass; one it skips fires at the first time after the gap. */
+              cron: string;
+              /** @constant */
+              kind: "schedule";
+              /**
+               * @description The IANA zone the cron line is read in.
+               * @default UTC
+               */
+              timezone?: string;
+            }, {
+              /**
+               * Format: date-time
+               * @description Once, at this time (to the second, in the future); the trigger turns itself off after.
+               */
+              at: string;
+              /** @constant */
+              kind: "schedule";
+            }, {
+              /** @description Every this many seconds, on the grid from start_at. */
+              every_s: number;
+              /** @constant */
+              kind: "schedule";
+              /**
+               * Format: date-time
+               * @description The grid's origin, to the second: the first firing is at it when it is ahead, else at the first point of the grid after now. Default the time the trigger was made.
+               */
+              start_at?: string;
+            }, {
+              /** @constant */
+              kind: "webhook";
+            }]>;
+            /** @description What each firing does: start a run of an agent, capped, or send a message to one run. */
+            target: OneOf<[{
+              /** @description The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here. */
+              agent_id: string;
+              effort?: components["schemas"]["Effort"];
+              /** @description The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone. */
+              input: Record<string, never>;
+              /** @constant */
+              kind: "start_run";
+              /** @description Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails. */
+              max_cost_usd?: number;
+            }, {
+              /** @description The message: its content, then a webhook's payload marked untrusted, then a line naming the trigger and when it fired. */
+              input: {
+                content: string;
+              };
+              /** @constant */
+              kind: "message_run";
+              /** @description The run each firing messages, as POST /runs/{run_id}/messages would: a steer while it works, a follow-up after it ended (a completed run opens again), under its own cap, which it must have (422 otherwise). A firing never answers a run that waits on its person (a question, an approval, its cap): it is skipped. */
+              run_id: string;
+            }]>;
+            /** Format: date-time */
+            updated_at: string;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      415: components["responses"]["UnsupportedMediaType"];
+      422: components["responses"]["Unprocessable"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * Run it now: one firing per Idempotency-Key
+   * @description A firing now, on or off, under the same overlap rule as a scheduled one; it is driven before the answer. The same key again answers its firing as it stands (200, `Idempotent-Replayed: true`), and starts no second run, for `limits.idempotency_ttl_s` after it fired, even once the firing has left the history; past that it is a new firing, which a run the key started still answers. A firing never moves `last_run_id` back to an older run. 400 with no Idempotency-Key. 429 `rate_limited`, with Retry-After, while the trigger holds 20 firings due.
+   */
+  fireTrigger: {
+    parameters: {
+      header: {
+        /** @description Required here: a retry with the same key fires once. */
+        "Idempotency-Key": string;
+      };
+      path: {
+        trigger_id: string;
+      };
+    };
+    responses: {
+      /** @description This key's firing, as it stands. */
+      200: {
+        content: {
+          "application/json": {
+            /**
+             * Format: date-time
+             * @description When it was recorded.
+             */
+            at: string;
+            attempts?: number;
+            /**
+             * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+             * @enum {unknown}
+             */
+            by: "schedule" | "manual" | "webhook";
+            /**
+             * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+             * @constant
+             */
+            catch_up?: true;
+            /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+            count?: number;
+            error: OneOf<[{
+              code: string;
+              message: string;
+            }, null]>;
+            /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+            key: string;
+            /**
+             * Format: date-time
+             * @description The time it fires for, to the second; a run now's is when it was asked.
+             */
+            nominal_at: string;
+            reason: string | null;
+            /** Format: date-time */
+            retry_at?: string;
+            run_id: string | null;
+            /**
+             * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+             * @enum {unknown}
+             */
+            status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+          };
+        };
+      };
+      /** @description Fired: its run started, or why not. */
+      202: {
+        content: {
+          "application/json": {
+            /**
+             * Format: date-time
+             * @description When it was recorded.
+             */
+            at: string;
+            attempts?: number;
+            /**
+             * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+             * @enum {unknown}
+             */
+            by: "schedule" | "manual" | "webhook";
+            /**
+             * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+             * @constant
+             */
+            catch_up?: true;
+            /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+            count?: number;
+            error: OneOf<[{
+              code: string;
+              message: string;
+            }, null]>;
+            /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+            key: string;
+            /**
+             * Format: date-time
+             * @description The time it fires for, to the second; a run now's is when it was asked.
+             */
+            nominal_at: string;
+            reason: string | null;
+            /** Format: date-time */
+            retry_at?: string;
+            run_id: string | null;
+            /**
+             * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+             * @enum {unknown}
+             */
+            status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /** The trigger's last 200 firings, newest first */
+  listTriggerFirings: {
+    parameters: {
+      path: {
+        trigger_id: string;
+      };
+    };
+    responses: {
+      /** @description Each firing. */
+      200: {
+        content: {
+          "application/json": {
+            firings: ({
+                /**
+                 * Format: date-time
+                 * @description When it was recorded.
+                 */
+                at: string;
+                attempts?: number;
+                /**
+                 * @description `webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and the request's `webhook-id`.
+                 * @enum {unknown}
+                 */
+                by: "schedule" | "manual" | "webhook";
+                /**
+                 * @description A time that fired late, within the trigger's catch-up window: the server was down, or its timer late.
+                 * @constant
+                 */
+                catch_up?: true;
+                /** @description On a `missed` firing: how many times it stands for, from `nominal_at` on; a cron line's are counted to 10000, and `reason` says "or more" past that. */
+                count?: number;
+                error: OneOf<[{
+                  code: string;
+                  message: string;
+                }, null]>;
+                /** @description The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once. */
+                key: string;
+                /**
+                 * Format: date-time
+                 * @description The time it fires for, to the second; a run now's is when it was asked.
+                 */
+                nominal_at: string;
+                reason: string | null;
+                /** Format: date-time */
+                retry_at?: string;
+                run_id: string | null;
+                /**
+                 * @description `due`: recorded, its run not started yet (a full server keeps it due, with `retry_at`). `started`: its run is `run_id`. `sent`: a message_run firing's message reached `run_id`. `skipped`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due; `reason` says which. `failed`: the run was refused, with `error`; a trigger.failed webhook message says so. `missed`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), `count` of them from `nominal_at` on.
+                 * @enum {unknown}
+                 */
+                status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+              })[];
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      429: components["responses"]["RateLimited"];
+      500: components["responses"]["Internal"];
+    };
+  };
+  /**
+   * A webhook trigger's new secret, shown once; the old one signs nothing from now on
+   * @description 422 for a trigger that is not a webhook's; 409 no_sealing_key when the server was handed no seal key.
+   */
+  rotateTriggerSecret: {
+    parameters: {
+      path: {
+        trigger_id: string;
+      };
+    };
+    responses: {
+      /** @description The new secret, this once. */
+      200: {
+        content: {
+          "application/json": {
+            /** @description A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it. */
+            secret: string;
+          };
+        };
+      };
+      401: components["responses"]["Unauthenticated"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["Unprocessable"];
       429: components["responses"]["RateLimited"];
       500: components["responses"]["Internal"];
     };

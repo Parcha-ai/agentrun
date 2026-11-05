@@ -2,13 +2,18 @@
 // still replay, and a carry back that a busy home put off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test as nodeTest } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
+import { openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
+import { Runs } from "../dist/runs.js";
+import { stable } from "../dist/validate.js";
+import { ledgerOf, reflectRows } from "./learn-support.mjs";
 import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -19,9 +24,11 @@ const alive = processAlive;
 
 /** A server in a process of its own, so a test can kill it the way a crash does and leave its runs behind. It is ready
  *  when it prints its banner, which it does once it listens: its address and key lines, whole. A server that exits first
- *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. */
-async function serverProcess(data) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
+ *  fails the test with what it said. No clock: a slow start, on a loaded machine, is still a start. `execArgv` and `env`
+ *  go to its node (a preloaded test hook, say). */
+async function serverProcess(data, { execArgv = [], env = {} } = {}) {
+  // A home beside the data, not this machine's: a first start counts the sessions in its home for setup's offer.
+  const child = spawn(process.execPath, [...execArgv, CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: dirname(data), ...env } });
   let out = "";
   let err = "";
   // Read to the end, so the server never blocks on a full pipe; its last lines say why, should it exit before it listens.
@@ -79,18 +86,76 @@ async function killRun(pid) {
   }
 }
 
-test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes", async (t) => {
+test("a run whose process died with its server is relaunched on its directory by the next one, resumes, and completes; its timeline says it resumed after a crash", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await killRun(pid);
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
-  const { last } = await follow(api, runId, ["completed"]);
+  const { last, rows } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
+  assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary.startsWith("Resumed")).map((r) => r.summary), ["Resumed after a crash"], "one stored row, kept by the settle's read");
   assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
   assert.equal(storeRun(data, runId).state, "completed");
   assert.ok(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation >= 2, "opened again on its directory");
+  // A launch that served removes its mark: the next server opens the run again once, never fails it as lost at launch.
+  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).generation, 2, "opened again once");
 });
+
+// A server that goes down while it copies what a learning run's agent learned: before the copy starts, or once it is
+// whole and pinned but its learning not yet saved. The run's input is saved before the copy, so the next server relaunches
+// it with its first message; a copy it finds unsaved goes, so the run starts again with nothing learned, and asks no
+// end-of-run turn though its agent has a write tool (a seeded run of it does: the control).
+const HOLD_SEED = new URL("./fixtures/hold-seed.mjs", import.meta.url).href;
+for (const [seam, learning] of [["beforePin", null], ["afterPin", { state: "dropped", reason: "seed_failed" }]]) {
+  test(`a server killed while a learning run's seed is copied (${seam}): the next one relaunches the run with its first message, and it completes with nothing learned and no end-of-run turn`, async (t) => {
+    const data = join(await scratch(t), "agents");
+    const signal = join(await scratch(t), "held");
+    const first = await serverProcess(data, { execArgv: ["--import", HOLD_SEED], env: { AGENTRUN_TEST_HOLD_SEED: seam, AGENTRUN_TEST_HOLD_SIGNAL: signal } });
+    t.after(() => first.child.kill("SIGKILL"));
+    assert.equal((await first.api("POST", "/agents", agent("learner", { learning: true, tools: ["write"] }))).status, 201);
+    // The start waits on the held copy, so it never answers: the run is found by its directory once the copy holds.
+    const starting = first.api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } }).catch(() => undefined);
+    let runDir = "";
+    for (let i = 0; !(runDir = await readFile(signal, "utf8").catch(() => "")); i++) {
+      assert.ok(i < 1200, "the run's seed copy was reached");
+      await sleep(50);
+    }
+    first.child.kill("SIGKILL");
+    await new Promise((resolve) => first.child.once("exit", resolve));
+    await starting;
+    const runId = basename(runDir);
+    assert.equal(storeRun(data, runId).state, "running");
+    assert.equal(existsSync(join(runDir, "learning.json")), seam === "afterPin", "a pin only once the copy was whole");
+    const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    // Closed in the body, before the data directory's hook removes it: the control run below learns, and its check and
+    // grade still write into its directory after it reads completed. close() returns once they ended.
+    let closed;
+    const stop = () => (closed ??= next.close());
+    t.after(stop);
+    const api = client(next.baseUrl, next.token);
+    const { rows } = await follow(api, runId, ["completed"]);
+    const read = (await api("GET", `/runs/${runId}`)).body;
+    assert.equal(read.result.final_answer, "Soon.", "its first message reached it");
+    assert.deepEqual(read.learning && { state: read.learning.state, reason: read.learning.reason }, learning);
+    assert.equal(existsSync(join(runDir, "learning.json")), false, "no pin");
+    assert.equal(existsSync(join(runDir, "work", ".learning")), false, "no copy of the notes");
+    // Nothing seeded, so no end-of-run turn: none asked, none saved, no row of one.
+    assert.equal(reflectRows(rows).length, 0, "no end-of-run turn");
+    assert.equal(JSON.parse(await readFile(join(runDir, "serve.json"), "utf8")).reflect, undefined, "none saved");
+    if (learning) {
+      // Its end is in the ledger once, after its serve.json: /v2/stats counts it.
+      assert.deepEqual(ledgerOf(data).filter((line) => line.run === runId).map((line) => [line.state, line.reason]), [["dropped", "seed_failed"]]);
+      assert.equal((await api("GET", "/stats")).body.learning.dropped.seed_failed, 1);
+    }
+    // The control: a run of the same agent that is seeded asks its end-of-run turn.
+    const control = (await api("POST", "/agents/learner/runs", { input: { content: "Answer soon." } })).body.run_id;
+    await follow(api, control, ["completed"]);
+    const saved = JSON.parse(await readFile(join(data, "runs", control, "serve.json"), "utf8"));
+    assert.equal(typeof saved.reflect?.after, "number", JSON.stringify(saved));
+    await stop();
+  });
+}
 
 test("a workflow run whose process died with its server is relaunched by the next one and completes from its journal", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, undefined, { create: flowAgent("flow"), input: { question: "Answer soon." } });
@@ -104,7 +169,7 @@ test("a workflow run whose process died with its server is relaunched by the nex
   assert.equal(storeRun(data, runId).state, "completed");
 });
 
-test("a run released but not carried back when its server stopped is carried back when the next one starts", async (t) => {
+test("a run released but not carried back when its server stopped is carried back by the next one, its run store read again once free if still locked, so the run still ends final", async (t) => {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await sleep(2_500);
   process.kill(pid, "SIGTERM");
@@ -112,25 +177,7 @@ test("a run released but not carried back when its server stopped is carried bac
     assert.ok(i < 200, "the run's process exits on SIGTERM");
     await sleep(50);
   }
-  assert.equal(storeRun(data, runId).state, "running", "nobody carried it back yet");
-  const next = await startServe({ data, port: 0, faux: FAUX });
-  t.after(() => next.close());
-  const api = client(next.baseUrl, next.token);
-  const { last } = await follow(api, runId, ["completed"]).catch(async (error) => {
-    throw new Error(`${error.message}: ${JSON.stringify((await api("GET", `/runs/${runId}`)).body.error)}`);
-  });
-  assert.equal(last.final, true);
-  assert.equal(storeRun(data, runId).state, "completed");
-});
-
-test("a run store still locked when the next server reads it is read again once free, so the run still ends final", async (t) => {
-  const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
-  await sleep(2_500);
-  process.kill(pid, "SIGTERM");
-  for (let i = 0; alive(pid); i++) {
-    assert.ok(i < 200, "the run's process exits on SIGTERM");
-    await sleep(50);
-  }
+  assert.equal(storeRun(data, runId).state, "running", "released, and nobody carried it back yet");
   // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it exits.
   const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
@@ -187,10 +234,14 @@ async function adopting(t, data, runId, options = {}) {
   return api;
 }
 
-test("an adopted run that released is read only once its process has exited, so its store is never read while held", async (t) => {
-  const { data, runId, standIn, release } = await adoptedStandIn(t);
+test("an adopted run that released is read only once its process has exited, so its store is never read while held; a record read half written neither crashes the server nor settles the run", async (t) => {
+  const { data, runId, standIn, release, tear } = await adoptedStandIn(t);
   let busy = 0;
   const api = await adopting(t, data, runId, { carryBackRetry: { delaysMs: Array(20).fill(50), onBusy: () => busy++ } });
+  // Two of the server's 500 ms reads of a torn record: nothing to wait on but the window, since a torn read changes nothing.
+  await tear();
+  await sleep(1_000);
+  assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled on an unreadable record");
   const store = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { timeout: 0 });
   store.exec("PRAGMA locking_mode = EXCLUSIVE");
   store.exec("BEGIN EXCLUSIVE");
@@ -200,19 +251,6 @@ test("an adopted run that released is read only once its process has exited, so 
   assert.equal(busy, 0, "the store was not read while the run's process lived");
   assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false);
   store.close();
-  standIn.kill("SIGKILL");
-  const { last } = await follow(api, runId, ["completed"]);
-  assert.equal(last.final, true);
-  assert.equal(storeRun(data, runId).state, "completed");
-});
-
-test("a run record read half written neither crashes the server nor settles the run: it is read again", async (t) => {
-  const { data, runId, standIn, release, tear } = await adoptedStandIn(t);
-  const api = await adopting(t, data, runId);
-  await tear();
-  await sleep(1_600);
-  assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled on an unreadable record");
-  await release();
   standIn.kill("SIGKILL");
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
@@ -254,8 +292,10 @@ test("a record unreadable for longer than 5 s while the process lives is still w
   t.after(() => (process.stderr.write = write));
   const api = await adopting(t, data, runId);
   await tear();
-  await sleep(6_500);
-  assert.ok(lines.some((line) => line.includes(runId) && line.includes("still watching")), "the server said it is still watching");
+  for (let i = 0; !lines.some((line) => line.includes(runId) && line.includes("still watching")); i++) {
+    assert.ok(i < 600, "the server said it is still watching");
+    await sleep(50);
+  }
   assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled while the process lives");
   await heal();
   await release();
@@ -307,6 +347,22 @@ test("a start that needs the place of a cancelled run whose adopted process will
   assert.ok(waited < 8_000, `and answered by its deadline, never hanging on a process that will not go: ${waited} ms`);
 });
 
+test("a run whose live process the next server adopts holds its harness's memory there: a start that needs it is 429, one that fits the rest starts", async (t) => {
+  const { data, runId } = await crashMidRun(t, "Take your time.");
+  // 384 MB: 256 for runs, 128 of it the adopted pi run's.
+  const was = process.constrainedMemory;
+  process.constrainedMemory = () => 384 * 2 ** 20;
+  t.after(() => void (process.constrainedMemory = was));
+  const api = await adopting(t, data, runId, { fauxHarness: new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname, drainTimeout: "5s" });
+  await untilState(api, runId, ["working", "working"]);
+  assert.equal((await api("POST", "/agents", agent("mid", { harness: "codex" }))).status, 201);
+  const refused = await api("POST", "/agents/mid/runs", { input: { content: "hi" } });
+  assert.deepEqual([refused.status, refused.body.error?.details?.harness, refused.body.error?.details?.free_mb], [429, "codex", 128], JSON.stringify(refused.body));
+  const fits = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(fits.status, 202, JSON.stringify(fits.body));
+  await follow(api, fits.body.run_id, ["completed"]);
+});
+
 test("Idempotency-Key answers outlive a restart for the retention capabilities state", async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX });
@@ -321,6 +377,115 @@ test("Idempotency-Key answers outlive a restart for the retention capabilities s
   assert.deepEqual([replay.status, replay.headers.get("idempotent-replayed"), replay.body], [201, "true", first.body]);
   assert.equal((await api("POST", "/agents", agent("other"), key)).body.error.code, "idempotency_mismatch");
   assert.equal((await api("GET", "/capabilities")).body.limits.idempotency_ttl_s, 86_400);
+});
+
+test("a run create retried after its server was killed before it saved the key answers the run it made, which completes: one run, and another body under the key is idempotency_mismatch", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  assert.equal((await first.api("POST", "/agents", agent("calc"))).status, 201);
+  // A directory where the key's file is written first: no save lands, so the kill leaves what a kill between the run's
+  // start and the save leaves, a run in the store and no key on disk.
+  const partial = join(data, ".idempotency.json.partial");
+  await mkdir(partial);
+  const body = { input: { content: "Answer soon." } };
+  const key = { "idempotency-key": "create-1" };
+  const created = await first.api("POST", "/agents/calc/runs", body, key);
+  assert.equal(created.status, 202, JSON.stringify(created.body));
+  const runId = created.body.run_id;
+  await untilState(first.api, runId, ["working", "working"]);
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const pid = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8")).holder.pid;
+  t.after(() => alive(pid) && process.kill(pid, "SIGKILL"));
+  assert.equal(existsSync(join(data, ".idempotency.json")), false, "no key was saved");
+  await rm(partial, { recursive: true });
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const retried = await api("POST", "/agents/calc/runs", body, key);
+  assert.deepEqual([retried.status, retried.headers.get("idempotent-replayed"), retried.headers.get("location"), retried.body.run_id], [202, "true", `/v2/runs/${runId}`, runId]);
+  assert.equal((await api("POST", "/agents/calc/runs", { input: { content: "Another." } }, key)).body.error.code, "idempotency_mismatch");
+  assert.deepEqual((await api("GET", "/agents/calc/runs")).body.runs.map((run) => run.run_id), [runId], "one run");
+  await follow(api, runId, ["completed"]);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
+});
+
+// Each a serve.json a run that was never set up can have: none (a kill right after the store's insert), the failure a
+// start saved before a kill kept it from the store, and a stop saved before the failure. None holds the run's input.
+const NOT_SET_UP = [
+  ["no serve.json", undefined],
+  ["its failure saved to serve.json, not to the store", { title: "", created_at: "2026-11-04T00:00:00.000Z", error: { code: "run_failed", message: "The server went down while it set the run up.", details: { reason: "server_lost_at_setup" } } }],
+  ["a stop saved to serve.json", { title: "", created_at: "2026-11-04T00:00:00.000Z", stopped_at: "2026-11-04T00:00:01.000Z" }],
+];
+for (const [left, meta] of NOT_SET_UP) {
+  test(`a run its server went down before setting up (${left}) is failed by the next start as server_lost_at_setup, never launched; the create retried under its key answers it`, async (t) => {
+    const data = join(await scratch(t), "agents");
+    const one = await startServe({ data, port: 0, faux: FAUX });
+    assert.equal((await client(one.baseUrl, one.token)("POST", "/agents", agent("calc"))).status, 201);
+    await one.close();
+    // What a kill before the run's setup leaves: the run's row and its origin (the create's key slot and body, hashed),
+    // its directory seeded, and the serve.json this case names.
+    const body = { input: { content: "Answer soon." } };
+    const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+    const store = openStore(data);
+    const { runId, dir } = await store.startRun({ agent: "calc", origin: { key: `idk_${sha256("/agents/calc/runs\nsetup-1").slice(0, 32)}`, fingerprint: sha256(stable(body)) } });
+    store.close();
+    if (meta) await writeFile(join(dir, "serve.json"), `${JSON.stringify(meta)}\n`);
+    const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    t.after(() => next.close());
+    const api = client(next.baseUrl, next.token);
+    const { last } = await follow(api, runId, ["failed"]);
+    assert.equal(last.status, "failed");
+    const read = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual([read.error.code, read.error.details], ["run_failed", { reason: "server_lost_at_setup" }]);
+    assert.equal(existsSync(join(dir, "run.json")), false, "never launched");
+    assert.equal(storeRun(data, runId).state, "failed");
+    const retried = await api("POST", "/agents/calc/runs", body, { "idempotency-key": "setup-1" });
+    assert.deepEqual([retried.status, retried.headers.get("idempotent-replayed"), retried.body.run_id, retried.body.status], [202, "true", runId, "failed"]);
+    assert.equal((await api("GET", "/agents/calc/runs")).body.runs.length, 1, "one run");
+  });
+}
+
+test("a start's recovery that lists the runs late (a store slow at boot) leaves alone a run this server is creating: it is set up, completes, and never fails as lost at setup", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX });
+  assert.equal((await client(one.baseUrl, one.token)("POST", "/agents", agent("calc"))).status, 201);
+  await one.close();
+  // The window, held open: the next start's recovery reads the store only once a create's run is in it, and that
+  // create's setup waits until the recovery is over.
+  const writer = openStore(data);
+  const AgentStore = Object.getPrototypeOf(writer);
+  writer.close();
+  let committed;
+  const inStore = new Promise((resolve) => (committed = resolve));
+  let recovery;
+  const { startRun } = AgentStore;
+  const { recover } = Runs.prototype;
+  AgentStore.startRun = async function (input) {
+    const started = await startRun.call(this, input);
+    committed();
+    await recovery;
+    return started;
+  };
+  Runs.prototype.recover = function () {
+    return (recovery = inStore.then(() => recover.call(this)));
+  };
+  t.after(() => {
+    AgentStore.startRun = startRun;
+    Runs.prototype.recover = recover;
+  });
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  const created = await api("POST", "/agents/calc/runs", { input: { content: "Answer soon." } });
+  assert.equal(created.status, 202, JSON.stringify(created.body));
+  const runId = created.body.run_id;
+  await recovery;
+  assert.equal(storeRun(data, runId).state, "running", "the recovery did not end it");
+  await follow(api, runId, ["completed"]);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.result.final_answer, "Soon.");
+  assert.equal(storeRun(data, runId).state, "completed");
 });
 
 test("a carry back that finds the store busy is tried again until it lands, so the run still ends final", async (t) => {
@@ -480,6 +645,8 @@ test("a reply that answers only once its turn is stopped leaves the run stopped,
   const two = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(two.baseUrl, two.token);
   assert.deepEqual(await stateOf(api, run_id), ["input_required", "idle"]);
+  // Its process ended with the first server, so these rows are the stopped turn's last: the late reply left none.
+  assert.deepEqual((await follow(api, run_id, ["input_required"])).rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block"), []);
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
   await follow(api, run_id, ["completed"]);
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
@@ -505,6 +672,83 @@ test("a stop saved before its abort reached the run is finished by the next serv
   await untilState(api, run_id, ["input_required", "idle"]);
   // Behind a turn still running (60 s), the follow-up would wait past follow's 30 s.
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
-  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 });
+  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 }).catch(async (error) => { error.message += `\ntimeline: ${await api.fresh("GET", `/runs/${run_id}/timeline?limit=500`).then(({ body }) => JSON.stringify(body), (cause) => `unavailable (${cause.message})`)}`; throw error; });
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+});
+
+/** An accepted message never vanishes. Answered 2xx with a mode, it shows as the person's row and the run goes on past it
+ *  to an answer, or the run ends with its error stated. A message a stop's abort withdrew would show nothing, and the run
+ *  would read working from then on: the follow below would run out. */
+async function neverDropped(api, runId, sent, content) {
+  assert.ok(sent.status >= 200 && sent.status < 300 && typeof sent.body.mode === "string", `accepted: ${JSON.stringify(sent.body)}`);
+  const { rows, last } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 20_000 }).catch(async (error) => {
+    error.message += `\ntimeline: ${await api.fresh("GET", `/runs/${runId}/timeline?limit=500`).then(({ body }) => JSON.stringify(body), (cause) => `unavailable (${cause.message})`)}`;
+    throw error;
+  });
+  const at = rows.findIndex((row) => row.kind === "user_message" && row.text === content);
+  assert.ok(at >= 0, `the message shows as the person's row: ${JSON.stringify(rows.map((row) => row.summary))}`);
+  if (last.status === "completed") assert.ok(rows.slice(at + 1).some((row) => row.kind === "final_answer"), "and an answer after it");
+  else assert.ok((await api("GET", `/runs/${runId}`)).body.error?.message, `or the run ends with its error stated: ${last.status}`);
+}
+
+test("a run that reads stopped runs the follow-up it takes, even while the abort of its turn is still on its way (the next server ending a saved stop): the abort never drops the message, live or after a restart", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  const { run_id } = await startRun(first.api, "slow", "Take your time.");
+  await untilState(first.api, run_id, ["working", "working"]);
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", run_id, "run.json"), "utf8"));
+  t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  const meta = join(data, "runs", run_id, "serve.json");
+  await writeFile(meta, `${JSON.stringify({ ...JSON.parse(await readFile(meta, "utf8")), stopped_after: 1 })}\n`);
+  // The order a loaded machine can give: the next server's abort reaches the run's door only after a message has (or
+  // after 3 s, when none comes). A message that reaches the door first is queued behind the turn the abort then ends.
+  const realFetch = globalThis.fetch;
+  let reached;
+  const submitted = new Promise((resolve) => (reached = resolve));
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    if (path === "/abort") await Promise.race([submitted, sleep(3_000)]);
+    const answer = await realFetch(input, init);
+    if (path === "/submit") reached();
+    return answer;
+  };
+  t.after(() => (globalThis.fetch = realFetch));
+  const next = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(next.baseUrl, next.token);
+  await untilState(api, run_id, ["input_required", "idle"]);
+  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  assert.equal(sent.body.mode, "follow_up");
+  await neverDropped(api, run_id, sent, "go on");
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+  await next.close();
+  const after = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  await neverDropped(client(after.baseUrl, after.token), run_id, sent, "go on");
+});
+
+test("a message sent while a stop is on its way runs after it, never dropped: a live stop held between its mark and its abort, live and after a restart", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  let atAbort, release;
+  const reachedAbort = new Promise((resolve) => (atAbort = resolve));
+  const held = new Promise((resolve) => (release = resolve));
+  const one = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s", beforeAbort: async () => { atAbort(); await held; } });
+  const api = client(one.baseUrl, one.token);
+  const { run_id } = await startRun(api, "slow", "Take your time.");
+  await untilState(api, run_id, ["working", "working"]);
+  const stopping = api("POST", `/runs/${run_id}/stop`);
+  // The stop has saved its mark and the run reads stopped; its abort waits at the seam.
+  await reachedAbort;
+  const sending = api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  await Promise.race([sending, sleep(1_000)]);
+  release();
+  const [stop, sent] = await Promise.all([stopping, sending]);
+  assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
+  await neverDropped(api, run_id, sent, "go on");
+  await one.close();
+  const after = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  await neverDropped(client(after.baseUrl, after.token), run_id, sent, "go on");
 });

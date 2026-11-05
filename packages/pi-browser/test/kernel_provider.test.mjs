@@ -421,3 +421,24 @@ test("a holder whose status does not answer is taken for running after a short w
   await assert.rejects(waiting);
   assert.ok(Date.now() - waited < 3_500, "cancelling ends the wait");
 });
+
+test("a create Kernel refuses (401, 403) frees its saving profile's claim, so the next saver's create is sent; a 500 keeps the claim until findByTag has looked", async (t) => {
+  const { fake, provider } = await rig(t);
+  const other = (n) => ({ tag: `ar-run1-${n}-2`, metadata: { run: `run ${n}`, label: "other" } });
+  for (const [n, status] of [[1, 401], [2, 403]]) {
+    const profile = { name: `refused-${status}`, save: true };
+    fake.knobs.createStatus = status;
+    await assert.rejects(provider.create(spec({ tag: `ar-run1-${n}-1`, profile }), signal()), (error) => error instanceof KernelError && error.status === status);
+    fake.knobs.createStatus = 0;
+    const sent = fake.only("POST /browsers").length;
+    assert.ok((await provider.create(spec({ ...other(n), profile }), signal())).id, `${status}: another owner's saving create is not refused for the claim`);
+    assert.equal(fake.only("POST /browsers").length, sent + 1, `${status}: and its create was sent`);
+  }
+  const profile = { name: "failed-500", save: true };
+  fake.knobs.createStatus = 500;
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-3-1", profile }), signal()), (error) => error instanceof KernelError && error.status === 500);
+  fake.knobs.createStatus = 0;
+  const sent = fake.only("POST /browsers").length;
+  await assert.rejects(provider.create(spec({ ...other(3), profile }), signal()), (error) => error.failure?.code === "refused" && /one session at a time/.test(error.failure.message), "the claim is kept: the browser may exist");
+  assert.equal(fake.only("POST /browsers").length, sent, "the second create was never sent");
+});

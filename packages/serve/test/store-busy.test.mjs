@@ -2,6 +2,7 @@
 // async backoff, so the event loop goes on answering. A run's end waits as long as it takes; a request waits about
 // 2 s, then answers home_busy.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
@@ -9,7 +10,9 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
+/** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
+const fakeKey = (name) => ["not-a-secret", name].join("-");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
@@ -103,6 +106,42 @@ test("a read while the agent store is held exclusively waits, then answers once 
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
 });
 
+test("a message to a working run, the first after a key is saved too, never waits on a read of its revision from the agent store: held for 1 s, it is answered 202 as soon as the store is free", async (t) => {
+  const dir = await scratch(t);
+  // A key is kept sealed: this server's seal key, as its launcher would give it.
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  // A run's read of its revision from the agent store waits REVISION_RETRY_MS before its next try: a message that made one
+  // would be answered after that. Without one, an answer comes once the store is free (HOLD_MS) plus the answer's own read
+  // of the run (about 2 s, as any request's): 4.1 to 4.2 s on CI, and up to 6.5 s on its slowest runners (F34, 11-05). The
+  // bound sits halfway to the retry: twice the slowest answer seen, and half the time a message that waited would take.
+  const REVISION_RETRY_MS = 30_000;
+  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: [REVISION_RETRY_MS] } });
+  assert.equal((await api("POST", "/agents", agent("steered", { instructions: `Answer once ${join(dir, "go")} exists.` }))).status, 201);
+  const run = await api("POST", "/agents/steered/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  for (let i = 0; (await api("GET", `/runs/${run.body.run_id}`)).body.state !== "working"; i++) {
+    assert.ok(i < 200, "the run works");
+    await sleep(50);
+  }
+  // Each message sent while another connection holds the agent store exclusively, for HOLD_MS.
+  const message = async (content) => {
+    const release = hold(t, data, "EXCLUSIVE");
+    const sent = timed(port, token, "POST", `/runs/${run.body.run_id}/messages`, { content });
+    await sleep(HOLD_MS);
+    release();
+    const answer = await sent;
+    assert.equal(answer.status, 202, JSON.stringify(answer.body));
+    assert.ok(answer.took < REVISION_RETRY_MS / 2, `"${content}" was answered at ${answer.took} ms: it waited on a read of its revision (its retry is ${REVISION_RETRY_MS} ms)`);
+  };
+  await message("Before any key is saved.");
+  // OpenAI's key: a save does not check it with its provider (key-check.ts' NOT_CHECKED), so this reaches no network.
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: fakeKey("saved-openai") } })).status, 204);
+  await message("The first message after a key is saved.");
+  await writeFile(join(dir, "go"), "");
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify(last));
+});
+
 test("an edit whose commit meets a reader of the agent store waits for it, then answers 200 with the new revision", async (t) => {
   const { api, data, port, token } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("edited"))).status, 201);
@@ -152,27 +191,6 @@ test("the agent home's own busy on a read no storeError wraps reaches the server
   assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
 });
 
-test("two edits held by a reader of the store are each checked against the revision current when it commits", async (t) => {
-  const { api, data, port, token } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("raced"))).status, 201);
-  const put = (instructions, version) => timed(port, token, "PUT", "/agents/raced/definition", agent("raced", { instructions, version }));
-  // Both ask for version 2: the second to commit is one more, so it is refused, not written as version 3.
-  let release = hold(t, data, "READ");
-  const versions = [put("Answer A.", 2), put("Answer B.", 2)];
-  await sleep(500);
-  release();
-  const answered = (await Promise.all(versions)).map((answer) => [answer.status, answer.body.error?.fields?.[0]?.field ?? null]).sort();
-  assert.deepEqual(answered, [[200, null], [422, "definition.version"]]);
-  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 2, "one edit made a revision");
-  // The same edit twice makes one revision: the second finds it current.
-  release = hold(t, data, "READ");
-  const same = [put("Answer C.", 3), put("Answer C.", 3)];
-  await sleep(500);
-  release();
-  assert.deepEqual((await Promise.all(same)).map((answer) => answer.status), [200, 200]);
-  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 3, "the same edit twice made one revision");
-});
-
 /** A workflow agent whose run is working, its model node answering 1.5 s after it starts, or once a file exists when
  *  `instructions` say "Answer once <file> exists.". */
 async function workingFlow(api, id, instructions = "Answer soon.") {
@@ -206,10 +224,17 @@ test("a workflow that ends while the agent store is held past a request's 2 s wa
 });
 
 test("a workflow whose end outlasts the run end's retries is settled again, not left until the next start", async (t) => {
-  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [50, 50] }, settleRetryMs: 300 });
+  // The store is let go only once the run end's retries ran out and a later settle was refused too.
+  const delaysMs = [50, 50];
+  let exhausted = 0;
+  const onBusy = (_id, attempt) => void (attempt === delaysMs.length && exhausted++);
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs, onBusy }, settleRetryMs: 300 });
   const runId = await workingFlow(api, "settled-again");
   const release = hold(t, data, "EXCLUSIVE");
-  await sleep(3_000);
+  for (let i = 0; exhausted < 2; i++) {
+    assert.ok(i < 600, `the run's end ran out of retries, then was tried again: ${exhausted} times out of retries`);
+    await sleep(50);
+  }
   release();
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
   assert.equal(last.status, "completed", JSON.stringify(last));
@@ -250,8 +275,8 @@ test("a run's view is of one moment: a run that ends while its read waits is ans
   assert.deepEqual([viewed.status, viewed.body.status, viewed.body.result?.final_answer], [200, "completed", "Now."], JSON.stringify(viewed.body));
 });
 
-/** Holds each of the next two workflow commits until both have arrived: each read its current revision and passed its
- *  checks, and both reach the store's own check of the body together, as two edits in flight at once do. */
+/** Holds each of the next two commits until both have arrived: each read its current revision and passed its checks, and
+ *  both reach the store's own check of the body together, as two edits in flight at once do. */
 async function twoCommitsAtOnce(t) {
   const probe = await scratch(t);
   const store = openStore(probe);
@@ -262,7 +287,7 @@ async function twoCommitsAtOnce(t) {
   const arrived = [];
   let armed = true;
   proto.commitRevision = async function (agentId, input, options) {
-    if (armed && input.kind === "workflow") {
+    if (armed) {
       await new Promise((resolve) => {
         arrived.push(resolve);
         if (arrived.length === 2) (armed = false), arrived.forEach((go) => go());
@@ -273,7 +298,7 @@ async function twoCommitsAtOnce(t) {
   return () => assert.equal(arrived.length, 2, "both edits reached the store's commit together");
 }
 
-test("two workflow edits whose body checks are in flight together are each checked against the revision current when it commits", async (t) => {
+test("two edits in flight together, of a workflow or an agentic agent, are each checked against the revision current when it commits", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("flowed"))).status, 201);
   const put = (instructions, extra = {}, headers = {}) => api("PUT", "/agents/flowed/definition", flowAgent("flowed", answerFlow(instructions), extra), headers);
@@ -298,10 +323,22 @@ test("two workflow edits whose body checks are in flight together are each check
   assert.deepEqual(outcome(await Promise.all([put("Answer D.", {}, { "if-match": etag }), put("Answer E.", {}, { "if-match": etag })])), [[200, null, null], [412, "precondition_failed", null]]);
   both();
   assert.equal(await count(), 4);
+
+  // An agentic agent's edits the same way: both asking for version 2, the second refused; the same edit twice, one revision.
+  assert.equal((await api("POST", "/agents", agent("raced"))).status, 201);
+  const edit = (instructions, version) => api("PUT", "/agents/raced/definition", agent("raced", { instructions, version }));
+  both = await twoCommitsAtOnce(t);
+  assert.deepEqual(outcome(await Promise.all([edit("Answer A.", 2), edit("Answer B.", 2)])), [[200, null, null], [422, "input_invalid", "definition.version"]]);
+  both();
+  both = await twoCommitsAtOnce(t);
+  assert.deepEqual(outcome(await Promise.all([edit("Answer C.", 3), edit("Answer C.", 3)])), [[200, null, null], [200, null, null]]);
+  both();
+  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 3, "the same edit twice made one revision");
 });
 
 test("an escalated workflow's review.at is its ended_at, one saved end time, even when its end waits for a held store, and after a restart", async (t) => {
-  const { api, data, close } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100) }, settleRetryMs: 120_000 });
+  let refused = 0;
+  const { api, data, close } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100), onBusy: () => void refused++ }, settleRetryMs: 120_000 });
   const gated = answerFlow("Answer soon.");
   gated.schemas.In.properties.amount = { type: "number" };
   gated.root.steps.push({ node: "escalate", label: "too big", when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: "needs a person" });
@@ -312,7 +349,10 @@ test("an escalated workflow's review.at is its ended_at, one saved end time, eve
   await follow(api, runId, ["working"]);
   // Another writer holds the store past the run's end: its end is written, and its ended_at stamped, when it lets go.
   const release = hold(t, data);
-  await sleep(2_500);
+  for (let i = 0; refused === 0; i++) {
+    assert.ok(i < 600, "the run's end met the held store");
+    await sleep(50);
+  }
   release();
   await follow(api, runId, ["completed"], { deadlineMs: 15_000 });
   const same = (view) => [view.status, view.review?.kind, view.review?.at === view.ended_at];
@@ -325,4 +365,74 @@ test("an escalated workflow's review.at is its ended_at, one saved end time, eve
   t.after(() => again.close());
   const read = client(again.baseUrl, again.token);
   assert.deepEqual([...same((await read("GET", "/runs")).body.runs.find((row) => row.run_id === runId)), (await read("GET", `/runs/${runId}`)).body.review?.at], ["completed", "review", true, run.ended_at], "and the next server reads the same time");
+});
+
+test("a follow-up to a stopped run is taken while another connection holds the agent store, and runs; taken or refused, never both", { timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  const { run_id } = await startRun(api, "slow", "Take your time.");
+  for (const end = Date.now() + 30_000; ; await sleep(50)) {
+    const { status, state } = (await api("GET", `/runs/${run_id}`)).body;
+    if (status === "working" && state === "working") break;
+    assert.ok(Date.now() < end, `the run works: last ${status}/${state}`);
+  }
+  assert.equal((await api("POST", `/runs/${run_id}/stop`)).body.stopped, true);
+  await follow(api, run_id, ["input_required"]);
+  // No reader gets through: a message that reads the store waits about 2 s, then answers home_busy.
+  const release = hold(t, data, "EXCLUSIVE");
+  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "Go on." });
+  release();
+  // Taken or refused, never both: a refusal for a message the run took anyway (it runs) invites a retry that sends it
+  // twice. Taken, the run no longer reads stopped (its message waits its turn, or has run); refused, it does.
+  const after = (await api("GET", `/runs/${run_id}`)).body;
+  const taken = !(after.status === "input_required" && after.state === "idle");
+  assert.equal(taken, sent.status === 202, `answered ${sent.status} ${sent.body.error?.code ?? sent.body.mode}, and the run ${taken ? `took it (${after.status}/${after.state})` : "did not take it"}: taken or refused, never both`);
+  assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+  const { rows } = await follow(api, run_id, ["completed"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.summary), ["You: Take your time.", "You: Go on."], "it ran, once");
+});
+
+test("a run's start is answered 202 even when the agent store turns busy right after the run is written; taken or refused, never both", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("starter"))).status, 201);
+  // In this process the agent store reads and writes through node:sqlite. From the moment the run's row is written, the
+  // store's read of one run (readRun) finds it busy for 3 s, longer than a request waits (about 2 s), as a store another
+  // connection took right then would be. Everything before that goes through, the run's own writes among it.
+  const prepare = DatabaseSync.prototype.prepare;
+  let busyUntil = 0;
+  DatabaseSync.prototype.prepare = function (sql, ...rest) {
+    if (/^INSERT INTO runs /.test(sql)) busyUntil = Date.now() + 3_000;
+    if (Date.now() < busyUntil && /FROM runs r JOIN agents a /.test(sql) && /WHERE r\.id = :id/.test(sql)) throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+    return prepare.call(this, sql, ...rest);
+  };
+  t.after(() => (DatabaseSync.prototype.prepare = prepare));
+  const started = await api("POST", "/agents/starter/runs", { input: { content: "What is six times seven?" } });
+  while (Date.now() < busyUntil) await sleep(100);
+  DatabaseSync.prototype.prepare = prepare;
+  // Taken or refused, never both: a refusal for a run that started anyway invites a retry that starts a second one.
+  const runs = (await api("GET", "/agents/starter/runs")).body.runs;
+  assert.equal(runs.length === 1, started.status === 202, `answered ${started.status} ${started.body.error?.code ?? ""}, and ${runs.length} run(s) started: taken or refused, never both`);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal(runs.length, 1, "one run");
+  await follow(api, started.body.run_id, ["completed"]);
+});
+
+test("a message to a run working on its first turn is taken while another connection holds the agent store: the run's harness is known from its start, so nothing is read", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, data } = await serve(t);
+  const go = join(dir, "go");
+  const { run_id } = await startRun(api, "gated", `Answer once ${go} exists.`);
+  for (const end = Date.now() + 30_000; ; await sleep(50)) {
+    const { status, state } = (await api("GET", `/runs/${run_id}`)).body;
+    if (status === "working" && state === "working") break;
+    assert.ok(Date.now() < end, `the run works: last ${status}/${state}`);
+  }
+  // No reader gets through: a message that read the run's harness from the store would wait about 2 s, then answer
+  // home_busy. Its turn holds until the file exists, so the run is working when the message comes.
+  const release = hold(t, data, "EXCLUSIVE");
+  const sent = await api("POST", `/runs/${run_id}/messages`, { content: "And then this." });
+  release();
+  await writeFile(go, "");
+  assert.deepEqual([sent.status, sent.body.mode], [202, "steer"], JSON.stringify(sent.body));
+  const { rows } = await follow(api, run_id, ["completed"]);
+  assert.deepEqual(rows.filter((row) => row.kind === "user_message").map((row) => row.text).slice(1), ["And then this."], "taken, and run once");
 });

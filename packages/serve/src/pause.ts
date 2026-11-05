@@ -38,7 +38,7 @@ export function gated<P, R>(root: string, fn: (params: P) => Promise<R>): (param
 export type NodeLine =
   | { t: "node.start" | "node.end"; path: string; kind: string; at: string; status?: string; duration_ms?: number; error?: string }
   | { t: "effect.start"; path: string | null; item: number | null; tool: string; label: string; input: unknown; at: string }
-  | { t: "effect.end"; path: string | null; item: number | null; tool: string; label: string; status: "done" | "failed"; output?: unknown; error?: string; at: string };
+  | { t: "effect.end"; path: string | null; item: number | null; tool: string; label: string; status: "done" | "failed"; output?: unknown; error?: string; error_truncated?: boolean; at: string };
 
 /** Appends to the run's node log; a write that fails is lost, never the run's. */
 export const nodeLog = (root: string) => (line: NodeLine) => {
@@ -60,6 +60,10 @@ export async function readNodeLog(root: string): Promise<NodeLine[]> {
   }
   return out;
 }
+
+/** The llm calls the node log says answered, in order: a run's `llmRead` counts them, and its cost reads the rest. */
+export const llmAnswers = (lines: readonly NodeLine[]) =>
+  lines.filter((line): line is Extract<NodeLine, { t: "effect.end" }> => line.t === "effect.end" && line.tool === "llm" && line.status === "done");
 
 /** What the run's process last wrote of its driver's frame and its receipts. */
 export type LiveView = { at: string; pin: Record<string, unknown>; receipts: Array<Record<string, unknown>> };

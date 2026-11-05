@@ -78,8 +78,9 @@ test('images go as base64 JSON assets under their tokens with the image header, 
   assert.equal(sent.headers['content-type'], 'application/json', 'OpenRouter refuses a multipart body (live: "invalid content-type: multipart/form-data")');
   const body = JSON.parse(sent.body);
   assert.deepEqual(body.assets, { '<page1>': { type: 'image', format: 'png', data_base64: Buffer.from(PNG).toString('base64') } });
-  // A model other than Jev reads an image only as a top-level item of an array state: the node's object state goes as one.
-  assert.deepEqual(body.state, [{ doc: 'acme.pdf' }, '<page1>']);
+  // A model other than Jev reads an image only as a top-level item of an array state: the node's object state goes as one,
+  // with the field each image stood in named in the first item.
+  assert.deepEqual(body.state, [{ doc: 'acme.pdf', image_fields: ['page'] }, '<page1>']);
   // Jev reads a token anywhere, inside text too, and gets the state as the node wrote it.
   await openrouterProvider({ ...settings, fetch }).decide({ ...request, model: 'typesafe/jev-1.14', state: { doc: 'acme.pdf', note: 'see <page1>' } }, ctx());
   assert.deepEqual(JSON.parse(seen[1].init.body).state, { doc: 'acme.pdf', note: 'see <page1>' });
@@ -188,4 +189,72 @@ test('an image past Jev\'s 1568 px side is refused before sending to a typesafe/
   await ask(sent.fetch, 'typesafe/jev-1.14', png(1568, 1568));
   await ask(sent.fetch, 'liquid/d1', png(1569, 400));
   assert.equal(sent.seen.length, 2);
+});
+
+/** What `deciding` does within `ms`: answered, rejected with its code, or still waiting. */
+async function within(ms, deciding) {
+  let timer;
+  const settled = deciding.then(() => 'answered', (error) => `rejected ${error?.code ?? error?.name}`);
+  return Promise.race([settled, new Promise((resolve) => { timer = setTimeout(() => resolve('still waiting'), ms); })]).finally(() => clearTimeout(timer));
+}
+
+test("the image check runs inside the request's deadline and ends on its cancel: a catalog that never answers holds it no longer", async () => {
+  const images = { '<p>': { bytes: PNG, mime: 'image/png', ref: 'pages/acme/1.png' } };
+  const request = { label: 'x', kind: 'judge', state: { page: '<p>' }, questions: QUESTIONS, model: 'liquid/d1', images };
+  // The catalog never answers (it waits on its own signal, whose 10 s bound is longer than any here); nothing else is sent.
+  const posts = [];
+  const silent = (url, init) => {
+    if (String(url).includes('/v1/models')) return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    posts.push(String(url));
+    return Promise.reject(new Error('sent'));
+  };
+  const cancel = new AbortController(); setTimeout(() => cancel.abort(), 50);
+  let started = Date.now();
+  assert.equal(await within(1500, openrouterProvider({ ...settings, takesImages: undefined, fetch: silent }).decide(request, ctx({ signal: cancel.signal, deadlineMs: null }))), 'rejected aborted');
+  assert.ok(Date.now() - started < 1000, 'cancelled at once, not after the catalog gives up');
+  started = Date.now();
+  assert.equal(await within(1500, openrouterProvider({ ...settings, takesImages: undefined, timeoutMs: 200, fetch: silent }).decide(request, ctx({ deadlineMs: null }))), 'rejected timeout');
+  assert.ok(Date.now() - started < 1000, 'cut at the provider timeout');
+  // A host's own check that never ends is cut at the decision's deadline too.
+  assert.equal(await within(1500, openrouterProvider({ ...settings, takesImages: () => new Promise(() => {}), fetch: silent }).decide(request, ctx({ deadlineMs: 100 }))), 'rejected timeout');
+  assert.deepEqual(posts, [], 'nothing was sent');
+});
+
+test('an object state with several images names, in order, the field each image item stood in, so the model can tell them apart', async () => {
+  const { fetch, seen } = fakeFetch([answered(), answered()]);
+  const images = { '<i1>': { bytes: PNG, mime: 'image/png', ref: 'pages/invoice/1.png' }, '<i2>': { bytes: PNG, mime: 'image/png', ref: 'pages/receipt/1.png' } };
+  const request = { label: 'x', kind: 'judge', state: { invoice: '<i1>', receipt: '<i2>', vendor: 'Acme' }, questions: { holds: { type: 'noul', instructions: 'Does the receipt match the invoice?' } }, model: 'liquid/d1', images };
+  await openrouterProvider({ ...settings, fetch }).decide(request, ctx());
+  const body = JSON.parse(seen[0].init.body);
+  assert.deepEqual(body.state, [{ vendor: 'Acme', image_fields: ['invoice', 'receipt'] }, '<i1>', '<i2>']);
+  assert.deepEqual(Object.keys(body.assets), ['<i1>', '<i2>']);
+  // A state with a field of its own named image_fields keeps it; the names go under _image_fields.
+  await openrouterProvider({ ...settings, fetch }).decide({ ...request, state: { image_fields: 'theirs', receipt: '<i2>', invoice: '<i1>' } }, ctx());
+  assert.deepEqual(JSON.parse(seen[1].init.body).state, [{ image_fields: 'theirs', _image_fields: ['receipt', 'invoice'] }, '<i2>', '<i1>']);
+  // The faux service, which refuses images anywhere but as top-level items as OpenRouter does, takes the shape.
+  process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS = '0';
+  try {
+    const outcome = await openrouterProvider({ apiKey: KEY, fetch: fauxSystemOne }).decide(request, ctx());
+    validateAnswers(request.questions, outcome.answers);
+  } finally { delete process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS; }
+});
+
+test("through judgeFromProviders, a node's timeoutMs that cuts the image check is timeout and unsent, never a decision for review", async () => {
+  const posts = [];
+  const silent = (url, init) => {
+    if (String(url).includes('/v1/models')) return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    posts.push(String(url));
+    return Promise.reject(new Error('sent'));
+  };
+  const provider = openrouterProvider({ ...settings, takesImages: undefined, fetch: silent });
+  const judge = judgeFromProviders({ providers: { openrouter: provider }, default: 'openrouter', deadlineMs: 60_000, loadImage: async () => ({ bytes: PNG, mime: 'image/png' }) });
+  const ask = { label: 'x', kind: 'judge', state: { page: '<p>' }, questions: QUESTIONS, model: 'liquid/d1', images: { '<p>': 'pages/acme/1.png' } };
+  let caught;
+  assert.equal(await within(1500, judge({ ...ask, timeoutMs: 50 }).catch((error) => { caught = error; throw error; })), 'rejected timeout');
+  assert.equal(caught.unsent, true, 'it says nothing was sent');
+  // The run's own cancel there is aborted, and unsent too.
+  const cancel = new AbortController(); setTimeout(() => cancel.abort(), 50);
+  assert.equal(await within(1500, judge({ ...ask, signal: cancel.signal }).catch((error) => { caught = error; throw error; })), 'rejected aborted');
+  assert.equal(caught.unsent, true);
+  assert.deepEqual(posts, [], 'nothing was sent');
 });

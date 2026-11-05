@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { processAlive } from "@parcha/agentrun-kernel/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 
@@ -14,9 +16,19 @@ export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathna
 // on loopback (boxes.test.mjs).
 delete process.env.AGENTRUN_BOXES;
 
+/** The records of a log another process appends to (a line of JSON each, as the fake docker's): only its whole lines,
+ *  each ended by its newline. A file just made and still empty, or a last line still being written, is read as the
+ *  records before it, never parsed half. None when there is no file. */
+export function jsonLines(file) {
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file, "utf8");
+  return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // Retried: a server that is still closing can write into it during the rm (ENOTEMPTY).
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return dir;
 }
 
@@ -152,7 +164,8 @@ export async function startRun(api, id, content, extra = {}, skills) {
   return run.body;
 }
 
-/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until` and settled. */
+/** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
+ *  once its page is final, any other status on the first page that leaves no change behind it. */
 export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {
   const view = new Map();
   const pages = [];
@@ -166,7 +179,9 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
     for (const id of page.drop) view.delete(id);
     for (const row of page.rows) view.set(row.id, row);
     after = page.next_after;
-    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more && (page.unchanged || page.rows.length === 0);
+    // A page's status and its rows are read together, so a page with no more to come has every row up to that status. A
+    // second, empty page to confirm it would only return when its long poll runs out.
+    const settled = ["completed", "failed", "cancelled"].includes(page.status) ? page.final : !page.has_more;
     if (until.includes(page.status) && settled) break;
     assert.ok(Date.now() < end, `the run did not reach ${until.join("|")}: last ${page.status}/${page.state}`);
   }
@@ -175,33 +190,41 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.
- *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for. */
-export async function responsesEndpoint(t, text, tokens) {
+ *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for,
+ *  `authorizations` each POST's authorization header.
+ *  `incomplete`: each answer stops at its length instead (response.incomplete, max_output_tokens: pi's stopReason "length"). */
+export async function responsesEndpoint(t, text, tokens, { incomplete = false } = {}) {
   const asked = [];
   const bodies = [];
   const models = [];
+  const authorizations = [];
   const server = createServer((req, res) => {
     asked.push(`${req.method} ${req.url}`);
+    if (req.method === "POST") authorizations.push(req.headers.authorization ?? null);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       if (req.method === "POST") bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "null"));
       if (req.method === "POST") models.push(bodies.at(-1)?.model);
-      const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const item = { type: "message", id: "msg_1", role: "assistant", status: incomplete ? "incomplete" : "completed", content: [{ type: "output_text", text, annotations: [] }] };
+      const usage = { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens };
+      const end = incomplete
+        ? { type: "response.incomplete", response: { id: "resp_1", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [item], usage } }
+        : { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage } };
       res.writeHead(200, { "content-type": "text/event-stream" });
       for (const event of [
         { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
         { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
         { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
         { type: "response.output_item.done", output_index: 0, item },
-        { type: "response.completed", response: { id: "resp_1", status: "completed", output: [item], usage: { input_tokens: tokens, output_tokens: tokens, total_tokens: 2 * tokens } } },
+        end,
       ]) res.write(`data: ${JSON.stringify(event)}\n\n`);
       res.end();
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models };
+  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models, authorizations };
 }
 
 /** Sets `vars` in this process's environment, which a server's runs inherit, for test `t`; the rest of `names` unset. */
@@ -236,3 +259,21 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
+
+/** Once the process that held run `runId` (its run.json's holder) has exited: only then is the run's store free to read.
+ *  A paused run's process marks the run released itself (sleeping) before it closes its store and exits, so run.json's
+ *  status is not that signal; the process gone is, as it is for the server (runs.ts, a run no longer live). */
+export async function letGo(data, runId, { deadlineMs = 20_000 } = {}) {
+  const file = join(data, "runs", runId, "run.json");
+  for (const end = Date.now() + deadlineMs; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    let record = null;
+    try {
+      record = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+    } catch {
+      // Read while it was rewritten: read again.
+    }
+    const pid = record?.holder?.pid;
+    if (Number.isInteger(pid) && !processAlive(pid)) return;
+    assert.ok(Date.now() < end, `the run's process did not exit: ${JSON.stringify(record)}`);
+  }
+}
