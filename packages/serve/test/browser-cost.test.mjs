@@ -317,3 +317,21 @@ test("through the API: a capped run whose next browser call would pass its cap i
   assert.equal(pico(booked.reduce((sum, row) => sum + row.usd, 0)), 0.002, "one session, released at its one-minute minimum");
   assert.ok(view.cost.usd <= 0.02, `the run's cost ${view.cost.usd} is within its cap`);
 });
+
+test("through the API: a provider with no price books its time as an unknown cost, counted unpriced on browser_time with its seconds, never as $0 or under tools", async (t) => {
+  withEnv(t, { ...KEYS, FAUX_BROWSER_PROVIDER: "steel" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("unpriced", { tools: ["browser"] }))).status, 201);
+  const started = await api("POST", "/agents/unpriced/runs", { input: { content: "Browse the example page 2 times." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"]);
+  const booked = toolCosts(data, started.body.run_id);
+  assert.ok(booked.length >= 2 && booked.every((row) => row.usd === null && row.charged_by === "steel"), JSON.stringify(booked));
+  assert.equal((await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd, null, "its cost is unknown");
+  const lines = (await api("GET", "/usage?group_by=meter")).body.lines;
+  const browser = lines.find((line) => line.meter === "browser_time");
+  assert.ok(browser, JSON.stringify(lines));
+  assert.deepEqual([browser.usd, browser.unpriced_runs, browser.unit], [0, 1, "second"]);
+  assert.ok(browser.quantity > 0, "its seconds");
+  assert.equal(lines.find((line) => line.meter === "tools"), undefined, "no other tool charged anything");
+});

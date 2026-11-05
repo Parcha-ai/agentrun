@@ -309,11 +309,11 @@ export function spentIn(storeFile: string): number | null {
 
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
- *  conversation as its settled timeline prices it; and `browser`, the part of `tools` that is browser session time
- *  (browser-cost.ts), with its seconds. A mark is never a charge here (the cap's alone). Never for a live run: its process
+ *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time
+ *  (browser-cost.ts), with its seconds; and `others`, the rest of `tools`, each unknown (null) apart. A mark is never a charge here (the cap's alone). Never for a live run: its process
  *  holds the store exclusively. */
-export function metersIn(storeFile: string): { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number } } {
-  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 } };
+export function metersIn(storeFile: string): { tools: number | null; tokens: number | null; browser: { usd: number | null; seconds: number }; others: number | null } {
+  if (!existsSync(storeFile)) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
   const db = new DatabaseSync(storeFile, { readOnly: true, timeout: 2_000 });
   try {
     const rows = db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }));
@@ -321,10 +321,12 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
     const marks = new Set<unknown>();
     const charges: (number | undefined)[] = [];
     const browser = { usd: 0 as number | null, seconds: 0 };
+    const others: (number | undefined)[] = [];
     for (const { entry } of rows) {
       const data = (entry.data ?? {}) as Record<string, unknown>;
       if (entry.kind === TOOL_STARTED) marks.add(data.call);
       else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
+      if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd));
       if (entry.kind !== TOOL_COST || data.tool !== "browser") continue;
       const usd = figureOf(data.usd);
       browser.usd = browser.usd === null || usd === undefined ? null : browser.usd + usd;
@@ -333,7 +335,8 @@ export function metersIn(storeFile: string): { tools: number | null; tokens: num
     const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
     const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
     const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
-    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser };
+    const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
+    return { tools, tokens: usage ? (usage.usage?.usd ?? null) : 0, browser, others: otherTools };
   } finally {
     db.close();
   }

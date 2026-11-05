@@ -1188,7 +1188,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       try {
         meters = metersIn(agents.store.runStorePath(row.id));
       } catch {
-        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 } };
+        meters = { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0 };
       }
       endedMeters.set(key, meters);
     }
@@ -1228,10 +1228,11 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
       // ended (a call a crash cut makes `tools` unknown, never `tokens`). An unknown meter counts the run as unpriced on it.
-      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null } } : metersOf(row);
+      const meters = group !== "meter" || usd === 0 ? undefined : live ? { tools: toolCostOf(live.rows), tokens: null, browser: { usd: toolCostOf(live.rows, "browser"), seconds: null }, others: toolCostOf(live.rows.filter((r) => r.tool_name !== "browser")) } : metersOf(row);
       const tokens = meters && (usd !== null && meters.tools !== null ? usd - meters.tools : usd === null && meters.tools === null ? meters.tokens : null);
-      const browser = meters?.browser.usd ?? 0;
-      const tools = !meters || browser === 0 ? meters?.tools : meters.tools !== null && browser !== null ? Math.round((meters.tools - browser) * 1e12) / 1e12 : null;
+      // Each apart, an unknown one unknown (unpriced on its own line), never $0 nor the other's.
+      const browser = meters ? meters.browser.usd : 0;
+      const tools = meters?.others;
       const parts: [string, number | null][] = !meters ? [[key, usd]] : [[key, tokens ?? null], ...(tools !== 0 ? [["tools", tools ?? null] as [string, number | null]] : []), ...(browser !== 0 ? [["browser_time", browser] as [string, number | null]] : [])];
       if (meters && browser !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
