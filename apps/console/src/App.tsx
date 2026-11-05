@@ -173,6 +173,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [needsProblem, setNeedsProblem] = useState<string | null>(null);
   const [ownRun, setOwnRun] = useState<boolean | null>(null);
   const [needsTry, setNeedsTry] = useState(0);
+  // Whether the runs asking a person have been read at least once: until then the Needs input tile's count is unknown,
+  // never the empty list a failed first read leaves (a later failure keeps the last list, and its count).
+  const [askingRead, setAskingRead] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -327,6 +330,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         if (!live) return;
         const day = Date.now() - 86_400_000;
         setNeedsProblem(mergeNeeds(null, reads).problem);
+        if (reads[0]?.status === "fulfilled") setAskingRead(true);
         setNeeds((prev) => {
           const { needs: next } = mergeNeeds(prev, reads);
           return { asking: next.asking.filter(asksPerson), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
@@ -424,7 +428,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
-                asking={needs ? needs.asking.length : null}
+                asking={needs && askingRead ? needs.asking.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} problem={needsProblem} agentName={agentName} onAnswer={answer} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />

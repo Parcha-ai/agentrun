@@ -56,10 +56,12 @@ export function AnalyticsTab({ agent, v2, now = Date.now, stats: first }: { agen
         try {
           const s = await v2.statsOver({ from: rangeFrom(range, now()), agent: agent.agent_id });
           if (n !== asked.current || !open.current) return;
-          setStats(s);
-          // Settled: the server holds no run whose end its store has yet to write. The last try is kept as it is.
+          // Settled: the server holds no run whose end its store has yet to write. The last try is kept as it is. The
+          // figures on screen are this answer's, so `shown` is its key when settled, else none: an unsettled answer is
+          // never taken for a range on screen.
           const settled = !(s.runs.status_unknown > 0);
-          if (settled || i === TRIES_MS.length - 1) shown.current = key;
+          setStats(s);
+          shown.current = settled || i === TRIES_MS.length - 1 ? key : null;
           if (settled) break;
         } catch (e) {
           if (n === asked.current) setError(problemOf(e));
