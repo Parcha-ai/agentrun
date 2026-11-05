@@ -87,3 +87,12 @@ test("two edits at once, one a target whose check is slow and one a source, each
   assert.equal(after.next_at, "2026-06-01T09:00:00.000Z", "the next time is the source's");
   assert.deepEqual(triggers.get(made.id), after);
 });
+
+test("an interval with no start_at, made part way through a second, first fires one interval later, as one made on the second does", async (t) => {
+  const { clock, triggers } = await engine(t, {});
+  for (const [made, next] of [["2026-06-01T00:00:00.500Z", "2026-06-01T01:00:00.000Z"], ["2026-06-01T02:00:00.000Z", "2026-06-01T03:00:00.000Z"]]) {
+    clock.to(made);
+    const trigger = await triggers.create(body({ every_s: 3600 }));
+    assert.deepEqual([trigger.source.start_at, trigger.next_at], [made.replace(/\.\d{3}Z$/, "Z"), next], made);
+  }
+});
