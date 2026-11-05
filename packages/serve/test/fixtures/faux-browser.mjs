@@ -8,6 +8,7 @@
 // gets with its hidden properties, and the environment the kernel shows); each session that asks for a profile logs
 // the profile's name and whether it saves. Profiles are kept, as Browserbase's and Kernel's are.
 import { appendFileSync, readFileSync } from "node:fs";
+import { BrowserFailureError, browserFailure } from "@parcha/pi-browser";
 import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
 
 export default function browser(env = process.env, vendor = "browserbase", signIn = undefined) {
@@ -30,6 +31,12 @@ export default function browser(env = process.env, vendor = "browserbase", signI
   const backend = new FakeBackend({ start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.`, "Example") }, ...(log ? { logFile: log } : {}) });
   const { downloads: _, ...withoutDownloads } = backend.provider;
   const provider = vendor === "kernel" ? withoutDownloads : backend.provider;
-  const create = (spec, signal) => (log && spec.profile && appendFileSync(log, `${JSON.stringify({ op: "profile", name: spec.profile.name, save: spec.profile.save })}\n`), provider.create(spec, signal));
+  const create = (spec, signal) => {
+    if (log && spec.profile) appendFileSync(log, `${JSON.stringify({ op: "profile", name: spec.profile.name, save: spec.profile.save })}\n`);
+    // A saving session refused in the words pi-browser's one-saver rule uses, which name the vendor's profile (Kernel's
+    // name is the run's pointer).
+    if (signIn && spec.profile?.save && process.env.FAUX_BROWSER_REFUSE_WITH_REF) throw new BrowserFailureError(browserFailure("refused", `browser profile "${signIn.ref}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`));
+    return provider.create(spec, signal);
+  };
   return { provider: { ...provider, create }, driver: fakeDriver(backend) };
 }

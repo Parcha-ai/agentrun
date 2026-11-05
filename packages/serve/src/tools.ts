@@ -235,7 +235,9 @@ const browserTool: ToolEntry = {
     const saved = kept?.save
       ? { onSession: (row: Parameters<typeof savedOnRelease>[0], change: string) => void (savedOnRelease(row, change) && writeFileSync(join(host.where.root, SIGN_IN_SAVED), new Date().toISOString(), { mode: 0o600 })) }
       : {};
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved });
+    // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
+    // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files, ...saved, redact: { values: () => (kept ? [kept.ref] : []) } });
     const extension = browser.extension as unknown as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {

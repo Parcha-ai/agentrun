@@ -6,7 +6,7 @@
 // vendors are the tests' fakes.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmod, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { homeOf } from "../dist/files.js";
@@ -14,11 +14,13 @@ import { SIGN_IN_SAVED, SignIns, vendorOf, vendorsOver } from "../dist/sign-ins.
 import { keptContexts, keptProfile, savedOnRelease } from "../dist/tools.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { calls as bbCalls, contexts, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
+import { KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
-const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_DIE_WITH_REF"];
+const FAUX_KERNEL = new URL("./fixtures/faux-kernel-check.mjs", import.meta.url).pathname;
+const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_DIE_WITH_REF", "FAUX_BROWSER_REFUSE_WITH_REF"];
 
 /** A store over `data` with fake vendors: each made object named in turn, each removal recorded (or refused). */
 function fakeStore(data, { key = randomBytes(32), running = new Set(), refuseRemove = false } = {}) {
@@ -335,4 +337,22 @@ test("verified_at counts only a session that saved: one let go by the run on the
   await store.view("alpha");
   await new Promise((go) => setImmediate(go));
   assert.equal(store.chains.size, 0);
+});
+
+test("a Kernel saving run whose session is refused in words that name its profile never shows the model its pointer: the browser's own redaction knows it", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { KERNEL_API_KEY: KERNEL_KEY, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log, FAUX_BROWSER_REFUSE_WITH_REF: "1" }, KEYS);
+  const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxKernel: FAUX_KERNEL });
+  assert.equal((await api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const started = await api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const handed = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
+  assert.deepEqual([handed.provider, handed.save], ["kernel", true]);
+  // What the model was given, as its run's own store keeps it (before anything this server serves is cut).
+  const files = (await readdir(join(data, "runs", started.body.run_id), { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
+  const raw = Buffer.concat(await Promise.all(files.map((file) => readFile(file))));
+  assert.ok(raw.includes("one session at a time may save to a profile"), "the refusal reached the model");
+  assert.ok(!raw.includes(handed.ref), "with its pointer cut");
 });
