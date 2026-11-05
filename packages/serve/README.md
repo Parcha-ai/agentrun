@@ -1136,6 +1136,40 @@ before the next one's overlap is checked. `PATCH /v2/triggers/{id}` changes it, 
 once per `Idempotency-Key` (required): the same key within `limits.idempotency_ttl_s` answers its firing, after the
 firing has left the history too, and later it is a new firing that a run the key started still answers. `GET /v2/triggers/{id}/firings` lists its last 200 firings.
 
+### Webhook triggers
+
+A trigger with `source: {kind: "webhook"}` fires on each request to `POST /v2/hooks/{trigger_id}`: this server's one
+route with no token. The request is signed by the trigger's own secret under the
+[Standard Webhooks](https://www.standardwebhooks.com) spec, the one this server's outbound [webhooks](#webhooks) sign
+with, so a sender uses any of its libraries: `webhook-id` (1 to 255 printable ASCII characters, no space), `webhook-timestamp` (Unix seconds, within 5 minutes of this
+server's clock either way) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under the
+secret's bytes (several, space-separated, and any one may match). The signature is checked on the raw body, as sent and whatever its content type, before
+anything else. A bad signature, a stale timestamp, an unknown trigger, one that is off and one that is not a webhook's all
+answer the same `401`, so no trigger id can be found by asking; a body past 256 KiB is `413`.
+
+The secret, `whsec_` and 32 random bytes in base64, is made with the trigger and shown in the `201` once; no `GET`
+shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-secrets.json`, so with no seal key no webhook
+trigger is made (`409 no_sealing_key`). `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one
+signs nothing from then on. An import cuts these secrets out of what it keeps, and no learning text shows one. A
+`trigger-secrets.json` that does not read is never written over: until it is fixed or moved away, no webhook trigger is
+made or rotated (`409 store_unreadable`) and none fires.
+
+The request's `webhook-id` is its firing's key: the first answers `202` once the firing is recorded, and its run starts
+after; the same `webhook-id` again, for a day after (even once the firing has left the history of 200), answers `200` with that
+firing and starts nothing. The agent gets the trigger's input,
+then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" untrusted>...</trigger-payload>`: whatever the
+sender wrote is data, not an instruction.
+
+A trigger's target may also be `{kind: "message_run", run_id, input: {content}}`, with a webhook or a schedule source:
+each firing sends its input to that run as `POST /v2/runs/{id}/messages` would (a steer, or a follow-up that opens a
+completed run again), under its own cap. The run must have a cap (`422` on `target.run_id` otherwise, and a firing to a
+run that has none fails), and a firing never answers a run that waits on its person (a question, an approval, its
+cap): it is `skipped`, "The run is waiting on a person.", and the run still waits. The firing's key is the message's id in the run's store, which takes
+one message per id; a firing driven again after a restart first looks for it there, so it sends the message once and
+never opens a completed run again for one it already has. A firing to a run that is working waits for it (tried every
+5 s), and a trigger holds at most 20 firings due: past them a webhook event and a run now answer `429 rate_limited`
+with `Retry-After: 30`, recording nothing, and a schedule's time is `skipped`.
+
 ## What it serves
 
 | Route | Here |
@@ -1167,7 +1201,7 @@ firing has left the history too, and later it is a new firing that a run the key
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
-| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings` | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
+| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
@@ -1614,7 +1648,8 @@ path that is not a `.md` file at the top, a bad name, front matter out of shape 
 naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
 less the 28 the server's own `origin` and `status` lines may take once it merges the note), an
 index past 200 lines, hidden characters, and text shaped like a secret or holding one of the server's own secrets (the
-launcher's, the keys and tokens in its environment, its API and door tokens), in a note or its name. A `MEMORY.md` the
+launcher's, the keys and tokens in its environment, its API and door tokens, each webhook trigger's signing secret as it
+is now), in a note or its name. A `MEMORY.md` the
 answer gives is ignored. What passes is kept as the run's proposal, `runs/<id>/learning-proposal.json`, with what the
 user said, each message cut of the server's secrets.
 
