@@ -33,7 +33,7 @@ import { REFLECT_REQUEST } from "./turns.js";
  *  after it (its rows are those between), its deadline, and how it ended. */
 export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
 /** Who sent the end-of-run turn: the server, never a person, and no request field sets it. The one value it is sent
- *  with, at its one call (reflectTurn); the tool gate reads it there (tool-gate.ts's carve-out). */
+ *  with, at its one call (reflectTurn); the tool gate reads it there and refuses that turn's writes under work/.learning/ (tool-gate.ts NOTE_ONLY_TEXT). */
 const REFLECT_ORIGIN = "reflect";
 export type TurnOrigin = typeof REFLECT_ORIGIN;
 /** The run asked its end-of-run turn and has not ended since. */

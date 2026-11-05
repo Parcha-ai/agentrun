@@ -1770,7 +1770,7 @@ export class Runs {
 
   /** One request to the door of a run whose process lives, never waking it (toDoor wakes no run that is finishing): again
    *  while it opens or parks. `turnOrigin`: who sent a turn this request sends (learning-run.ts's REFLECT_ORIGIN), kept in
-   *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts's carve-out); a person's message
+   *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts NOTE_ONLY_TEXT); a person's message
    *  removes it. */
   private async toLiveDoor(run: Run, path: string, body?: Json, turnOrigin?: TurnOrigin): Promise<Json | null> {
     if (turnOrigin) await (run.originWrite = writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`));
@@ -2639,7 +2639,7 @@ export class Runs {
     return { mode, messageId };
   }
 
-  /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts's carve-out),
+  /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts NOTE_ONLY_TEXT),
    *  so its origin goes, right before the turn is sent. */
   private async personsTurn(run: Run): Promise<void> {
     // A write of the origin still in flight lands first, then goes: none starts from here (learning-run.ts reflectTurn).
