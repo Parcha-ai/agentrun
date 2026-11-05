@@ -10,7 +10,7 @@ import { runLabel, when } from "@/lib/format";
 import { uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capWords, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantOf, issuesOf, patchOf, whenWords } from "@/lib/schedules";
+import { atLeast, bodyOf, capWords, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
@@ -112,10 +112,14 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
   const firing = useRef(false);
   // One read of the schedule and its firings at a time.
   const reading = useRef(false);
+  // Moves on when an action (Pause, Resume, Run now) starts and when its answer lands: a read applies its answer only if
+  // no action moved it since the read was asked, so an older answer never replaces a newer one.
+  const generation = useRef(0);
   const read = () => {
     reading.current = true;
+    const asked = generation.current;
     return Promise.all([v2.getTrigger(id), v2.triggerFirings(id)])
-      .then(([t, f]) => { setTrigger(t); setFirings(f.firings); setError(null); })
+      .then(([t, f]) => { if (asked === generation.current) { setTrigger(t); setFirings(f.firings); setError(null); } })
       .finally(() => { reading.current = false; });
   };
   useEffect(() => { read().catch((e) => setError(problem(e, "the schedule"))); }, [v2, id, tries]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -128,13 +132,20 @@ function ScheduleDetail({ v2, go, agentName, id, every }: PageProps & { id: stri
     setBusy(what); setSaid(null);
     try { await work(); } catch (e) { setSaid(problem(e, failed)); } finally { setBusy(null); }
   };
-  const toggle = () => act("pause", async () => setTrigger(await v2.updateTrigger(id, { enabled: !trigger.enabled })), trigger.enabled ? "the pause" : "the resume");
+  const toggle = () => act("pause", async () => {
+    generation.current++;
+    const answer = await v2.updateTrigger(id, { enabled: !trigger.enabled });
+    generation.current++;
+    setTrigger(answer);
+  }, trigger.enabled ? "the pause" : "the resume");
   const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/schedules"); }, "the delete");
   const runNow = async () => {
     if (firing.current) return;
     firing.current = true; setBusy("fire"); setSaid(null);
+    generation.current++;
     try {
       const made = await v2.fireTrigger(id, uuid());
+      generation.current++;
       setFirings((all) => [made, ...all.filter((f) => f.key !== made.key)]);
       await read().catch(() => {});
     } catch (e) {
@@ -264,7 +275,9 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
   // An edit that changes when starts the schedule again from now (the server's rule for a new source): said before the save.
   const edited = trigger ? bodyOf(draft).body : undefined;
   const restarts = !!(trigger && edited && patchOf(trigger, edited).source);
-  const atInstant = draft.kind === "at" ? instantOf(draft.at) : null;
+  // The instants the hints say: the ones the save sends (a time left alone keeps the instant it was read with).
+  const atInstant = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
+  const startInstant = draft.startAt ? instantKept(draft.startAt, draft.read?.startAt) : null;
   const live = (agents ?? []).filter((a) => !a.archived_at || a.agent_id === draft.agentId);
   const kinds: { kind: Draft["kind"]; label: string }[] = [{ kind: "cron", label: "Cron" }, { kind: "at", label: "Once" }, { kind: "every", label: "Every" }];
   return (
@@ -301,7 +314,7 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
                 <input name="timezone" list="schedule-zones" className={INPUT} value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
               </Field>
             )}
-            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={draft.startAt && instantOf(draft.startAt) ? `= ${utcWhen(instantOf(draft.startAt)!)}` : undefined}><input name="startAt" type="datetime-local" step={1} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
+            {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={startInstant ? `= ${utcWhen(startInstant)}` : undefined}><input name="startAt" type="datetime-local" step={1} className={INPUT} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
           </div>
           {ZONES.length > 0 && <datalist id="schedule-zones">{ZONES.map((z) => <option key={z} value={z} />)}</datalist>}
           {restarts && <p className="mt-3 text-[12px] text-warning-text" role="note">Changing when restarts the schedule from now.</p>}

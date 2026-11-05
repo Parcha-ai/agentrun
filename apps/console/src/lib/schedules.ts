@@ -14,8 +14,8 @@ export type EveryUnit = "seconds" | "minutes" | "hours";
 export type Draft = { name: string; kind: WhenKind; cron: string; timezone: string; at: string; every: string; everyUnit: EveryUnit; startAt: string; agentId: string; content: string; maxCost: string; enabled: boolean; read?: { at?: string; startAt?: string } };
 
 /** The instant a wall time is: the one read with the schedule while the wall time is still what it read as, else the
- *  wall time as typed. */
-const instantKept = (wall: string, read: string | undefined) => (read && wall === wallOf(read) ? read : instantOf(wall));
+ *  wall time as typed. What a save sends, and what the form's hint under the time says. */
+export const instantKept =(wall: string, read: string | undefined) => (read && wall === wallOf(read) ? read : instantOf(wall));
 
 /** The browser's own zone: where a new cron line starts (as n8n's and Windmill's schedule forms start theirs). */
 export const browserZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
