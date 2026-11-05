@@ -183,3 +183,21 @@ test("a malformed run id under the live path is a 404, never a crash: the server
   assert.equal(upgrade.status, 404);
   assert.equal((await call(port, { path: "/v2/health" })).status < 500, true, "and after the upgrade");
 });
+
+test("a run's process that dies without letting its sessions go takes its hand-over with it, and a hand-over with no live process names no viewer: none, and nothing is proxied", { timeout: 120_000 }, async (t) => {
+  const w = await watched(t);
+  const handed = JSON.parse(readFileSync(w.file, "utf8"));
+  const { holder } = JSON.parse(readFileSync(join(w.server.data, "runs", w.runId, "run.json"), "utf8"));
+  process.kill(holder.pid, "SIGKILL");
+  assert.ok(await until(() => stat(w.file).then(() => false, () => true)), "the hand-over went with the process");
+  assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" });
+  // One left behind (a server that was not watching when the process died), on a port another listener now answers: none.
+  const { createServer } = await import("node:http");
+  const squatter = createServer((_req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<script src=/x.js></script>"); });
+  await new Promise((resolve) => squatter.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => squatter.close(resolve)));
+  writeFileSync(w.file, JSON.stringify({ ...handed, port: squatter.address().port }), { mode: 0o600 });
+  assert.deepEqual((await browserOf(w, { cookie: w.cookie })).json, { state: "none" }, "no live process: no viewer");
+  assert.equal((await call(w.server.port, { path: `/v2/runs/${w.runId}/browser/live/v/${handed.id}`, headers: { cookie: w.cookie } })).status, 404, "nothing proxied");
+  assert.equal((await liveWs(w, `/v2/runs/${w.runId}/browser/live/v/${handed.id}/ws`)).status, 404);
+});

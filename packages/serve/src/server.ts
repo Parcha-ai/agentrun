@@ -1591,8 +1591,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const kept = run.meta.tool_plane?.browser ?? (granted ? "browserbase" : undefined);
         const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
         if (browser === undefined || isUnavailable(browser)) return send(res, 200, { state: "off", reason: browser === undefined ? "this run's agent has no browser tool" : whyUnavailable(browser) }, { "cache-control": "no-store" });
-        const handover = await readHandover(run.dir);
-        // A file a process that is gone left behind names no viewer: only one that answers is live.
+        // Only the run's live process serves its view: a file one that is gone left behind names none, whatever answers its port.
+        const handover = runs.hasProcess(run.id) ? await readHandover(run.dir) : undefined;
         const live = handover && (await viewerAnswers(handover)) ? handover : undefined;
         return send(res, 200, live ? { state: "live", viewer: viewerLink(run.id, live) } : { state: "none" }, { "cache-control": "no-store" });
       }
@@ -1863,7 +1863,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", "a run's live browser view takes the owner's password sign-in in the console") : new ApiError("forbidden", "a run's live browser view takes the owner's password sign-in in the console, never a token");
     }
     const run = await needRun(runId);
-    const handover = await readHandover(run.dir);
+    const handover = runs.hasProcess(run.id) ? await readHandover(run.dir) : undefined;
     if (!handover || !liveRest(rest) || (rest.startsWith("/v/") && rest !== `/v/${handover.id}`)) throw new ApiError("not_found", "this run's browser has no live view at that address");
     await proxyLiveHttp(req, res, handover, rest);
   }
@@ -1921,7 +1921,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
     void (async () => {
       const run = await runs.get(viewing[1]!);
-      const handover = run ? await readHandover(run.dir) : undefined;
+      const handover = run && runs.hasProcess(run.id) ? await readHandover(run.dir) : undefined;
       if (!handover || viewing[2] !== `/v/${handover.id}/ws`) return deny("404 Not Found");
       proxyLiveUpgrade(req, socket, head, handover, viewing[2]!);
     })().catch(() => deny("500 Internal Server Error"));
