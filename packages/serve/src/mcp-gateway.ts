@@ -161,6 +161,8 @@ export interface McpGatewayOptions {
   work: () => string;
   /** For tests: the fetch the upstream client sends with. */
   fetch?: typeof fetch;
+  /** For tests: the bound on one call (CALL_MS) and on a server's first connection (CONNECT_MS). */
+  bounds?: { callMs?: number; connectMs?: number };
   /** The run's tool gate; none (a test), every call is let go. Its `executor` and `spill`, where it has them, run an
    *  approved call and pass a result through. */
   gate?: Pick<Gate, "enter"> & Partial<Pick<Gate, "executor" | "spill">>;
@@ -211,7 +213,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
         // The 2026-07-28 revision first, a 2025-era server through its initialize, as a preview connects.
         const client = new Client({ name: "agentrun", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
-        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(headers, status) as never }), { timeout: CONNECT_MS });
+        await client.connect(new StreamableHTTPClientTransport(new URL(url), { fetch: guarded(headers, status) as never }), { timeout: options.bounds?.connectMs ?? CONNECT_MS });
         return client as unknown as Upstream;
       })();
       clients.set(server, upstream);
@@ -255,7 +257,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       }
       // The pinned definition, so the SDK mirrors its x-mcp-header parameters into Mcp-Param-* headers on a 2026-07-28
       // server, as its own listing would have it do.
-      const result = (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
+      const result = (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
       return said(await textOf(server, tool.name, result, headers), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
@@ -321,7 +323,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     return "refused" in paid ? said(paid.refused, true) : paid.result;
   };
 
-  // An approved call, run by the gate once a person allows it: through the same path, once.
+  // An approved call, run by the gate once a person allows it: through the same path, once. It has the same deadline as
+  // any call: forward() gives callTool CALL_MS and a server's first connection CONNECT_MS, so a server that never answers
+  // ends the call as an error the model reads, the upstream request aborted, and the run goes on; the gate's own stop or
+  // cancel reaches it through `signal`.
   options.gate?.executor?.("mcp:", async (name, args, callId, signal) => {
     const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
     const result = parsed ? await sent(parsed[1]!, parsed[2]!, (args ?? {}) as Record<string, unknown>, callId, signal) : said(`${name} is not an MCP tool.`, true);

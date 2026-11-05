@@ -15,9 +15,9 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
 const schema = { type: "object" };
-const tools = ["add", "slow_write", "long", "echo", "paid"].map((name) => ({ name, inputSchema: schema }));
+const tools = ["add", "slow_write", "long", "echo", "paid", "hang"].map((name) => ({ name, inputSchema: schema }));
 
-async function setup(t, { token = TOKEN, url, prices, gate, commit } = {}) {
+async function setup(t, { token = TOKEN, url, prices, gate, commit, bounds } = {}) {
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   fake.tools.echo = { description: "Echoes what it was sent.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: `seen Bearer ${TOKEN} and ${TOKEN}` }, { type: "image", data: Buffer.from(TOKEN).toString("base64"), mimeType: "image/png" }], structuredContent: { token: TOKEN } }) };
@@ -31,7 +31,7 @@ async function setup(t, { token = TOKEN, url, prices, gate, commit } = {}) {
     if (typeof init?.body === "string" && init.body.includes('"tools/call"')) sent.push(init);
     return fetch(input, init);
   };
-  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => work, fetch: spy, ...(gate ? { gate } : {}), ...(commit ? { commit } : {}) });
+  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => work, fetch: spy, ...(gate ? { gate } : {}), ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}) });
   /** Whether the server was told the call was cancelled: notifications/cancelled (2025 era), or its request closed. */
   const cancelled = () => fake.log.some((entry) => entry.method === "notifications/cancelled") || sent.some((init) => init.signal?.aborted);
   return { fake, gateway, work, cancelled };
@@ -348,4 +348,21 @@ test("the header check visits each part of a schema once, within its bounds: dee
   once(cyclic, "a cycle");
   assert.match(mcpHeaderProblem(deepSchema(HEADER_SCAN_DEPTH + 10)) ?? "", /nests deeper than 64 levels/);
   assert.match(mcpHeaderProblem({ type: "object", properties: Object.fromEntries(Array.from({ length: 20_000 }, (_, i) => [`p${i}`, { type: "string" }])) }) ?? "", /larger than 10000 parts/);
+});
+
+test("an approved call to a server that never answers ends at the call's deadline: an error the model reads, the upstream request aborted, and the gateway goes on", async (t) => {
+  const executors = new Map();
+  const gate = { ...gateOf(() => "allow"), executor: (prefix, run) => void executors.set(prefix, run) };
+  const { fake, gateway, cancelled } = await setup(t, { gate, commit: store().commit, bounds: { callMs: 500 } });
+  fake.tools.hang = { description: "Never answers.", input: { type: "object", properties: {} }, run: () => new Promise(() => {}) };
+  const started = Date.now();
+  const answer = await executors.get("mcp:")("mcp:fake/hang", {}, "c1", signal());
+  assert.equal(answer.isError, true);
+  assert.match(answer.text, /The MCP server fake failed/);
+  assert.ok(Date.now() - started < 5_000, `ended at its bound, ${Date.now() - started} ms`);
+  for (let i = 0; !cancelled() && !fake.log.some((entry) => entry.method === "closed" && entry.closed === "hang"); i++) {
+    assert.ok(i < 100, `the server is told the call is over: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal(), callId: "c2" }), { content: [{ type: "text", text: "5" }] }, "the next call goes on");
 });
