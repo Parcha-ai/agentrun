@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { bulletOf, fold, hasVersionSection, loadFragments, ownVersionPackages, parseFragment, releaseRace, staleOwnVersions, unreleasedEdits, unreleasedSection } from './changes.mjs';
+import { bulletOf, fold, hasVersionSection, loadFragments, ownVersionPackages, parseFragment, comparedBase, releaseRace, staleOwnVersions, unreleasedEdits, unreleasedSection } from './changes.mjs';
 
 const exec = promisify(execFile);
 const script = join(dirname(fileURLToPath(import.meta.url)), 'changes.mjs');
@@ -575,4 +575,63 @@ test('the command line fails a change to the files a package on its own version 
   await setVersion(root, '0.3.1');
   const pass = local();
   assert.equal(pass.status, 0, pass.stderr);
+}));
+
+// CI checks GitHub's test merge (refs/pull/N/merge: the base branch as merged, then the pull request), but the event's base SHA
+// is the base branch when the pull request was last synchronized. After a release merged, that SHA was older than the release on
+// every open pull request (030bed836 on 11-04), and the diff from it carried the release's bumps.
+const testMerge = async (git, onto, branch) => {
+  await git('checkout', '-q', '--detach', onto);
+  await git('merge', '-q', '--no-ff', '-m', 'test merge', branch);
+  return (await git('rev-parse', 'HEAD')).stdout.trim();
+};
+test('an open pull request checked on its test merge after a release landed passes, though the event\'s base predates the release', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  await commitAll(git, 'the script');
+  const stale = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await git('branch', '-q', 'main');
+  await git('checkout', '-q', '-b', 'pr');
+  await writeFile(join(root, 'changes/pr.md'), fragment('repo', 'fix', 'A fix.'));
+  await commitAll(git, 'a pull request');
+  await git('checkout', '-q', 'main');
+  await bump(root, '0.1.0-beta.14');
+  const folded = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--fold', '0.1.0-beta.14', '--base', 'HEAD'], { cwd: root, encoding: 'utf8' });
+  assert.equal(folded.status, 0, folded.stderr);
+  await commitAll(git, 'release');
+  await testMerge(git, 'main', 'pr');
+  const check = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', stale], { cwd: root, encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stderr);
+  assert.equal(await comparedBase(root, stale), (await git('rev-parse', 'main')).stdout.trim());
+}));
+test('a release pull request checked on its test merge is still refused for a fragment that landed after its fold', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  await commitAll(git, 'the script');
+  const stale = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await git('branch', '-q', 'main');
+  await git('checkout', '-q', '-b', 'release');
+  await bump(root, '0.1.0-beta.14');
+  await commitAll(git, 'release');
+  await git('checkout', '-q', 'main');
+  await writeFile(join(root, 'changes/late.md'), fragment('repo', 'fix', 'Late.'));
+  await commitAll(git, 'a pull request merged after the fold');
+  await testMerge(git, 'main', 'release');
+  const check = spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', stale], { cwd: root, encoding: 'utf8' });
+  assert.equal(check.status, 1);
+  assert.match(check.stderr, /release commit carries unfolded fragments: late\.md; refold on current main/);
+}));
+test('the base stays the one given for a commit that is not a merge, and for a merge whose first parent does not hold it (a restack)', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const base = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await git('branch', '-q', 'main');
+  assert.equal(await comparedBase(root, base), base);
+  await git('checkout', '-q', '-b', 'pr', 'HEAD~1');
+  await writeFile(join(root, 'changes/pr.md'), fragment('repo', 'fix', 'A fix.'));
+  await commitAll(git, 'a pull request on an older main');
+  // A restack: the pull request's old head first, main second.
+  await git('merge', '-q', '--no-ff', '-m', 'restack', 'main');
+  assert.equal(await comparedBase(root, base), base);
 }));
