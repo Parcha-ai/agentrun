@@ -110,7 +110,7 @@ test("demo through the API: a new agent on a server with docker, still preparing
   assert.equal((await api("GET", `/runs/${run.run_id}/files/out.txt`)).body, "hello from the box\n");
 });
 
-test("a new agent that names its tools gets exactly those in the box; one that names the runner keeps it; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
+test("a new agent that names its tools gets exactly those in the box; one that names the runner, or a tool the box refuses, keeps the runner; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
   await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
   const named = await api("POST", "/agents", agent("named", { tools: ["read"] }));
@@ -124,6 +124,10 @@ test("a new agent that names its tools gets exactly those in the box; one that n
   const onRunner = await probe(api, "runner", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
   assert.deepEqual(onRunner.place, RUNNER);
   await follow(api, onRunner.run_id, ["completed"]);
+  // A tool the box refuses (browser, runner-only) keeps a new agent on the runner, as before: it saves, with no place.
+  const browsing = await api("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }));
+  assert.equal(browsing.status, 201, JSON.stringify(browsing.body));
+  assert.deepEqual(["place" in browsing.body.definition, browsing.body.definition.tools], [false, ["read", "browser"]]);
   const flow = await api("POST", "/agents", flowAgent("flow"));
   assert.equal(flow.status, 201, JSON.stringify(flow.body));
   assert.equal("place" in flow.body.definition, false, "a workflow names no place, and none is stamped");

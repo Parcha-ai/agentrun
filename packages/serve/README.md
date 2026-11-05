@@ -280,7 +280,8 @@ The box is a new agent's default machine. A new agentic agent whose definition n
 run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
 show it. If that definition names no `tools` either, it gets `["bash"]`, so the agent has a shell. A definition that
 names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved as before,
-with no place, and runs on the runner. A workflow is never given a box.
+with no place, and runs on the runner. So is one whose tools name one the box refuses (`browser`, runner-only for now). A
+workflow is never given a box.
 
 `capabilities.places` says both sides. `default_place` is the place a new agent gets here. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is

@@ -19,7 +19,7 @@ import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
-import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolsView } from "./tools.js";
+import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { DATA_ENV, DOOR_TOKEN_FILE, HOME_HOST_OWNED, HOMES_DIR, homeOf, readJson, RUN_META, SETUP_LOST, syncDir, TOKEN_FILE, writeDurable } from "./files.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, hostOwnedRefusal, type OwnedReadAt, ownedByIdentity } from "./home-path.js";
@@ -1452,9 +1452,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
           let warnings: InputIssue[] = [];
-          // A new agent that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision.
-          const fresh = newAgentPlace(boxOffers);
-          const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
+          // A new agent that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision;
+          // one that names a tool the box refuses (browser) keeps the runner, as before.
+          const definition = checkDefinitionBody(body);
+          const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
+          const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+          const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
           return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);

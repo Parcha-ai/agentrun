@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const DOCKER = { mode: "sandbox", box: "docker" };
 const boxes = [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: true }];
 const served = (extra: Record<string, unknown>) => placesOf({ places: { modes: ["runner", "sandbox"], default: "runner", boxes, ...extra } });
-const tools = toolOffers([{ name: "read", available: true }, { name: "write", available: true }, { name: "bash", available: true, sandbox_only: true }]);
+const tools = toolOffers([{ name: "read", available: true }, { name: "write", available: true }, { name: "bash", available: true, sandbox_only: true }, { name: "browser", available: true }]);
 const capsWith = (places: ReturnType<typeof placesOf>) => ({ harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places });
 
 function mount(places: ReturnType<typeof placesOf>) {
@@ -53,12 +53,15 @@ describe("AgentEditor, a new agent's default place", () => {
     boxed.step(/Tools/);
     expect(boxed.input('input[type="checkbox"][value="bash"]')!.checked).toBe(true);
     expect(boxed.input('input[type="checkbox"][value="read"]')!.checked).toBe(true);
+    // The browser runs only on the runner (the server refuses it in a box): a sandbox default never ticks it.
+    expect(boxed.input('input[type="checkbox"][value="browser"]')!.checked).toBe(false);
     act(() => root?.unmount());
     document.body.innerHTML = "";
     const runner = mount(served({ default_place: { mode: "runner" }, default_reason: "fixture: no docker" }));
     expect(runner.input('input[name="place"][value="runner"]')!.checked).toBe(true);
     runner.step(/Tools/);
     expect(runner.input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
+    expect(runner.input('input[type="checkbox"][value="browser"]')!.checked).toBe(true);
   });
 
   it("an older server that serves no default_place keeps today's form: on the server, bash not ticked, no place sent", async () => {
@@ -68,7 +71,7 @@ describe("AgentEditor, a new agent's default place", () => {
     expect(input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
     fill();
     const sent = await save();
-    expect(sent).toMatchObject({ tools: ["read", "write"] });
+    expect(sent).toMatchObject({ tools: ["read", "write", "browser"] });
     expect(sent!.place).toBeUndefined();
   });
 

@@ -115,10 +115,14 @@ export function toolsFor(harness: string, offers: ToolOffer[]): ToolOffer[] {
 export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
   tool.sandbox_only && (place as { mode?: unknown } | undefined)?.mode !== "sandbox" ? "Sandbox-only: it runs in a box, and this agent's place is the runner" : undefined;
 
-/** A new agent's tools: on by default, every tool its harness runs here that the server can run now; a sandbox-only one
- *  (bash) only when its `place` is a sandbox (the server's default for a new agent, where it has a box), since the runner
- *  has no shell. */
-export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (!t.sandbox_only || place?.mode === "sandbox")).map((t) => t.name);
+/** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
+ *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
+const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
+
+/** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
+ *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one
+ *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
+export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
 
 /** The tools that reach the web: a page read (fetch_page, web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */
