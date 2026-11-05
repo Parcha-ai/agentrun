@@ -136,3 +136,20 @@ test("a run that comes to wait on a person between the firing's check and its do
   assert.equal(rows.filter((row) => row.kind === "user_message").length, 1, "no message reached it");
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
+
+test("a firing never reaches a run paused at its spend cap (pending budget): it is skipped with the same reason, and the run still waits for its cap to be raised", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  // The tests' faux model priced on output only: a $0.05 cap cannot buy a request's least, so the run pauses at once.
+  const { api, baseUrl } = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname });
+  await made(api, "capped");
+  const run = (await api("POST", "/agents/capped/runs", { input: { content: "Write one.md" }, max_cost_usd: 0.05 })).body;
+  await follow(api, run.run_id, ["input_required"]);
+  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.pending?.kind, "budget");
+  const { id, secret } = (await api("POST", "/triggers", messaging(run.run_id))).body;
+  assert.equal((await post(baseUrl, id, "{}", secret)).status, 202);
+  const [skipped] = await firings(api, id, 1);
+  assert.deepEqual([skipped.status, skipped.reason], ["skipped", "The run is waiting on a person."], JSON.stringify(skipped));
+  const read = (await api("GET", `/runs/${run.run_id}`)).body;
+  assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "budget"], "still paused at its cap");
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+});
