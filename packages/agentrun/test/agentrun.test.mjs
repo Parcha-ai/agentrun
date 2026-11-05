@@ -160,6 +160,8 @@ test("the command passes its arguments through to the server, with its store (~/
   const plain = await throughStub(t, [], { ANTHROPIC_API_KEY: "sk-test" });
   assert.deepEqual([plain.args, plain.model, plain.npx], [["--open", "--data", STORE(plain.home)], null, `@parcha/agentrun@${VERSION}`], plain.err);
   assert.equal(plain.out, "AgentRun is running at http://127.0.0.1:7399/\n");
+  // A person reads how to stop it and where its data is; stdout stays the one line a script reads.
+  assert.match(plain.err, new RegExp(`^Press Ctrl-C to stop it\\. Its data is in ${STORE(plain.home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.$`, "m"), plain.err);
   assert.equal(plain.code, 0, plain.err);
   const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "/srv/agents"]);
   assert.deepEqual(given.args, ["--data", "/srv/agents", "--port", "7400"], given.err);

@@ -141,5 +141,8 @@ export async function main(argv, env = process.env) {
     return (await exited) || 1;
   }
   console.log(`AgentRun is running at ${url}`);
+  // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
+  // data is kept, which the next start opens again.
+  console.error(`Press Ctrl-C to stop it. Its data is in ${data[1]}.`);
   return exited;
 }
