@@ -63,27 +63,32 @@ function cliOf(env, seen) {
     });
 }
 
-/** A proxy to `upstream` that passes its first request's first whole event and then, on `cut()`, breaks the connection; it
- *  holds its second request until `release()`, and `second` resolves once that one came. `seen` holds each request's
- *  Last-Event-ID. */
+/** A proxy to `upstream`. The first request answered with a stream passes its first whole event and then, on `cut()`,
+ *  loses its connection; the next request (the reconnect) waits until `release()`, and `resumed` resolves with its
+ *  Last-Event-ID once it came. A request answered otherwise passes as it is. `seen` holds each request's Last-Event-ID
+ *  and status, for the failure messages. */
 async function cuttingProxy(t, upstream) {
   const seen = [];
   let cut;
   const cutting = new Promise((resolve) => (cut = resolve));
   let release;
   const gate = new Promise((resolve) => (release = resolve));
-  let arrived;
-  const second = new Promise((resolve) => (arrived = resolve));
+  let reconnected;
+  const resumed = new Promise((resolve) => (reconnected = resolve));
+  let phase = "first";
   const server = createServer(async (req, res) => {
-    const n = seen.push(req.headers["last-event-id"]);
-    if (n === 2) {
-      arrived();
+    const record = { lastEventId: req.headers["last-event-id"] };
+    seen.push(record);
+    if (phase === "cut") {
+      phase = "open";
+      reconnected(record.lastEventId);
       await gate;
     }
     // The server takes only its own Host.
     const up = request(new URL(req.url, upstream), { method: req.method, headers: { ...req.headers, host: new URL(upstream).host } }, (answer) => {
+      record.status = answer.statusCode;
       res.writeHead(answer.statusCode, answer.headers);
-      if (n !== 1 || answer.statusCode !== 200) return void answer.pipe(res);
+      if (phase !== "first" || answer.statusCode !== 200) return void answer.pipe(res);
       let held = "";
       answer.on("data", (chunk) => {
         if (held === null) return;
@@ -92,6 +97,7 @@ async function cuttingProxy(t, upstream) {
         if (end < 0) return;
         const first = held.slice(0, end + 2);
         held = null;
+        phase = "cut";
         answer.destroy();
         res.write(first, () => cutting.then(() => res.destroy()));
       });
@@ -100,7 +106,7 @@ async function cuttingProxy(t, upstream) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => (server.closeAllConnections(), server.close()));
-  return { base: `http://127.0.0.1:${server.address().port}/v2`, seen, cut, second, release };
+  return { base: `http://127.0.0.1:${server.address().port}/v2`, seen, cut, resumed, release };
 }
 
 /** The rows the pages leave, applied in order: upserted by id, the drops removed, a reset dropping all first. */
@@ -159,7 +165,7 @@ test("runs start --wait, runs wait and runs timeline --follow: exit by how the r
     // The stream through a proxy that cuts it once its first page is printed, and holds the reconnect until the answer is in.
     const proxy = await cuttingProxy(t, server.base);
     const following = cli(["runs", "timeline", run.run_id, "--follow", "--base-url", proxy.base], { AGENTRUN_API_KEY: server.token }, (out) => out.includes("\n") && proxy.cut());
-    await proxy.second;
+    const resumedWith = await proxy.resumed;
     const answer = await cli(["runs", "message", run.run_id, "--content", "eu", ...data]);
     assert.equal(answer.code, 0, answer.err);
     proxy.release();
@@ -173,7 +179,7 @@ test("runs start --wait, runs wait and runs timeline --follow: exit by how the r
     const pages = followed.lines();
     assert.ok(pages.length >= 2, "a page before the cut and one after");
     assert.equal(pages[0].status, "input_required");
-    assert.deepEqual(proxy.seen, [undefined, String(pages[0].next_after)], "the reconnect resumed from the last page it had");
+    assert.equal(resumedWith, String(pages[0].next_after), `the reconnect resumed from the last page it had: ${JSON.stringify(proxy.seen)}`);
     assert.ok(pages.slice(1).every((page) => !page.reset), "no page after the cut starts over");
     for (let i = 1; i < pages.length; i++) assert.ok(pages[i].next_after > pages[i - 1].next_after, "each page is past the one before");
     const versions = new Set();
