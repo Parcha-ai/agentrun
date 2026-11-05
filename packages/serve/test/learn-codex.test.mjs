@@ -5,21 +5,19 @@
 // (a loopback server here), which answers each one the same, so the end-of-run turn adds nothing.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { copyFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { note } from "./fixtures/faux-learn.mjs";
 import { ended, learner, made, settled, started } from "./learn-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
-const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 
 test("on codex's real adapter, a run whose job reads a note through the host's read tool used it: its rows name the tool `read` with the path as given, and its learning block, in its view and its list, names the note", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
-  await copyFile(STAND_IN, standIn);
+  await copyStandIn(standIn);
   // serve's gateway: each Responses request streamed back as one short answer with its usage.
   const gateway = createServer(async (req, res) => {
     if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();

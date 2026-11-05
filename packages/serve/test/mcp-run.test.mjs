@@ -6,17 +6,16 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
-const CODEX_STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 /** The fake server's bearer token: no real one. */
 const TOKEN = `not-a-secret-${"mcp-bearer-0123456789"}`;
 /** A server that seals saved credentials, under a seal key of its own. */
@@ -324,7 +323,7 @@ async function echoGateway(t) {
 async function codexServe(t, standInEnv = {}) {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
-  await copyFile(CODEX_STAND_IN, standIn);
+  await copyStandIn(standIn);
   withEnv(t, {
     AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"),
     AGENTRUN_CODEX_STANDIN: "1",
