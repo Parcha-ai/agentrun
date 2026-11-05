@@ -1,0 +1,54 @@
+{
+  "model": "gpt-test",
+  "input": [
+    {
+      "role": "system",
+      "content": "You are the session's agent. INSTRUCTIONS-MARK\nYou are powered by the model named gpt-test. The exact model ID is openai/gpt-test\nHere is some useful information about the environment you are running in:\n<env>\n  Working directory: /workspace\n  Workspace root folder: /\n  Is directory a git repo: no\n  Platform: linux\n  Today's date: Tue Nov 03 2026\n</env>\nSYSTEM-HOOK-MARK"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Echo hi."
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_0",
+      "name": "hands_echo",
+      "arguments": "{\"text\":\"hi\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_0",
+      "output": "echo: hi"
+    }
+  ],
+  "max_output_tokens": 32000,
+  "store": false,
+  "prompt_cache_key": "ses_e5d54ffe6ffegin3vurTaPJg0C",
+  "tools": [
+    {
+      "type": "function",
+      "name": "hands_echo",
+      "description": "Echo the text.",
+      "parameters": {
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "strict": false
+    }
+  ],
+  "tool_choice": "auto",
+  "stream": true
+}

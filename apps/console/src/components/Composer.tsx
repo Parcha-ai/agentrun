@@ -13,7 +13,10 @@ const MODE: Record<MessageMode, { label: string; placeholder: string; does: stri
 
 /** The follow-up box, posting to the same run (`POST /v2/runs/{id}/messages`). Sent is not done: it says "Sent"
  *  until the timeline shows the message. */
-export function Composer({ mode, onSend, sending: sendingProp, sent }: { mode: MessageMode; onSend?: (text: string) => void | boolean | Promise<void | boolean>; sending?: boolean; sent?: boolean }) {
+/** `purpose`: the box's words where the mode's own don't say what a send does (a message that declines a tool call
+ *  waiting on its approval). */
+export function Composer({ mode, onSend, sending: sendingProp, sent, purpose }: { mode: MessageMode; onSend?: (text: string) => void | boolean | Promise<void | boolean>; sending?: boolean; sent?: boolean; purpose?: { label: string; placeholder: string; does: string } }) {
+  const words = purpose ?? MODE[mode];
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const sending = sendingProp || busy;
@@ -27,12 +30,12 @@ export function Composer({ mode, onSend, sending: sendingProp, sent }: { mode: M
   };
   return (
     <form className="border bg-card" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-      <textarea id="composer" rows={2} value={text} readOnly={sending} aria-busy={sending} onChange={(e) => setText(e.target.value)} placeholder={MODE[mode].placeholder}
+      <textarea id="composer" rows={2} value={text} readOnly={sending} aria-busy={sending} onChange={(e) => setText(e.target.value)} placeholder={words.placeholder}
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
         className="block w-full resize-none bg-transparent px-4 pt-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
         <span className="min-w-0 text-[11px] text-muted-foreground">
-          <label htmlFor="composer" className="font-medium text-foreground">{MODE[mode].label}</label> · {sent ? "Sent. It appears on the timeline when the run takes it." : MODE[mode].does}
+          <label htmlFor="composer" className="font-medium text-foreground">{words.label}</label> · {sent ? "Sent. It appears on the timeline when the run takes it." : words.does}
         </span>
         <Button type="submit" size="sm" disabled={!text.trim() || !onSend || sending}>
           {sending ? "Sending" : "Send"} <CornerDownLeft aria-hidden />

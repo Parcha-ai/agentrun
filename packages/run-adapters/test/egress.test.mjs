@@ -9,7 +9,7 @@ import { connect, createServer as createNetServer } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { addressBytes, checkAddress, EGRESS_RANGES, startEgressProxy } from '@parcha/agentrun-kernel/host';
+import { addressBytes, checkAddress, EGRESS_RANGES, parseAllow, startEgressProxy } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-egress-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -605,3 +605,129 @@ test('headers for this hop only never travel on: the fixed hop-by-hop names, and
     await t.close();
   }
 });
+
+// A host list: the box reaches only the names on it, on ports 80 and 443, and a name off it is never looked up.
+const LISTED = { ...NAMES, 'pypi.org': [PUBLIC], 'files.pythonhosted.org': [PUBLIC], 'pythonhosted.org': [PUBLIC], 'pythonhosted.org.evil.com': [PUBLIC], 'example.com': [PUBLIC], 'meta.pypi.org': [METADATA], 'FILES.PythonHosted.ORG.': [PUBLIC], 'pypi.org.': [PUBLIC] };
+const ALLOW = ['pypi.org', '*.pythonhosted.org', 'meta.pypi.org'];
+const HINT = 'use web_fetch for web pages, or ask the operator to add it to AGENTRUN_BOX_ALLOW';
+const listed = (extra = {}) => proxy({ names: LISTED, options: { allow: ALLOW, allowHint: HINT, ...extra } });
+
+test('with a host list, a name off it is refused 403 in plain words before any lookup: the name never leaves the host', async () => {
+  const t = await listed();
+  try {
+    const answer = head((await talk(t.path, CONNECT('example.com:443'), ended)).got);
+    assert.equal(answer.line, `HTTP/1.1 403 example.com is not on this box's network list: ${HINT}`);
+    assert.match(answer.text, /^x-egress-refused: not-listed$/im);
+    assert.match(answer.text, new RegExp(`\r\n\r\nexample\.com is not on this box's network list: ${HINT}\n$`));
+    assert.deepEqual([t.lookups, t.dials], [[], []], 'the lookup seam was never called, and nothing was dialled');
+    assert.deepEqual(t.lines, ['egress connect host="example.com" port=443 ip=- class=not-listed']);
+  } finally {
+    await t.close();
+  }
+});
+
+test('an entry is an exact name or *.suffix (subdomains only), matched in any case and without a trailing dot', async () => {
+  const t = await listed();
+  try {
+    for (const target of ['pypi.org:443', 'files.pythonhosted.org:443', 'FILES.PythonHosted.ORG.:443', 'pypi.org.:80']) {
+      const { got, socket } = await talk(t.path, CONNECT(target), ended);
+      assert.equal(head(got).status, 200, target);
+      socket.destroy();
+    }
+    for (const target of ['pythonhosted.org:443', 'pythonhosted.org.evil.com:443', 'evilpypi.org:443', 'sub.pypi.org:443']) {
+      assert.equal(head((await talk(t.path, CONNECT(target), ended)).got).status, 403, target);
+    }
+    assert.deepEqual(t.lookups, ['pypi.org', 'files.pythonhosted.org', 'FILES.PythonHosted.ORG.', 'pypi.org.'], 'only listed names were looked up');
+  } finally {
+    await t.close();
+  }
+});
+
+test('a listed name that resolves to metadata space is still refused by the address rule', async () => {
+  const t = await listed();
+  try {
+    const answer = head((await talk(t.path, CONNECT('meta.pypi.org:443'), ended)).got);
+    const verdict = checkAddress(addressBytes(METADATA), []);
+    assert.equal(verdict.ok, false);
+    assert.equal(answer.line, `HTTP/1.1 403 Egress refused: ${verdict.class}`);
+    assert.deepEqual([t.lookups, t.dials], [['meta.pypi.org'], []]);
+  } finally {
+    await t.close();
+  }
+});
+
+test('with a host list, an IP literal and any port but 80 and 443 are refused, before any lookup', async () => {
+  const t = await listed();
+  try {
+    const literal = head((await talk(t.path, CONNECT(`${PUBLIC}:443`), ended)).got);
+    assert.equal(literal.line, `HTTP/1.1 403 ${PUBLIC} is an address, not a name on this box's network list: ${HINT}`);
+    assert.equal(head((await talk(t.path, CONNECT('[::ffff:5db8:d70e]:443'), ended)).got).status, 403, 'an IPv6 literal');
+    const port = head((await talk(t.path, CONNECT('pypi.org:22'), ended)).got);
+    assert.equal(port.line, "HTTP/1.1 403 pypi.org:22 is not open on this box's network list, which takes ports 80 and 443 only");
+    const http = head((await talk(t.path, 'GET http://pypi.org:8080/simple/ HTTP/1.1\r\nHost: pypi.org:8080\r\n\r\n')).got);
+    assert.equal(http.status, 403);
+    assert.deepEqual([t.lookups, t.dials], [[], []]);
+    assert.ok(t.lines.every((line) => line.endsWith('class=not-listed')), t.lines.join('\n'));
+  } finally {
+    await t.close();
+  }
+});
+
+test('with a host list, SOCKS5 gets reply 2 for a domain off it or an address, and tunnels a listed name', async () => {
+  const t = await listed();
+  try {
+    const good = await socks(t.path, 1, 3, 'pypi.org', 443);
+    assert.equal(good.reply, 0);
+    good.socket.destroy();
+    assert.equal((await socks(t.path, 1, 3, 'example.com', 443)).reply, 2, 'a domain off the list');
+    assert.equal((await socks(t.path, 1, 1, [93, 184, 215, 14], 443)).reply, 2, 'an address');
+    assert.equal((await socks(t.path, 1, 3, 'pypi.org', 25)).reply, 2, 'another port');
+    assert.deepEqual(t.lookups, ['pypi.org']);
+  } finally {
+    await t.close();
+  }
+});
+
+test('with a host list, plain HTTP to a listed name reaches the origin with no proxy-authorization, and one off it is refused in words', async () => {
+  const t = await listed();
+  try {
+    const answer = head((await talk(t.path, 'GET http://pypi.org/simple/six/ HTTP/1.1\r\nHost: pypi.org\r\nProxy-Authorization: Basic aG9wOm9ubHk=\r\nConnection: close\r\n\r\n')).got);
+    assert.equal(answer.status, 200, answer.line);
+    assert.equal(t.fake.heads.at(-1)['proxy-authorization'], undefined);
+    const off = head((await talk(t.path, 'GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n')).got);
+    assert.equal(off.line, `HTTP/1.1 403 example.com is not on this box's network list: ${HINT}`);
+    assert.deepEqual(t.lookups, ['pypi.org']);
+  } finally {
+    await t.close();
+  }
+});
+
+test('with no hint the refusal still names the list; an empty list refuses every host', async () => {
+  const t = await proxy({ names: LISTED, options: { allow: [] } });
+  try {
+    assert.equal(head((await talk(t.path, CONNECT('pypi.org:443'), ended)).got).line, "HTTP/1.1 403 pypi.org is not on this box's network list");
+    assert.deepEqual(t.lookups, []);
+  } finally {
+    await t.close();
+  }
+});
+
+test('parseAllow takes names and *.suffixes (a list or a comma list), lowercase and without a trailing dot, and refuses anything else by name', () => {
+  assert.deepEqual(parseAllow('PyPI.org., *.PythonHosted.org ,registry.npmjs.org'), ['pypi.org', '*.pythonhosted.org', 'registry.npmjs.org']);
+  assert.deepEqual(parseAllow(['pypi.org', 'pypi.org']), ['pypi.org']);
+  assert.deepEqual(parseAllow(''), []);
+  for (const bad of ['*', '*.', '*.org', 'pypi org', 'http://pypi.org', 'pypi.org:443', '*.*.org', '-bad.org', `${PUBLIC}`, '::1', 'localhost', 'a..b']) {
+    assert.throws(() => parseAllow([bad]), (error) => error.message.startsWith(`the network list's entry ${JSON.stringify(bad)} is not`), bad);
+  }
+  assert.throws(() => parseAllow(['*.org']), /a name with at least two labels/);
+});
+
+test('a hint that a status line cannot carry (a control character, or anything past printable ASCII) refuses the start', async () => {
+  for (const allowHint of ['ask the operator \u2014 please', 'add it\r\nx-injected: yes', 'caf\u00e9']) {
+    const path = socketPath();
+    mkdirSync(join(path, '..'), { recursive: true });
+    await assert.rejects(startEgressProxy({ socketPath: path, maxTunnels: 1, maxConnections: 1, log: () => {}, allow: ['pypi.org'], allowHint }), /allowHint holds a character a status line cannot carry/, JSON.stringify(allowHint));
+    assert.equal(existsSync(path), false, 'no socket was made');
+  }
+});
+

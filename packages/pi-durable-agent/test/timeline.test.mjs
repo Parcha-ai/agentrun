@@ -807,7 +807,7 @@ test("a subagent's subagent shows under the call that spawned it", () => {
   ]);
 });
 
-test("no URL value reaches a row, whichever path wrote it; only a user's own text stays as typed", () => {
+test("no URL value from what the model read reaches a row, whichever path wrote it; a user's own message and the agent's own text keep theirs whole", () => {
   const at = (id) => `https://x.example/${id}?token=SECRET${id}`;
   const entries = [
     user(`Open ${at(1)}`, 0),
@@ -837,9 +837,13 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own tex
   for (const rows of [timelineOf(entries), reducer.rows()]) {
     const [typed] = rows.filter((row) => row.kind === "user_message");
     assert.ok(typed.text.includes("SECRET1"), "the person's own text stays as typed");
-    const rest = JSON.stringify(rows.map((row) => (row === typed ? { ...row, text: null } : row)));
+    assert.ok(typed.summary.includes(`Open ${at(1)}`), `the person's own summary stays as typed: ${typed.summary}`);
+    // The agent's own words (its text before a call, its answer, a live text block) show their URLs whole.
+    const own = rows.filter((row) => row.kind === "text_block" || row.kind === "final_answer");
+    const said = JSON.stringify(own.map((row) => [row.summary, row.text]));
+    for (const id of [5, 14]) assert.ok(said.includes(at(id)), `the agent's own text keeps ${at(id)} whole: ${said}`);
+    const rest = JSON.stringify(rows.map((row) => (row === typed ? { ...row, text: null, summary: null } : own.includes(row) ? { ...row, text: null, summary: null } : row)));
     assert.deepEqual(rest.match(/SECRET\d+/g), null);
-    assert.ok(rest.includes("https://x.example/14?token=…"));
   }
   const nested = JSON.stringify(reducer.rows());
   for (const id of [17, 21]) assert.ok(nested.includes(`https://x.example/${id}?token=…`), `a nested call's ${id === 17 ? "result" : "args"} keep the URL's path`);
@@ -933,4 +937,23 @@ test("a run's process that opened again after the last one ended unfinished is a
   const reducer = timelineReducer();
   reducer.apply([{ type: "snapshot", entries }]);
   assert.deepEqual(marks(reducer.rows()), marks(rows), "live, the same rows");
+});
+
+test("a message after an adapter turn's end is the person's next message, not a steer: a codex turn stopped right after a tool result", () => {
+  const userMessages = (rows) => rows.filter((r) => r.kind === "user_message").map((r) => r.summary);
+  const live = (entries) => {
+    const reducer = timelineReducer();
+    reducer.apply(entries.map((entry) => ({ type: "entry_appended", entry })));
+    return reducer.rows();
+  };
+  // A turn on another harness ends with serve's turn end on the root ("adapter.turn_end"); its last round's tool ran to
+  // the end, and no request was in flight when the stop came.
+  const entries = [
+    user("Write five files", 0),
+    assistant([call("a", "write", { path: "a.md" })], 1),
+    result("a", "write", "ok", 2),
+    custom("adapter.turn_end", { key: "s", status: "interrupted", answer: null, cost: "booked" }),
+    user("Go on.", 3),
+  ];
+  assert.deepEqual([userMessages(timelineOf(entries)), userMessages(live(entries))], [["You: Write five files", "You: Go on."], ["You: Write five files", "You: Go on."]]);
 });

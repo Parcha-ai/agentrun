@@ -1,12 +1,20 @@
+const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
+const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/;
+const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
+const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+/** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
+
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["AWS access key id", /(?:AKIA|ASIA)[0-9A-Z]{16}/],
   ["Google API key", /AIza[0-9A-Za-z_-]{35}/],
   ["private key block", /-----BEGIN[ A-Z0-9]*PRIVATE KEY[ A-Z0-9]*-----/],
-  ["GitHub token", /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/],
-  ["sk- key", /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/],
-  ["Slack token", /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/],
-  ["JWT", /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/],
+  ["GitHub token", GITHUB_TOKEN],
+  ["sk- key", SK_KEY],
+  ["Slack token", SLACK_TOKEN],
+  ["JWT", JWT],
+  ["webhook signing secret", WEBHOOK_SECRET],
   ["URL with a password", /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/],
 ];
 
@@ -19,12 +27,34 @@ type Span = [start: number, end: number];
 function spans(text: string, pattern: RegExp): Span[] {
   const re = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
   const out: Span[] = [];
+  const next = RESUME.get(pattern) ?? ((m: RegExpExecArray) => m.index + 1);
   for (let m = re.exec(text); m; m = re.exec(text)) {
     out.push([m.index, m.index + m[0].length]);
-    re.lastIndex = m.index + 1;
+    re.lastIndex = Math.max(m.index + 1, next(m));
   }
   return out;
 }
+
+const toEnd = (m: RegExpExecArray) => m.index + m[0].length;
+
+/** Where spans() reads on after a match, by shape: past each place inside it where a match would end where it ends, as
+ *  such a match adds nothing to what is redacted. A shape not here reads on from the next character. Without it, a run
+ *  that repeats a shape's start ("sk-sk-sk-…", "github_pat_github_pat_…", a JWT's first part "eyJeyJ…") is read again
+ *  from every repeat.
+ *  - sk- and Slack: a prefix and one greedy run of a class holding the prefix's characters, so a match inside ends at
+ *    the same end.
+ *  - GitHub: the same for github_pat_. A ghp_ run's class has no "_", and a github_pat_ can start in its last characters
+ *    and run past it, so it reads on from the next character.
+ *  - JWT: a match that starts in the first part reads on through the same second and third parts, so it ends where this
+ *    one does; one that starts in the second part can run past it, into a fourth. It reads on from the second part.
+ *  - whsec_: not here. Its run's class has no "_", so a run takes the next secret's "whsec" and stops at its "_": that
+ *    secret starts inside this match and runs past it, and is found only by reading on from the next character. */
+const RESUME = new Map<RegExp, (m: RegExpExecArray) => number>([
+  [SK_KEY, toEnd],
+  [SLACK_TOKEN, toEnd],
+  [GITHUB_TOKEN, (m) => (m[0].startsWith("github_pat_") ? toEnd(m) : m.index + 1)],
+  [JWT, (m) => m.index + m[0].indexOf(".") + 1],
+]);
 
 function places(text: string, form: string): Span[] {
   const out: Span[] = [];

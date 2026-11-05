@@ -64,7 +64,31 @@ describe("createClient", () => {
   });
 });
 
+describe("raiseCap", () => {
+  it("raises a run's spend cap with PATCH /v2/runs/{id} and only max_cost_usd, as same-origin JSON, and answers what the server says", async () => {
+    const answer = { run_id: "r 1", max_cost_usd: 1.03, resumed: true, message_id: "m1", status: "input_required", state: "waiting" };
+    const { fn, calls } = fakeFetch(() => json(200, answer));
+    const v2 = createClient({ fetch: fn });
+    expect(await v2.raiseCap("r 1", 1.03)).toEqual(answer);
+    expect([calls[0].init?.method, calls[0].url, JSON.parse(String(calls[0].init?.body))]).toEqual(["PATCH", "/v2/runs/r%201", { max_cost_usd: 1.03 }]);
+    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("application/json");
+    expect(calls[0].init?.credentials).toBe("same-origin");
+  });
+});
+
 describe("follow", () => {
+  it("with no onRows, follows a run's status alone: each page to onPage, the cursor kept, no rows merged or held", async () => {
+    const first = running.body as unknown as TimelinePage;
+    const done: TimelinePage = { ...first, reset: false, rows: [], unchanged: true, final: true, status: "completed", state: "idle", next_after: first.next_after + 1 };
+    const pages = [first, done];
+    const { fn, calls } = fakeFetch(() => json(200, pages.shift()));
+    const statuses: string[] = [];
+    const out = await follow(createClient({ fetch: fn }), "r1", { onPage: (p) => statuses.push(p.status), waitMs: 1, minDelayMs: 0 });
+    expect(calls.map((c) => new URL(c.url, "http://x").searchParams.get("after"))).toEqual([null, String(first.next_after)]);
+    expect(statuses).toEqual([first.status, "completed"]);
+    expect(out.status).toBe("completed");
+  });
+
   it("applies each page from the previous cursor until the server says final, and never duplicates a row", async () => {
     const first = running.body as unknown as TimelinePage;
     const again: TimelinePage = { ...first, reset: false, rows: first.rows.slice(-1), final: false, next_after: first.next_after + 1 };
@@ -113,6 +137,21 @@ describe("agents", () => {
       expect(c.init?.body).toBe("{}");
       expect(c.init?.credentials).toBe("same-origin");
     }
+  });
+
+  it("retires a learned skill's SKILL.md and a draft's README.md through the note's retire route, slashes percent-encoded, under If-Match", async () => {
+    const { fn, calls } = fakeFetch(() => new Response("---\nname: find-policies\nstatus: retired\n---\n", { status: 200, headers: { "content-type": "text/markdown", etag: '"skill-v2"' } }));
+    const v2 = createClient({ fetch: fn });
+    const done = await v2.retireNote("refunds", "skills/find-policies/SKILL.md", '"skill-v1"');
+    await v2.retireNote("refunds", "workflows/check-refunds/README.md", '"readme-v1"');
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual([
+      "POST /v2/agents/refunds/learning/files/skills%2Ffind-policies%2FSKILL.md/retire",
+      "POST /v2/agents/refunds/learning/files/workflows%2Fcheck-refunds%2FREADME.md/retire",
+    ]);
+    expect(new Headers(calls[0].init?.headers).get("if-match")).toBe('"skill-v1"');
+    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"readme-v1"');
+    expect(calls[0].init?.credentials).toBe("same-origin");
+    expect(done).toEqual({ note: "---\nname: find-policies\nstatus: retired\n---\n", etag: '"skill-v2"' });
   });
 
   it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {

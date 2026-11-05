@@ -4,10 +4,12 @@ export { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool }
 export type { DelegateAgent, DelegateEvent, DelegateOptions } from "./delegate.js";
 export { HarnessRunError, SessionFenced } from "./errors.js";
 export { toolSchemaProblems } from "./schema-check.js";
-export { READ_SKILL_FILE, readSkillFileTool, skillProblems } from "./skill-files.js";
+export { READ_SKILL_FILE, readSkillFileTool, SKILL_BYTES, skillProblems } from "./skill-files.js";
 export type { HostSkill, SkillFileList } from "./skill-files.js";
 export type { HarnessRunReason } from "./errors.js";
-export { HOST_RESULT_MAX_CHARS } from "./types.js";
+export { CONTENT_FILTERED, HOST_RESULT_MAX_CHARS } from "./types.js";
+export { bookRequest, isConnectCode, isGatewayTimeout, rejectionCode } from "./booking.js";
+export type { Booked, Ended, Priced } from "./booking.js";
 export type {
   AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, HarnessEvent, HostTool, McpCallResult, McpTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage,
   NodeRequest, SessionIO, SessionMcp, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,

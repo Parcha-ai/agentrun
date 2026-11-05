@@ -16,7 +16,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { constants } from 'node:os';
-import { commandsOf, testShards } from './ci-plan.mjs';
+import { commandsOf, testShards, timingDrift } from './ci-plan.mjs';
 
 const limit = (name, fallback) => {
   const value = process.env[name] ?? String(fallback);
@@ -76,6 +76,7 @@ async function run(command, ms) {
 const minutes = (ms) => Number((ms / 60_000).toFixed(1));
 const ends = Date.now() + SHARD_TIMEOUT_MS;
 const failed = [];
+const shardStarted = Date.now();
 for (const command of commands(shard)) {
   if (Date.now() >= ends) {
     console.log(`::error::ci-shard: ${shown(command)} was not run: the shard's ${minutes(SHARD_TIMEOUT_MS)}-minute limit had passed`);
@@ -89,4 +90,9 @@ for (const command of commands(shard)) {
   if (status === 'killed') console.log(`::error::ci-shard: ${shown(command)} ran ${minutes(Date.now() - started)} min and was killed at the shard's ${minutes(SHARD_TIMEOUT_MS)}-minute limit`);
   if (status !== 0) failed.push(shown(command));
 }
+// Its time against its model, whatever the result: a shard far over it means scripts/ci-timings.json is stale.
+const took = Math.round((Date.now() - shardStarted) / 1000);
+console.log(`ci-shard: ${wanted} ran ${took} s, modelled ${shard.seconds} s`);
+const drift = timingDrift(wanted, shard.seconds, took);
+if (drift) console.log(drift);
 if (failed.length) { console.error(`failed: ${failed.join(', ')}`); process.exit(1); }

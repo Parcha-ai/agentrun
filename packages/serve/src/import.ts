@@ -5,7 +5,7 @@
 // Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, type Stats } from "node:fs";
+import { existsSync, readFileSync, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -15,15 +15,18 @@ import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResu
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE, type StoredMetrics } from "@parcha/pi-durable-agent";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "@parcha/pi-durable-agent/timeline";
-import { defaultData, readJson, RUN_META } from "./files.js";
+import { DOOR_TOKEN_FILE, defaultData, readJson, RUN_META, TOKEN_FILE } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, foundIn, hoursOf, summaryLines } from "./import-summary.js";
 import { catalogPrices, type Listed } from "./model.js";
+import { SESSION_SECRET_FILE } from "./owner.js";
 import { logLine } from "./print.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
-import { ToolKeys } from "./tool-keys.js";
+import { SEAL_KEY_ENV, ToolKeys } from "./tool-keys.js";
+import { WEBHOOK_FILE, webhookSecretIn } from "./webhooks.js";
+import { triggerSecretsIn } from "./trigger-secrets.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
@@ -56,6 +59,8 @@ export type ImportOptions = {
   env: NodeJS.ProcessEnv;
   /** The tool keys saved through the settings API, opened (tool-keys.ts' `values`): cut out by the same rule. */
   stored?: Record<string, string>;
+  /** The secrets this server made and keeps (`ownSecrets`), cut out by their values as the environment's are. */
+  own?: readonly string[];
   now?: number;
   /** The temp directory whose projects are left out (default the OS's). */
   temp?: string;
@@ -114,8 +119,9 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const redactedId = (id: string) => `redacted-${hash(id).slice(0, 16)}`;
 /** A file's size and time, as an import read it: the same after means the same content was read. */
 const stampOf = (stats: { size: number; mtimeMs: number }) => `${stats.size}:${stats.mtimeMs}`;
-const keptId = (envs: readonly NodeJS.ProcessEnv[]) => {
-  const { text } = secretCut(envs, SECRET_NAMES);
+const keptId = (envs: readonly NodeJS.ProcessEnv[], own: readonly string[] = []) => {
+  const { text, add } = secretCut(envs, SECRET_NAMES);
+  add(own);
   // A key secretlint finds in the id itself (a session named after its file); a count, whose ids are kept by no run, asks
   // no scan.
   return async (id: string, scan = true) => (text(id) === id && !(scan && (await secretsIn(id)).length) ? id : redactedId(id));
@@ -211,10 +217,10 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, deleted = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, signal, keys: scan = true, onKeys }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, deleted = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, own = [], signal, keys: scan = true, onKeys }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
   // import's run then goes by the id as kept.
-  const idOf = keptId([env, stored ?? {}]);
+  const idOf = keptId([env, stored ?? {}], own);
   const skipped: Skipped[] = [];
   const seen = store ? await filesIn(store) : new Map<string, SourceFile & { run: string }>();
   let already = 0;
@@ -312,6 +318,8 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   // Every key the import would cut, found first, as the import finds it before it writes anything: then the counts.
   const heldBy = store ? importedIn(store) : undefined;
   const foundKeys = (keys: readonly string[]) => (counting.add(keys), onKeys?.(keys));
+  // This server's own secrets first, as the import takes them.
+  foundKeys(own);
   await findKeys(plan, foundKeys, counting.text, (listed) => heldBy?.get(`${listed.source}:${listed.id}`) !== undefined, signal);
   // Measured in the import's own order, a record or response counted once across files, each session with its
   // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
@@ -860,6 +868,27 @@ async function writeMeta(dir: string, session: Session, read: SourceFile, json: 
   await chmod(metaPath, 0o600);
 }
 
+/** The secrets this server made and keeps in data directory `data`, by value: its API token (`ar_local_...`) and its
+ *  door token (server.ts), its sign-in sessions' secret (owner.ts), its webhook's signing secret (`whsec_...`;
+ *  webhooks.ts) and each webhook trigger's (trigger-secrets.ts), opened with the seal key of `env`, so left out when that key is not there. One pasted into a session is
+ *  this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a run's own
+ *  door token (one file a run; not read at each import), and a key-shaped value this server did not make (a `whsec_`
+ *  from elsewhere). A webhook secret that does not open is said to `say`, as ToolKeys says a saved key that does not:
+ *  the import goes on, and does not cut it. */
+export function ownSecrets(data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): string[] {
+  const read = (name: string) => {
+    try {
+      return readFileSync(join(data, name), "utf8").trim();
+    } catch {
+      return "";
+    }
+  };
+  const webhook = webhookSecretIn(data, env);
+  if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
+  const values = [read(TOKEN_FILE), read(DOOR_TOKEN_FILE), read(SESSION_SECRET_FILE), webhook && "secret" in webhook ? webhook.secret : "", ...triggerSecretsIn(data, env)];
+  return [...new Set(values)].filter((value) => value.length >= 8 && !/\s/.test(value));
+}
+
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. A run an earlier import made whose
  *  transcript never landed (the process stopped between the two) has it written now. */
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
@@ -867,6 +896,8 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
   const { text, json } = cut;
   // Each key found is the import's to cut, and the CLI's to cut out of what it prints.
   const add = (keys: readonly string[]) => (cut.add(keys), options.onKeys?.(keys));
+  // This server's own secrets, then every key the import finds.
+  add(options.own ?? []);
   const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
@@ -1058,8 +1089,13 @@ export async function importCommand(
   const print = out;
   const lines: string[] = [];
   out = (line: string) => void lines.push(line);
+  // What it says on stderr (a key or a secret that does not open here, its file named) is held and cut the same way, and
+  // printed first.
+  const warnings: string[] = [];
+  const say = (event: string) => (fields: Record<string, string>) => void warnings.push(`agentrun-serve import: ${logLine(event, fields)}`);
   const flush = async () => {
-    printed.add(await secretsIn(lines.join("\n")));
+    printed.add(await secretsIn([...warnings, ...lines].join("\n")));
+    for (const line of warnings.splice(0)) console.error(printed.text(line));
     for (const line of lines.splice(0)) print(printed.text(line));
   };
   try {
@@ -1097,7 +1133,7 @@ export async function importCommand(
     // The tool keys the server keeps in this directory, opened here on the host with the seal key this process was handed:
     // an imported transcript keeps none of them. One that does not open is not known here, so not cut: said, as the
     // server says it at its start.
-    const keys = new ToolKeys(dir, env, (fields) => console.error(`agentrun-serve import: ${logLine("tool_keys", fields)}`));
+    const keys = new ToolKeys(dir, env, say("tool_keys"));
     keys.view();
     const options: ImportOptions = {
       home,
@@ -1107,6 +1143,7 @@ export async function importCommand(
       temp,
       env,
       stored: keys.values(),
+      own: ownSecrets(dir, env, say("webhook_secret")),
     };
     // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
     // keeps is.

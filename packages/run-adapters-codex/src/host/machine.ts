@@ -187,6 +187,23 @@ function start(options: MachineSpawn, from: Readonly<Record<string, string | und
   };
 }
 
+/**
+ * A child's sends with no `turn/start` once the drive is stopped: no turn starts after a stop. Whether a placed prompt
+ * reached Codex is its rollout's to say (the settle reads it as the session keeps it): Codex answers turn/start before it
+ * writes the user message, so a stop just after the send can kill it with the prompt unrecorded. Every other line goes
+ * unchanged, in order, at once (the stop's own `turn/interrupt` too).
+ */
+export function withoutTurnsAfterStop<P extends Pick<SessionProcess, "send">>(proc: P, signal: AbortSignal): P {
+  const send = proc.send.bind(proc);
+  return {
+    ...proc,
+    send(line: Parameters<P["send"]>[0]) {
+      if (signal.aborted && (line as { method?: unknown })?.method === "turn/start") return true;
+      return send(line);
+    },
+  } as P;
+}
+
 /** A machine factory for sessions under `options.dir`: each acquire makes the directories fresh and starts a proxy. */
 export function localMachine(options: LocalMachineOptions): AcquireMachine {
   const from = options.env ?? process.env;
@@ -253,6 +270,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(options.mcp ? { mcp: mcpRoute(recorded(options.mcp, ctx, () => calls)) } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
+      // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
+      onFiltered: (message) => ctx.halt?.(new Error(message)),
     }, key);
     const lost = new AbortController();
     const children = new Set<SessionProcess>();
@@ -279,7 +298,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-harness-codex: the session machine is closed");
-        const proc = start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch);
+        const proc = withoutTurnsAfterStop(start(spawnOptions, from, root, ceiling, options.confine, options.parentWatch), ctx.signal);
         children.add(proc);
         void proc.exited.then(() => children.delete(proc));
         return proc;

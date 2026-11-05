@@ -199,6 +199,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
       ...(options.proxy.mcp ? { mcp: options.proxy.mcp.handler } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
+      // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
+      onFiltered: (message) => ctx.halt?.(new Error(message)),
       onResponse: ({ path, status }) => {
         if (path !== "/v1/messages/count_tokens" || counted) return;
         counted = true;

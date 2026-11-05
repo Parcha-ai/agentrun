@@ -2,7 +2,7 @@
 // metadata, or the repository's docs about it say "Claude Code". Comments in the copied files keep their upstream's
 // factual wording (they describe that project's code), so the check reads the built code with its comments removed.
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -65,11 +65,13 @@ test('no exported name says it either', async () => {
 
 test("the package's README, changelog and metadata, and the repository's docs about it, say Claude Agent", () => {
   const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  // The changes/ fragment until a release folds it into CHANGELOG.md (read above) and deletes it.
+  const fragment = join(root, '../../changes/run-adapters-claude-agent.md');
   const texts = {
     'README.md': readFileSync(join(root, 'README.md'), 'utf8'),
     'CHANGELOG.md': readFileSync(join(root, 'CHANGELOG.md'), 'utf8'),
     'package.json description and keywords': [manifest.description, ...(manifest.keywords ?? [])].join(' '),
-    'changes/run-adapters-claude-agent.md': readFileSync(join(root, '../../changes/run-adapters-claude-agent.md'), 'utf8'),
+    ...(existsSync(fragment) ? { 'changes/run-adapters-claude-agent.md': readFileSync(fragment, 'utf8') } : {}),
   };
   for (const [where, text] of Object.entries(texts)) assert.equal(text.replace(API_VALUES, '').match(BANNED), null, where);
   assert.match(texts['README.md'], /Claude Agent/);

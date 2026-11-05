@@ -2,6 +2,14 @@
 
 **Experimental.** The API changes without notice between releases.
 
+> **Deprecated, removed in 0.1.0-beta.31:** the session home (`./home`); the launcher (`./launch`, `Box.launcher` and
+> `BoxLauncher`); the placer (`./place`, and from the root `jevPlacer`, `jevClassifier`, `environmentFacts`,
+> `PlacementsDoc`, `writePlacement`, `isPlacementRecord`, `PlacementError` and the `Placement*` and `Placer` types); the
+> move, restore, store and replay checks of `./testing` (`registerMoveConformance`, `registerRestoreConformance`,
+> `registerStoreConformance`, `replayClassifier` and what they take) and its `FakeLaunch`; and the `home`, `auto` and
+> `purpose` config keys, which from 0.1.0-beta.31 fail to parse. To run an agent in a box, use `@parcha/agentrun-serve`:
+> it uses this package's boxes, `./hands` and `./sync`, which stay.
+
 A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it. [Jev](https://docs.typesafe.ai/) is TypeSafe's typed-decision model: it answers a question about a step with a choice and a probability, and writes no prose.
 
 Tool calls can also run as serverless calls on an Archil disk (`archilExecBoxes`).
@@ -21,6 +29,7 @@ tool calls go to the box. Every provider is behind one `Box` interface:
 
 Jev places a call from each environment's one-line `purpose`: the host asks `jevPlacer`, Jev reads the step and those
 lines and says where it should run, and the host points its tools there.
+The placer is deprecated and removed in 0.1.0-beta.31.
 
 The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
 [where tools run](#where-tools-run-is-a-line-of-config),
@@ -169,7 +178,11 @@ empty); `ptraceScope` absent is unknown (do not assume 1 or more); `diskGb` and 
 the time the create call answered). Only Modal reports all of them and can restrict a network to an allowlist, expose ports or give
 `fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest. Daytona takes `network: "none"`
 (`networkBlockAll`) and reports `network: "none"` only once the sandbox's own read says Daytona blocked it; a sandbox it did not block
-(an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. Daytona also
+(an organization on tier 1 or 2, whose own network policy holds) is deleted and the create refused as `unsupported`. It takes an
+allowlist of domains (a `*.` wildcard allowed) as Daytona's domain list (`domainAllowList`, which Daytona's egress proxy enforces,
+re-signing TLS with its own CA) and reports `network: "allowlist"`, with the hosts in `allow`, only once the sandbox's own read
+carries that list (comma-separated, or a list of hosts); a sandbox without it, or with a value that is neither, is deleted and
+the create refused as `unsupported` the same way. A CIDR in the list is refused. Daytona also
 reports `diskGb` and `startedAt`. Local reports `network: "open"` and `startedAt`, the Archil exec box `startedAt`, and those two
 and Daytona refuse every other network, ports and capabilities as `unsupported`.
 
@@ -439,6 +452,9 @@ node --experimental-strip-types examples/01-hands.ts examples/hands.local.json '
 
 ## Moving a home: a store and a workspace
 
+> **Deprecated:** `@parcha/pi-transport/home`, with these movers, is removed in 0.1.0-beta.31. To run an agent in a box,
+> use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
+
 `@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
 nothing of sessions beyond "a SQLite file and a directory". Node only.
 
@@ -580,6 +596,9 @@ The box needs `sh`, GNU `tar` and `find`, and `split`, `sha256sum`, `cut`, `wc` 
 movers do. No name is ever put in a shell string: the box reads the list on its standard input.
 
 ## A home: the session runs somewhere, and can stop without a cut
+
+> **Deprecated:** `@parcha/pi-transport/home`, with everything in this section, is removed in 0.1.0-beta.31. To run an
+> agent in a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
 
@@ -875,6 +894,9 @@ the runner's process: `runMain(app, { recording })`, with `@parcha/agentrun-pi/d
 
 ### Where a session runs: the placer
 
+> **Deprecated:** The placer, with the `auto` and `purpose` config keys, is removed in 0.1.0-beta.31. To run an agent in
+> a box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
+
 A config whose `home` is `auto` lets Jev place the session. Each environment then has a `purpose`, the author's one
 line on what it is for, which is what Jev reads for it (required when auto places the session, never made up from the
 facts); `auto.rest` is where the session goes back when nothing needs it elsewhere (default the first declared
@@ -910,6 +932,9 @@ against Jev, replays in its tests offline.
 
 ## Ownership: one writer per session
 
+> **Deprecated:** `@parcha/pi-transport/home`, with its lease, is removed in 0.1.0-beta.31. To run an agent in a box,
+> use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
+
 `@parcha/pi-transport/home` holds the lease that says which home may write a session. It is a numbered epoch, not a
 timer: the epoch changes only when a host takes, so a slow home is never taken over because a clock ran out.
 
@@ -943,6 +968,9 @@ const taken = await lease.take("session-1", { environment: "gpu", provider: "mod
   making the value current.
 
 ## A session's place in a box (`./place`)
+
+> **Deprecated:** `@parcha/pi-transport/place` is removed in 0.1.0-beta.31. To run an agent in a box, use
+> `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 `boxPlace({ session, provider, spec, environment, ownership, program, models, vault, ... })` is where one session
 lives in a box, for a supervisor that starts, kills and restarts it: the place a reference entry's `demo()` drives.
@@ -1019,6 +1047,9 @@ given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 
 for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
 ## Launch: a program kept alive in a box
+
+> **Deprecated:** `@parcha/pi-transport/launch`, with `Box.launcher`, is removed in 0.1.0-beta.31. To run an agent in a
+> box, use `@parcha/agentrun-serve`: it uses this package's boxes, `./hands` and `./sync`, which stay.
 
 A box has no init system, and a host's `exec` ends when the host goes away. `launch` keeps one program running in a box
 whatever happens to the host. It uploads a small `sh` supervisor and starts it in its own session, so the program
@@ -1189,7 +1220,8 @@ provider.script.on({ op: "create" }, { fail: "unknown", leakBox: true }); // fai
   scripted `exit`, a box that goes `gone` in the middle of an exec, a `refuse`. A match names the op, a box, the nth call, a command
   or any predicate over the call. `fakeClock()` moves time only when a test says (`advance`): delays, `timeoutMs` and a box's
   `maxLifetimeMs` all run on it.
-- Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`)
+- Deprecated, removed in 0.1.0-beta.31 with the launcher: `FakeLaunch` and the launcher half of the fake that this
+  bullet describes. Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`)
   run over it with no exec of a launcher program. A launch has a scriptable state (`phase`, `incarnation`, `restarts`, `lastExit`),
   restarts under the spec's policy (`restart`, `restartDelayMs`, `restartLimit`, `terminalExits`), the stdin replayed to every
   incarnation, `secrets` on the program's secrets channel, and a stop that drains, runs the `beforeStop` program, then kills. The
