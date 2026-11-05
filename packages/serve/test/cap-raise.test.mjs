@@ -422,3 +422,18 @@ test("a raise is the same cap within a float's tail: a cap a hair above the run'
   const retry = await raise(api, runId, { max_cost_usd: 0.3 });
   assert.deepEqual([first.status, retry.status, retry.body.resumed, retry.body.message_id], [200, 200, true, first.body.message_id], JSON.stringify([first.body, retry.body]));
 });
+
+for (const harness of ["pi", "claude-agent"]) {
+  test(`${harness}: a raise's follow-up shows as the server's, "AgentRun: The cap was raised to $1; continue the task.", never as the person's "You: …"`, { timeout: 120_000 }, async (t) => {
+    const { api } = await serve(t, { faux: OUTPUT_PRICED, ...(harness === "pi" ? {} : { fauxHarness: FAUX_HARNESS }) });
+    assert.equal((await api("POST", "/agents", agent(`said-${harness}`, { ...(harness === "pi" ? {} : { harness }), instructions: "Make three requests." }))).status, 201);
+    const { run_id } = (await api("POST", `/agents/said-${harness}/runs`, { input: { content: "go" }, max_cost_usd: 0.05 })).body;
+    await follow(api, run_id, SETTLED, { deadlineMs: 60_000 });
+    assert.equal((await view(api, run_id)).pending?.kind, "budget", "paused at its cap");
+    assert.equal((await raise(api, run_id, { max_cost_usd: 1 })).status, 200);
+    const { rows } = await follow(api, run_id, ENDED, { deadlineMs: 60_000 });
+    assert.equal((await view(api, run_id)).status, "completed");
+    assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: go"], "the person's one message");
+    assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary?.startsWith("AgentRun:")).map((r) => [r.summary, r.text]), [[`AgentRun: ${CONTINUE("$1")}`, CONTINUE("$1")]], "the server's row");
+  });
+}
