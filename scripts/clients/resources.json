@@ -8,7 +8,8 @@
   },
   "omit": {
     "approveLearningFile": "It takes the owner's password session in the console; the server refuses every token on it.",
-    "answerApproval": "Only the owner's password session answers a tool call's approval, on the console's own origin; the server refuses every token on it."
+    "answerApproval": "Only the owner's password session answers a tool call's approval, on the console's own origin; the server refuses every token on it.",
+    "receiveHook": "A sender fires it with a request signed by the trigger's secret and no token; the CLI sends the server's token, so it has no command."
   },
   "commands": {
     "getCapabilities": ["server", "capabilities"],
@@ -67,6 +68,7 @@
     "deleteTrigger": ["triggers", "delete"],
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
+    "rotateTriggerSecret": ["triggers", "rotate-secret"],
     "listToolKeys": ["tool-keys", "list"],
     "saveToolKey": ["tool-keys", "save"],
     "deleteToolKey": ["tool-keys", "delete"],
