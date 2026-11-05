@@ -67,13 +67,14 @@ test("a call cancelled during the wait starts no init of its own, and a reason t
   assert.deepEqual(c.calls, { create: 1, wait: 1 });
 });
 
-test("a second refusal is the browser still busy: browser_unavailable, retryable, naming the host and the 60 s it waited", async () => {
+test("a second refusal is the browser still busy: browser_unavailable, retryable, naming no address, and the 60 s it waited", async () => {
   const c = creates(busy(), busy());
   await assert.rejects(createSealed(c.create, c.wait, "127.0.0.1:41234"), (error) => {
     assert.ok(error instanceof BrowserFailureError);
     assert.equal(error.failure.code, "browser_unavailable");
     assert.equal(error.failure.retryable, true);
-    assert.match(error.message, /^The browser at 127\.0\.0\.1:41234 is still finishing an earlier connection after 60 s\./);
+    assert.match(error.message, /^The browser is still finishing an earlier connection after 60 s\./);
+    assert.doesNotMatch(error.message, /127\.|:41234/, "no address");
     return true;
   });
   assert.deepEqual(c.calls, { create: 2, wait: 1 });
@@ -85,11 +86,12 @@ test("any other error from the second create is thrown as it is", async () => {
   await assert.rejects(createSealed(c.create, c.wait, "h"), (error) => error === other);
 });
 
-test("a failed attach step names the host it went to and keeps the original as its cause; a step that succeeds is untouched", async () => {
+test("a failed attach step says what failed and never where: the host stays in the cause, the text has no address; a step that succeeds is untouched", async () => {
   const step = attachStep("10.0.0.5:9222");
   const cause = { toString: () => "[object Object]" };
-  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser at 10.0.0.5:9222 failed: [object Object]" && error.cause === cause);
-  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser at 10.0.0.5:9222 failed: ECONNREFUSED");
+  await assert.rejects(step(Promise.reject(cause)), (error) => error.message === "attaching to the browser failed: [object Object]" && error.cause === cause);
+  await assert.rejects(step(Promise.reject(new Error("ECONNREFUSED"))), (error) => error.message === "attaching to the browser failed: ECONNREFUSED");
+  await assert.rejects(step(Promise.reject(new Error("the CDP socket to 127.0.0.1:9222 failed"))), (error) => error.message === "attaching to the browser failed: the CDP socket to the browser failed");
   assert.equal(await step(Promise.resolve(7)), 7);
 });
 

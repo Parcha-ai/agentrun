@@ -106,11 +106,38 @@ export function isRefusal(error: unknown): boolean {
   return status === 401 || status === 403;
 }
 
+/** The loopback name, with a port or without. */
+const LOOPBACK = "localhost"; // key-gate: loopback-rule the loopback name an attach failure leaves out
+const LOOPBACK_NAME = new RegExp(`\\b${LOOPBACK}(:\\d+)?\\b`, "gi");
+/** `text` with every address taken out: a URL (a vendor's connect URL, its signing query with it), an IP address, a
+ *  bracketed IPv6 one, the loopback name, and a host's port. What is left still says what failed. */
+export function withoutAddresses(text: string): string {
+  return text
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s'"<>)]+/gi, "the browser")
+    .replace(/\[[0-9a-f:.]+\](:\d+)?/gi, "the browser")
+    .replace(/\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b/g, "the browser")
+    .replace(LOOPBACK_NAME, "the browser")
+    .replace(/\b([a-z0-9-]+\.)+[a-z]{2,}:\d+\b/gi, "the browser")
+    .replace(/\bport \d+\b/gi, "its port");
+}
+
+/** A failure to attach to a session's browser, in words that name no host, port or URL: those stay in its cause and in
+ *  the operator's log (a PI_BROWSER_ATTACH warning, which a host writes to its own log, never to a model). */
+export class AttachFailureError extends Error {
+  constructor(error: unknown, where?: string) {
+    const said = error instanceof Error ? withCause(error.message, field(error, "cause")) : String(error);
+    super(`attaching to the browser failed: ${withoutAddresses(said)}`, { cause: error });
+    this.name = "AttachFailureError";
+    process.emitWarning(`pi-browser: attaching to the browser${where ? ` at ${where}` : ""} failed: ${said.replace(/\?[^\s'"<>)]*/g, "")}`, { code: "PI_BROWSER_ATTACH" });
+  }
+}
+
 export function classifyBrowserError(error: unknown, effectful: boolean, facts: FailureFacts = {}): BrowserFailure {
-  // Stagehand wraps SDK failures with { cause }: the HTTP status and the real message live on the cause.
+  // Stagehand wraps SDK failures with { cause }: the HTTP status and the real message live on the cause. An attach
+  // failure's cause holds the address its own words leave out, so its words are told alone.
   const cause = field(error, "cause");
   const own = error instanceof Error ? error.message : String(error);
-  const message = (facts.redact ?? ((text: string) => text))(withCause(own, cause));
+  const message = (facts.redact ?? ((text: string) => text))(error instanceof AttachFailureError ? own : withCause(own, cause));
   const fact = transportFactOf(error);
   const status = statusOf(error, fact);
   const effect = effectful ? "possibly_effected" : "none";

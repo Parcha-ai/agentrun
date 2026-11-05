@@ -1,7 +1,7 @@
 // The steps of attaching a sealed Stagehand that can fail on their own: naming where a failed step went, stopping a
 // cancelled attach, and creating the instance once more when the extension is still running an earlier attach's init.
 import { BrowserFailureError } from "../core/custody.js";
-import { browserFailure } from "../core/failures.js";
+import { AttachFailureError, browserFailure } from "../core/failures.js";
 
 /** What Stagehand's extension answers an init while another is still running in it. */
 export const INIT_IN_PROGRESS = "Stagehand initialization is already in progress";
@@ -14,10 +14,11 @@ export const initInProgress = (error: unknown): boolean => {
   return !!cause && typeof cause === "object" && typeof cause.code === "number" && cause.message === INIT_IN_PROGRESS;
 };
 
-/** A failed attach step names where it went: Stagehand reports a failed open as "[object Object]", and the socket's error
- *  has no address. */
+/** A failed attach step says what failed, never where: the host it went to (a local browser's loopback port, a vendor's
+ *  connect host) goes to the operator's log and stays in the cause (failures.ts AttachFailureError). Stagehand reports a
+ *  failed open as "[object Object]", and the socket's error has no address. */
 export const attachStep = (host: string) => <T>(step: Promise<T>): Promise<T> => step.catch((error) => {
-  throw new Error(`attaching to the browser at ${host} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  throw new AttachFailureError(error, host);
 });
 
 /** A cancelled call never starts an init of its own, however the wait ended. */
@@ -42,6 +43,7 @@ export async function createSealed<S>(create: () => Promise<S>, waitForThatInit:
     return await create();
   } catch (again) {
     if (!initInProgress(again)) throw again;
-    throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser at ${host} is still finishing an earlier connection after ${IN_FLIGHT_INIT_MS / 1_000} s. Call again in a moment, or call browser_relaunch for a fresh session.`, { retryable: true }));
+    process.emitWarning(`pi-browser: the browser at ${host} is still finishing an earlier connection after ${IN_FLIGHT_INIT_MS / 1_000} s`, { code: "PI_BROWSER_ATTACH" });
+    throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser is still finishing an earlier connection after ${IN_FLIGHT_INIT_MS / 1_000} s. Call again in a moment, or call browser_relaunch for a fresh session.`, { retryable: true }));
   }
 }

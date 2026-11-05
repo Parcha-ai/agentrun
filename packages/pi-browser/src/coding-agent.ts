@@ -10,7 +10,7 @@ import {
   BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
   type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput,
 } from "./core/custody.js";
-import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
+import { AttachFailureError, browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
 import type { AttachTarget, BrowserConfig, BrowserPolicy, BrowserProvider, HandoffOutcome, HandoffPort, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort, WorkspaceFiles } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
@@ -156,7 +156,10 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     const signal = AbortSignal.any([this.d.signal, AbortSignal.timeout(CREATE_DEADLINE_MS), ...(bound ? [bound] : [])]);
     try {
       if (!live.driver) {
-        const target = await provider.attach(live.ref, signal);
+        // A provider's own failure to attach names no address to the model (an aborted call stays as it is).
+        const target = await provider.attach(live.ref, signal).catch((error: unknown) => {
+          throw error instanceof BrowserFailureError || (error as { name?: unknown } | null)?.name === "AbortError" ? error : new AttachFailureError(error);
+        });
         // A kept sign-in is put back before the driver, and so before any page, attaches.
         if (afterAttach) await afterAttach(target);
         live.driver = await this.d.driver(target, signal, { batchTimeoutMs: this.d.config.policy.batchTimeoutMs });

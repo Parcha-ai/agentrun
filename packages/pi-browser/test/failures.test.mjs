@@ -193,3 +193,20 @@ test("a refusal is exactly what classifies as auth: a 401 or 403 read from the e
   assert.deepEqual(errors.map(isRefusal), errors.map((error) => code(error) === "auth"));
   assert.deepEqual(errors.map(isRefusal), [true, true, false, false, false, true, true, true, true, false, false, false, false]);
 });
+
+test("an attach failure's words name no address: URLs (a signing query with them), IP addresses, localhost and ports go; what failed stays", async () => {
+  const { withoutAddresses, AttachFailureError } = await import("../dist/core/failures.js");
+  const cases = [
+    ["the CDP socket to 127.0.0.1:9222 failed", "the CDP socket to the browser failed"],
+    ["connect ECONNREFUSED 127.0.0.1:41234", "connect ECONNREFUSED the browser"],
+    ["Failed to open wss://connect.example.com/?signingKey=SECRET", "Failed to open the browser"],
+    ["the browser on port 41234 is not the browser this lease's profile records", "the browser on its port is not the browser this lease's profile records"],
+    ["dial [::1]:9 refused, then localhost:9", "dial the browser refused, then the browser"],
+    ["getaddrinfo failed for connect.example.com:443", "getaddrinfo failed for the browser"],
+    ["Stagehand initialization timed out after 60000ms", "Stagehand initialization timed out after 60000ms"],
+  ];
+  for (const [given, told] of cases) assert.equal(withoutAddresses(given), told, given);
+  const failure = new AttachFailureError(new Error("the CDP socket to 127.0.0.1:9222 failed"), "127.0.0.1:9222");
+  assert.equal(failure.message, "attaching to the browser failed: the CDP socket to the browser failed");
+  assert.match(failure.cause.message, /127\.0\.0\.1:9222/, "the address stays in the cause");
+});

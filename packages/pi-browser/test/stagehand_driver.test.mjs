@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { classifyBrowserError } from "../dist/core/failures.js";
 import { STAGEHAND_INFERENCE_REFUSED, stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
@@ -129,14 +130,23 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
   }
 });
 
-test("a failed open names the host the process dialed, and keeps the cause so the failure stays typed", async () => {
+test("a failed open tells the model no host, port or URL, a local browser's or a vendor's: the address stays in the cause and the operator's log, and the cause keeps the failure typed", async (t) => {
+  const warned = [];
+  const listen = (warning) => { if (warning.code === "PI_BROWSER_ATTACH") warned.push(warning.message); };
+  process.on("warning", listen);
+  t.after(() => process.off("warning", listen));
   // Both ends are closed loopback ports (nothing leaves the host); the raw URL is on `localhost`, the dial URL on
-  // `127.0.0.1`.
+  // `127.0.0.1`, as a vendor's connect URL carries a signing query.
   const target = { sdkCdpUrl: "ws://localhost:9/s?signingKey=SECRETKEY", dial: { url: "ws://127.0.0.1:9/ws/s?signingKey=SECRETKEY" } };
   const error = await stagehandDriver()(target, new AbortController().signal).then(() => null, (e) => e);
   assert.ok(error instanceof Error, "the attach failed");
-  assert.match(error.message, /attaching to the browser at 127\.0\.0\.1:9 failed/, "the dial host, not the raw URL's");
-  assert.equal(error.message.includes("localhost"), false);
+  assert.match(error.message, /^attaching to the browser failed/);
+  for (const leak of [/127\./, /localhost/, /:\d/, /ws:\/\//, /SECRETKEY/]) assert.doesNotMatch(error.message, leak, `the model's words: ${error.message}`);
   assert.ok(error.cause instanceof Error, "the original error is the cause");
-  assert.equal(error.message.includes("SECRETKEY"), false, "the host only: never the path or the signing query");
+  // What the model is told of it, its detail included: the cause's text is never added back.
+  const told = JSON.stringify(classifyBrowserError(error, false));
+  for (const leak of [/127\./, /localhost/, /:\d/, /ws:\/\//, /SECRETKEY/]) assert.doesNotMatch(told, leak, `the model's failure: ${told}`);
+  await new Promise((done) => setImmediate(done));
+  assert.ok(warned.some((line) => line.includes("127.0.0.1:9")), `the operator's log names where it went: ${warned.join(" | ")}`);
+  assert.ok(!warned.some((line) => line.includes("SECRETKEY")), "never the signing query");
 });
