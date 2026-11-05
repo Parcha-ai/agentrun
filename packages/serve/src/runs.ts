@@ -48,7 +48,8 @@ import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
-import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, sweepRunBoxes } from "./run-box.js";
+import { destroyRunBoxes, ensureRemoteBox, PullIncomplete, pullRemoteBox, RUN_LABEL, sweepRunBoxes } from "./run-box.js";
+import { BACKGROUND_DIR, endBackground } from "./background.js";
 import { removeEgressDir, RUN_BOX_ALLOW_ENV } from "./box-egress.js";
 import type { BoxProvider } from "@parcha/pi-transport";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -1197,6 +1198,17 @@ export class Runs {
     const remote = remotePlace(place);
     const boxes = remote ? this.options.remoteBoxes : this.options.runBoxes;
     if (!boxes) return;
+    // Its background processes first (background.ts), so each one's exit code and whole log are in work/ before the
+    // pull and the destroy. A bound box with no work/background/ started none, and costs no command here. A failure only
+    // warns: the destroy ends them all the same.
+    if (remote || existsSync(join(run.dir, "work", BACKGROUND_DIR))) {
+      try {
+        const ended = await endBackground(boxes, { [RUN_LABEL]: run.id }, boxContext());
+        if (ended) this.options.log?.("background_ended", { run: run.id, ended });
+      } catch (error) {
+        warn(run.id, `its background processes were not ended before its box goes (${(error as Error).message}); destroying the box ends them`);
+      }
+    }
     if (remote) {
       try {
         await this.pullBox(run, true);

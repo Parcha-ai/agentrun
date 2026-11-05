@@ -4,20 +4,21 @@
 // wrapped so a refusal names the path the call gave (asGivenRefusals), and the extension keeps everything else pi's
 // carries (its name, so a conversation selects it as before).
 //
-// A run whose place is a box gets codingSource's instead: pi's own read, write, edit and bash, each call made on the
-// box's environment (run-box.ts), so the shell exists only in the box. One source feeds pi's tool table (tools.ts,
+// A run whose place is a box gets codingSource's instead: pi's own read, write, edit and bash, and the background tools
+// (background.ts), each call made on the box's environment (run-box.ts), so the shell exists only in the box. One source feeds pi's tool table (tools.ts,
 // app.ts) and another harness's host tools (host-tools.ts).
 //
 // Where the box binds the run's work/ from this machine and the confinement holds directory handles (Docker on Linux),
 // read, write and edit run on this machine instead, on the bind's source (bound-files.ts): a command in the box costs
-// far more than a file read. bash always runs in the box, and every tool of any other box (or of any host that reaches
-// directories by path) does too.
+// far more than a file read. bash and the background tools always run in the box, and every tool of any other box (or of
+// any host that reaches directories by path) does too.
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Extension, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { FileError } from "@earendil-works/pi-durable/env";
 import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
 import { ArchilCodingTools } from "@parcha/pi-durable-disk";
+import { BACKGROUND_TOOLS, backgroundTools } from "./background.js";
 import { boundFiles } from "./bound-files.js";
 import { BOX_WORK, type Place } from "./place.js";
 import { asGivenRefusals, refuseOutsideWorkspace } from "./workspace-paths.js";
@@ -31,8 +32,12 @@ const pis = ArchilCodingTools as unknown as Extension;
  *  call gave (`asGivenRefusals`): the model reads that refusal, and the run's timeline shows it. */
 export const CodingTools: Extension = { ...pis, tools: asGivenRefusals((pis.tools ?? []).filter((tool) => tool.name !== "bash")) };
 
-/** The tools a box runs: pi's, by name. */
-export const BOXED_TOOLS: readonly string[] = ["read", "write", "edit", "bash"];
+/** pi's tools a box runs, by name. */
+const PI_BOXED: readonly string[] = ["read", "write", "edit", "bash"];
+/** The tools that run a command in the box, never on this machine: bash, and the background tools (background.ts). */
+export const SHELL_TOOLS: readonly string[] = ["bash", ...BACKGROUND_TOOLS];
+/** The tools a box runs, by name: pi's four and the background tools. */
+export const BOXED_TOOLS: readonly string[] = [...PI_BOXED, ...BACKGROUND_TOOLS];
 
 /** A run's coding tools and the extension a conversation selects for them. */
 export type CodingSource = { readonly extension: Extension; readonly tools: readonly ToolRegistration[] };
@@ -61,13 +66,14 @@ export function boxPath(path: string, hostWork?: string): string | undefined {
 }
 
 /** A run's coding tools by its place: on the runner, CodingTools (no bash); in a box, pi's read, write, edit and bash,
- *  each with its arguments, output and replay as pi ships it and its environment the box's. A file tool's path stays in
- *  the box's work dir; bash's command is the box's own. */
+ *  each with its arguments, output and replay as pi ships it and its environment the box's, and the background tools
+ *  (background.ts), each call a command in the box. A file tool's path stays in the box's work dir; bash's command is
+ *  the box's own. */
 export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
   if (place.mode === "runner") return { extension: CodingTools, tools: CodingTools.tools ?? [] };
   if (!box) throw new Error("a run whose place is a box needs its box for its coding tools");
   const here = box.hostWork && writesHeld() ? boundFiles(box.hostWork) : undefined;
-  const tools = asGivenRefusals((pis.tools ?? []).filter((tool) => BOXED_TOOLS.includes(tool.name)).map((tool): ToolRegistration => ({
+  const tools = asGivenRefusals([...(pis.tools ?? []).filter((tool) => PI_BOXED.includes(tool.name)), ...backgroundTools()].map((tool): ToolRegistration => ({
     ...tool,
     execute: async (args, api, context) => {
       // A file tool's path in the box's words, or refused as the confined tools refuse (refuseOutsideWorkspace): named
@@ -78,7 +84,7 @@ export function codingSource(place: Place, box?: BoxedEnv): CodingSource {
       const given = inBox === undefined ? args : { ...(args as object), path: inBox };
       // read, write and edit on this machine's work/, where the box binds it; no box is made for them. A box an earlier
       // process left has its left commands killed first, so none of them changes work/ under these tools.
-      if (here && tool.name !== "bash" && (await box.bound?.()) === true) {
+      if (here && !SHELL_TOOLS.includes(tool.name) && (await box.bound?.()) === true) {
         await box.leftEnded?.(context);
         return tool.execute(given as typeof args, { ...api, env: here as typeof api.env }, context).catch((error: unknown) => Promise.reject(withCause(error)));
       }
