@@ -26,6 +26,12 @@ export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_
 export type ToolSettings = Record<string, ToolSetting>;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
+/** One of an agent's saved browser sign-ins, as GET /v2/agents/{id} shows it: never its pointer. `held` while a run holds
+ *  its save lease (`held_by`); `unreadable`, its pointer doesn't open under this server's seal key, so runs start signed
+ *  out until it is forgotten. */
+export type SignIn = components["SignIn"];
+/** DELETE /v2/agents/{id}/sign-ins/{key}'s answer: what each vendor did with its object. */
+export type SignInForgotten = Answer<"forgetSignIn">;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
 export type Cost = components["Cost"];

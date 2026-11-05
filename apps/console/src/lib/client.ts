@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, HandBackAnswer, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerInput, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
+import type { ApiError, Firing, HandBackAnswer, RaiseAnswer, Run, RunBrowser, RunFiles, RunStatus, SignInForgotten, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerInput, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -136,6 +136,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       const kept = created.get(id);
       return { agent: kept && kept.revision === r.body.revision && !r.body.warnings ? { ...r.body, warnings: kept.warnings } : r.body, etag: r.etag };
     },
+    /** Forgets one of an agent's saved browser sign-ins (DELETE /agents/{id}/sign-ins/{key}). */
+    forgetSignIn: (id: string, key: string) => call<SignInForgotten>("DELETE", `${agent(id)}/sign-ins/${encodeURIComponent(key)}`),
     createAgent: async (body: { definition: Definition; skills?: Record<string, string> }) => {
       const made = await call<Agent>("POST", "/agents", { body });
       if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
