@@ -408,8 +408,9 @@ input as it goes. Each call is one short command in the run's box, on the same p
   console and the API show each log, during the run and after it.
 - Those files are for people to read: the run's own file tools can write anything in `work/`, so no call trusts one.
   The group a signal goes to, the exit code, the start time, the command and the run's-end mark are kept in the box's
-  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written beside its name and renamed
-  over it, so a link planted there is replaced, never followed. `output.log` is opened first and then checked as opened
+  own directory (its `TMPDIR`, else `/tmp`), out of `work/`; a copy in `work/` is written in that directory and moved
+  over its name from inside `work/background/<id>`, entered and checked by its real path, so a link planted at the name
+  or at the directory is never followed (a failed check skips the copy). `output.log` is opened first and then checked as opened
   (through `/proc`: the file reached is `work/background/<id>/output.log` itself, by its real path, and a regular file),
   and every read is of that open file, so a link swapped in after the check is never read. A link planted at it is
   refused, saying so; so is any log in a box with no `/proc` to check it by. A directory made in `work/background/` that this box

@@ -8,8 +8,8 @@
 // first BACKGROUND_LOG_BYTES of them) and display copies of `command`, `started`, `pid` (the command's process group)
 // and, once it ends, `exit` (its code: 128 + n for signal n). Every file there can be written by the run's own file
 // tools, so no call trusts one: the copies a call reads (the group, the exit code, the start time, the command, the
-// run's-end mark) live in the box-only directory below, a copy in work/ is renamed over its name (never written through
-// a link planted there), and output.log is read only as a regular file reached through no link. The command runs under its own session (`setsid`), from a runner started with
+// run's-end mark) live in the box-only directory below, a copy in work/ is moved over its name from inside its checked
+// directory (never written through a link planted there), and output.log is read only as a regular file reached through no link. The command runs under its own session (`setsid`), from a runner started with
 // `setsid -f nohup`, which writes `exit` once the command's output is all in the log and no live process of its group
 // is left, so a read that sees `exit` sees the whole log, and a child left running keeps the process running. The
 // box-only directory is the box's TMPDIR (else /tmp), under `.agentrun-background/<id>/`, never work/: it holds the
@@ -62,9 +62,10 @@ const SIGNAL_NAMES: Readonly<Record<number, string>> = { 1: "HUP", 2: "INT", 3: 
  */
 const RUNNER = [
   'L=$1; C=$2; cap=$3; echo $$ > "$C/runner"',
-  // A display copy in work/ (put): written beside its name and renamed over it, so a link planted at the name is
-  // replaced, never followed. No call reads one back.
-  `put() { [ -L "$L" ] || [ -L "\${L%/*}" ] && return 0; t=$(mktemp "$L/.put.XXXXXX" 2>/dev/null) || return 0; printf '%s\\n' "$2" > "$t" && mv -f "$t" "$L/$1" 2>/dev/null || rm -f "$t"; }`,
+  // A display copy in work/ (put): written in C, then moved over its name from inside the log's directory, entered with
+  // cd -P and checked to be work/background/<id> itself by its real path, so a link planted at the name, or at the
+  // directory, is never followed. A check that fails skips the copy; no call reads one back.
+  `put() { [ -n "$rw" ] || return 0; t=$(mktemp "$C/.put.XXXXXX" 2>/dev/null) || return 0; printf '%s\\n' "$2" > "$t"; ( cd -P "$L" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/\${L##*/}" ] && mv -f "$t" "./$1" ) 2>/dev/null; rm -f "$t"; return 0; }`,
   // The log is opened once, here, where start has just made it a regular file, then checked as opened: the file the
   // open reached must be work/background/<id>/output.log itself (by its real path, so through no link) and a regular
   // file, else nothing is kept. What later stands at its name is never written through.
@@ -104,8 +105,9 @@ const SCRIPT = [
   // 2: it is not to be read (a link, not a regular file, or a box with no /proc to check it by).
   'openlog() { exec 3<&-; f="$d/$1/output.log"; [ -e "$f" ] || [ -L "$f" ] || return 1; [ -f "$f" ] && [ ! -L "$f" ] && [ -n "$rw" ] || return 2; exec 3< "$f" 2>/dev/null || return 2; [ "$(readlink /proc/self/fd/3 2>/dev/null)" = "$rw/background/$1/output.log" ] && [ -f /proc/self/fd/3 ] || { exec 3<&-; return 2; }; }',
   'size() { if openlog "$1"; then echo $(($(wc -c < /proc/self/fd/3))); exec 3<&-; else echo 0; fi; }',
-  // A display copy in work/ (the runner's put, by id): renamed over its name, never written through a link.
-  `put() { [ -L "$d" ] || [ -L "$d/$1" ] || [ ! -d "$d/$1" ] && return 0; t=$(mktemp "$d/$1/.put.XXXXXX" 2>/dev/null) || return 0; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t" && mv -f "$t" "$d/$1/$2" 2>/dev/null || rm -f "$t"; }`,
+  // A display copy in work/ (the runner's put, by id): written in c, then moved over its name from inside the log's
+  // directory, entered with cd -P and checked to be work/background/<id> by its real path; a failed check skips it.
+  `put() { [ -n "$rw" ] || return 0; t=$(mktemp "$c/.put.XXXXXX" 2>/dev/null) || return 0; if [ "$4" = n ]; then printf '%s\\n' "$3"; else printf '%s' "$3"; fi > "$t"; ( cd -P "$d/$1" 2>/dev/null && [ "$(pwd -P)" = "$rw/background/$1" ] && mv -f "$t" "./$2" ) 2>/dev/null; rm -f "$t"; return 0; }`,
   'known() { [ -d "$c/$1" ] || { [ ! -L "$d" ] && [ -d "$d/$1" ]; }; }',
   'case $op in',
   'start)',
