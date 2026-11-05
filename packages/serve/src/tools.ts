@@ -175,7 +175,7 @@ const browserTool: ToolEntry = {
   // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -193,7 +193,11 @@ const browserTool: ToolEntry = {
       if (refused) throw refused;
       return parts.provider as never;
     };
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
+    // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
+    // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
+    const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
+    const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, ...files });
     const extension = browser.extension as unknown as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {

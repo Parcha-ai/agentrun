@@ -31,7 +31,8 @@ test("the coding tools serve installs have no bash; read, write and edit are pi'
 test("no tool the table binds registers bash on the runner: what each installs and each selects, the file tools' extension being serve's, and bash binds none", async () => {
   const installed = [];
   const host = { where: { work: "/nonexistent", ref: { id: "run" } }, env: {}, coding: codingSource({ mode: "runner" }), install: (extension) => void installed.push(extension), onConversation() {}, beforeResume() {}, beforeRelease() {} };
-  const bound = BOUND_TOOLS.filter((name) => missingEnv(TOOLS[name], {}).length === 0);
+  // Each that runs with no key: the browser needs a vendor's, which its plane says (tool-plane.ts), not its variables.
+  const bound = BOUND_TOOLS.filter((name) => missingEnv(TOOLS[name], {}).length === 0 && name !== "browser");
   for (const name of ["read", "write", "edit", "ask_person", "web_fetch"]) assert.ok(bound.includes(name), `${name} binds with no key`);
   assert.ok(bound.includes("bash"), "bash is in the table, for a box");
   assert.deepEqual(await TOOLS.bash.bind(host), { tools: [], extensions: [] }, "on the runner bash binds nothing");

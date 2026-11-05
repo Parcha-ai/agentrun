@@ -5,11 +5,13 @@
 // key is saved, sealed and checked free like the other tool keys. No network: the vendors are the tests' fakes.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CHECK_MS, checkKey, KEY_CHECKS } from "../dist/key-check.js";
-import { NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
+import { FAUX_ENV } from "../dist/model.js";
+import { keptFromBefore, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
+import { FAUX_BROWSER_ENV, TOOLS } from "../dist/tools.js";
 import { calls as kernelCalls, KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -53,6 +55,28 @@ test("a run's plane names its browser from the server's keys, set or saved; a la
   assert.deepEqual(recheckPlane(kept, BB), { browser: "unavailable: kernel picked, no KERNEL_API_KEY", web_fetch: "kernel" }, "Kernel's key gone: unavailable, and the guarded fetch stays");
   assert.deepEqual(recheckPlane({ browser: "browserbase" }, { BROWSERBASE_API_KEY: "fake-test-key", ...KERNEL }), { browser: "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID" });
   assert.deepEqual(recheckPlane({ browser: NO_CHROME }, { ...BB, ...KERNEL }), { browser: NO_CHROME }, "an unavailable browser stays so");
+  // A run made before its plane was kept, resolved at a later launch: Browserbase, the vendor it had, never today's pick.
+  const today = planeFor({ ...BB, ...KERNEL }, tooling, { browser: { provider: "kernel" } });
+  assert.deepEqual(keptFromBefore(today, { ...BB, ...KERNEL }), { browser: "browserbase", web_fetch: "kernel" });
+  assert.deepEqual(keptFromBefore(today, KERNEL).browser, "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
+  assert.deepEqual(keptFromBefore({ web_fetch: "kernel" }, KERNEL), { web_fetch: "kernel" }, "no browser, none added");
+});
+
+test("the browser lists browser_downloads only on a vendor that keeps a session's downloads: Browserbase does, Kernel does not; upload is listed on both", async (t) => {
+  const { kernelProvider } = await import("@parcha/pi-browser/providers/kernel");
+  const { browserbaseProvider } = await import("@parcha/pi-browser/providers/browserbase");
+  assert.equal(kernelProvider({ env: {} }).downloads, undefined, "Kernel's provider has no downloads");
+  assert.equal(typeof browserbaseProvider({ env: {} }).downloads, "object", "Browserbase's has");
+  const work = await scratch(t);
+  const toolsOf = async (vendor) => {
+    const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }) };
+    const host = { where: { work, ref: { id: "run" } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {} };
+    return (await TOOLS.browser.bind(host)).tools.map((tool) => tool.name);
+  };
+  const kernel = await toolsOf("kernel");
+  assert.ok(kernel.includes("browser_upload") && !kernel.includes("browser_downloads"), kernel.join(", "));
+  const bb = await toolsOf("browserbase");
+  assert.ok(bb.includes("browser_upload") && bb.includes("browser_downloads"), bb.join(", "));
 });
 
 test("Kernel's key check: one free call, a list of at most one browser, on the key, given 5 s, at the base the provider sends to; 401 refuses the key in plain words", async () => {
@@ -121,4 +145,28 @@ test("pick the browser through the API: a Kernel key saved and checked, Kernel p
   const refused = await api("POST", "/agents/kern/runs", { input: { content: "Browse the example page." } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
   assert.match(refused.body.error.message, /The tool browser does not run here on pi: a local Chrome is not set up on this server\./);
+});
+
+test("a run made before the browser was pickable keeps Browserbase when it is launched again, though the server now picks Kernel", { timeout: 90_000 }, async (t) => {
+  const log = join(await scratch(t), "browser.jsonl");
+  withEnv(t, { ...BB, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER, fauxKernel: FAUX_KERNEL });
+  assert.equal((await first.api("POST", "/agents", agent("old", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const started = await first.api("POST", "/agents/old/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { after } = await follow(first.api, started.body.run_id, ["completed"]);
+  await first.close();
+  // As a run made before this server kept its browser: no plane in its serve.json.
+  const file = join(first.data, "runs", started.body.run_id, "serve.json");
+  const { tool_plane: _, ...meta } = JSON.parse(await readFile(file, "utf8"));
+  await writeFile(file, JSON.stringify(meta));
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER, fauxKernel: FAUX_KERNEL });
+  assert.equal((await api("PUT", "/settings/tool-keys/kernel", { values: { KERNEL_API_KEY: KERNEL_KEY } })).status, 204);
+  assert.equal((await api("PUT", "/settings/tools", { browser: { provider: "kernel" } })).status, 200);
+  const before = (await readFile(log, "utf8")).trim().split("\n").length;
+  assert.equal((await api("POST", `/runs/${started.body.run_id}/messages`, { content: "Browse the example page again." })).status, 202);
+  await follow(api, started.body.run_id, ["completed"], { after });
+  const vendors = (await readFile(log, "utf8")).trim().split("\n").slice(before).map((line) => JSON.parse(line)).filter((op) => op.op === "vendor");
+  assert.deepEqual(vendors.map((op) => op.vendor), ["browserbase"], "the vendor it had, never today's pick");
+  assert.equal(JSON.parse(await readFile(file, "utf8")).tool_plane.browser, "browserbase", "and kept so from now on");
 });
