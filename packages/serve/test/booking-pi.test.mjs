@@ -289,3 +289,32 @@ test("a lost attempt's mark that the store takes 3 s to commit (behind a large e
   assert.equal(spentIn(storeOf(t, [...marks, { kind: "pi.assistant", model: [first] }])), 0.001, "read again at its hold");
   assert.equal(END_MARK_WAIT_MS, 15_000, "the store's bound for a mark that carries a hold");
 });
+
+test("an answer whose holding mark the store is slow to take reaches pi only once the mark is in: the done event waits for it, as an error does, so pi's entry always comes after the mark that pairs with it", async () => {
+  const marks = [];
+  // The store takes 200 ms for an end mark.
+  const run = await capped(marks, costless(), (entry) => (entry.kind === REQUEST_ENDED ? new Promise((resolve) => setTimeout(resolve, 200)) : undefined));
+  const stream = run.streamSimple(MODEL, context, {});
+  let atDone;
+  for await (const event of stream) if (event.type === "done") atDone = marks.filter((m) => m.kind === REQUEST_ENDED).map((m) => m.data);
+  assert.deepEqual(atDone, [{ unpriced: true, heldUsd: 0.001 }], "the answer's mark at its hold is in the store when pi has the answer");
+  // A lost attempt's mark, the store as slow: in before the retry is sent, so in before its answer too.
+  {
+    const marks = [];
+    const run = await capped(marks, undefined, (entry) => (entry.kind === REQUEST_ENDED ? new Promise((resolve) => setTimeout(resolve, 200)) : undefined));
+    const stream = run.streamSimple(MODEL, context, options(scripted([STEPS.refused("ECONNRESET"), STEPS.ok])));
+    let lostAtDone;
+    for await (const event of stream) if (event.type === "done") lostAtDone = marks.filter((m) => m.kind === REQUEST_ENDED).map((m) => m.data);
+    assert.deepEqual(lostAtDone, [{ lost: true, heldUsd: 0.001 }], "the lost mark at its hold is in the store when pi has the retry's answer");
+  }
+});
+
+test("a later process reads an answer with no readable cost at its hold when pi wrote its entry in its own order, the moment the answer reached it, with the store slow to take the mark: the restart figure, not a hand-built store", async (t) => {
+  // One list in the order the store took them: the cap's marks as they land, and pi's entry as the done event reaches it.
+  const store = [];
+  const run = await capped(store, costless(), (entry) => (entry.kind === REQUEST_ENDED ? new Promise((resolve) => setTimeout(resolve, 200)) : undefined));
+  for await (const event of run.streamSimple(MODEL, context, {})) if (event.type === "done") store.push({ kind: "pi.assistant", model: [event.message] });
+  // Past every write the store was still taking.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(spentIn(storeOf(t, store)), 0.001, `read again at its hold: ${JSON.stringify(store.map((e) => [e.kind, e.data]))}`);
+});
