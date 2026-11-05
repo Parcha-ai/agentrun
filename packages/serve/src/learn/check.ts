@@ -187,6 +187,23 @@ export function checkNote(path: string, bytes: Uint8Array, refuseValues: readonl
 
 /** Checks what a run proposes against SPEC.md: its notes, and a skill or workflow drafts beside them (learnedChecked).
  *  `MEMORY.md` is the host's: a change to it is ignored, never refused. */
+/** What must never be stored, in every change's name and text, whatever the checks would refuse it for first: the
+ *  name and text scans (nameScanned, textOf) of each change, its text read whole (an edit, a file over its cap, one not
+ *  a regular file included), printable as checkProposal's are. A text that is not UTF-8 is `encoding`: unread, so
+ *  never trusted. Empty when nothing in them must be refused. Ahead of keeping some items of a proposal the checks
+ *  refuse (propose.ts): an item refused before its text was read hides nothing. */
+export function unstorable(changes: readonly Change[], refuseValues: readonly string[] = []): Problem[] {
+  const problems: Problem[] = [];
+  const add: Add = (rule, detail, path) => void problems.push(printable(path === undefined ? { rule, detail } : { rule, path, detail }, refuseValues));
+  const refused = valueMatcher(refuseValues);
+  for (const change of changes) {
+    if (change.path === INDEX_FILE) continue;
+    nameScanned(change.path, refused, add);
+    if (change.bytes) textOf(change.path, change.bytes, refused, add);
+  }
+  return problems;
+}
+
 export function checkProposal(input: CheckInput): ProposalCheck {
   const values = input.refuseValues ?? [];
   const problems: Problem[] = [];

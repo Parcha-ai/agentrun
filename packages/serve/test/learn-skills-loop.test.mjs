@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
+import { CAPS } from "../dist/learn/check.js";
 import { ended, git, learner, LEARN, made, mergesOf, reflectRows, repoOf, savedOf, sleep, started } from "./learn-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
@@ -66,16 +67,19 @@ test("a note, a skill and a workflow draft in one answer: one grader call, one m
   assert.match(view.learning.detail, /Learned: Check units\. Also learned the skill find-policies and the workflow find-policies/);
 });
 
-test("a skill from a run whose job failed is dropped by the checks as skill_outcome, and nothing of the answer is kept", { timeout: 120_000 }, async (t) => {
+test("a skill from a run whose job failed is left out by the checks as skill_outcome, and the rest of its answer goes on to the grader", { timeout: 120_000 }, async (t) => {
   const { api, data, grades } = await server(t);
   await made(api, answering("failing", answer(), ["Fail the job."]));
   const { view } = await ended(api, await started(api, "failing"), ["failed"]);
-  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "checker"], JSON.stringify(view.learning));
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["merged", null], JSON.stringify(view.learning));
   const saved = await savedOf(data, view.run_id);
   assert.deepEqual(saved.learning.problems.map((problem) => [problem.rule, problem.path]), [["skill_outcome", "skills/find-policies/SKILL.md"]]);
-  assert.match(view.learning.detail, /didn't pass the checks on what it learned \(a skill from a run that didn't finish its job\)/);
-  assert.equal(grades(), 0, "no grader call");
-  assert.deepEqual(mergesOf(repoOf(data, "failing"), view.run_id), []);
+  assert.match(view.learning.detail, /Not kept: it didn't pass the checks on what it learned \(a skill from a run that didn't finish its job\)/);
+  assert.equal(grades(), 1, "the rest is graded");
+  const repo = repoOf(data, "failing");
+  assert.equal(mergesOf(repo, view.run_id).length, 1);
+  const tree = git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n");
+  assert.ok(tree.includes("check-units.md") && !tree.includes("skills/find-policies/SKILL.md"), tree.join(","));
 });
 
 /** A draft whose call node fetches the store's page with `tool`. */
@@ -87,7 +91,7 @@ const callDraft = (tool) => {
   return JSON.stringify(doc, null, 2);
 };
 
-test("a draft may name only the agent's own tools, on a call node: with web_fetch granted a draft that runs it merges, and without it the checks refuse it; a model node that names a tool is refused though the agent was granted it", { timeout: 120_000 }, async (t) => {
+test("a draft may name only the agent's own tools, on a call node: with web_fetch granted a draft that runs it merges, and without it the checks leave the draft out and the rest merges; a model node that names a tool is left out though the agent was granted it", { timeout: 120_000 }, async (t) => {
   const { api, data } = await server(t);
   const text = answer({ json: callDraft("web_fetch") });
   await made(api, answering("fetcher", text, [], { tools: ["web_fetch"] }));
@@ -95,29 +99,37 @@ test("a draft may name only the agent's own tools, on a call node: with web_fetc
   assert.equal(granted.view.learning?.state, "merged", JSON.stringify(granted.view.learning));
   await made(api, answering("bare", text));
   const bare = await ended(api, await started(api, "bare"));
-  assert.deepEqual([bare.view.learning?.state, bare.view.learning?.reason], ["dropped", "checker"]);
+  assert.deepEqual([bare.view.learning?.state, bare.view.learning?.reason], ["merged", null]);
+  assert.ok(!git(repoOf(data, "bare"), ["ls-tree", "-r", "--name-only", "main"]).includes("workflows/"), "the draft is not on main");
   const saved = await savedOf(data, bare.view.run_id);
   assert.deepEqual(saved.learning.problems.map((problem) => problem.rule), ["workflow"]);
   assert.match(saved.learning.problems[0].detail, /tool "web_fetch" is not one of the host's tools/);
   // A learned model node runs without tools: one that names web_fetch is refused at learn time, though it is granted.
   await made(api, answering("tooled", answer({ json: draft(["web_fetch"]) }), [], { tools: ["web_fetch"] }));
   const tooled = await ended(api, await started(api, "tooled"));
-  assert.deepEqual([tooled.view.learning?.state, tooled.view.learning?.reason], ["dropped", "checker"], JSON.stringify(tooled.view.learning));
+  assert.deepEqual([tooled.view.learning?.state, tooled.view.learning?.reason], ["merged", null], JSON.stringify(tooled.view.learning));
+  assert.ok(!git(repoOf(data, "tooled"), ["ls-tree", "-r", "--name-only", "main"]).includes("workflows/"), "the tooled draft is not on main");
   const refused = await savedOf(data, tooled.view.run_id);
+  assert.deepEqual(refused.learning.problems.map((problem) => problem.rule), ["workflow"]);
   assert.match(refused.learning.problems[0].detail, /model node at \/root names a tool \(web_fetch\): a learned workflow's model node runs without tools/);
 });
 
-test("the grader drops a draft that singles out one case, and with it the whole answer: nothing merges", { timeout: 120_000 }, async (t) => {
+test("the grader drops a draft that singles out one case: the draft (its workflow.json and README) is left out, and the note and the skill it kept merge", { timeout: 120_000 }, async (t) => {
   const { api, data, grades } = await server(t);
   const text = answer({ json: draft([], "Find the refund policy of the one store in this case, shop.example, and answer 30 days.") });
   await made(api, answering("caser", text, ["Grade: drop workflows/find-policies/workflow.json."]));
   const { view } = await ended(api, await started(api, "caser"));
-  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "grader"], JSON.stringify(view.learning));
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["merged", null], JSON.stringify(view.learning));
   assert.equal(grades(), 1);
   const saved = await savedOf(data, view.run_id);
   const items = Object.fromEntries(saved.learning.verdict.items.map((item) => [item.file, item.keep]));
   assert.deepEqual(items, { "check-units.md": true, "skills/find-policies/SKILL.md": true, "workflows/find-policies/workflow.json": false });
-  assert.deepEqual(mergesOf(repoOf(data, "caser"), view.run_id), []);
+  const repo = repoOf(data, "caser");
+  assert.equal(mergesOf(repo, view.run_id).length, 1);
+  const tree = git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n");
+  assert.ok(tree.includes("check-units.md") && tree.includes("skills/find-policies/SKILL.md"), tree.join(","));
+  assert.ok(!tree.some((path) => path.startsWith("workflows/find-policies/")), "the dropped draft's files are not on main");
+  assert.deepEqual(view.learning.workflows ?? [], [], "nor named as learned");
 });
 
 test("a risky skill waits for its owner's OK: merged with status: pending in its SKILL.md, and said so", { timeout: 120_000 }, async (t) => {
@@ -207,4 +219,17 @@ test("a skill is laid into a run with its name and description alone in its fron
   const given = readFileSync(join(data, "runs", runId, "work", ".agents", "skills", "find-policies", "SKILL.md"), "utf8");
   assert.ok(!given.includes("hooks:") && !given.includes("touch /tmp/never"), given);
   assert.match(given, /^---\nname: find-policies\ndescription: [^\n]+\n---\n/);
+});
+
+test("a skill left out unread for its size that hides a secret's shape refuses the whole answer: the note and the draft beside it are not kept", { timeout: 120_000 }, async (t) => {
+  const { api, data, grades } = await server(t);
+  const shaped = ["s", "k-", "Zx9".repeat(10)].join("");
+  const huge = `${SKILL}\nSign in with ${shaped}.\n${"x".repeat(CAPS.file)}\n`;
+  await made(api, answering("hider", answer({ skill: huge })));
+  const { view } = await ended(api, await started(api, "hider"));
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "checker"], JSON.stringify(view.learning));
+  const saved = await savedOf(data, view.run_id);
+  assert.ok(saved.learning.problems.some((problem) => problem.rule === "secret_shape"), JSON.stringify(saved.learning.problems));
+  assert.equal(grades(), 0, "nothing graded");
+  assert.deepEqual(mergesOf(repoOf(data, "hider"), view.run_id), []);
 });
