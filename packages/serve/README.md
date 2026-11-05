@@ -214,14 +214,16 @@ container's limit when it has one (cgroup), else the machine's, less the server'
 | pi | 128 MiB | up to 106 MB |
 | codex | 192 MiB | up to 143 MB |
 | claude-agent | 288 MiB | up to 215 MB |
+| opencode | 704 MiB | up to 524 MB |
 
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
-once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28. A start that does not fit in what is left is
+once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
+it, needs a 1 GB instance for one and 2 GB for two. A start that does not fit in what is left is
 `429 rate_limited` with `retry-after`, its message naming the harness and the memory, and nothing starts: there is no
 queue, so the client tries again once a run ends. A harness whose one run needs more than all the memory for runs (claude-agent
-on a host under 416 MB) is unavailable: capabilities say why in its `harnesses` entry, and its runs are `409
-agent_not_runnable` with that reason. pi always has one place, however small the host.
+on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses` entry, and
+its runs are `409 agent_not_runnable` with that reason. pi always has one place, however small the host.
 
 `--max-runs N` or `AGENTRUN_MAX_RUNS` caps the count as well (by default, as many as pi runs fit), and both limits
 apply. Capabilities report pi's count in `limits.max_concurrent_runs`, and each harness's own in its `harnesses` entry
@@ -600,7 +602,8 @@ On another harness, every host tool's result reaches the model within the host's
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
 saying where it was cut, and flags the call `truncated`. Each CLI adapter tells its CLI to pass a result that long to
 the model whole: the Claude Agent CLI would otherwise save a result past 50,000 characters to a file and tell the model
-to read it, which a run's confinement refuses, and Codex keeps only the ends of a result past 10,000 tokens. A
+to read it, which a run's confinement refuses, Codex keeps only the ends of a result past 10,000 tokens, and OpenCode
+would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the session has no tool to read. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
 
 ### Search and fetch
@@ -777,7 +780,8 @@ A tool's key comes from one of two places. The server's own environment, through
 `typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
 provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
 `"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
-default model ([models](#models)); its `harnesses` are pi and the provider's own harness (OpenRouter's, all three), of
+default model ([models](#models)); its `harnesses` are pi and the harnesses that talk to that provider's API (OpenAI's:
+codex and opencode; OpenRouter's, all four), of
 those this server runs or would run once the key is set, so a row names them before it is saved: one left out is one
 this server cannot run for another reason (not installed, not the pinned build, more than this host's memory). `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
@@ -1083,7 +1087,7 @@ codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGE
 ## Harnesses
 
 A definition names the harness that runs it: `pi` (the default, and what a definition that names none gets),
-`claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
+`claude-agent`, `codex` or `opencode`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
 (`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
 back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
@@ -1092,8 +1096,11 @@ it runs none (the harness does not run here, or no default model here runs on it
 model). A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
-`claude-agent` and `codex` when each adapter's package, pins and provider endpoint check out; the harness's `reason`
-says what is missing. The packages and pins are checked once, at the start (`event=harness_offers why=start`): a harness
+`claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
+`reason` says what is missing. `opencode` needs `opencode-ai@1.19.5` installed beside the server (an exact optional peer of
+it), and its model goes where codex's does: the gateway at `AGENT_MODEL_BASE_URL`, or
+OpenAI with `OPENAI_API_KEY`, on the Responses API. The packages and pins are checked once, at the start
+(`event=harness_offers why=start`): a harness
 installed after it, or put back on its pinned build, stays unavailable until AgentRun restarts, and its reason ends
 saying so, `once it is installed, restart AgentRun to pick it up` or `once the pinned build is installed, restart
 AgentRun`. Run from npx, a reason whose install line is the npx line that starts the server with what is missing needs
@@ -1101,13 +1108,13 @@ no such clause: running that line is the restart. A reason a setting fixes (a mo
 
 `claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with `ANTHROPIC_API_KEY` and Anthropic's own
 model id, and prices the run by it: a revision's `anthropic/<model-id>`, its dots as dashes, so OpenRouter's dotted name
-(`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `codex` sends its requests to
-serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
+(`anthropic/claude-sonnet-5.5`) and Anthropic's own (`claude-sonnet-5-5`) are one model. `codex` and `opencode` send their requests
+to serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
 `OPENROUTER_API_KEY` is set, runs through OpenRouter (`https://openrouter.ai/api`, the key as a bearer token):
 claude-agent on its Messages endpoint, with Anthropic's own id on the wire (OpenRouter takes it: its Claude Code guide
-says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex on its Responses API, with the model's whole id (`openai/gpt-6-sol`). On that key alone the defaults are
+says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6-sol`). On that key alone the defaults are
 `openrouter/openai/gpt-6-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
-claude-agent and `openai/gpt-6-sol` for codex; a direct provider's key gives the default for its harnesses where it is
+claude-agent and `openai/gpt-6-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
 set. A model named `openrouter/<vendor>/<model>` (pi's name for it) goes through OpenRouter on every harness. An endpoint
 the host names never gets OpenRouter's key: `ANTHROPIC_BASE_URL` without `ANTHROPIC_API_KEY` is refused. A model with more
 than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming the form to use. A provider
@@ -1119,7 +1126,7 @@ harness, with the provider's first sentence only.
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
 adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
 its `name` and a `description`, a file path that is not plain or is deeper than five segments) stays inlined in the
-system prompt, as every skill is on `pi` and `codex`; so do all of them when together they hold more than 1 MiB.
+system prompt, as every skill is on `pi`, `codex` and `opencode`; so do all of them when together they hold more than 1 MiB.
 
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
@@ -1551,14 +1558,14 @@ the model's input and cache-write prices (the provider may bill any of the input
 sent with at the output price, plus any fee its tokens do not show (below). Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
 ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
-own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent and codex written into its body
+own options (its max tokens, and on Anthropic's API its thinking budget), on claude-agent, codex and opencode written into its body
 by the model proxy (`max_tokens` and `thinking.budget_tokens`, or `max_output_tokens`). The limit is what it is held at,
 so the cap stays exact. A request is refused only when what is left cannot buy its least: 1,024
 tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
 where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
 a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
-server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent and codex uses; there
+server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent, codex and opencode uses; there
 the proxy measures each request's body. A request in flight holds its worst case until it answers, so requests sent side
 by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
