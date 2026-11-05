@@ -1319,7 +1319,7 @@ export class Runs {
 
   /** The server's environment a run's tools resolve in (tool-plane.ts): its secrets, saved keys among them, and the Chrome
    *  the operator gave the browser (`browserChrome`) alone: a LOCAL_CHROME_ENV in this process's own environment that the
-   *  server's start did not check and resolve counts for nothing (opt-in, server.ts chromeOf). */
+   *  server's start did not check and resolve counts for nothing (opt-in, local-chrome.ts checkChrome). */
   private served(): NodeJS.ProcessEnv {
     const env = withSecrets(process.env, "all", this.options.storedKeys);
     delete env[LOCAL_CHROME_ENV];

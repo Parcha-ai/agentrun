@@ -42,8 +42,9 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
   --browser-chrome PATH a Chrome or Chromium on this machine the browser tool may run on where chrome is picked (default
-                    AGENTRUN_SERVE_BROWSER_CHROME; off when neither is set): headless, Chrome's sandbox on, no saved
-                    sign-ins, every request through the egress proxy, which reaches public addresses only
+                    AGENTRUN_SERVE_BROWSER_CHROME; off when neither is set): headless, Chrome's sandbox on (a Chrome
+                    that cannot start it here, or AgentRun as root, refuses the start), no saved sign-ins, every
+                    request through the egress proxy, which reaches public addresses only
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their

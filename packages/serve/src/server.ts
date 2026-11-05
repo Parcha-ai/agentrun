@@ -1,7 +1,7 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
-import { constants, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { NewRevision, Revision, RunOrigin } from "@parcha/pi-durable-agent";
@@ -58,6 +58,7 @@ import { WEBHOOK_EVENTS, Webhooks } from "./webhooks.js";
 import { HOOK_TOLERANCE_S, hookHeadersRefusal, hookRefusal, TriggerSecrets } from "./trigger-secrets.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, OVERLAP, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
+import { checkChrome } from "./local-chrome.js";
 import { agentTools, browserKeyRow, LOCAL_CHROME_ENV, settingsIssues, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { INLINE_TYPES, openWorkFile, removeWorkFile, typeOf, WALK_DEPTH, walkWork, WorkRefused, writesHeld, writeWorkFile } from "./workspace.js";
@@ -596,16 +597,6 @@ function browserFeature(tools: readonly { name: string; available: boolean; reso
   return !browser?.available ? "none" : resolved === "kernel" || resolved === "chrome" ? resolved : "browserbase";
 }
 
-/** The Chrome the operator gives the browser (`--browser-chrome`), resolved: refused, before anything starts, unless it
- *  is an executable file. */
-async function chromeOf(path: string | undefined): Promise<string | undefined> {
-  if (path === undefined || path === "") return undefined;
-  const at = resolve(path);
-  const runs = await stat(at).then((info) => info.isFile(), () => false) && await access(at, constants.X_OK).then(() => true, () => false);
-  if (!runs) throw new Error(`the browser's Chrome ${at} is not an executable file: name a Chrome or Chromium binary with --browser-chrome (or ${LOCAL_CHROME_ENV}), or leave it out`);
-  return at;
-}
-
 export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
@@ -627,7 +618,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
-  const browserChrome = await chromeOf(options.browserChrome ?? process.env[LOCAL_CHROME_ENV]);
+  const browserChrome = await checkChrome(options.browserChrome ?? process.env[LOCAL_CHROME_ENV]);
   // Then one server per data root, before anything writes it: a refused second server writes no token, opens no store,
   // adopts or sweeps no run, binds no port and prints no address (server-lock.ts). A failed start releases the lock and
   // leaves the file, which the next server reuses: unlinking it would race a server that opens it meanwhile. A server
@@ -665,7 +656,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   // Each webhook trigger's secret, made below once the environment is read; shown nowhere, as the server's own are not.
   let triggerSecrets: TriggerSecrets | undefined;
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}), ...(options.browserChrome ? { [LOCAL_CHROME_ENV]: options.browserChrome } : {}) };
-  // The local Chrome is the one the start resolved (chromeOf), or none: never a variable it did not check.
+  // The local Chrome is the one the start checked and resolved (local-chrome.ts checkChrome), or none: never a variable it did not check.
   if (!options.browserChrome) delete (base as NodeJS.ProcessEnv)[LOCAL_CHROME_ENV];
   // Which fields are the server's is read from what it is started with alone: handed the saved keys too, ToolKeys would
   // call each the server's, and none could be deleted.
