@@ -46,7 +46,7 @@ async function open(start: ToolSettings = {}, refuse?: () => ClientError) {
     await pick(select(tool), provider);
     await settle();
   };
-  const reset = async (tool: string) => { await act(async () => { row(tool).querySelector<HTMLButtonElement>("button")!.click(); }); await settle(); };
+  const reset = async (tool: string) => { await act(async () => { row(tool).querySelector<HTMLButtonElement>("button[aria-label^='Reset']")!.click(); }); await settle(); };
   return { host, puts, reads: () => reads, row, select, choose, reset };
 }
 
@@ -69,9 +69,9 @@ describe("Settings → Tools", () => {
     const page = await open({ web_search: { provider: "exa-keyless" } });
     expect(page.row("web_search").hasAttribute("data-set")).toBe(true);
     expect(page.row("web_search").textContent).toContain("default: auto");
-    expect(page.row("web_search").querySelector("button")?.getAttribute("aria-label")).toBe("Reset web_search to its default");
+    expect(page.row("web_search").querySelector("button[aria-label^='Reset']")?.getAttribute("aria-label")).toBe("Reset web_search to its default");
     expect(page.row("web_fetch").hasAttribute("data-set")).toBe(false);
-    expect(page.row("web_fetch").querySelector("button")).toBeNull();
+    expect(page.row("web_fetch").querySelector("button[aria-label^='Reset']")).toBeNull();
   });
 
   it("saves a change at once: a PUT of the server's settings with the pick, then the capabilities read again", async () => {

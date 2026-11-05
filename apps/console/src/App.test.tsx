@@ -173,7 +173,7 @@ describe("App, Settings", () => {
     root = createRoot(host);
     act(() => root!.render(createElement(App)));
     const wait = async (ok: () => boolean) => { const end = Date.now() + 3000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 20)); }); };
-    const select = () => host.querySelector<HTMLButtonElement>('tr[data-tool="web_search"] select');
+    const select = () => host.querySelector<HTMLButtonElement>('tr[data-tool="web_search"] button[aria-haspopup=listbox]');
     await wait(() => !!select());
     const choose = async (p: string) => { await pick(select()!, p); };
     await choose("native");
@@ -195,7 +195,7 @@ describe("App, Settings", () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"]]);
-    expect(page.host.querySelector('tr[data-tool="web_search"] select')).toBeTruthy();
+    expect(page.host.querySelector('tr[data-tool="web_search"] button[aria-haspopup=listbox]')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
   });
 
