@@ -467,9 +467,8 @@ const TRIGGER_TARGET = closedWith(
     kind: { const: "start_run" },
     agent_id: { type: "string", description: "The agent whose run each firing starts: an agent, not a workflow, since a workflow run's spend is not capped here." },
     input: { type: "object", description: "The run's input, as POST /agents/{agent_id}/runs takes it: `{content}`. Each run's content ends with a line naming the schedule and the time it fired for, in its zone." },
-    max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap, required: every run a trigger starts is capped." },
   },
-  { effort: { $ref: "#/components/schemas/Effort" } },
+  { effort: { $ref: "#/components/schemas/Effort" }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Each run's spend cap. Absent, the agent's default (its definition's `max_cost_usd`) as it stands when the firing starts; one of the two is required, so every run a trigger starts is capped: a target with neither is 422, and a firing that finds neither (the agent's default removed since) fails." } },
 );
 const TRIGGER_FIRING = closedWith(
   {
@@ -1001,7 +1000,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     post: {
       operationId: "createTrigger", tags: ["local"], summary: "Make a trigger: a schedule that starts a run of an agent, capped",
-      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\`, as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last ${HISTORY_KEPT} firings are kept. 422 for a source other than a schedule, a target with no max_cost_usd, or an agent that is a workflow or does not take the input.`,
+      description: `Each firing starts one run of \`target.agent_id\` with \`target.input\` and its \`max_cost_usd\` (else the agent's default), as POST /agents/{agent_id}/runs would, and the run's \`trigger\` names it. A firing starts its run once, across retries and restarts. While the trigger's last run is active (working, or waiting on a person: a question, an approval, its cap), a firing is skipped. The last ${HISTORY_KEPT} firings are kept. 422 for a source other than a schedule, a target with no max_cost_usd whose agent has no default one, or an agent that is a workflow or does not take the input.`,
       parameters: [ref("parameters/IdempotencyKey")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["source", "target"], properties: TRIGGER_WRITE } } } },
       responses: { "201": json(TRIGGER, "Made."), ...errors(400, 401, 409, 415, 422, 429, 500) },

@@ -814,11 +814,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       if (!entry) return [{ field: "target.agent_id", reason: "not_found", message: `no agent ${target.agent_id}` }];
       if (!entry.revision) return [{ field: "target.agent_id", reason: "invalid", message: `the agent ${target.agent_id} has no current revision` }];
       if (entry.revision.kind === "workflow") return [{ field: "target.agent_id", reason: "not_allowed", message: "A trigger's runs are capped, and a workflow run's spend is not capped here: name an agent that is not a workflow." }];
-      return (await inputIssuesOf(entry.revision, target.input)).map((issue) => ({ ...issue, field: `target.${issue.field}` }));
+      const uncapped = target.max_cost_usd === undefined && entry.revision.body.maxCostUsd === undefined ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }] : [];
+      return [...uncapped, ...(await inputIssuesOf(entry.revision, target.input)).map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
     async start(target, input, trigger) {
       const entry = await needAgent(target.agent_id);
-      const run = await startRunOf(entry, { input, max_cost_usd: target.max_cost_usd, ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key } });
+      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped.
+      const run = await startRunOf(entry, { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) }, { trigger, origin: { key: trigger.firing_key }, capped: true });
       return { run_id: run.id };
     },
     notify: (failed, key) => webhooks.emitTrigger(failed, key),
@@ -1054,7 +1056,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   /** A run of `entry`'s agent from a create's body, checked as POST /agents/{id}/runs checks it: that route's, and a
    *  trigger's firing's, which names itself as the run's `trigger`. Under `origin`, a key that already started a run
    *  gets that run (the agent store's run_origins). */
-  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin }: { trigger?: RunTrigger; origin?: RunOrigin } = {}): Promise<Run> {
+  /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
+  async function startRunOf(entry: AgentEntry, body: Json, { trigger, origin, capped = false }: { trigger?: RunTrigger; origin?: RunOrigin; capped?: boolean } = {}): Promise<Run> {
     const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"]);
     if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
     if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
@@ -1072,13 +1075,16 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const input = body.input as Json;
     const wrong = await inputIssuesOf(revision, input);
     if (wrong.length) throw invalid(wrong);
+    // The run's own cap, else the agent's default (an agentic revision's): the caller chose its own.
+    const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : revision.kind === "agentic" ? revision.body.maxCostUsd : undefined;
+    if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
     const place = resolvePlace(revision.body.place as Place | undefined);
-    await runnable(revision, place, { capped: body.max_cost_usd !== undefined });
+    await runnable(revision, place, { capped: cap !== undefined });
     // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held
     // value redacted before a long one is cut (a cut key could no longer be found), and the run gets its input as given.
     const shown = redactedOutput(input, learningSecrets());
     const title = revision.kind === "workflow" ? workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
-    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
+    return runs.create(entry, revision, version, { input, title, place, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(cap !== undefined ? { maxCostUsd: cap } : {}), ...(trigger ? { trigger } : {}), ...(origin ? { origin } : {}), ...(files.length ? { inputs: (work: string) => uploads.copyInto(work, files) } : {}) });
   }
 
   /** A page of runs from the store, newest first: `agent`, `revision` and `status` narrow it. */

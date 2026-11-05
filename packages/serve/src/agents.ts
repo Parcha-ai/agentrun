@@ -108,7 +108,7 @@ export class Agents {
     // The learning switch is kept whenever a definition sets it, false included; a definition that leaves it out keeps
     // none, and its revision id is the one it had before the switch.
     const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
-    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning };
+    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common, ...learning, ...(typeof definition.max_cost_usd === "number" ? { maxCostUsd: definition.max_cost_usd } : {}) };
   }
 
   /** `definition.version`, when given, is the number of the revision the request leaves current. */
@@ -273,7 +273,7 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as `POST /agents` takes one, numbered. */
 export function definitionOf(agent: Agent, revision: Revision, version: number): Json {
   const body = revision.kind === "agentic"
-    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}) }
+    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning !== undefined ? { learning: revision.body.learning } : {}), ...(revision.body.maxCostUsd !== undefined ? { max_cost_usd: revision.body.maxCostUsd } : {}) }
     : { workflow: revision.body.workflow };
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), ...(revision.body.place ? { place: revision.body.place } : {}), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
