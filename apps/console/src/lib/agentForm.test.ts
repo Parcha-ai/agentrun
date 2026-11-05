@@ -86,6 +86,25 @@ describe("createBody", () => {
   });
 });
 
+describe("the agent's default spend cap per run (definition.max_cost_usd)", () => {
+  const capped = { ...(agent.body as object), definition: { ...agent.body.definition, max_cost_usd: 2.5, some_future_field: { kept: true } } } as never;
+  it("an edit keeps every field the form does not show: max_cost_usd and an unknown one", () => {
+    const body = editBody(capped, { instructions: "Check it twice." }, "");
+    expect(body.definition).toMatchObject({ max_cost_usd: 2.5, some_future_field: { kept: true }, instructions: "Check it twice." });
+  });
+  it("an edit sets a new cap, and a cleared one is sent as an explicit 0, never left out", () => {
+    expect(editBody(capped, { max_cost_usd: 4 }, "").definition.max_cost_usd).toBe(4);
+    const cleared = editBody(capped, { max_cost_usd: 0 }, "");
+    expect([cleared.unchanged, cleared.definition.max_cost_usd, cleared.definition.some_future_field]).toEqual([false, 0, { kept: true }]);
+  });
+  it("a new agent's first revision carries the cap typed, none when empty, and a starter never one", () => {
+    const f = { name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [] };
+    expect(createBody({ ...f, max_cost_usd: 0.75 }).definition.max_cost_usd).toBe(0.75);
+    expect(createBody(f).definition).not.toHaveProperty("max_cost_usd");
+    expect(createBody({ ...f, harness: DECISION, decisionProvider: "jev", max_cost_usd: 0.75 }).definition).not.toHaveProperty("max_cost_usd");
+  });
+});
+
 describe("harnessOptions", () => {
   it("offers pi, Claude and Codex in that order, each available or disabled with the server's reason", () => {
     expect(harnessOptions(caps.body.harnesses)).toEqual([
