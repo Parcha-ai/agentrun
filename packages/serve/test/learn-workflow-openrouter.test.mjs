@@ -70,3 +70,9 @@ test("where the harness has its own key, a learned workflow's model is the run's
   const named = adapters.claudeModel(claudeEnv, "openrouter/anthropic/claude-sonnet-5.5");
   assert.deepEqual(adapters.learnedRoute("claude-agent", claudeEnv, named.model), { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" });
 });
+
+test("a codex run through a gateway at OpenRouter's URL (AGENT_MODEL_BASE_URL) keeps the gateway's model for its learned workflow: the run's models hold that provider, not OpenRouter's", () => {
+  const env = { AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1", AGENT_MODEL_API_KEY: KEY };
+  const prepared = { provider: "agent-model", modelId: "openai/gpt-6-sol" };
+  assert.deepEqual(adapters.learnedRoute("codex", env, prepared), prepared);
+});
