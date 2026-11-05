@@ -77,3 +77,15 @@ test("runs start --wait --timeout bounds the start too: a server that never answ
   assert.equal(started.out, "");
   assert.equal(server.requests.length, 1);
 });
+
+test("runs timeline --follow: a stream event that is not a JSON object is the server's bad answer, exit 1, never exit 3", { timeout: 60_000 }, async (t) => {
+  const { env } = scratch(t);
+  for (const event of ["event: rows\ndata: {not json\n\n", "event: rows\ndata: null\n\n", "event: end\ndata: terminal?\n\n"]) {
+    const server = await listener(t, (request, res) => res.writeHead(200, { "content-type": "text/event-stream" }).end(event));
+    const followed = await cli(env, ["runs", "timeline", "r1", "--follow", "--base-url", server.base], { timeout: 40_000 });
+    assert.equal(followed.code, 1, `${JSON.stringify(event)}: ${followed.code} ${followed.err}`);
+    assert.match(followed.err, /^The server's timeline stream sent an? (?:rows|end) event that is not a JSON object\.\n$/);
+    assert.doesNotMatch(followed.err, /Cannot reach/);
+    assert.equal(server.requests.length, 1, "not tried again");
+  }
+});

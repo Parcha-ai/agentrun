@@ -46,6 +46,14 @@ export const WAIT = {
 const failure = (code) => Object.assign(new Error(code), { cause: { code } });
 /** A count of milliseconds as timers take it: a whole number, at least 1 (AbortSignal.timeout throws on a fraction). */
 const wholeMs = (ms) => Math.max(1, Math.ceil(ms));
+/** `text`'s JSON as `{ value }`, or undefined when it holds none. */
+const jsonOf = (text) => {
+  try {
+    return { value: JSON.parse(text) };
+  } catch {
+    return undefined;
+  }
+};
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, wholeMs(ms)));
 /** The wait before try `tries + 1`: the client's own delay, doubling up to its cap, and never under the server's `retry`
  *  (`floor`), which may be above that cap. */
@@ -208,15 +216,21 @@ export async function followTimeline(client, path, headers = {}) {
       }
       for await (const { event, data, id, retry } of events(response.body, heard)) {
         if (retry !== undefined) retryMs = retry;
+        // An event that is not JSON is the server's bad answer, not a connection gone: said, exit 1, not tried again.
+        const json = event === "rows" || event === "end" ? jsonOf(data) : undefined;
+        if ((event === "rows" || event === "end") && (json?.value === null || typeof json?.value !== "object")) {
+          client.io.stderr.write(`The server's timeline stream sent ${event === "end" ? "an" : "a"} ${event} event that is not a JSON object.\n`);
+          return 1;
+        }
         if (event === "rows") {
-          const page = JSON.parse(data);
+          const page = json.value;
           client.io.stdout.write(`${JSON.stringify(page)}\n`);
           status = page.status;
           progress = true;
         }
         if (id !== undefined) last = id;
         if (event === "end") {
-          if (JSON.parse(data).reason === "terminal") return EXIT[status] ?? 1;
+          if (json.value?.reason === "terminal") return EXIT[status] ?? 1;
           reconnect = true;
           break;
         }
