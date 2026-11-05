@@ -14,6 +14,7 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { REQUEST_ENDED } from "@parcha/pi-durable-agent/timeline";
 import { capModels, spentIn } from "../dist/cap.js";
 import { markRequests } from "../dist/request-start.js";
 
@@ -113,6 +114,43 @@ test("a later process reads a failed request's hold as this one booked it, never
   for (const entry of [...marks, { kind: "pi.assistant", model: [first] }]) put.run(JSON.stringify(entry));
   db.close();
   assert.equal(spentIn(file), 0.001, `read again at its hold: ${JSON.stringify(marks.map((m) => [m.kind, m.data]))}`);
+});
+
+/** A store holding `entries` in order, as a later process reads it. */
+function storeOf(t, entries) {
+  const dir = mkdtempSync(join(tmpdir(), "booking-pi-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "run.sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, record TEXT NOT NULL)");
+  const put = db.prepare("INSERT INTO entries (conversation_id, record) VALUES (1, ?)");
+  for (const entry of entries) put.run(JSON.stringify(entry));
+  db.close();
+  return file;
+}
+
+test("a later process reads an answer after a lost attempt (a reset, then pi-ai's retry answered) at the hold this one booked, never at the answer's own usage: its mark is in the store before the retry is sent", async (t) => {
+  const marks = [];
+  const run = await capped(marks);
+  let atRetry;
+  const retried = async (...args) => { atRetry = marks.map((m) => [m.kind, m.data]); return STEPS.ok(...args); };
+  const first = await run.streamSimple(MODEL, context, options(scripted([STEPS.refused("ECONNRESET"), retried]))).result();
+  await settle();
+  assert.equal(first.stopReason, "stop", first.errorMessage);
+  // A process that dies once pi has the answer, whatever the store did meanwhile, leaves the hold's mark: no window.
+  assert.deepEqual(atRetry?.find(([kind]) => kind === REQUEST_ENDED), [REQUEST_ENDED, { lost: true, heldUsd: 0.001 }], "the hold's end mark is in the store before the retry is sent");
+  const file = storeOf(t, [...marks, { kind: "pi.assistant", model: [first] }]);
+  assert.equal(spentIn(file), 0.001, `read again at its hold, as this process booked it: ${JSON.stringify(marks.map((m) => [m.kind, m.data]))}`);
+});
+
+test("a guard: an ordinary answer is priced once, its own cost, in this process and in a later one: no mark of the hold beside it", async (t) => {
+  const { first, marks } = await bookedFirst([STEPS.ok], { only: true });
+  assert.equal(first.stopReason, "stop", first.errorMessage);
+  const own = first.usage.cost.total;
+  assert.ok(own > 0 && own < 0.001, `its own cost: ${own}`);
+  assert.equal(spentIn(storeOf(t, [...marks, { kind: "pi.assistant", model: [first] }])), own, "read again at its own cost, once");
+  const again = await bookedFirst([STEPS.ok]);
+  assert.equal(again.roomForAnother, true, "in this process: its own cost, room for another");
 });
 
 test("a guard: a 429 then an answer is the answer, priced once; an answer cut part way books its hold; a request refused at connect never left", async () => {
