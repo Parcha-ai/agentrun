@@ -129,7 +129,7 @@ test("a draft with a code node, or a call via shell or executor, is refused as e
   }
   // Inside a child workflow too.
   const doc = JSON.parse(richWorkflow());
-  doc.root.steps[1] = { node: "workflow", label: "fetch", workflow: { v: 2, name: "inner", schemas: doc.schemas, input: { schemaId: "Store" }, output: { schemaId: "Page" }, root: { ...SHELL, label: "run" } }, input: { url: "{url}" }, out: "Page", as: "page" };
+  doc.root.steps[1] = { node: "workflow", label: "fetch", workflow: { v: 2, name: "inner", schemas: doc.schemas, input: { schemaId: "Store" }, output: { schemaId: "Page", path: "page" }, root: { ...SHELL, label: "run" } }, input: { url: "{url}" }, out: "Page", as: "page" };
   assert.deepEqual(rules(check(draft(JSON.stringify(doc)))), ["executable_node"]);
 });
 
