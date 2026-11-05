@@ -1669,14 +1669,37 @@ Under a cap, whatever cannot be priced is refused, never passed as $0, and the r
   after a cut, at the worst case the cap held, as pi does.
 
 A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
-word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
-calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
-(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
-usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
-output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
-went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
-response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
-request cut by a crash (its process gone mid-request).
+word we read; never more than it was held. That is its input bound and each byte of content it streamed (its text,
+thinking and tool calls on pi; on `claude-agent`, `codex` and `opencode`, the text, reasoning and tool-argument deltas
+the response sent, never the provider's framing around them, which runs to about 12 bytes a character on the Responses
+API and 24 on the Messages API) as a token, plus 1,024 tokens of output (`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most
+the worst case the cap held for it. The cut stream's own usage is never read: it is not what the provider billed (the
+Responses API reports none until the end, and Anthropic's output count comes at the end). The 1,024 tokens are a stated
+bound, as the native search allowance is: a provider that went on producing for longer after the stop could bill past
+what is counted. A request that ended on an error after its response began (an overload part way, a reset), or a summary
+that failed, still counts at its worst case, and so does a request cut by a crash (its process gone mid-request). A
+request stopped before the provider's first header counts its input and the 1,024 tokens, on every harness.
+
+Reasoning the provider never streams counts too. A model whose reasoning streams only as a summary (the Responses API's
+reasoning; Claude 4-class thinking, and redacted thinking) or not at all is billed for far more than the summary's
+bytes, so a stopped request that reasons also counts the part of its reasoning budget that did not stream: input +
+streamed + 1,024 + max(0, reasoning budget - reasoning streamed), never more than the hold. Reasoning streamed is its
+thinking's bytes on pi, and on `claude-agent`, `codex` and `opencode` the bytes of the reasoning events the response
+sent (a thinking delta, a reasoning summary delta); answer text never stands in for it. The budget is its effort's or thinking
+level's (minimal 1,024, low 2,048, medium 8,192, high 16,384; on Anthropic's API, the `budget_tokens` it was sent with).
+A Claude model whose thinking is adaptive (pi-ai sends every current one `thinking: {type: "adaptive"}`, no budget) thinks
+within its output limit as it sees fit, so on pi it counts that limit less 1,024 tokens, as `claude-agent` counts
+`max_tokens`, and is sent the limit it is held at. With no effort or level given, on an API whose model then reasons at
+its own default (OpenAI's), it counts its whole output limit, the conservative side; with thinking off on Anthropic's
+API, none, unless the model thinks adaptively at any level (pi-ai's models with mid-conversation effort). On
+`claude-agent`, every request that thinks counts its budget, since Claude 4-class models stream only a summary of their
+thinking; thinking that streamed is subtracted, so a stop after a budget's worth of visible thinking counts nothing on
+top. The figure is an estimate: an effort's budget is not a limit the provider keeps, so a request can reason past it.
+It is bounded by the request's hold, and its real usage replaces it when that comes.
+
+So on a model whose thinking is adaptive (every current Claude model, on pi and on `claude-agent`), a stopped request
+counts up to its hold: the provider is given no thinking budget, and what streamed says nothing of the thinking billed.
+Under a cap with little left beside that hold, the request after the stop can be refused.
 
 On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
 of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
