@@ -261,3 +261,21 @@ test("a retired draft whose workflow.json the learning checker refuses is not re
   assert.match(refused.text, /"rule":"workflow","path":"workflows\/price-report\/workflow\.json"/, refused.text);
   assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
 });
+
+test("a note an approval or a restore supersedes says it was superseded, not approved or restored; the approved or restored note says its own action", { timeout: 150_000 }, async (t) => {
+  const OLD = note("Answer in lists", "The user wants answers as lists", "Answer every question as a list.\n");
+  const NEW = (status) => note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n", `supersedes: [answer-in-lists.md]\nstatus: ${status}\n`);
+  for (const [action, status] of [["approve", "pending"], ["restore", "retired"]]) {
+    await t.test(action, async (t) => {
+      const { api, port, cookie, origin, etag } = await keeper(t, { "answer-in-lists.md": OLD, "answer-in-tables.md": NEW(status) });
+      const res = await call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/answer-in-tables.md/${action}`, headers: { ...json, cookie, origin, "if-match": await etag("answer-in-tables.md") }, body: {} });
+      assert.equal(res.status, 200, res.text);
+      const items = (await api("GET", "/agents/keeper/learning?status=all")).body.notes.items;
+      const all = items.length ? items : (await api("GET", "/agents/keeper/learning/notes?status=all")).body.items;
+      const of = (file) => all.find((item) => item.file === file);
+      assert.equal(of("answer-in-tables.md")?.last_change?.kind, action === "approve" ? "approved" : "restored", JSON.stringify(of("answer-in-tables.md")));
+      assert.equal(of("answer-in-lists.md")?.status, "superseded", JSON.stringify(of("answer-in-lists.md")));
+      assert.deepEqual([of("answer-in-lists.md")?.last_change?.kind, of("answer-in-lists.md")?.last_change?.by], ["superseded", "person"], JSON.stringify(of("answer-in-lists.md")));
+    });
+  }
+});
