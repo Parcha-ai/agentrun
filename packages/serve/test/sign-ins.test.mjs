@@ -663,7 +663,7 @@ test("a run still going whose browser sign-in the next server cannot read (its s
   const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
   const { last } = await follow(api, runId, ["failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
-  assert.equal(view.error.message, "This server's seal key changed, so the run's browser sign-in can't be read: the run was stopped, so nothing it says can show it.");
+  assert.equal(view.error.message, "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.");
   await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
   // Its gate opens now: a process still going would answer with the pointer.
   await writeFile(gate, "");
@@ -679,7 +679,8 @@ test("a run whose process went with its server, and whose browser sign-in the ne
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const log = join(dir, "browser.jsonl");
-  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  const sealKey = randomBytes(32).toString("base64");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: sealKey, FAUX_BROWSER_LOG: log }, KEYS);
   const first = await crashable(t, data);
   assert.equal((await first.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
   const gate = join(dir, "gate");
@@ -698,13 +699,67 @@ test("a run whose process went with its server, and whose browser sign-in the ne
   await until(async () => { try { process.kill(holder.pid, 0); return false; } catch { return true; } }, (gone) => gone);
   // The next server holds another seal key: the agent's sign-in no longer opens.
   process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
-  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const second = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const { api } = second;
   const { last } = await follow(api, runId, ["failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
-  assert.equal(view.error.message, "This server's seal key changed, so the run's browser sign-in can't be read: the run was stopped, so nothing it says can show it.");
+  assert.equal(view.error.message, "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.");
   for (const shown of [JSON.stringify(last), JSON.stringify((await api("GET", `/runs/${runId}/timeline`)).body), JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body)]) {
     assert.ok(!shown.includes(ref), shown);
     assert.ok(!shown.includes("I kept"), shown);
   }
   assert.equal((await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).filter((op) => op.op === "vendor").length, 1, "never opened again");
+  // The right seal key back: its rows are read and shown again, cut of the pointer, which opens now.
+  await second.close();
+  process.env.AGENTRUN_SEAL_KEY = sealKey;
+  const third = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  const page = JSON.stringify((await third.api("GET", `/runs/${runId}/timeline`)).body);
+  assert.ok(page.includes("I kept [redacted] for you."), page);
+  assert.ok(!page.includes(ref) && !JSON.stringify((await third.api("GET", `/runs/${runId}`)).body).includes(ref));
+  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8")).unshown, undefined, "no longer hidden");
+});
+
+test("after the seal key changed, a run that was never handed the sign-in (it browsed signed out) is taken up across a restart as any other run", { timeout: 180_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const log = join(dir, "browser.jsonl");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), FAUX_BROWSER_LOG: log }, KEYS);
+  // The agent's sign-in is made under one seal key.
+  const before = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.equal((await before.api("POST", "/agents", agent("alpha", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  await follow(before.api, (await before.api("POST", "/agents/alpha/runs", { input: { content: "Browse the example page." } })).body.run_id, ["completed"]);
+  await before.close();
+  // Under another, a run is launched signed out, and its server goes while it browses.
+  process.env.AGENTRUN_SEAL_KEY = randomBytes(32).toString("base64");
+  const first = await crashable(t, data);
+  const gate = join(dir, "gate");
+  const runId = (await first.api("POST", "/agents/alpha/runs", { input: { content: `Browse the example page once ${gate} exists.` } })).body.run_id;
+  // Its browser open (signed out: a session made with no profile), so its first message has landed.
+  await until(async () => (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)), (ops) => ops.filter((op) => op.op === "vendor").length === 2 && ops.slice(ops.findLastIndex((op) => op.op === "vendor")).some((op) => op.op === "create"));
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  t.after(() => { try { process.kill(holder.pid, "SIGKILL"); } catch {} });
+  const { api } = await serve(t, { data, fauxBrowser: FAUX_BROWSER, fauxBrowserbase: FAUX_BROWSERBASE });
+  assert.notEqual((await api("GET", `/runs/${runId}`)).body.status, "failed", "taken up, not stopped");
+  process.kill(holder.pid, 0);
+  await writeFile(gate, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.error, null);
+  assert.equal(JSON.parse(await readFile(join(data, "runs", runId, "serve.json"), "utf8")).unshown, undefined);
+});
+
+test("a sign-ins file that cannot be read or parsed reads back as unreadable, never as no sign-in", async (t) => {
+  const data = await scratch(t);
+  const store = new SignIns(data, randomBytes(32), { create: async () => "ctx-1" }, async () => false);
+  await store.forRun("alpha", "run-1", "browserbase");
+  assert.deepEqual(await store.peek("alpha", "browserbase"), { ref: "ctx-1" });
+  const file = join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json");
+  await chmod(file, 0o000);
+  t.after(() => chmod(file, 0o600).catch(() => undefined));
+  assert.equal(await store.peek("alpha", "browserbase"), "unreadable", "a file this server may not read");
+  await chmod(file, 0o600);
+  await writeFile(file, "{ not json");
+  assert.equal(await store.peek("alpha", "browserbase"), "unreadable", "a damaged file");
+  assert.equal(await store.peek("beta", "browserbase"), undefined, "an agent with none at all");
 });

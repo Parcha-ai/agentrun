@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { open as openFile, rm, stat } from "node:fs/promises";
+import { open as openFile, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -75,8 +75,9 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
-/** Why a run going when its server started was stopped: its browser sign-in does not open under this server's seal key. */
-export const UNREADABLE_SIGN_IN = "This server's seal key changed, so the run's browser sign-in can't be read: the run was stopped, so nothing it says can show it.";
+/** Why a run going when its server started was stopped: the browser sign-in it was handed can't be read here (the seal
+ *  key changed or is missing, or the sign-ins file is damaged or can't be read). */
+export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
 /** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
@@ -157,6 +158,9 @@ type RunMeta = {
   /** Set when a server found the run going with a browser sign-in it could not read (its seal key changed): the run was
    *  stopped, and its store is never read for rows, which could repeat the pointer uncut. */
   unshown?: true;
+  /** Set once a launch handed the run its agent's browser sign-in (a flag, never the pointer): only such a run's text
+   *  could repeat it, so only such a run is stopped and hidden when the sign-in can no longer be read. */
+  sign_in_handed?: true;
   /** Where it runs, as its start resolved it (place.ts): its process reads it. Absent for a run an older server started,
    *  which ran on the runner. */
   place?: Place;
@@ -792,6 +796,7 @@ export class Runs {
       ...(isObject(stored?.launch_thinking) ? { launch_thinking: stored.launch_thinking as RunMeta["launch_thinking"] } : {}),
       ...(isObject(stored?.tool_plane) ? { tool_plane: stored.tool_plane as Plane } : {}),
       ...(stored?.unshown === true ? { unshown: true as const } : {}),
+      ...(stored?.sign_in_handed === true ? { sign_in_handed: true as const } : {}),
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
@@ -814,9 +819,15 @@ export class Runs {
     // A run still going whose agent's browser sign-in does not open under this server's seal key: whatever it said, or
     // says, could repeat the pointer, which nothing here can cut. Its rows are never read, and it ends failed, saying
     // why: a live process is stopped (below), one already gone is never opened again.
-    if (row.state === "running" && signIn === "unreadable" && !run.meta.unshown) {
+    // Only a run that was handed it: one launched signed out since the key changed is taken up as any other.
+    if (row.state === "running" && signIn === "unreadable" && run.meta.sign_in_handed && !run.meta.unshown) {
       run.error = { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
       run.meta.unshown = true;
+      await this.saveMeta(run);
+    }
+    // Hidden under a key that did not open its sign-in, and that sign-in opens again now: its rows are read, cut of it.
+    if (run.meta.unshown && signIn === "readable") {
+      delete run.meta.unshown;
       await this.saveMeta(run);
     }
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
@@ -838,7 +849,7 @@ export class Runs {
         run.finishing = "cancelled";
       }
       const adopted = record && this.doorOf(record) ? record : null;
-      if (run.meta.unshown && !adopted) {
+      if (run.meta.unshown && !adopted && !run.outcome) {
         // Its process gone: never opened again. The start's recovery settles it, failed (settleOnce reads `finishing`).
         run.error ??= { code: "run_failed", message: UNREADABLE_SIGN_IN, retryable: false };
         run.finishing = "failed";
@@ -851,7 +862,9 @@ export class Runs {
         // Its turn aborted first, so the drain SIGTERM starts does not wait for it; one that outlives its drain is killed.
         this.finish(run, "failed", true);
         const pid = run.orphan;
-        if (pid) setTimeout(() => void (alive(pid) && process.kill(pid, "SIGKILL")), this.killAfterMs() + 5_000).unref();
+        // Killed only while that pid is still this run's process, never one the system reused meanwhile: its command
+        // line names the run's directory (Linux), else its run.json still names it, running.
+        if (pid) setTimeout(() => void this.stillRunsIt(run, pid).then((ours) => void (ours && process.kill(pid, "SIGKILL"))), this.killAfterMs() + 5_000).unref();
       } else if (adopted) {
         // A server that died between saving a stop and its abort reaching the run leaves the turn working.
         run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
@@ -1151,6 +1164,16 @@ export class Runs {
 
   /** Supervise a run process an earlier server started: follow its door, and settle the run once its run.json says it
    *  let go (released, or its lease lapsed) or the process is gone. */
+  /** Whether `pid` is still run `run`'s process: alive, and its command line names the run's directory (where /proc
+   *  shows it), else its run.json names it, running. */
+  private async stillRunsIt(run: Run, pid: number): Promise<boolean> {
+    if (!alive(pid)) return false;
+    const args = await readFile(`/proc/${pid}/cmdline`, "utf8").then((text) => text.split("\0"), () => null);
+    if (args) return args.includes(run.dir);
+    const now = await this.record(run);
+    return holderPid(now) === pid && now?.status === "running";
+  }
+
   /** `follow`: its rows are followed live from its door (never for a run whose rows are not shown, meta.unshown). */
   private adoptProcess(run: Run, record: Json, follow = true): void {
     const pid = holderPid(record);
@@ -1618,17 +1641,22 @@ export class Runs {
     run.signIn = browser && signIns ? ((await signIns.forRun(run.agentId, run.id, browser).catch((error: Error) => void warn(run.id, `its browser starts signed out: ${error.message}`))) ?? undefined) : undefined;
     // Never shown in its errors, from now on: a server started since its launch has handed it nothing yet.
     if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
+    // Kept, a flag alone: a later server that cannot read the sign-in knows this run's text could hold it.
+    if (run.signIn && !run.meta.sign_in_handed) {
+      run.meta.sign_in_handed = true;
+      await this.saveMeta(run).catch((error: Error) => warn(run.id, `that it was handed a sign-in is not saved: ${error.message}`));
+    }
   }
 
   /** The pointer of the sign-in a run this server loads was handed, among the values its rows, errors and answers never
    *  show: read only, with no lease taken (pinSignIn takes one at its next launch). `unreadable` when its agent keeps
    *  one that does not open under this server's seal key. */
-  private async peekSignIn(run: Run): Promise<"unreadable" | undefined> {
+  private async peekSignIn(run: Run): Promise<"unreadable" | "readable" | undefined> {
     const browser = run.meta.tool_plane?.browser;
-    const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => undefined) : undefined;
-    if (peeked === "unreadable") return peeked;
-    if (peeked && peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
-    return undefined;
+    const peeked = browser ? await this.options.signIns?.peek(run.agentId, browser).catch(() => "unreadable" as const) : undefined;
+    if (peeked === "unreadable" || peeked === undefined) return peeked;
+    if (peeked.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(peeked.ref);
+    return "readable";
   }
 
   /** Lets go of the save lease the run holds on its agent's sign-in, if any: at once when its process let its sessions go

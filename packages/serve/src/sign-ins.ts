@@ -145,12 +145,15 @@ export class SignIns {
 
   /** The pointer of `agentId`'s sign-in for `resolution`, read only: no lease taken, nothing made or written. For a run
    *  this server loads (after a restart), whose rows, errors and answers must never show it: `{ ref }`; `unreadable`
-   *  when the agent keeps one that does not open under this server's seal key (none now, or another), told apart from
-   *  none at all (undefined). */
+   *  when the agent keeps one that does not open under this server's seal key (none now, or another), or its sign-ins
+   *  file cannot be read or parsed, told apart from none at all (undefined: no file, or no entry for the vendor). */
   async peek(agentId: string, resolution: string): Promise<{ ref: string } | "unreadable" | undefined> {
     const vendor = (() => { try { return vendorOf(resolution); } catch { return undefined; } })();
     if (!vendor) return undefined;
-    const entry = (await this.read(agentId).catch(() => [])).find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
+    // Only a file that is not there means none: one this server may not read, or that does not parse, is unreadable.
+    const entries = await this.read(agentId).catch(() => null);
+    if (entries === null) return "unreadable";
+    const entry = entries.find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);
     if (!entry) return undefined;
     const ref = this.open(agentId, entry);
     return ref === undefined ? "unreadable" : { ref };

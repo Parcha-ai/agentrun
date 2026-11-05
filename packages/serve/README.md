@@ -850,10 +850,12 @@ picks which one a run gets, never the model.
   `unreadable` (this server's own state, marked `signins/1` in the served contract) is a pointer that does not open
   under the seal key the server has now (none, or another): runs start signed out, and none is made in its place until
   you forget it, since the vendor's object it points to would be left behind. A run still going when the server
-  starts, whose agent's sign-in does not open that way, is not taken up: it is stopped (or, its process already gone, never
-  opened again) and ends failed ("This server's
-  seal key changed, so the run's browser sign-in can't be read: …"), and its rows are never read, since what it says
-  could repeat the pointer, which the server could not cut. Its `held_by` still names a run that
+  starts that was handed the sign-in, which now does not open (or whose sign-ins file can't be read or is damaged), is
+  not taken up: it is stopped (or, its process already gone, never opened again) and ends failed ("This server can't
+  read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): …"), and its rows are
+  not read, since what it says could repeat the pointer, which the server could not cut. Once the sign-in opens again
+  (the right seal key back), its rows are read and shown, cut of it. A run that was never handed the sign-in (one
+  launched signed out since the key changed) is taken up as any other. Its `held_by` still names a run that
   holds its lease, as a held one does.
   Never the pointer. `DELETE /v2/agents/{id}/sign-ins/{key}` forgets one: the vendor's context or profile is deleted,
   then the pointer. A delete the vendor does not answer is said in the answer (`at_vendor: "not_deleted"`), and the
