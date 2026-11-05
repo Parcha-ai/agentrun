@@ -1111,6 +1111,56 @@ test("a start's catch-up queues each end the store holds and the ledger does not
   assert.equal(ledgerOf(dir).lost.ended, now);
 });
 
+test("an end after the webhook was set and inside the day is queued by a start's catch-up, though it came before that server started: a file named end-notices-since is neither read nor written", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const env = { AGENTRUN_SEAL_KEY: sealKey() };
+  const describe = async (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+  for (const leftover of [undefined, `${new Date().toISOString()}\n`]) {
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    const since = join(dir, "end-notices-since");
+    if (leftover !== undefined) writeFileSync(since, leftover);
+    const setup = new Webhooks(dir, env, () => undefined, []);
+    setup.save({ url: hook.url });
+    await setup.close();
+    const config = JSON.parse(readFileSync(join(dir, "webhook.json"), "utf8"));
+    writeFileSync(join(dir, "webhook.json"), `${JSON.stringify({ ...config, updated_at: new Date(Date.now() - 600_000).toISOString() })}\n`);
+    const ended = new Date(Date.now() - 300_000).toISOString();
+    const webhooks = new Webhooks(dir, env, () => undefined, []);
+    t.after(() => webhooks.close());
+    await webhooks.catchUp([{ id: "ended-before-start", endedAt: ended }], describe);
+    await until(() => hook.got.length === 1, `its run.ended (${leftover === undefined ? "no" : "a leftover"} end-notices-since)`);
+    assert.equal(hook.got[0].headers["webhook-id"], noticeId("ended-before-start", "run.ended", ended));
+    assert.equal(existsSync(since) ? readFileSync(since, "utf8") : undefined, leftover, "left as it was");
+  }
+});
+
+test("demo: an outbox file of another version than this server's is not read: none of its messages is sent, the deliveries log starts empty, and the log says which version it found", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let stopped = false;
+  t.after(() => stopped || first.close());
+  assert.equal((await client(first.baseUrl, first.token)("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  await first.close();
+  stopped = true;
+  const id = `msg_${"0".repeat(32)}`;
+  const body = JSON.stringify({ type: "run.ended", timestamp: new Date().toISOString(), data: { run_id: "r", agent_id: "a", status: "completed", title: "t" } });
+  const message = { id, type: "run.ended", body, created_at: new Date().toISOString(), status: "pending", attempts: 0, next_at: 0 };
+  const attempt = { webhook_id: id, type: "run.ended", at: new Date().toISOString(), status_code: null, latency_ms: 0, error: "not reached: ECONNREFUSED", retry_at: null, redelivery: false };
+  writeFileSync(join(data, "webhook-outbox.json"), `${JSON.stringify({ v: 2, messages: [message], attempts: [attempt] })}\n`);
+  const lines = [];
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", log: (line) => lines.push(line) });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  assert.deepEqual((await api("GET", "/settings/webhook/deliveries")).body, { attempts: [] });
+  assert.equal((await api("POST", `/settings/webhook/deliveries/${id}/redeliver`)).status, 404, "not a message this server holds");
+  await sleep(500);
+  assert.equal(hook.got.length, 0, "nothing sent");
+  assert.ok(lines.some((line) => line.includes("condition=outbox_not_read") && line.includes("version=2")), lines.join("\n"));
+});
+
 test("the ledger keeps an end exactly as long as a start's catch-up looks for it: one just inside the day stays and is not sent again; one just past it is dropped, and not sent either", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
