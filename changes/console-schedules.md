@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+The console has a Schedules page, where the server has schedules (`features.triggers`). It lists each schedule: its name, its agent, when it fires (a cron line and its zone, one time, or an interval), its next time, whether it is paused, and how its last firing went. A schedule is made or edited in a form: when (cron in an IANA zone, one time, or every N seconds, minutes or hours from an optional start), the agent, what each run is asked, and its required cost cap. A save the server refuses shows each issue under the field it names, a workflow agent's refusal under the agent. An edit sends only what changed. A schedule's page pauses and resumes it, edits it, deletes it after a confirm, and runs it now, one firing per click under its own Idempotency-Key. It lists its firings, newest first: started (with its run), skipped, missed (with the count), failed (with why), or due. A run a schedule started names the schedule on its page, and links to it.

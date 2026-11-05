@@ -33,8 +33,8 @@
 //   run: a stop, unlike a cancel, leaves no mark the resume is held to.
 
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, posix, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { type Cursor, defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx, wrapTool } from "@earendil-works/pi-durable";
 import { type Drive, EffectFailure, INTERRUPTED_TEXT, openDrive } from "@parcha/agentrun-kernel/kernel";
@@ -42,11 +42,12 @@ import { boundResult } from "@parcha/agentrun-kernel/process";
 import { type DurableRun, MESSAGE_ORIGIN_KIND } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { LEARNED_DIR } from "./learning.js";
+import { BOX_WORK } from "./place.js";
 import type { TurnOrigin } from "./learning-run.js";
 import { forModel } from "./result.js";
 import { durableSessions } from "./sessions.js";
 import { SHELL_TOOLS } from "./background.js";
-import { LEGACY_NAMES, readToolSettings, TABLE_TOOLS } from "./tool-plane.js";
+import { LEGACY_NAMES, readToolSettings, SERVE_OWN_TOOLS, TABLE_TOOLS } from "./tool-plane.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -101,7 +102,7 @@ export function settingsKeyOf(harness: string, name: string, mcpServers: readonl
   // and a tool that runs a command in the box (bash_background and the rest) to bash's: before the table's own names.
   if (Object.hasOwn(LEGACY_NAMES, name)) return LEGACY_NAMES[name];
   if (Object.hasOwn(SHELL_FAMILY, name)) return SHELL_FAMILY[name];
-  if (TABLE_TOOLS.includes(name) || isCatalogTool(name)) return name;
+  if (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || isCatalogTool(name)) return name;
   const native = NATIVE_TOOLS[harness]?.[name];
   if (native) return native;
   const mcp = /^mcp__([a-z][a-z0-9-]*)__(.+)$/.exec(name);
@@ -171,7 +172,9 @@ export type EnterOptions = {
  *  (`isError: true`), or the waiting text with `parked: true`, after which the caller ends the turn. */
 export type Entered = undefined | (ToolAnswer & { parked?: true });
 
-/** Runs an APPROVED parked call of a tool family the gate does not own (the MCP gateway's), exactly once. */
+/** Runs an APPROVED parked call of a tool family the gate does not own (the MCP gateway's), exactly once. It owns the
+ *  call's deadline: the gate puts no wall-clock bound on it (only a stop or a cancel cuts it, through `signal`), so an
+ *  executor bounds its own work and answers a timeout as an error result (`isError: true`), never by waiting on. */
 export type Executor = (tool: string, args: unknown, callId: string, signal: AbortSignal) => Promise<ToolAnswer>;
 
 /** The gate of one run, in the run's process. */
@@ -225,43 +228,25 @@ export function gateOf(policy: (tool: string) => Permission): Gate {
 
 
 /** The file in a run's directory that names the origin of the turn it runs now: written by the server alone, as it sends
- *  the learning lane's reflect turn (runs.ts's toLiveDoor), and gone before a person's turn is sent (runs.ts's personsTurn). */
+ *  the learning lane's reflect turn (runs.ts's toLiveDoor), and gone before a person's turn is sent (runs.ts's personsTurn).
+ *  The gate refuses that turn's writes under work/.learning/ (NOTE_ONLY_TEXT). */
 export const TURN_ORIGIN_FILE = "turn-origin.json";
 /** The run's store's record of a call that waits for approval (`phase: "requested"`), and of its answer acted on
  *  (`phase: "resolved"`), on its root conversation. */
 export const APPROVAL_ENTRY = "agentrun.tool_approval";
 
-/** What the gate does with one call: `policy` gives the run's permission of a tool, `turnOrigin` the turn's (from the
- *  server's internal path only), `work` the run's work/. Under ask, a write or an edit of a reflect turn whose path lies
- *  inside work/.learning/ runs without asking; under deny nothing runs. */
-export function gateToolCall(call: { tool: string; args: unknown }, { turnOrigin, work, policy }: { turnOrigin?: TurnOrigin; work: string; policy: (tool: string) => Permission }): Permission {
-  const permission = policy(call.tool);
-  if (permission !== "ask") return permission;
-  const path = (call.args as { path?: unknown } | null | undefined)?.path;
-  return turnOrigin === "reflect" && (call.tool === "write" || call.tool === "edit") && inLearning(work, path) ? "allow" : "ask";
-}
+/** The refusal of the end-of-run turn's write or edit under work/.learning/: its notes are kept only from its answer's
+ *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
+export const NOTE_ONLY_TEXT = "A note is kept only from your answer: write it in a ```note block, not to a file.";
 
-/** Whether `path`, resolved against `work` as pi's file tools resolve it (a leading `@` dropped, Unicode spaces made
- *  plain, then lexically), names a file inside work/.learning/ with no link on the way: no component from work/ down
- *  that exists is a link, so nothing a link points at counts as inside. */
-export function inLearning(work: string, path: unknown): boolean {
-  if (typeof path !== "string" || path.includes("\0")) return false;
-  const plain = path.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ");
-  const root = resolve(work);
-  const target = resolve(root, plain.startsWith("@") ? plain.slice(1) : plain);
-  const below = relative(join(root, LEARNED_DIR), target);
-  if (!below || below === ".." || below.startsWith(`..${sep}`) || isAbsolute(below)) return false;
-  let at = root;
-  for (const part of relative(root, target).split(sep)) {
-    at = join(at, part);
-    try {
-      if (lstatSync(at).isSymbolicLink()) return false;
-    } catch (error) {
-      // Missing: nothing below it exists either. Anything else is not known to be inside.
-      return (error as NodeJS.ErrnoException).code === "ENOENT";
-    }
-  }
-  return true;
+/** Whether `args.path`, as a file tool resolves it (a leading `@` dropped, Unicode spaces made plain, then lexically),
+ *  names work/.learning/ or a path under it: by this machine's `work` or the box's (BOX_WORK). */
+export function underLearning(work: string, args: unknown): boolean {
+  const path = (args as { path?: unknown } | null | undefined)?.path;
+  if (typeof path !== "string") return false;
+  const plain = path.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
+  const under = (base: string, at: string) => at === join(base, LEARNED_DIR) || at.startsWith(`${join(base, LEARNED_DIR)}${sep}`);
+  return under(resolve(work), resolve(work, plain)) || under(BOX_WORK, posix.resolve(BOX_WORK, plain));
 }
 
 /** One call that waits for approval, as the run's store keeps it. */
@@ -296,8 +281,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 
 /** The gate of the run `runId` at `where` (its directory, under the data directory's runs/), on its pinned revision:
  *  an agentic run's parks an asked call; a workflow's model node cannot. */
-export function runGate(where: { root: string; work: string; learningAt?: () => Promise<boolean> }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
-  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi", ...(where.learningAt ? { learningAt: where.learningAt } : {}) }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
+export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string } }): RunGate {
+  return new RunGate({ root: where.root, work: where.work, data: resolve(where.root, "..", ".."), runId, harness: revision.body.harness ?? "pi" }, (revision.body.toolSettings ?? {}) as PermissionSettings, revision.kind === "agentic", process.env[NO_APPROVER_ENV] !== "1");
 }
 
 /** The gate in a run's process, park mode: its policy, the turn's origin, the calls that wait, and the answers acted on. */
@@ -306,6 +291,8 @@ export class RunGate {
   private durable?: DurableRun;
   private context?: Context;
   private coding?: readonly ToolRegistration[];
+  /** The run's own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  private extra: readonly ToolRegistration[] = [];
   private resume?: Resume;
   private drive?: Promise<Drive>;
   private timer?: NodeJS.Timeout;
@@ -315,7 +302,7 @@ export class RunGate {
   /** `where.data`: the server's data directory, its tool settings beside the store; `overrides`: the pinned revision's
    *  own; `parks`: whether an asked call parks the run (an agentic run's), which a workflow's model node cannot;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on). */
-  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[]; /** Whether the file tools write this machine's work/, where the carve-out's path is checked; absent, they do. */ learningAt?: () => Promise<boolean> }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
+  constructor(private readonly where: { root: string; work: string; data: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly overrides: PermissionSettings = {}, private readonly parks = true, private readonly approvers = true) {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call. */
@@ -361,13 +348,10 @@ export class RunGate {
     // held to bash's (SHELL_FAMILY) keeps its own name, so an approved bash_background runs bash_background, never bash.
     const key = settingsKeyOf(this.where.harness ?? "pi", name, this.where.mcpServers) ?? name;
     const tool = shellToolOf(name) ?? key;
-    const permission = this.policy(name);
-    // The reflect turn's carve-out holds only where the path checked here is the file the tool writes (learningAt): a
-    // remote box's .learning/ is not this machine's, and a link made in it is never seen here. Read before the look for
-    // a call that waits below, which stays in one tick with its hold.
-    const origin = permission === "ask" ? this.turnOrigin() : undefined;
-    const turnOrigin = origin && (await (this.where.learningAt?.() ?? Promise.resolve(true))) ? origin : undefined;
-    const verdict = gateToolCall({ tool: key, args }, { ...(turnOrigin ? { turnOrigin } : {}), work: this.where.work, policy: () => permission });
+    // The end-of-run turn writes no file under work/.learning/, whatever the tool's permission: its notes are kept only
+    // from its answer (NOTE_ONLY_TEXT). Any other turn's write there follows its permission, as anywhere.
+    if ((key === "write" || key === "edit") && this.turnOrigin() === "reflect" && underLearning(this.where.work, args)) return { text: NOTE_ONLY_TEXT, isError: true };
+    const verdict = this.policy(name);
     if (verdict === "allow") return undefined;
     if (verdict === "deny") return { text: deniedText(tool, key), isError: true };
     // No one can answer here: refused at once with why, never parked until a cancel.
@@ -417,11 +401,13 @@ export class RunGate {
   }
 
   /** Reads the requests the run's store holds, as the run's process opens, before its turns go on. `coding`: the run's
-   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would. */
-  async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[]): Promise<void> {
+   *  coding source (coding-tools.ts), on which an approved coding call runs, as the run's own would; `extra`, the run's
+ *  own tools beyond the table (its learned_workflow), on which an approved call of one runs. */
+  async load(durable: DurableRun, context: Context, coding?: readonly ToolRegistration[], extra: readonly ToolRegistration[] = []): Promise<void> {
     this.durable = durable;
     this.context = context;
     this.coding = coding;
+    this.extra = extra;
     const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
     for (let cursor: Cursor | undefined; root; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, context);
@@ -591,7 +577,8 @@ export class RunGate {
   private readonly executors = new Map<string, Executor>();
 
   /** Registers how an approved call of tools named `prefix…` runs (the MCP gateway's, "mcp:"): one per prefix and run.
-   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool. */
+   *  The gate runs it exactly once on its journaled path, as it runs a kernel host tool, with no deadline of its own: the
+   *  executor bounds the call (Executor). */
   executor(prefix: string, run: Executor): void {
     this.executors.set(prefix, run);
   }
@@ -609,7 +596,7 @@ export class RunGate {
     // Imported here, not at the top: host-tools reaches the web tools, which reach tool-plane, which reads this module's
     // permission rule, and a cycle of top-level imports leaves one of them uninitialized for whichever loads first.
     const { hostTools } = await import("./host-tools.js");
-    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding);
+    const [tool] = hostTools(this.durable!, [held.tool], this.context!, new Map(), this.coding, undefined, this.extra);
     if (!tool) return { refused: `The approved ${held.tool} call is not one the kernel runs outside the model's turn.` };
     return { replay: tool.replay, call: (signal) => tool.call(held.args, { callId: held.call_id, signal }) as Promise<ToolAnswer> };
   }

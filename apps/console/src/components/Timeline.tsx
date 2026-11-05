@@ -19,9 +19,12 @@ const notSent = (row: TimelineRow) => (row.kind === "tool_approval_requested" ? 
 /** A tool call's approval row while the call still waits: its summary (the server's) says so. */
 const awaitsApproval = (row: TimelineRow) => row.kind === "tool_approval_requested" && row.summary.startsWith("Waiting for your approval");
 
-/** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: "). */
+/** A message the server wrote into the run (served `origin: "server"`): AgentRun's, never the person's. */
+const fromServer = (row: TimelineRow) => row.origin === "server";
+/** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
+ *  "AgentRun: "). */
 const title = (row: TimelineRow) => {
-  const text = row.summary.replace(/^(You|Thinking|Asked you|Waiting for you):\s*/, "");
+  const text = row.summary.replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
   if (row.kind === "user_message" && text.startsWith("{")) {
     try { return Object.entries(JSON.parse(text) as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · "); } catch { /* not whole JSON: as is */ }
@@ -40,7 +43,7 @@ const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)
  *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
 const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
 const toolName = (tool: string | null | undefined) => (tool && BROWSER.has(tool) ? nameOf(tool) : tool);
-const label = (row: TimelineRow) =>
+const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval" })[row.kind] ?? row.kind;
 
 /** One step. With one row per action, a call's row carries its own outcome: `running` until it ends (a spinner), a
@@ -75,7 +78,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
               {step.ms !== undefined && <span className="font-mono text-[11px]">{took(step.ms)}</span>}
               {step.times && <span className="font-mono text-[11px]">{step.times} times{step.until ? ` over ${took(Math.max(0, Date.parse(step.until) - Date.parse(row.timestamp)))}` : ""}</span>}
             </span>
-            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", missing && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>
+            <span className={cn("mt-0.5 block break-words text-[15px] leading-snug", (missing || fromServer(row)) && "text-muted-foreground")}>{step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row)}</span>
             {step.saved && <span className="mt-0.5 block font-mono text-[12px] text-muted-foreground">saved {step.saved}</span>}
             {notSent(row) && <span className="mt-0.5 block break-words text-[13px] text-muted-foreground">{notSent(row)}</span>}
           </span>

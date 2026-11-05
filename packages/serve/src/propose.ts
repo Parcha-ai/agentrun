@@ -58,7 +58,7 @@ async function seedFiles(home: string, repo: string, sha: string, wanted: readon
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. In the agent's
  *  queue. */
-export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[] }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
+export const proposeRun = (input: { data: string; agentId: string; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>> }): Promise<Proposed> => withAgentRepo(input.data, input.agentId, async () => {
   const home = homeOf(input.data, input.agentId);
   const repo = await agentFolder(input.data, input.agentId);
   const seed = await readSeed(home, repo, input.seed);
@@ -82,7 +82,7 @@ export const proposeRun = (input: { data: string; agentId: string; runDir: strin
   const dsl = files.some(({ file }) => file.endsWith("/workflow.json")) ? await import("@parcha/agentrun-dsl") : undefined;
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const kept = [...held.texts].filter(([file, text]) => (file.endsWith("/SKILL.md") || file.endsWith("/README.md")) && learnedStatus(text) !== "active").map(([file]) => file);
-  const check = (some: Change[]) => checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(dsl ? { dsl } : {}) });
+  const check = (some: Change[]) => checkProposal({ base: { files: [...seed.files, ...held.files], active: activeOf(seed) }, changes: some, refuseValues: input.refuse, ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(dsl ? { dsl } : {}) });
   // A verdict per item from the checks too: the items a problem names are left out (a draft's two files together),
   // and the rest is checked again; a problem that names no item, or one that refuses the whole (WHOLE), drops it all,
   // as does a rest the checks still refuse.

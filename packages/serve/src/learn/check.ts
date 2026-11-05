@@ -71,9 +71,12 @@ export type CheckInput = {
   /** How the run's job ended, its status (`completed`, `failed`, ...). Only a completed run adds or changes a skill:
    *  without it, none does. */
   readonly outcome?: string;
-  /** The tools a workflow draft may name: the agent's granted tools a workflow node runs here (tools.ts
+  /** The tools a workflow draft may name: the agent's granted tools a workflow's call node runs here (tools.ts
    *  learnedWorkflowTools). Without it, a draft that names a tool is refused. */
   readonly tools?: readonly string[];
+  /** The agent's granted tools the gate does not allow, with what each is set to (tools.ts learnedDraftTools): a draft
+   *  whose call node calls one is refused, in the words a workflow revision's is (learn/skills.ts gatedNodes). */
+  readonly gated?: Readonly<Record<string, string>>;
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
   readonly dsl?: DraftReader;
   /** The skills' and drafts' files whose text in the run's seed has a status (a person retired it, or it waits for its
@@ -162,7 +165,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (text === undefined) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
-    for (const { rule, detail } of draftProblems(input.dsl, text, input.tools)) add(rule, detail, path);
+    for (const { rule, detail } of draftProblems(input.dsl, text, input.tools, input.gated)) add(rule, detail, path);
     return;
   }
   for (const reason of skillProblems(text, place.name)) add(place.kind === "skill" ? "skill" : "workflow", reason, path);
