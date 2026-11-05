@@ -257,6 +257,11 @@ interface DoorHook {
 type DoorContext = { run: DurableRun; signal: AbortSignal; emit(event: { type: "run_start" } | { type: "run_end" }): void; adopt(pid: number): void };
 ```
 
+A submit with `answers: false` and `asks` (tool names) may not answer a question the conversation waits on: pi's root
+refuses it with 409 `WAITING` when its last model message is the result of a tool in `asks`, and both pi and a hook admit
+it only as `whenBusy: "reject"`, so a busy run refuses it (409 `BUSY`) and it is never queued behind a turn that may end on
+such a tool.
+
 With a hook, `POST /submit` (whose `whenBusy` defaults to `followUp`, as pi's) goes through, in this order: the bearer
 token (401); the lease (503 `OPENING`, `PARKING`, `RELEASED`), so nothing reaches the hook once the lease is lost; the
 admission, one `door.input` entry in the root conversation holding the requestId, the content and its status, written

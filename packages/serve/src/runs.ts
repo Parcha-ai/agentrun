@@ -2001,9 +2001,14 @@ export class Runs {
     return true;
   }
 
-  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
+  /** `answers: false`: the run's door refuses the message (WAITING) when the run's turn ended on ask_person, and when the
+   *  run is busy (BUSY), so it is never queued behind a turn that may end so; decided at the door's admission, past every
+   *  wait here. */
+  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number, answers = true): Promise<void> {
     await this.beforeSubmit?.(run.id, content);
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(answers ? {} : { answers: false, asks: [ASK_TOOL] }) }, readyMs);
+    if (answer.status === 409 && answer.body?.error === "WAITING") throw new ApiError("not_continuable", WAITS_ON_A_PERSON, { details: { reason: "waiting" } });
+    if (answer.status === 409 && answer.body?.error === "BUSY" && !answers) throw new ApiError("rate_limited", "The run is working: a message that may not answer it waits until it is idle.", { retry_after_ms: 5_000 });
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
@@ -2074,7 +2079,7 @@ export class Runs {
     run.submitted++;
     this.refresh(run);
     try {
-      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId);
+      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, answers);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);
