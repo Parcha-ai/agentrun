@@ -25,13 +25,14 @@ export function loopbackNames(host: string, allowHosts: readonly string[] = [], 
 export const HOST_FIX =
   "this server answers at localhost or 127.0.0.1, on any port (a tunnel such as ssh -L 7340:localhost:7340 works); to serve it at a name of its own, start it with AGENTRUN_PUBLIC_URL=https://<name> or --allow-host <name>";
 
-/** The page a browser gets for a refused Host: fixed text, under the console's CSP (page.ts). */
+/** The page a browser gets for a refused Host: fixed text, under the console's CSP (page.ts). Its addresses carry no
+ *  scheme: a published package names no loopback URL (scripts/verify-packages.mjs). */
 export const HOST_REFUSED_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>AgentRun: open it at localhost</title></head>
 <body>
 <h1>Open AgentRun at localhost</h1>
 <p>This AgentRun server answers only at a name on its own machine, so it refused the address this page was opened at.</p>
-<p>Open it at <code>http://localhost:&lt;port&gt;/</code> or <code>http://127.0.0.1:&lt;port&gt;/</code>, with the port you reached it on. From another computer, a tunnel works at any local port: <code>ssh -L 7340:localhost:7340 &lt;server&gt;</code>, then open <code>http://localhost:7340/</code>.</p>
+<p>Open it at <code>localhost:&lt;port&gt;</code> or <code>127.0.0.1:&lt;port&gt;</code>, with the port you reached it on. From another computer, a tunnel works at any local port: <code>ssh -L 7340:localhost:7340 &lt;server&gt;</code>, then open <code>localhost:7340</code> in the browser.</p>
 <p>To serve it at a name of its own (behind HTTPS, for example), start it with <code>AGENTRUN_PUBLIC_URL=https://&lt;name&gt;</code>, or add the name with <code>--allow-host &lt;name&gt;</code>.</p>
 </body></html>
 `;
