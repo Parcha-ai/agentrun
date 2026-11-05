@@ -50,8 +50,8 @@ Stop the server with SIGTERM to its exact PID. A busy run gets the drain timeout
 ## Auth recipe
 
 - API: `Authorization: Bearer $(cat DIR/.token)`. `GET /v2/health`, `GET /v2/capabilities` and `GET /v2/openapi.json`
-  need no credential. Anything else without a token is `401 unauthenticated`. A non-loopback `Host` on a loopback
-  bind is `403`.
+  need no credential. Anything else without a token is `401 unauthenticated`. A `Host` on a loopback bind
+  that is not `localhost`, `127.0.0.1`, `[::1]`, the public URL's name or an `--allow-host` name (any port) is `403`.
 - Console: `/` (`/console/`, `/setup` and `/sign-in` redirect there with 303). On the first visit, set the owner
   password (12 characters or more; labels `New password` and `Password again`). After that, sign in with the
   `Password` field. The session is a cookie, and the `?token=` link sets none while accounts are on.
