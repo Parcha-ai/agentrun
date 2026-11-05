@@ -17,7 +17,7 @@ import { drivingGates, keptFor, keptReason, personOn, rearmWhenLeft, type Drivin
 import { captureFor, planRestore, untilQuiet, vaultRuntime, type VaultOptions, type VaultRuntime } from "./vault-session.js";
 import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type BrowserToolImpls, type PageDriver, type ToolImpl } from "./core/tools.js";
-import type { AttachTarget, BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
+import type { AttachTarget, BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionCharge, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, hostLiveView, redactContent, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
@@ -57,6 +57,12 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
   /** A session runs without the effect observer its policy asked for; a throw here never fails a call. */
   onObserver?: (row: ObserverRow) => void | Promise<void>;
   prices?: Partial<PriceTable>;
+  /** Each charge of a session's time, called in the commit that writes it on the session's record (`tx`), so a host that
+   *  books it in that commit books what the record bills, once: at a browser call (`call`), what the session ran since its
+   *  last charge; at its release (`final`, no `call`), what it ran since, topped up to the provider's minimum. Never for a
+   *  session already billed in full. It must not throw: a throw fails that commit, and a call's charge is then carried by
+   *  the session's next one. */
+  onCharge?: (charge: SessionCharge, tx: Tx, call?: { callId: string }) => void | Promise<void>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };
   section?: { addendum?: string };
@@ -138,13 +144,16 @@ const FAILED_END_MS = 5_000;
 type Scope = { cid: ConversationId; plane: string; context: Context; read: DocumentReader; signal: AbortSignal; commit<T>(change: (tx: Tx) => Promise<T>): Promise<T>; keep(slot: string, value: string): Promise<string> };
 /** A session this process attached, until its release is confirmed: what a release the store cannot record lets go of. */
 type Owned = { cid: ConversationId; provider: BrowserProvider; ref: LeaseRef };
+/** Bills `record` through `at` in the commit `tx` (sessionCharge), and tells the host (onCharge): what was charged, or null
+ *  for a record already billed in full. */
+type Bill = (tx: Tx, conversationId: ConversationId, record: SessionRecord, at: string, final: boolean, call?: { callId: string }) => Promise<ToolUsage | null>;
 type Readers<D extends PageDriver> = { options: BrowserExtensionOptions<D>; redact: Redact; Config: ConversationDocToken<BrowserConfig> };
 type Custody<D extends PageDriver> = Readers<D> & {
   name: string;
   Sessions: ConversationDocToken<SessionsState>;
   Children: ConversationDocToken<{ byRequest: Record<string, number> }>;
   store: ReturnType<typeof custodyStore>;
-  meter(spent: SessionRecord["spent"], at: string, final?: boolean): { spent: SessionRecord["spent"]; usage: ToolUsage };
+  bill: Bill;
   held: Attachments<D>;
   /** The host's session vault, when it gave one. */
   vault: VaultRuntime | null;
@@ -743,9 +752,7 @@ async function chargeCall<D extends PageDriver>(c: Custody<D>, api: ToolExecutio
   return api.commit(async (tx) => {
     const record = currentRecord(await tx.doc(c.Sessions, api.conversationId), PLANE);
     if (record?.state !== "live") return null;
-    const { spent, usage } = c.meter(record.spent, now());
-    record.spent = spent;
-    return usage;
+    return c.bill(tx, api.conversationId, record, now(), false, { callId: api.callId });
   }, context);
 }
 
@@ -898,10 +905,19 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     const charged = sessionCharge(spent, at, prices, priceState, final);
     return { spent: { ...withEstimate(spent, charged.spent, listPriced), state: charged.usage.state }, usage: charged.usage };
   };
+  const bill: Bill = async (tx, conversationId, record, at, final, call) => {
+    const before = record.spent;
+    if (before.final) return null;
+    const { spent, usage } = meter(before, at, final);
+    record.spent = spent;
+    const seconds = Math.round((spent.seconds - before.seconds) * 1000) / 1000;
+    await options.onCharge?.({ conversationId, tag: record.tag, provider: record.provider, at, seconds, usd: usage.usage.cost.total, final, state: usage.state }, tx, call);
+    return usage;
+  };
   const leaving = new Map<string, () => void>();
   const owned = new Map<string, Owned>();
   const store = custodyStore({
-    name, Config, Sessions, meter, scrubbed, createDeadlineMs: options.createDeadlineMs ?? CREATE_DEADLINE_MS,
+    name, Config, Sessions, meter, bill, scrubbed, createDeadlineMs: options.createDeadlineMs ?? CREATE_DEADLINE_MS,
     providerOf: (read, cid, plane, context) => providerOf(readers, read, cid, plane, context),
     emit: (cid, label, record, change) => {
       // A released session's poll ends with it, whatever released it, and nothing is left to release directly.
@@ -913,7 +929,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   });
 
   const c: Custody<D> = {
-    ...readers, name, Sessions, Children, store, meter, held: new Attachments<D>(), vault, fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), owned, failed: false, ending: null, opened: null, incarnation: randomUUID(),
+    ...readers, name, Sessions, Children, store, bill, held: new Attachments<D>(), vault, fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), owned, failed: false, ending: null, opened: null, incarnation: randomUUID(),
     idle: idleTracker<ConversationId>({ idleMs: DEFAULT_BROWSER_POLICY.idleReleaseS * 1000, onIdle: (cid, fired, idleMs) => void releaseIdle(c, cid, fired, idleMs).catch(() => undefined) }),
   };
   // Every browser tool is a model call on its session's driving gate: refused while a person drives the live view, and the viewer's input is held while it runs. The host's own

@@ -26,6 +26,8 @@ export type StoreDeps = {
   providerOf(read: DocumentReader, cid: ConversationId, plane: string, context: Context): Promise<BrowserProvider>;
   emit(cid: ConversationId, label: string, record: SessionRecord, change: SessionChange): Promise<void>;
   meter(spent: SessionRecord["spent"], at: string, final?: boolean): { spent: SessionRecord["spent"] };
+  /** The release's charge, written on `record` in the commit `tx` and told to the host (durable.ts). */
+  bill(tx: Tx, conversationId: ConversationId, record: SessionRecord, at: string, final: true): Promise<unknown>;
   scrubbed(error: unknown): Error;
   createDeadlineMs: number;
   handoff?: HandoffPort;
@@ -33,7 +35,7 @@ export type StoreDeps = {
   handedBack?(tag: string, fence: number): void;
 };
 
-export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, scrubbed, createDeadlineMs, handoff, handedBack }: StoreDeps) {
+export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack }: StoreDeps) {
   const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }) });
 
   /** One state change: the record and the open-session inventory move in the same commit. */
@@ -46,7 +48,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     const record = state.sessions.find((r) => r.tag === row.tag);
     if (!record) return;
     moveRecord(record, next);
-    if (next.state === "released" && record.resourceId !== null) record.spent = meter(record.spent, next.at, true).spent;
+    if (next.state === "released" && record.resourceId !== null) await bill(tx, cidOf(row), record, next.at, true);
     if (next.notice) {
       for (const stale of [notices.kept(record.lastUrl), notices.lost(record.lastUrl)]) state.notice = state.notice?.replace(stale, "").replace(/\s+/g, " ").trim() || null;
       addNotice(state, notices[next.notice](record.lastUrl));
@@ -235,7 +237,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
           await ((await releasedAll(provider, row)) ? outcome("released", async (tx) => {
             delete (await tx.doc(Inventory)).rows[row.tag];
             const record = (await tx.doc(Sessions, cidOf(row))).sessions.find((r) => r.tag === row.tag);
-            if (record && record.resourceId !== null) record.spent = meter(record.spent, at, true).spent;
+            if (record && record.resourceId !== null) await bill(tx, cidOf(row), record, at, true);
           }) : outcome("lost"));
           continue;
         }

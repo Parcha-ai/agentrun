@@ -1,0 +1,195 @@
+// Browser minutes in the run's spend: each charge of a session's time is booked as a TOOL_COST in the commit that bills
+// it, and under a cap the time is held before it runs (browser-cost.ts). The first tests run pi-browser's own meter
+// in this process on node's mock Date, so every bill is exact; the last ones go through the API with the faux browser.
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { BROWSER_PRICES, browserPrice, browserSpend } from "../dist/browser-cost.js";
+import { paidHolds, useSpend } from "../dist/cap.js";
+import { agent, follow, serve, withEnv } from "./support.mjs";
+
+const START = "https://example.test/start";
+const T0 = Date.UTC(2026, 10, 5, 12, 0, 0);
+const BROWSERBASE = { usdPerHour: 0.12, minimumS: 60 };
+const KEYS = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
+
+/** A pi run in this process whose model calls browser_read `reads` times, thinking `thinkS` between calls, each read
+ *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap). `seen()` runs at every moment the
+ *  run can spend: inside each call, before each model turn and after the release. */
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", seen = () => {} }) {
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
+    import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
+    import("@earendil-works/pi-durable"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
+  ]);
+  let spent = 0;
+  useSpend(cap === undefined ? undefined : { cap, spent: () => spent, add: (usd) => void (spent = spent === null || usd === null ? null : spent + usd) });
+  t.after(() => useSpend(undefined));
+  const backend = new FakeBackend({ name: provider, start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const releases = [];
+  // A refusal's release, waited for here so its charge is billed at the moment of the refusal.
+  const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); });
+  const browser = createBrowserExtension({
+    provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null },
+    prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge,
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); t.mock.timers.tick(readS * 1000); seen("call", spent); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const extension = { ...browser.extension, tools: browser.extension.tools.map(spend.capped) };
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: reads + 1 }, () => (context) => {
+    const results = context.messages.filter((m) => m.role === "toolResult");
+    if (results.length > 0) t.mock.timers.tick(thinkS * 1000);
+    seen("turn", spent);
+    const refused = results.some((m) => m.content.some((c) => c.type === "text" && c.text.includes("spend_cap_reached")));
+    return results.length < reads && !refused ? faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" }) : faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = durable.createRegistry();
+  registry.install(extension);
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: idleS, batchTimeoutMs: 60_000 };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-cost", policy }); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  t.mock.timers.tick(5_000);
+  // `idle`: the run calls no more, and pi-browser releases the session itself once its idle window passes (in real time).
+  const sessions = async () => (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
+  if (end === "idle") for (let i = 0; i < 200 && (await sessions())[0]?.state !== "released"; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+  else await browser.release(root, "close", ctx);
+  await browser.drain(harness, ctx);
+  seen("released", spent);
+  const [record] = await sessions();
+  const entries = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 500), ctx)).items;
+  const booked = entries.filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
+  const results = entries.map((entry) => JSON.stringify(entry)).filter((text) => text.includes("spend_cap_reached"));
+  return { record, booked, spent, releases, results, backend, stretch: spend.stretch };
+}
+
+const pico = (usd) => Math.round(usd * 1e12) / 1e12;
+const total = (booked) => pico(booked.reduce((sum, row) => sum + row.usd, 0));
+
+test("uncapped: every charge is booked under its call, idle time between calls included, and the release's last; nothing is refused", async (t) => {
+  const { record, booked, releases } = await run(t, { reads: 3 });
+  // 3 s, then 20 s thought and a 3 s read twice, then the last answer's 20 s and 5 s to the release: 74 s past the minimum.
+  assert.deepEqual(booked.map((row) => [row.tool, row.charged_by, row.seconds]), [["browser", "browserbase", 3], ["browser", "browserbase", 23], ["browser", "browserbase", 23], ["browser", "browserbase", 25]]);
+  assert.ok(booked.every((row) => typeof row.call === "string"), "the release's charge goes under the session's last call");
+  assert.equal(booked[3].call, booked[2].call);
+  assert.deepEqual([record.spent.seconds, record.spent.final], [74, true]);
+  assert.equal(total(booked), record.spent.usd, "booked is what the session's record bills");
+  assert.ok(Math.abs(record.spent.usd - 74 * 0.12 / 3600) < 1e-11, String(record.spent.usd));
+  assert.deepEqual(releases, [], "nothing refused");
+  assert.equal(paidHolds(), 0, "no hold is left");
+});
+
+test("capped: what the run spent plus what it holds never passes the cap; the call that would cross it is refused in the cap's words and the session is released", async (t) => {
+  const cap = 0.028;
+  const moments = [];
+  const { record, booked, spent, releases, results, backend, stretch } = await run(t, { reads: 4, cap, seen: (at, spent) => moments.push([at, spent + paidHolds()]) });
+  assert.equal(stretch, 270 * 0.12 / 3600, "the next stretch: its 60 s minimum, the 180 s idle window and 30 s for its release");
+  // Each moment the run could spend: inside each call, at each model turn and after the release.
+  assert.ok(moments.length >= 6, JSON.stringify(moments));
+  for (const [at, held] of moments) assert.ok(held <= cap, `${at}: ${held} is over the cap of ${cap}`);
+  // Two calls fit: $0.018 held for the first, then the session's $0.009 reserve beside the second's $0.018 and the 20 s it
+  // ran since. The third does not, and is refused before it runs.
+  const refusal = results.find((text) => text.includes("spend_cap_reached"));
+  assert.match(refusal, /spend_cap_reached: This browser call was not sent\. It could cost up to \$0\.018667 \(browserbase's session time at \$0\.12 an hour: the 20 s its session ran since its last charge, and twice the next stretch of 270 s \(its 60 s minimum, the 180 s idle window and 30 s for its release\)\), and with \$0\.009867 spent the run would pass its cap of \$0\.028: the run is out of budget\./);
+  assert.equal(releases.length, 1, "its session was released");
+  assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [1, 1, 0]);
+  // 3 s, 23 s, and at the refusal 20 s more, topped up to the minute.
+  assert.deepEqual(booked.map((row) => row.seconds), [3, 23, 34]);
+  assert.deepEqual([record.spent.seconds, record.spent.usd], [60, 0.002]);
+  assert.equal(total(booked), 0.002);
+  assert.ok(Math.abs(spent - 0.002) < 1e-12 && spent <= cap, `the run's process counted ${spent}`);
+  assert.equal(paidHolds(), 0, "every hold is let go once the release is booked");
+});
+
+test("capped, a session pi-browser releases itself once the run stops calling: its release's charge is booked from the reserve held for it", async (t) => {
+  const cap = 0.01;
+  const moments = [];
+  const { record, booked, releases, stretch } = await run(t, { reads: 1, idleS: 1, end: "idle", cap, seen: (at, spent) => moments.push([at, spent + paidHolds()]) });
+  assert.equal(stretch, 91 * 0.12 / 3600, "its 60 s minimum, a 1 s idle window and 30 s for its release");
+  for (const [at, held] of moments) assert.ok(held <= cap, `${at}: ${held} is over the cap of ${cap}`);
+  assert.deepEqual([record.state, record.spent.final, releases], ["released", true, []], "released by its idle window, not by a refusal");
+  // 3 s at the call; the last answer's 20 s and 5 s more, topped up to the minute at the idle release.
+  assert.deepEqual(booked.map((row) => row.seconds), [3, 57]);
+  assert.equal(total(booked), 0.002);
+  assert.equal(paidHolds(), 0);
+});
+
+test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {
+  assert.deepEqual(BROWSER_PRICES, { browserbase: { usdPerHour: 0.12, minimumS: 60 }, kernel: { usdPerHour: 0.06, minimumS: 0 }, cdp: { usdPerHour: 0, minimumS: 0 } });
+  assert.deepEqual(browserPrice("kernel", {}), { usdPerHour: 0.06, minimumS: 0 });
+  assert.deepEqual(browserPrice("kernel", { AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL: "0.48" }), { usdPerHour: 0.48, minimumS: 0 });
+  assert.deepEqual(browserPrice("browserbase", { AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE: " 0.1 " }), { usdPerHour: 0.1, minimumS: 60 }, "a contract price keeps the minimum");
+  assert.deepEqual(browserPrice("cdp", { AGENTRUN_BROWSER_USD_PER_HOUR_CDP: "" }), { usdPerHour: 0, minimumS: 0 }, "blank is unset");
+  for (const bad of ["-1", "abc", "1e3", "0x1"]) assert.equal(browserPrice("kernel", { AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL: bad }).usdPerHour, null, bad);
+  assert.deepEqual(browserPrice("steel", {}), { usdPerHour: null, minimumS: 0 });
+  assert.equal(browserPrice("steel", { AGENTRUN_BROWSER_USD_PER_HOUR_STEEL: "0.05" }).usdPerHour, 0.05);
+  // Kernel's per-second price: the release bills only the time it ran.
+  const kernel = await run(t, { provider: "kernel", price: browserPrice("kernel", {}), reads: 1, readS: 4 });
+  assert.deepEqual(kernel.booked.map((row) => [row.charged_by, row.seconds]), [["kernel", 4], ["kernel", 25]]);
+  assert.ok(Math.abs(total(kernel.booked) - 29 * 0.06 / 3600) < 1e-11, String(total(kernel.booked)));
+  t.mock.timers.reset();
+  // Local Chrome is free: its time books nothing and holds nothing, and a capped run is never refused for it.
+  const local = await run(t, { provider: "cdp", price: browserPrice("cdp", {}), reads: 2, cap: 0.001 });
+  assert.deepEqual([local.booked, local.releases, local.stretch], [[], [], 0]);
+  t.mock.timers.reset();
+  // A provider with no price: uncapped, its time is booked as an unknown cost; capped, every call is refused, saying how to price it.
+  const unknown = await run(t, { provider: "steel", price: browserPrice("steel", {}), reads: 1 });
+  assert.deepEqual(unknown.booked.map((row) => row.usd), [null, null]);
+  t.mock.timers.reset();
+  const refused = await run(t, { provider: "steel", price: browserPrice("steel", {}), reads: 1, cap: 5 });
+  assert.match(refused.results.join("\n"), /spend_cap_reached: This browser call was not sent\. steel's session time has no price here \(AGENTRUN_BROWSER_USD_PER_HOUR_STEEL gives one\), so the run's cap of \$5 cannot be kept/);
+  assert.deepEqual([refused.booked, refused.backend.tally().creates], [[], 0]);
+});
+
+/** Every TOOL_COST in a run's store, as written. */
+const toolCosts = (data, runId) => {
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
+  try {
+    return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "agentrun.tool_cost").map((entry) => entry.data);
+  } finally {
+    db.close();
+  }
+};
+
+test("through the API: an uncapped run's browser minutes are its cost, a line of their own on its timeline, and /usage's browser_time meter in seconds and dollars", async (t) => {
+  withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
+  assert.equal((await api("POST", "/agents", agent("browse", { tools: ["browser"] }))).status, 201);
+  const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page 3 times." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  const charges = rows.filter((row) => row.kind === "phase" && row.tool_name === "browser");
+  assert.ok(charges.length >= 2 && charges.every((row) => /^Tool cost: browserbase charged \$[\d.]+ for browser$/.test(row.summary)), JSON.stringify(charges.map((row) => row.summary)));
+  const booked = toolCosts(data, started.body.run_id);
+  // A session of well under a minute: its calls' charges and the release's top it up to the 60 s minimum, $0.002, booked before the run ended.
+  assert.equal(Math.round(booked.reduce((sum, row) => sum + row.seconds, 0) * 1000) / 1000, 60);
+  assert.equal(pico(booked.reduce((sum, row) => sum + row.usd, 0)), 0.002);
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(view.cost.usd, 0.002, "the faux model is free: the run's cost is its browser time");
+  const usage = (await api("GET", "/usage?group_by=meter")).body;
+  assert.deepEqual(usage.lines.map(({ meter, usd, quantity, unit }) => ({ meter, usd, quantity, unit })), [{ meter: "tokens", usd: 0, quantity: undefined, unit: undefined }, { meter: "browser_time", usd: 0.002, quantity: 60, unit: "second" }]);
+  assert.equal(usage.total_usd, 0.002);
+});
+
+test("through the API: a capped run whose next browser call would pass its cap is refused before it in the cap's words, its session released and its booked spend within the cap", async (t) => {
+  withEnv(t, KEYS, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_PROVIDER"]);
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-browse-many.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("capped", { tools: ["browser"] }))).status, 201);
+  // The first call holds $0.018 (two stretches of 270 s at $0.12 an hour); the second would hold that again beside the
+  // session's $0.009 reserve, past $0.02.
+  const started = await api("POST", "/agents/capped/runs", { input: { content: "Browse the example page 3 times." }, max_cost_usd: 0.02 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"]);
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.match(view.result?.final_answer ?? "", /spend_cap_reached: This browser call was not sent\. It could cost up to \$0\.018\d* .*the run would pass its cap of \$0\.02: the run is out of budget\./);
+  const booked = toolCosts(data, started.body.run_id);
+  assert.ok(booked.length >= 1 && booked.every((row) => row.tool === "browser"));
+  assert.equal(pico(booked.reduce((sum, row) => sum + row.usd, 0)), 0.002, "one session, released at its one-minute minimum");
+  assert.ok(view.cost.usd <= 0.02, `the run's cost ${view.cost.usd} is within its cap`);
+});

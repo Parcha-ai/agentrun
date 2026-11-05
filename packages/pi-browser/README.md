@@ -203,7 +203,8 @@ the call's own while the provider can still be tried.
 `web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices; a search
 source's answer at the usage it reports, else the list search price). Session
 minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
-time since the last charge, and each released session's record carries its total.
+time since the last charge, and each released session's record carries its total. A host that books session time as spend
+passes `onCharge` (below), which hears each charge in the commit that bills it.
 
 
 ## Failures
@@ -401,6 +402,12 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
   when a request expires is the port's to decide). Absent, `browser_request_handoff` is not listed.
 - `prices`: your session price (for example from `BROWSERBASE_USD_PER_MINUTE`). It prices the session meter, so each session
   tool's result and each released session's record carry dollars. Without it the minutes are recorded unpriced.
+- `onCharge(charge, tx, call?)`: each charge of a session's time, `{ conversationId, tag, provider, at, seconds, usd,
+  final, state }`, called in the commit that writes it on the session's record, so a host that books it in `tx` books
+  exactly what the record bills: at a browser call (`call.callId`), what the session ran since its last charge; at its
+  release (`final`), the rest, topped up to `prices.sessionMinimumS`. A session already billed in full is never charged
+  again. `state` is `priced`, or `unpriced`/`invalid` with `usd` 0 (no price, not $0). It must not throw: a throw fails the
+  commit, and a call's charge is then carried by the session's next one.
 
 Per conversation, the host writes a `BrowserConfig` (`label`, `run`, and the policy: proxies, verified, captcha, geolocation,
 region, a raw context id, the session timeout, the idle release and the batch timeout; `DEFAULT_BROWSER_POLICY` holds the

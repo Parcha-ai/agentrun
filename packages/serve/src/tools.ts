@@ -18,6 +18,7 @@ import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
 import { FAUX_ENV, workflowNodes } from "./model.js";
 import { bookedIn, booking, type Ledger } from "./paid-calls.js";
+import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, runPages, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
@@ -162,7 +163,8 @@ export const evidenceIn = (work: string) => {
 };
 
 /** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
- *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go. */
+ *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go.
+ *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). */
 const browserTool: ToolEntry = {
   summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
   needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
@@ -179,8 +181,13 @@ const browserTool: ToolEntry = {
     const parts = faux
       ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv) => { provider: unknown; driver: unknown } }).default(host.env)
       : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
-    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
-    const extension = browser.extension as unknown as Extension;
+    // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
+    const provider = (parts.provider as { name: string }).name;
+    const price = browserPrice(provider, host.env);
+    const spend = browserSpend(provider, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at));
+    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped);
+    const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
       Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy: DEFAULT_BROWSER_POLICY });
@@ -194,7 +201,7 @@ const browserTool: ToolEntry = {
       }
       await browser.drain(harness as never, context);
     });
-    return { tools: browser.tools as unknown as readonly ToolRegistration[], extensions: [extension] };
+    return { tools, extensions: [extension] };
   },
 };
 

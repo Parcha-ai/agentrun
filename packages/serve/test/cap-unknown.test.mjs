@@ -65,7 +65,7 @@ test("a Parallel request whose settle record could not be written: the cap, and 
   assert.equal(round(spentIn(storeOf(t, open))), 0.003, "a restarted process reads the held $0.001 as spent");
   assert.equal(capToolSpend(open), 0.001, "and so does another harness's, read at its open");
   assert.equal(timelineOf(open, { settled: true }).at(-1).usage.usd, null, "the run's shown cost: unknown, never the hold or $0");
-  assert.deepEqual(metersIn(storeOf(t, open)), { tools: null, tokens: 0.002 }, "the tools meter: unknown");
+  assert.deepEqual(metersIn(storeOf(t, open)), { tools: null, tokens: 0.002, browser: { usd: 0, seconds: 0 } }, "the tools meter: unknown");
 });
 
 test("a paid tool call a crash cut (marked, never settled) counts at its held figure in the cap's spend, leaves the run's reported cost unknown, and is no reported tool charge; settled, its charge alone", async (t) => {
@@ -77,13 +77,14 @@ test("a paid tool call a crash cut (marked, never settled) counts at its held fi
   assert.equal(round(spentIn(storeOf(t, cut))), 1.002, "the cap counts the held figure");
   assert.equal(capToolSpend(cut), 1, "and so does another harness's, read at its open");
   assert.equal(timelineOf(cut, { settled: true }).at(-1).usage.usd, null, "the run's cost is unknown, never 1.002");
-  assert.deepEqual(metersIn(storeOf(t, cut)), { tools: null, tokens: 0.002 }, "a cut call: the tools meter unknown, the tokens known, never the held $1");
+  assert.deepEqual(metersIn(storeOf(t, cut)), { tools: null, tokens: 0.002, browser: { usd: 0, seconds: 0 } }, "a cut call: the tools meter unknown, the tokens known, never the held $1");
   const settled = [...cut, charged(0.003)];
   assert.equal(round(spentIn(storeOf(t, settled))), 0.005, "its charge, not both");
   assert.equal(capToolSpend(settled), 0.003);
   assert.equal(timelineOf(settled, { settled: true }).at(-1).usage.usd, 0.005);
-  assert.deepEqual(metersIn(storeOf(t, settled)), { tools: 0.003, tokens: 0.002 });
+  assert.deepEqual(metersIn(storeOf(t, settled)), { tools: 0.003, tokens: 0.002, browser: { usd: 0, seconds: 0 } });
   assert.equal(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { call: "c2", usd: null } }])).tools, null, "an unknown charge is unknown");
+  assert.deepEqual(metersIn(storeOf(t, [...settled, { kind: TOOL_COST, data: { tool: "browser", charged_by: "browserbase", call: "c3", usd: 0.002, seconds: 60 } }])).browser, { usd: 0.002, seconds: 60 }, "the browser's session time apart, with its seconds");
   // A live run's tools, from the same rows as its cost: the charge's line, never a mark.
   const { toolCostOf } = await import("../dist/runs.js");
   assert.equal(toolCostOf(timelineOf(cut)), 0);
