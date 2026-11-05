@@ -72,7 +72,7 @@ function Row({ step, last }: { step: Step; last: boolean }) {
             <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
               {label(row)}
               {/* A call's own charge (a browser call's session time, #1736): on its row, never a row of its own. */}
-              {row.kind === "tool_use" && row.usage && <span className="font-mono text-[11px]">· {chargeWords(row.usage)}</span>}
+              {(row.kind === "tool_use" || row.kind === "tool_result") && row.usage && <span className="font-mono text-[11px]">· {chargeWords(row.usage)}</span>}
               {row.kind === "waiting" && <Chip tone="warning">Input required</Chip>}
               {awaitsApproval(row) && <Chip tone="warning">Approval required</Chip>}
               {failed && <Chip tone="error">{interrupted ? "Interrupted" : "Error"}</Chip>}
