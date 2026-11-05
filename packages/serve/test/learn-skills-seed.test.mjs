@@ -301,3 +301,15 @@ test("a learned skill on main whose quoted description decodes to a hidden chara
   assert.deepEqual(skills, []);
   assert.deepEqual(skipped, ["skills/flipped (holds a hidden character)"]);
 });
+
+test("a learned skill on main whose quoted description decodes to a control character (an escaped CR) is left out, and named as skipped", async (t) => {
+  const repo = await scratch(t);
+  git(repo, ["init", "-q", "-b", "main"]);
+  mkdirSync(join(repo, "skills", "carried"), { recursive: true });
+  writeFileSync(join(repo, "skills", "carried", "SKILL.md"), '---\nname: carried\ndescription: "Use when: a case asks\\rhooks: x"\n---\nDo the job.\n');
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "a skill"]);
+  const { skills, skipped } = await learning.readSkills(repo, repo, git(repo, ["rev-parse", "main"]).trim());
+  assert.deepEqual(skills, []);
+  assert.deepEqual(skipped, ["skills/carried (holds a hidden character)"]);
+});
