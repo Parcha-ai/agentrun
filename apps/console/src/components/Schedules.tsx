@@ -12,6 +12,7 @@ import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { atLeast, bodyOf, capOf, dollars, isScheduleTrigger, utcWhen, type Draft, draftOf, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, whenWords } from "@/lib/schedules";
 import type { Firing, Trigger } from "@/lib/v2";
+import { Picker } from "@/components/ui/picker";
 
 /** Which schedules page: the list (no `schedule`), a new one (`schedule` null), one schedule, or its editor (`edit`). */
 export type ScheduleView = { schedule?: string | null; edit?: boolean };
@@ -338,9 +339,8 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
               <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
                 <span className="flex gap-2">
                   <input name="every" inputMode="decimal" className={INPUT} value={draft.every} onChange={(e) => set("every")(e.target.value)} placeholder="5" />
-                  <select name="everyUnit" aria-label="Unit" className="h-10 border bg-background px-2 font-mono text-[13px]" value={draft.everyUnit} onChange={(e) => set("everyUnit")(e.target.value as Draft["everyUnit"])}>
-                    <option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours">hours</option>
-                  </select>
+                  <Picker name="everyUnit" label="Unit" className="w-32 shrink-0" value={draft.everyUnit} onChange={(v) => set("everyUnit")(v as Draft["everyUnit"])}
+                    options={(["seconds", "minutes", "hours"] as const).map((u) => ({ value: u, label: u }))} />
                 </span>
               </Field>
             )}
@@ -355,11 +355,10 @@ function ScheduleForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: Tri
           {restarts && <p className="mt-3 text-[12px] text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
-          <select name="agent" className={INPUT} value={draft.agentId} onChange={(e) => set("agentId")(e.target.value)}>
-            <option value="">{agents ? "Pick an agent" : "Loading the agents"}</option>
-            {live.map((a) => <option key={a.agent_id} value={a.agent_id}>{a.definition.name || a.agent_id}{a.kind === "workflow" ? " (workflow)" : ""}</option>)}
-            {draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) && <option value={draft.agentId}>{draft.agentId}</option>}
-          </select>
+          <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
+            options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+              ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` })),
+              ...(draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) ? [{ value: draft.agentId, label: draft.agentId }] : [])]} />
         </Field>
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><textarea name="content" rows={4} className="w-full border bg-background p-3 text-[13px]" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}

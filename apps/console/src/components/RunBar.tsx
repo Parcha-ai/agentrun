@@ -8,6 +8,7 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
+import { Picker } from "@/components/ui/picker";
 
 type Problem = { message: string; fields?: FieldIssue[]; box?: string; details?: Record<string, unknown> };
 type Sent = { status: number; runId?: string; problem?: Problem };
@@ -66,12 +67,10 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
           className={cn("min-w-0 flex-1 resize-y border bg-background px-3 py-2.5 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong", workflow && "leading-[1.6]")} />
         <div className="flex shrink-0 items-center gap-3">
           {efforts.length > 0 && (
-            <label className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
+            <div className="flex items-center gap-2" title="How hard the model thinks before it answers. default leaves it to the agent.">
               <span className="flex flex-col leading-tight"><span className="caps text-[11px] text-muted-foreground">Effort</span><span className="text-[11px] text-muted-foreground">How hard the model thinks</span></span>
-              <select value={effort} onChange={(e) => setEffort(e.target.value)} aria-label="Effort" className="h-10 border bg-background px-3 font-mono text-[13px]">
-                {["", ...efforts].map((e) => <option key={e || "default"} value={e}>{e || "default"}</option>)}
-              </select>
-            </label>
+              <Picker label="Effort" value={effort} onChange={setEffort} className="w-32" options={["", ...efforts].map((e) => ({ value: e, label: e || "default" }))} />
+            </div>
           )}
           <Button variant="solid" onClick={() => void start()} disabled={!built.ok || sending || !!blocked || attachments.busy} title={blocked ?? (attachments.busy ? "Waiting for the files to be sent" : undefined)}><Play aria-hidden /> {sending ? "Starting" : "Run"}</Button>
         </div>
