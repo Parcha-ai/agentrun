@@ -22,7 +22,7 @@ async function offered(api, id, { tools = ["web_fetch", "browser"], harness } = 
   return new Map(JSON.parse(answer).map((tool) => [tool.name, tool.description]));
 }
 
-const COLD = "It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser.";
+const COLD = "It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it.";
 const SIGN_INS = "It keeps this agent's saved sign-ins and cookies: use it for anything behind a sign-in, or a page that depends on an earlier one.";
 const COOKIES = "It keeps cookies across pages: use it for a page that depends on an earlier one, or one that sets cookies.";
 
