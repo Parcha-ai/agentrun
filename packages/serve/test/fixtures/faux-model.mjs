@@ -186,6 +186,11 @@ export default function reply(context, faux) {
   // Searches the web once for what its first message says, with web_search, then says so.
   const query = /^Search the web for (.+)$/s.exec(first)?.[1];
   if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
+  // A follow-up that browses once more: a snapshot, then what it saw.
+  if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+  // "Browse the example page once <file> exists." answers, its browser still open, only once the test has made that file.
+  const browseGate = /^Browse the example page once (\S+) exists\.$/.exec(first)?.[1];
+  if (browse && results > 0 && browseGate) return untilExists(browseGate).then(() => faux.message(`Seen: ${textOf(context.messages.at(-1))}`));
   if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
   if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
