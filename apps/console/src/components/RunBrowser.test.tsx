@@ -130,6 +130,19 @@ describe("the run page's Browser tab", () => {
     nowhereBut(p.frame(), VIEWER2);
   });
 
+  it("a newer session while one is live (no none between) moves the iframe to the newer viewer at once", async () => {
+    // The server answers the newest live session (#1685: one hand-over per session; GET /browser the newest that answers).
+    let newer = false;
+    const p = await page(async () => ({ state: "live", viewer: newer ? VIEWER2 : VIEWER }), working, "browser");
+    expect(p.frame()!.getAttribute("src")).toBe(VIEWER);
+    newer = true;
+    await settle(120);
+    expect(p.frame()!.getAttribute("src")).toBe(VIEWER2);
+    expect(p.host.querySelectorAll("iframe")).toHaveLength(1);
+    expect(p.host.innerHTML).not.toContain("SECRET-TOKEN-one");
+    nowhereBut(p.frame(), VIEWER2);
+  });
+
   it("a failed read after a live one keeps the page, and says nothing of the viewer anywhere", async () => {
     let i = 0;
     const p = await page(async () => { if (i++ === 0) return { state: "live", viewer: VIEWER }; throw new Error(`GET /v2/runs/${RUN}/browser: 502`); }, working, "browser");
