@@ -301,6 +301,20 @@ test("a claude-agent run's learned workflow searches natively through the run's 
   assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
 });
 
+test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const upstream = join(dir, "upstream.jsonl");
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", AGENT_MODEL: "anthropic/claude-sonnet-4.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
+  const { api, data } = await serve(t, { learning: "on", fauxHarness: FAUX_HARNESS, fauxUpstream: new URL("./fixtures/faux-upstream.mjs", import.meta.url).pathname });
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
+  const { rows } = await ran(api, data, "dotted-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
+  const result = learnedResult(rows);
+  assert.doesNotMatch(JSON.stringify(result), /no model to search on/, JSON.stringify(result));
+  assert.equal(result?.tool_status, "success", JSON.stringify(result));
+  const sent = readFileSync(upstream, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
+});
+
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 /** The run's harness requests' records, from its store: each with the worst case its cap held it at. */
 function harnessRequests(data, runId) {
