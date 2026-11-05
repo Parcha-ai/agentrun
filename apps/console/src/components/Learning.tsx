@@ -16,7 +16,9 @@ import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there. */
-export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void };
+/** `onLearning`: each read of what the agent learned, as it lands (after an approve, a retire or an edit too), so the
+ *  page around the tab can count what waits for the owner's OK. */
+export type LearningProps = { agent: Agent; v2: Client; focus?: string[]; server?: "on" | "off" | null; onAgent?: (agent: Agent) => void; onLearning?: (view: AgentLearning) => void };
 
 /** A failed write in the problem card's words, under its own title ("The note was not saved."). */
 const failed = (e: unknown, what: string, title: string) => ({ ...problem(e, what), title });
@@ -33,7 +35,7 @@ const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outli
  *  shows where it came from and how often it was used, and a person edits it (its version named, so a change made since
  *  is never written over), retires it, or adds one. Beside them: the learning switch, what runs did not keep and why, the
  *  before and after once there is one, and what the next run reads. */
-export function LearningTab({ agent, v2, focus = [], server, onAgent }: LearningProps) {
+export function LearningTab({ agent, v2, focus = [], server, onAgent, onLearning }: LearningProps) {
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -54,6 +56,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent }: Learning
     const learning = v2.agentLearning(agent.agent_id).then((r) => {
       if (n !== asked.current) return;
       setView(r); setLater({ items: [], cursor: r.notes.next_cursor, pages: 0 }); setOlderLog({ items: [], cursor: r.log.next_cursor, pages: 0 });
+      onLearning?.(r);
     }, (e) => { if (n === asked.current) setError(e ?? new Error("unknown")); });
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
     v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); setAllRuns(!r.next_cursor); } }, () => {});

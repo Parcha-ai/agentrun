@@ -121,6 +121,11 @@ export const counted = (n: number, one: "skill" | "workflow") => `${n} ${one}${n
 
 /** Whether a note waits for the owner's OK before any run reads it. */
 export const isPending = (n: Pick<LearningNote, "status">) => n.status === "pending";
+/** How many learned items wait for the owner's OK in `view` (GET .../learning): its pending notes, of the first page it
+ *  holds unless `notesPending` gives the served total (GET .../learning/notes?status=pending, read when the notes run past
+ *  that page), and its pending skills and workflows, which it lists whole. */
+export const waitingCount = (view: Pick<AgentLearning, "notes" | "skills" | "workflows">, notesPending?: number): number =>
+  (notesPending ?? view.notes.items.filter(isPending).length) + [...(view.skills ?? []), ...(view.workflows ?? [])].filter((x) => x.status === "pending").length;
 /** Who a note is from: the server's `origin` when it sends one, else its front matter's `origin:` line. A note from the
  *  person themselves reads "From you". */
 export function originOf(n: Pick<LearningNote, "origin" | "text">): "you" | "run" | undefined {
