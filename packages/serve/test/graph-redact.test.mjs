@@ -178,8 +178,8 @@ test("a call's error and a decision's state, each long enough to be cut, with th
 });
 
 test("a key saved after the graph was kept: a busy read from the kept view shows no part of it, a label's cut inside it included", { timeout: 60_000 }, async (t) => {
-  // Not held when the run ran, nor when the graph was first read and kept; 8 characters of it share none with CUT_KEY.
-  const saved = ["later", "saved", "zyxwvutsrq"].join("-");
+  // Not held when the run ran, nor when the graph was first read and kept; no 8 characters of it are in CUT_KEY or LATER.
+  const saved = ["later", "saved", "qponmlkjih"].join("-");
   const { api, data, runId } = await judgedRun(t, saved);
   const first = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.equal(first.stale, false);
