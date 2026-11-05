@@ -282,7 +282,7 @@ async function ownerAgain(server) {
   };
 }
 
-test("a deny refuses the call at once and the run goes on, on every harness; a workflow's call node calling a denied tool refuses its run, and ask does not apply to the author's own step", { timeout: 120_000 }, async (t) => {
+test("a deny refuses the call at once and the run goes on, on every harness; a workflow's call node calling a tool set to deny or ask refuses its run, and a catalog tool is no call node's tool", { timeout: 120_000 }, async (t) => {
   const dialled = await network(t);
   const { api } = await serve(t, GATE);
   const denied = await Promise.all(HARNESSES.map(async (harness) => ({ harness, runId: await fetching(api, `denied-${harness}`, harness, PAGE, { tool_settings: { web_fetch: { permission: "deny" } } }) })));
@@ -314,11 +314,11 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   const asked = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
   assert.deepEqual([asked.status, asked.body.error?.code, asked.body.error?.details?.asks], [409, "agent_not_runnable", ["web_fetch"]]);
   assert.match(asked.body.error.message, new RegExp(quoted(ASKS("web_fetch"))));
-  // A catalog tool's call node at its default (ask) is refused the same: allowed for the agent, it is not.
+  // A catalog tool (default ask) is no call node's tool here: a workflow whose call node names one is refused at its save,
+  // so none runs unapproved.
   const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: "monid.run", args: { endpoint: "/x" }, out: "Page", as: "home", deadline_s: 60 }] } };
-  assert.equal((await api("POST", "/agents", { definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } })).status, 201);
-  const byDefault = await api("POST", "/agents/monid-call/runs", { input: { website: PAGE } });
-  assert.deepEqual([byDefault.status, byDefault.body.error?.code, byDefault.body.error?.details?.asks], [409, "agent_not_runnable", ["monid.run"]], "a catalog tool's default, ask");
+  const catalog = await api("POST", "/agents", { definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } });
+  assert.deepEqual([catalog.status, catalog.body.error?.code, catalog.body.error?.fields?.[0]?.reason], [422, "input_invalid", "not_an_option"], JSON.stringify(catalog.body));
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "allow" } })).status, 200);
   const allowed = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
   assert.equal(allowed.status, 202, "allowed, the author's step runs");

@@ -705,9 +705,9 @@ Parallel key gone since makes Parallel unavailable, never another provider), and
 description with no secret in it (`AGENTRUN_SERVE_TOOL_PLANE`); the run reads its providers there, never from a request.
 A workflow's tools are those its revision lists and those its model and call nodes name.
 
-Upgrading to the tool gate: workflows with catalog (`monid.*`) or MCP call nodes (default ask) now need that tool set to
-allow for the agent (`definition.tool_settings`, e.g. `{"monid.run": {"permission": "allow"}}`); until then their runs
-are `409` with `details.asks`.
+Upgrading to the tool gate: a workflow whose call node's tool is set to ask, by a setting or a default, now refuses its
+run (`409` with `details.asks`); set that tool to allow for the agent (`definition.tool_settings`). Built-in tools are
+allowed by default; catalog (`monid.*`) and MCP tools, which ask by default, are no call node's tools here.
 
 Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
 Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set
