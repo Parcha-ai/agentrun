@@ -38,6 +38,38 @@ type Told = { wait?: string; ended?: string; at: string };
  *  the top level), `text` its text with the app's mention taken out. */
 export type SlackMessage = { team: string; channel: string; ts: string; thread_ts: string; user: string; text: string; event_id: string; mention: boolean };
 
+/** Text as Slack shows it, never as its markup: `&`, `<` and `>` escaped, so an agent's words can mention no one (no
+ *  `<!channel>`, no `<@U...>`) and make no link. */
+export const slackText = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** The one line a run's moment posts in its thread. Waiting, by `pending.kind`: a question is answered by a reply in the
+ *  thread; an approval (a tool call waiting on its owner's OK, which names the tool) only in the console, as no reply
+ *  approves; a pause at the cap by a raise; a stop by a reply that goes on; any other kind, at the run. Ended: its status,
+ *  and with `answer` (the settings' post_answer) the run's final answer, escaped and cut to ANSWER_POSTED_CHARS. `base`:
+ *  the console's public URL, for the run's link; none, no link. */
+export function slackLine(type: "run.needs_input" | "run.ended", run: RunNotice, { base, answer }: { base: string | null; answer?: string | null }): string {
+  const link = base ? `<${base}/#/runs/${encodeURIComponent(run.run_id)}|open the run>` : null;
+  if (type === "run.needs_input") {
+    // A kind this server may not have yet (an approval) read by name, as its notice will carry it.
+    const pending = run.pending as { kind?: unknown; tool?: unknown } | undefined;
+    const kind = pending?.kind;
+    if (kind === "budget") return link ? `Paused at its spend cap: ${link}` : "Paused at its spend cap.";
+    if (kind === "approval") {
+      const of = typeof pending?.tool === "string" && pending.tool ? ` of ${slackText(pending.tool)}` : "";
+      return `Waiting for your approval${of}: approve in the console${link ? ` ${link}` : "."}`;
+    }
+    if (kind === "question" || kind === "stopped") {
+      const head = kind === "question" ? "Waiting for your answer: reply in this thread" : "Stopped: reply in this thread to go on";
+      return link ? `${head}, or ${link}` : `${head}.`;
+    }
+    return link ? `Waiting: ${link}` : "Waiting: open the run in the console.";
+  }
+  const head = run.status === "completed" ? "Done" : run.status === "cancelled" ? "Cancelled" : "Failed";
+  const shown = answer ? slackText(answer.length > ANSWER_POSTED_CHARS ? `${answer.slice(0, ANSWER_POSTED_CHARS)}…` : answer) : "";
+  const said = run.status === "completed" && shown ? `\n\n${shown}` : "";
+  return `${head}${link ? `: ${link}` : "."}${said}`;
+}
+
 /** Why a request to POST /v2/hooks/slack is not signed by `secret`, or undefined when it is: X-Slack-Signature is
  *  `v0=` and the hex HMAC-SHA256 of "v0:{X-Slack-Request-Timestamp}:{raw body}" under the signing secret, and the
  *  timestamp is within SLACK_TOLERANCE_S of now. */
@@ -211,16 +243,7 @@ export class Slack {
   }
 
   private line(type: "run.needs_input" | "run.ended", run: RunNotice, answer?: string | null): string {
-    const link = this.base ? `<${this.base}/#/runs/${encodeURIComponent(run.run_id)}|open the run>` : null;
-    if (type === "run.needs_input") {
-      const kind = run.pending?.kind;
-      if (kind === "budget") return link ? `Paused at its spend cap: ${link}` : "Paused at its spend cap.";
-      const head = kind === "question" ? "Waiting for your answer: reply in this thread" : "Stopped: reply in this thread to go on";
-      return link ? `${head}, or ${link}` : `${head}.`;
-    }
-    const head = run.status === "completed" ? "Done" : run.status === "cancelled" ? "Cancelled" : "Failed";
-    const said = run.status === "completed" && answer && this.settings()?.post_answer ? `\n\n${answer.length > ANSWER_POSTED_CHARS ? `${answer.slice(0, ANSWER_POSTED_CHARS)}…` : answer}` : "";
-    return `${head}${link ? `: ${link}` : "."}${said}`;
+    return slackLine(type, run, { base: this.base, answer: this.settings()?.post_answer ? answer : null });
   }
 
   private schedule(post: Post, delayMs: number): void {

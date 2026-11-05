@@ -1093,9 +1093,11 @@ block alone. A trigger keeps a thread for 30 days after its last mention or repl
 in a thread it no longer keeps reaches nothing, and a mention there starts a new thread.
 
 When the run comes to need its person, and when it ends, one line is posted in its thread through `chat.postMessage`:
-"Waiting for your answer: reply in this thread", "Stopped: reply in this thread to go on", "Paused at its spend cap",
-"Done", "Failed" or "Cancelled", each with a link to the run when the server has a public address (`AGENTRUN_PUBLIC_URL`).
-With `post_answer: true`, a completed run's line carries its final answer, redacted and cut to 3,000 characters. Lines
+"Waiting for your answer: reply in this thread", "Waiting for your approval of <tool>: approve in the console" (a tool
+call waiting on its owner's OK, which no reply in the thread approves), "Stopped: reply in this thread to go on", "Paused
+at its spend cap", "Done", "Failed" or "Cancelled", each with a link to the run when the server has a public address
+(`AGENTRUN_PUBLIC_URL`). With `post_answer: true`, a completed run's line carries its final answer, redacted, cut to 3,000
+characters and escaped, so it mentions no one and links nowhere in Slack. Lines
 wait in `DIR/slack-outbox.json` and are tried again on the webhook's schedule until Slack takes them; a post whose answer
 never came is tried again, so it can show twice. A bot token Slack refuses turns posting off until the app is set again.
 An import cuts the Slack secrets out of what it keeps, and no learning text shows them.

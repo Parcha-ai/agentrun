@@ -15,6 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, serve, withEnv } from "./support.mjs";
 import { fakeSlack, SLACK_BOT_ID, SLACK_BOT_TOKEN, SLACK_BOT_USER, SLACK_TEAM } from "./fixtures/fake-slack.mjs";
+import { ANSWER_POSTED_CHARS, slackLine } from "../dist/slack.js";
 import { Triggers } from "../dist/triggers.js";
 import { fakeClock, firings, made } from "./trigger-support.mjs";
 
@@ -140,7 +141,9 @@ test("a run that asks posts a waiting line in its thread, and a reply there answ
   await follow(api, started.run_id, ["completed"]);
   const done = await until(() => slack.posts.find((p) => p.body.text.startsWith("Done")), "the end posted");
   const answer = (await api("GET", `/runs/${started.run_id}`)).body.result.final_answer;
-  assert.equal(done.body.text, `Done: <${PUBLIC}/#/runs/${started.run_id}|open the run>\n\n${answer}`);
+  // Escaped as Slack text: the answer's own <...> (here the trigger's payload block it echoes) mentions and links nothing.
+  assert.match(answer, /<trigger-payload/);
+  assert.equal(done.body.text, `Done: <${PUBLIC}/#/runs/${started.run_id}|open the run>\n\n${answer.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}`);
 });
 
 test("a Slack trigger is refused a channel another Slack trigger lists (409 naming it), a target other than start_run, and channels that are not Slack ids", { timeout: 60_000 }, async (t) => {
@@ -268,4 +271,28 @@ test("a Slack trigger's thread untouched for 30 days is forgotten, so a reply in
   assert.equal(triggers.receiveSlack(message("1780290000.000100", "1780272001.000100", false)), undefined, "the oldest of 1,001 threads is gone");
   assert.equal(triggers.receiveSlack(message("1780290001.000100", "1780272000.000100", false))?.created, true, "the next oldest is kept");
   assert.equal(triggers.receiveSlack(message("1780290002.000100", "1780280000.000100", false))?.created, true, "and the newer ones");
+});
+
+test("each line a thread gets says how to go on by what the run waits on: a question by a reply in the thread, an approval only in the console (naming the tool), its cap by a raise, a stop by a reply; an answer posted is escaped, so it mentions no one", () => {
+  const base = PUBLIC;
+  const run = (pending, status = "input_required") => ({ run_id: "run 1", agent_id: "helper", status, title: "t", ...(pending ? { pending } : {}) });
+  const link = `<${PUBLIC}/#/runs/run%201|open the run>`;
+  const waiting = (pending, b = base) => slackLine("run.needs_input", run(pending), { base: b });
+  assert.equal(waiting({ kind: "question" }), `Waiting for your answer: reply in this thread, or ${link}`);
+  assert.equal(waiting({ kind: "stopped" }), `Stopped: reply in this thread to go on, or ${link}`);
+  assert.equal(waiting({ kind: "budget" }), `Paused at its spend cap: ${link}`);
+  // An approval (a tool call waiting on its owner's OK): no reply approves it, so the line sends the person to the console.
+  assert.equal(waiting({ kind: "approval", tool: "send_email" }), `Waiting for your approval of send_email: approve in the console ${link}`);
+  assert.equal(waiting({ kind: "approval", tool: "<!channel>" }), `Waiting for your approval of &lt;!channel&gt;: approve in the console ${link}`);
+  assert.equal(waiting({ kind: "approval" }), `Waiting for your approval: approve in the console ${link}`);
+  assert.equal(waiting({ kind: "approval", tool: "send_email" }, null), "Waiting for your approval of send_email: approve in the console.");
+  // A kind this line does not know asks for no reply.
+  assert.equal(waiting({ kind: "later" }), `Waiting: ${link}`);
+  assert.equal(waiting(undefined, null), "Waiting: open the run in the console.");
+  // The answer, only on a completed run's end, cut and then escaped.
+  const ended = (status, answer) => slackLine("run.ended", run(undefined, status), { base, answer });
+  assert.equal(ended("completed", "Ping <!channel> & <@U0PERSON01>, see <https://evil.example|this>"), `Done: ${link}\n\nPing &lt;!channel&gt; &amp; &lt;@U0PERSON01&gt;, see &lt;https://evil.example|this&gt;`);
+  assert.equal(ended("completed", "x".repeat(ANSWER_POSTED_CHARS + 5)), `Done: ${link}\n\n${"x".repeat(ANSWER_POSTED_CHARS)}…`);
+  assert.equal(ended("failed", "an answer"), `Failed: ${link}`);
+  assert.equal(ended("cancelled", null), `Cancelled: ${link}`);
 });
