@@ -44,6 +44,9 @@ async function fakeDocker(t, runtime, marks = {}, vars = {}) {
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
   const lines = (name) => (existsSync(join(state, name)) ? readFileSync(join(state, name), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
   const runs = () => lines("argv.jsonl").filter((args) => args[0] === "run");
+  // The fake's volumes: short directories under /tmp (fake-docker.mjs volumeDir).
+  const volumeDir = (name) => join("/tmp", `fdv-${createHash("sha256").update(`${state}\0${name}`).digest("hex").slice(0, 12)}`);
+  t.after(() => Promise.all(lines("volumes.jsonl").map((args) => rm(volumeDir(args.at(-1)), { recursive: true, force: true }))));
   // Every proxy process the fake started ends with the test, whatever else happens.
   t.after(() => {
     for (const { pid } of lines("egress.jsonl")) {
@@ -58,6 +61,7 @@ async function fakeDocker(t, runtime, marks = {}, vars = {}) {
   });
   return {
     state,
+    volumeDir,
     argv: () => lines("argv.jsonl"),
     runs,
     proxies: () => runs().filter((args) => args.some((arg) => arg.startsWith("agentrun.egress="))),
@@ -172,7 +176,7 @@ test("demo through the API, Docker Desktop on a Mac: capabilities say allowlist;
   assert.deepEqual(flags(box, "--mount").filter((mount) => mount.includes(EGRESS_MOUNT)), [`type=volume,source=agentrun-egress-${key},target=${EGRESS_MOUNT},readonly`]);
   assert.equal(docker.relays().length, 1, "the box's relay to the socket");
   // The proxy, as a box's client reaches it: its socket in the volume, 0600.
-  const socket = join(docker.state, "volumes", `agentrun-egress-${key}`, "egress.sock");
+  const socket = join(docker.volumeDir(`agentrun-egress-${key}`), "egress.sock");
   assert.equal(statSync(socket).mode & 0o777, 0o600);
   const listed = await viaSocket(socket, { method: "GET", path: "http://pypi.org/simple/", headers: { host: "pypi.org" } });
   assert.equal(listed.status, 200, JSON.stringify(listed));
@@ -248,7 +252,7 @@ test("a proxy container that is gone (removed by hand) is started again by the s
   assert.equal(spawnSync(process.execPath, [FAKE, "rm", "--force", `agentrun-egress-${key}`], { env: process.env }).status, 0);
   await until(() => docker.started().length === 2, "the proxy started again", 40_000);
   await until(async () => (await dockerOf(api)).network === "allowlist", "allowlist again");
-  const socket = join(docker.state, "volumes", `agentrun-egress-${key}`, "egress.sock");
+  const socket = join(docker.volumeDir(`agentrun-egress-${key}`), "egress.sock");
   await until(() => viaSocket(socket, { method: "GET", path: "http://pypi.org/", headers: { host: "pypi.org" } }).then((res) => res.status === 200, () => false), "the new proxy answers");
 });
 

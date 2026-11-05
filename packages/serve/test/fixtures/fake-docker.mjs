@@ -17,7 +17,7 @@
 // `info` answers as a daemon on this Linux machine (its kernel), or as `docker-info` says, or, with `docker-runtime` naming
 // one of RUNTIMES, as that runtime's daemon does, each field of `--format` filled in from its own `docker info` (quoted
 // from each runtime's own pasted output: see RUNTIMES).
-// Named volumes (`volume create`, `inspect`, `rm`) are directories under `volumes/`, their options and labels noted in
+// Named volumes (`volume create`, `inspect`, `rm`) are directories under /tmp (volumeDir), their options and labels noted in
 // `volumes.jsonl`; a `--mount type=volume` maps its target there. A container may have a `--name`, which `inspect`, `logs`
 // and `rm` take as well as its id (a second with a taken name is refused, as Docker refuses it). The proxy container (label
 // `agentrun.egress`) is RUN here: its `node` command, its mounts mapped, in a process group of its own, its output its
@@ -26,7 +26,7 @@
 // An `exec` of the box's network relay (socat) is noted, never run here (`no-socat`, `no-setsid` or `relay-dead` in the
 // state directory: an image without one, or a relay that never listened).
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { constants, release } from "node:os";
 import { join } from "node:path";
@@ -67,6 +67,10 @@ const fail = (text, code = 1) => {
   process.stderr.write(`${text}\n`);
   process.exit(code);
 };
+
+/** A volume's directory: short, under /tmp, by the state directory and the name, so a Unix socket in it stays within a
+ *  socket path's limit (107 bytes) wherever the state directory is. The test that made the state removes it. */
+const volumeDir = (name) => join("/tmp", `fdv-${createHash("sha256").update(`${state}\0${name}`).digest("hex").slice(0, 12)}`);
 
 const images = join(state, "images");
 const imageFile = (name) => join(images, `${encodeURIComponent(name)}.json`);
@@ -149,8 +153,8 @@ switch (args[0]) {
       } else if (args[i] === "--env") container.env.push(args[++i]);
       else if (args[i] === "--mount") {
         const fields = Object.fromEntries(value.split(",").map((part) => [part.split("=")[0], part.slice(part.indexOf("=") + 1)]));
-        if (fields.type === "volume" && !existsSync(join(state, "volumes", fields.source))) fail(`docker: Error response from daemon: no such volume: ${fields.source}`, 125);
-        container.mounts.push({ source: fields.type === "volume" ? join(state, "volumes", fields.source) : fields.source, target: fields.target, type: fields.type });
+        if (fields.type === "volume" && !existsSync(volumeDir(fields.source))) fail(`docker: Error response from daemon: no such volume: ${fields.source}`, 125);
+        container.mounts.push({ source: fields.type === "volume" ? volumeDir(fields.source) : fields.source, target: fields.target, type: fields.type });
         i++;
       } else if (args[i] === "--name") container.Name = args[++i]; else if (args[i] === "--workdir") container.workdir = args[++i];
       else if (args[i] === "--network") container.HostConfig.NetworkMode = args[++i];
@@ -185,16 +189,14 @@ switch (args[0]) {
     break;
   }
   case "volume": {
-    const volumes = join(state, "volumes");
-    mkdirSync(volumes, { recursive: true });
     const name = args.at(-1);
-    if (args[1] === "inspect") existsSync(join(volumes, name)) ? done(`[{"Name":${JSON.stringify(name)}}]\n`) : fail(`Error response from daemon: get ${name}: no such volume`);
+    if (args[1] === "inspect") existsSync(volumeDir(name)) ? done(`[{"Name":${JSON.stringify(name)}}]\n`) : fail(`Error response from daemon: get ${name}: no such volume`);
     else if (args[1] === "create") {
       appendFileSync(join(state, "volumes.jsonl"), `${JSON.stringify(args)}\n`);
-      mkdirSync(join(volumes, name), { recursive: true, mode: 0o700 });
+      mkdirSync(volumeDir(name), { recursive: true, mode: 0o700 });
       done(`${name}\n`);
     } else if (args[1] === "rm") {
-      rmSync(join(volumes, name), { recursive: true, force: true });
+      rmSync(volumeDir(name), { recursive: true, force: true });
       done(`${name}\n`);
     } else fail(`fake docker: no volume ${args[1]}`);
     break;
