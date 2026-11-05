@@ -251,6 +251,8 @@ export type Run = {
   decisionsPriced?: { known: number; unpriced: number };
   /** The saved sign-in its next launch hands its browser (pinSignIn), never kept on disk by the run. */
   signIn?: HandedSignIn;
+  /** Whether its process, as last settled, let the run go (and its browser's sessions with it), or went without. */
+  letGo?: boolean;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). Null
    *  when they cannot be read: its timeline's usage row then reads unknown. */
   decisions?: Record<string, unknown>[] | null;
@@ -1482,10 +1484,11 @@ export class Runs {
     if (run.signIn && run.signIn.ref.length >= MIN_SECRET) (run.handed ??= new Set()).add(run.signIn.ref);
   }
 
-  /** Lets go of the save lease the run holds on its agent's sign-in, if any. */
-  private async releaseSignIn(run: Run): Promise<void> {
+  /** Lets go of the save lease the run holds on its agent's sign-in, if any: at once when its process let its sessions go
+   *  (`clean`), else by the gone rule (sign-ins.ts). */
+  private async releaseSignIn(run: Run, clean = true): Promise<void> {
     run.signIn = undefined;
-    await this.options.signIns?.release(run.agentId, run.id, run.dir).catch((error: Error) => warn(run.id, `its sign-in's save lease is not let go: ${error.message}`));
+    await this.options.signIns?.release(run.agentId, run.id, run.dir, clean).catch((error: Error) => warn(run.id, `its sign-in's save lease is not let go: ${error.message}`));
   }
 
   private launch(run: Run, followUp = run.followUpOpen === true): void {
@@ -1669,6 +1672,7 @@ export class Runs {
     run.working = false;
     const record = await this.record(run);
     const released = RELEASED.has(String(record?.status));
+    run.letGo = released;
     const pid = holderPid(record);
     // A process that is gone serves no door, whatever its last heartbeat says.
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
@@ -1759,8 +1763,9 @@ export class Runs {
   /** Ends the run in the agent store, once: how it ended, its cost, a line for the list and its metrics. A store held by
    *  another writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
-    // Ended, it saves to its agent's sign-in no more.
-    await this.releaseSignIn(run);
+    // Ended, it saves to its agent's sign-in no more; but a process that went without letting its sessions go may have
+    // left one live at the vendor, so its lease then ends by the gone rule. One never launched (letGo unset) has none.
+    await this.releaseSignIn(run, run.letGo !== false);
     // Its process is gone: its box goes with its end, whatever the end (a follow-up after it gets a fresh box; work/ stays).
     // A remote box's last pull lands first: the end is not recorded until its files are in work/.
     await this.dropBox(run, true);

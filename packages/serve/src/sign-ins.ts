@@ -108,14 +108,17 @@ export class SignIns {
     return serialBy(this.chains, agentId, work);
   }
 
-  /** Whether `entry`'s lease still holds: it names a run that has not ended, and whose process, if found gone, went
-   *  less than GONE_LEASE_MS ago (a run that waits on its person with no process is never let go otherwise). */
+  /** Whether `entry`'s lease still holds: it names a run that has not ended; or, once its process was found gone, that
+   *  went less than GONE_LEASE_MS ago, ended or not (a run waiting on its person with no process, or one that crashed and
+   *  ended, is never let go otherwise, or let go too soon). */
   private async held(entry: Entry): Promise<boolean> {
     if (entry.held_by === null) return false;
     if (entry.held_until) return this.now() < Date.parse(entry.held_until);
     // A Browserbase session that lived out the timeout still writes its context back after it ends; Kernel's browser
     // ends at its idle timeout and saves as it ends, so it needs no margin.
-    if (entry.gone_at && this.now() - Date.parse(entry.gone_at) >= GONE_LEASE_MS + (entry.provider === "browserbase" ? BROWSERBASE_SETTLE_MS : 0)) return false;
+    // Once its process is found gone, that alone decides, whether its run has ended since or not: a session it left
+    // live may still write back until then.
+    if (entry.gone_at) return this.now() - Date.parse(entry.gone_at) < GONE_LEASE_MS + (entry.provider === "browserbase" ? BROWSERBASE_SETTLE_MS : 0);
     return this.holds(entry.held_by).catch(() => true);
   }
 
@@ -195,9 +198,10 @@ export class SignIns {
     });
   }
 
-  /** Ends the lease run `runId` holds, if it holds one: it ended, or let go to wait for its person. A session of it that saved (its
+  /** Ends the lease run `runId` holds, if it holds one: it ended, or let go to wait for its person; one whose process did
+   *  not let its sessions go (`clean` false) keeps it until the gone rule ends it. A session of it that saved (its
    *  run directory's SIGN_IN_SAVED) makes that the sign-in's `verified_at`. */
-  release(agentId: string, runId: string, runDir: string): Promise<void> {
+  release(agentId: string, runId: string, runDir: string, clean = true): Promise<void> {
     return this.locked(agentId, async () => {
       const marker = join(runDir, SIGN_IN_SAVED);
       const saved = await readFile(marker, "utf8").then((text) => text.trim(), () => undefined);
@@ -205,8 +209,11 @@ export class SignIns {
       const mine = entries.filter((entry) => entry.held_by === runId && !entry.held_until);
       if (mine.length) {
         const when = saved && !Number.isNaN(Date.parse(saved)) ? new Date(saved).toISOString() : undefined;
+        const now = new Date(this.now()).toISOString();
+        // `clean`: its process let its sessions go. One that crashed may have left a session live at the vendor, which
+        // writes back when it ends: the lease stays named for it, and the gone rule (held) ends it.
         // A Browserbase session that saved is still being written back: the lease waits that out, named for this run.
-        for (const entry of mine) Object.assign(entry, { gone_at: null }, when && entry.provider === "browserbase" ? { held_until: new Date(this.now() + BROWSERBASE_SETTLE_MS).toISOString() } : { held_by: null, held_until: null }, when ? { verified_at: when } : {});
+        for (const entry of mine) Object.assign(entry, !clean ? { gone_at: entry.gone_at ?? now } : { gone_at: null, ...(when && entry.provider === "browserbase" ? { held_until: new Date(this.now() + BROWSERBASE_SETTLE_MS).toISOString() } : { held_by: null, held_until: null }) }, when ? { verified_at: when } : {});
         await this.write(agentId, entries);
       }
       await rm(marker, { force: true });

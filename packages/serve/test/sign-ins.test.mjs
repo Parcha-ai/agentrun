@@ -358,6 +358,11 @@ test("a run whose process dies naming its sign-in's pointer in its log fails wit
   const { ref } = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).find((op) => op.op === "sign-in");
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.match(view.error.message, /the browser died holding \[redacted\]/);
+  // Its process never let its sessions go: its lease stays with it, by the gone rule, rather than end with the run.
+  const kept = (await api("GET", "/agents/alpha")).body.sign_ins;
+  assert.deepEqual(kept.map((s) => [s.state, s.held_by]), [["held", started.body.run_id]]);
+  const [entry] = JSON.parse(await readFile(join(homeOf(data, "alpha"), "sign-ins", "sign-ins.json"), "utf8")).sign_ins;
+  assert.ok(Date.parse(entry.gone_at) > 0);
   for (const shown of [JSON.stringify(view), JSON.stringify((await api("GET", "/runs")).body), await readFile(join(data, "runs", started.body.run_id, "serve.json"), "utf8")]) assert.ok(!shown.includes(ref), shown);
 });
 
@@ -459,4 +464,17 @@ test("a Browserbase saver resumed while its own last save is still being written
   // Past it, nothing to wait for.
   await store.forRun("alpha", "run-1", "browserbase");
   assert.equal(slept.length, 1);
+});
+
+test("a run's end lets its lease go only when its process let its sessions go: after a crash the lease stays with it, by the gone rule", async (t) => {
+  let now = Date.parse("2026-11-05T06:00:00.000Z");
+  const store = new SignIns(await scratch(t), randomBytes(32), { create: async (vendor) => `${vendor}-pointer-1` }, async () => false, { now: () => now });
+  for (const vendor of ["browserbase", "kernel"]) await store.forRun("alpha", "run-1", vendor);
+  const dir = await scratch(t);
+  await store.release("alpha", "run-1", dir, false);
+  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state, s.held_by]), [["browserbase", "held", "run-1"], ["kernel", "held", "run-1"]], "its run has ended, yet it holds");
+  now += GONE_LEASE_MS;
+  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state]), [["browserbase", "held"], ["kernel", "ready"]]);
+  now += BROWSERBASE_SETTLE_MS;
+  assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, true);
 });
