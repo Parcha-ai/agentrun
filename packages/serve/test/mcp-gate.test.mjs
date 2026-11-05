@@ -357,7 +357,7 @@ test("a stop while an approved MCP call runs cuts it at the server: the fake see
     }
     const stop = await api("POST", `/runs/${runId}/stop`, {});
     assert.deepEqual([stop.status, stop.body.stopped], [200, true], JSON.stringify(stop.body));
-    for (let i = 0; !fake.log.some((entry) => entry.method === "closed" && entry.tool === "slow_write"); i++) {
+    for (let i = 0; !fake.log.some((entry) => entry.method === "closed" && entry.closed === "slow_write"); i++) {
       assert.ok(i < 100, `${harness}: the server sees the call's request closed: ${JSON.stringify(fake.log.map((entry) => entry.method))}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
