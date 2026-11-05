@@ -73,21 +73,12 @@ function commandHelp(entry) {
 const nounHelp = (noun, entries) => [`Usage: agentrun ${noun} <verb> [args]`, "", ...entries.map((entry) => `  ${usageOf(entry).padEnd(40)}  ${entry.summary}`)].join("\n");
 
 /** `file`'s JSON, or undefined when there is none. Never its text in a message: it may hold a key. */
-function readJson(file, text = readOptional(file)) {
+function readJson(file, text) {
   if (text === undefined) return undefined;
   try {
     return JSON.parse(text);
   } catch {
     throw usageError(`${file} is not valid JSON.`);
-  }
-}
-
-function readOptional(file) {
-  try {
-    return readFileSync(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return undefined;
-    throw usageError(`${file} cannot be read (${error.code}).`);
   }
 }
 
@@ -127,7 +118,7 @@ const trim = (url) => url.replace(/\/+$/, "");
 function targetOf(values, env) {
   const data = resolve(values.data ?? join(homedir(), ".agentrun"));
   const configFile = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "config.json");
-  const config = readJson(configFile) ?? {};
+  const config = readJson(configFile, privateFile(configFile)) ?? {};
   const recordFile = join(data, ".server.json");
   const record = readJson(recordFile, privateFile(recordFile));
   const stale = record && `The server recorded in ${recordFile} (pid ${record.pid}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.`;
@@ -237,6 +228,9 @@ async function api(argv, env, io) {
   const [, method, path] = positionals;
   if (values.help || method === undefined) return io.stdout.write(`Usage: agentrun api METHOD PATH [${BODY}] [--header 'NAME: VALUE']...\n\nAny route of the server; PATH is under the base URL (/agents, /runs/RUN_ID).\n`), values.help ? 0 : 2;
   if (path === undefined || !path.startsWith("/") || positionals.length > 3) throw usageError("Usage: agentrun api METHOD PATH [--body JSON|@FILE|-]; PATH starts with /");
+  // fetch resolves `.` and `..` (and their encoded forms) against the base URL's own path, which may be longer than /v2.
+  const segments = path.split(/[?#]/)[0].split("/").slice(1).map((segment) => segment.replace(/%2e/gi, "."));
+  if (segments.some((segment, i) => segment === "." || segment === ".." || (segment === "" && i < segments.length - 1))) throw usageError("agentrun api: PATH may not hold a . or .. segment or an empty one (//).");
   const verb = method.toUpperCase();
   const secret = secretAt(verb, path);
   if (secret) refuseInline(`${verb} ${secret.path}`, values.body);
@@ -307,6 +301,12 @@ async function run(argv, env, io) {
 }
 
 export async function main(argv, env = process.env, io = process) {
+  // A reader that stops early (`| head`) closes stdout: the command ends quietly, as it would have. Stdout is written only
+  // once a request succeeded (or for help), so that is exit 0. Any other write error still throws.
+  io.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+    process.exit(0);
+  });
   try {
     return await run(argv, env, io);
   } catch (error) {

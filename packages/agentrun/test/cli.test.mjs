@@ -368,3 +368,46 @@ test("with no server at the address, the hint names --base-url for a server on a
   assert.match(down.err, /--base-url/);
   assert.match(down.err, /ECONNREFUSED/);
 });
+
+test("a reader that closes stdout early (| head) ends the command quietly, exit 0, no EPIPE on stderr", async (t) => {
+  const { env } = scratch(t);
+  const agents = Array.from({ length: 20_000 }, (_, i) => ({ agent_id: `agent-${i}`, definition: { name: `agent ${i}`, instructions: "x".repeat(200) } }));
+  const server = await listener(t, () => [200, "application/json", JSON.stringify({ agents, next_cursor: null })]);
+  const child = spawn(process.execPath, [BIN, "agents", "list", "--base-url", server.base], { env: { ...env, AGENTRUN_API_KEY: "fake-test-key" }, stdio: ["ignore", "pipe", "pipe"] });
+  let err = "";
+  child.stderr.on("data", (chunk) => (err += chunk));
+  child.stdout.once("data", () => child.stdout.destroy());
+  const code = await new Promise((resolve) => child.on("close", (exit) => resolve(exit)));
+  assert.doesNotMatch(err, /EPIPE|Error|\n\s+at /);
+  assert.equal(code, 0);
+});
+
+test("a config.json another user could have written is refused, exit 4, and nothing is sent", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t);
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true });
+  const config = join(dir, ".config", "agentrun", "config.json");
+  writeFileSync(config, JSON.stringify({ base_url: server.base, api_key: "fake-test-key" }), { mode: 0o644 });
+  chmodSync(config, 0o644);
+  const open = await run(env, ["agents", "list"]);
+  assert.equal(open.code, 4, open.err);
+  assert.match(open.err, /config\.json/);
+  assert.ok(!`${open.out}${open.err}`.includes("fake-test-key"));
+  assert.equal(server.requests.length, 0, "nothing was sent");
+  chmodSync(config, 0o600);
+  assert.equal((await run(env, ["agents", "list"])).code, 0);
+  assert.equal(server.requests.length, 1);
+});
+
+test("api refuses a PATH with a dot segment, raw or encoded, or an empty one, whatever the base URL's own path", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t);
+  const prefixed = server.base.replace(/\/v2$/, "/x/v2");
+  const body = '{"values":{"EXA_API_KEY":"not-a-secret"}}';
+  const extra = { AGENTRUN_API_KEY: "fake-test-key" };
+  for (const [base, path] of [[prefixed, "/../../x/v2/settings/tool-keys/exa"], [prefixed, "/%2E%2E/%2e%2e/x/v2/settings/tool-keys/exa"], [server.base, "/agents//a"], [server.base, "/agents/%2e"]]) {
+    const sent = await run(env, ["api", "PUT", path, "--body", body, "--base-url", base], { extra });
+    assert.equal(sent.code, 2, `${base} ${path}: ${sent.err}`);
+  }
+  assert.equal(server.requests.length, 0, "nothing was sent");
+});
