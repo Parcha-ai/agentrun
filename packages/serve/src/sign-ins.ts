@@ -42,7 +42,8 @@ export type Vendors = { create(vendor: Vendor): Promise<string>; remove(vendor: 
 type Entry = { key: string; provider: Vendor; ref: string; verified_at: string | null; held_by: string | null; gone_at?: string | null; held_until?: string | null };
 
 /** Browserbase writes a saved context back after its session ends (pi-browser waits profileSettleMs, 5 s, for it), so
- *  its saver's lease outlasts the run's end by twice that: a run started meanwhile neither saves over it. */
+ *  its saver's lease outlasts the run's end by twice that: a run started meanwhile neither saves over it. A bound this
+ *  server chose; Browserbase publishes none. */
 export const BROWSERBASE_SETTLE_MS = 10_000;
 
 /** How long a lease outlives its holder's process: pi-browser's default session timeout (DEFAULT_BROWSER_POLICY's
@@ -67,11 +68,13 @@ export class SignIns {
 
   private readonly now: () => number;
   private readonly writeFile: (path: string, text: string) => Promise<unknown>;
+  private readonly sleep: (ms: number) => Promise<void>;
 
-  /** `holds(run)`: whether that run has not ended, so a lease it names still holds; `now`, the clock, and `write`, the
-   *  durable write (writeDurable), the tests'. */
-  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>, options: { now?: () => number; write?: (path: string, text: string) => Promise<unknown> } = {}) {
+  /** `holds(run)`: whether that run has not ended, so a lease it names still holds; `now` and `sleep`, the clock, and
+   *  `write`, the durable write (writeDurable), the tests'. */
+  constructor(private readonly data: string, private readonly key: Buffer | undefined, private readonly vendors: Vendors, private readonly holds: (runId: string) => Promise<boolean>, options: { now?: () => number; sleep?: (ms: number) => Promise<void>; write?: (path: string, text: string) => Promise<unknown> } = {}) {
     this.now = options.now ?? Date.now;
+    this.sleep = options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
     this.writeFile = options.write ?? writeDurable;
   }
 
@@ -110,7 +113,9 @@ export class SignIns {
   private async held(entry: Entry): Promise<boolean> {
     if (entry.held_by === null) return false;
     if (entry.held_until) return this.now() < Date.parse(entry.held_until);
-    if (entry.gone_at && this.now() - Date.parse(entry.gone_at) >= GONE_LEASE_MS) return false;
+    // A Browserbase session that lived out the timeout still writes its context back after it ends; Kernel's browser
+    // ends at its idle timeout and saves as it ends, so it needs no margin.
+    if (entry.gone_at && this.now() - Date.parse(entry.gone_at) >= GONE_LEASE_MS + (entry.provider === "browserbase" ? BROWSERBASE_SETTLE_MS : 0)) return false;
     return this.holds(entry.held_by).catch(() => true);
   }
 
@@ -142,6 +147,11 @@ export class SignIns {
     const vendor = vendorOf(resolution);
     if (!vendor || !this.key) return undefined;
     const key = this.key;
+    // The Browserbase saver itself, resumed while its last save is still being written back (held_until): it waits that
+    // out, at most BROWSERBASE_SETTLE_MS, before it is handed save again, so no session of it opens on a context in flux.
+    const mine = (await this.read(agentId).catch(() => [])).find((e) => e.key === SIGN_IN_KEY && e.provider === vendor && e.held_by === runId && e.held_until);
+    const rest = mine ? Date.parse(mine.held_until!) - this.now() : 0;
+    if (rest > 0) await this.sleep(Math.min(rest, BROWSERBASE_SETTLE_MS));
     return this.locked(agentId, async () => {
       const entries = await this.read(agentId);
       let entry = entries.find((e) => e.key === SIGN_IN_KEY && e.provider === vendor);

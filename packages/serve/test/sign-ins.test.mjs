@@ -302,7 +302,7 @@ test("a lease whose holder's process is gone lasts no longer than a session it o
   await store.markGone("alpha", "run-1");
   now += GONE_LEASE_MS - 1000;
   assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, false, "a session it opened may still write back");
-  now += 1000;
+  now += 1000 + BROWSERBASE_SETTLE_MS;
   assert.equal((await store.view("alpha"))[0].state, "ready");
   assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
   // run-3's process goes and comes back (its relaunch): the lease is its again, with no clock on it.
@@ -428,4 +428,34 @@ test("an unreadable sign-in still names the run that holds its lease, which forg
   const signIn = openapiDocument(() => undefined).components.schemas.SignIn;
   const unreadable = signIn.else;
   assert.deepEqual([unreadable.if, unreadable.then.properties.held_by.oneOf.length, unreadable.else.properties.held_by, unreadable["x-agentrun-serve"]], [{ properties: { state: { const: "unreadable" } } }, 2, { type: "null" }, "signins/1"]);
+});
+
+test("a Browserbase lease whose holder's process is gone outlasts the longest session it could have opened by that session's write-back; Kernel's, which saves as its browser ends, does not", async (t) => {
+  let now = Date.parse("2026-11-05T04:00:00.000Z");
+  const store = new SignIns(await scratch(t), randomBytes(32), { create: async (vendor) => `${vendor}-pointer-1` }, async () => true, { now: () => now });
+  for (const vendor of ["browserbase", "kernel"]) await store.forRun("alpha", "run-1", vendor);
+  await store.markGone("alpha", "run-1");
+  now += GONE_LEASE_MS;
+  assert.deepEqual((await store.view("alpha")).map((s) => [s.provider, s.state]), [["browserbase", "held"], ["kernel", "ready"]]);
+  now += BROWSERBASE_SETTLE_MS - 1;
+  assert.equal((await store.forRun("alpha", "run-2", "browserbase")).save, false, "a second short of its write-back");
+  now += 1;
+  assert.equal((await store.forRun("alpha", "run-3", "browserbase")).save, true);
+});
+
+test("a Browserbase saver resumed while its own last save is still being written back waits that out before it saves again", async (t) => {
+  let now = Date.parse("2026-11-05T05:00:00.000Z");
+  const slept = [];
+  const store = new SignIns(await scratch(t), randomBytes(32), { create: async () => "ctx-1" }, async () => true, { now: () => now, sleep: async (ms) => void (slept.push(ms), (now += ms)) });
+  await store.forRun("alpha", "run-1", "browserbase");
+  const dir = await scratch(t);
+  await writeFile(join(dir, SIGN_IN_SAVED), new Date(now).toISOString());
+  await store.release("alpha", "run-1", dir);
+  now += 3_000;
+  assert.deepEqual(await store.forRun("alpha", "run-1", "browserbase"), { provider: "browserbase", ref: "ctx-1", save: true });
+  assert.deepEqual(slept, [BROWSERBASE_SETTLE_MS - 3_000], "the rest of its write-back, then saving");
+  assert.deepEqual((await store.view("alpha")).map((s) => [s.state, s.held_by]), [["held", "run-1"]]);
+  // Past it, nothing to wait for.
+  await store.forRun("alpha", "run-1", "browserbase");
+  assert.equal(slept.length, 1);
 });
