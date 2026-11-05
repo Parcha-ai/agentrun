@@ -1452,6 +1452,7 @@ const BLOCKED_DETAILS = {
     missing: { type: "object", additionalProperties: { type: "array", items: { type: "string" } }, description: "Each bound tool this host cannot run yet, with the variables it is missing." },
     harness: { enum: [...HARNESSES], description: "The revision's harness, when this server does not run it (capabilities.harnesses)." },
     denied: { type: "array", items: { type: "string" }, description: "A workflow revision: the tools its call nodes call that are set to deny here." },
+    asks: { type: "array", items: { type: "string" }, description: "A workflow revision: the tools its call nodes call that are set to ask here (a catalog tool's default among them). A call node cannot wait for an approval: set the tool to allow for the agent." },
     box: { enum: [...BOX_IDS], description: "The box of the revision's place, when this server does not have it (capabilities.places.boxes)." },
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },

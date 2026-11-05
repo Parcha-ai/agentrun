@@ -25,7 +25,7 @@ export type RevisionShape =
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness`, `box` (the place's,
  *  which this server does not have) and `denied` (a tool a workflow's call node calls that is set to deny) name it for a
  *  run's 409 details. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string };
+export type Blocker = InputIssue & { host: boolean; tool?: string; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string };
 
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
@@ -141,9 +141,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   }
   for (const tool of named.calls) {
     if (!allows(CALL_TOOLS, tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
-    // A call node is the author's own step, which no gate asks about (ask does not apply to it); one that calls a tool
-    // set to deny would be refused mid-run, so the run never starts.
+    // A call node is the author's own step, and it cannot wait for an approval: one that calls a tool set to deny, or to
+    // ask (which it could never get), would be refused mid-run (app.ts runEffect), so the run never starts. Fails closed:
+    // a catalog tool at its default (ask) is refused until it is set to allow for the agent.
     // Held to its settings key: a legacy name (fetch_page) takes its capability's permission (web_fetch's), as the gate does.
+    else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "ask") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`, host: true, asks: capabilityOf(tool) });
     else if (permissionOf(capabilityOf(tool), settings as never, (revision.toolSettings ?? {}) as never) === "deny") out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `This workflow's call node calls ${capabilityOf(tool) === tool ? tool : `${tool} (${capabilityOf(tool)})`}, which is set to deny on this server.`, host: true, denied: capabilityOf(tool) });
   }
   const granted = await grantedTools(revision);

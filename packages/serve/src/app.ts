@@ -226,8 +226,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
   // A model node's tools pass the gate too; one set to ask is refused there, as no node can wait for a person. A call
-  // node is the author's own step, which no gate asks about: runnable.ts refuses a run whose call node calls a denied tool, and
-  // a tool set to deny since is refused as its call node runs (runEffect).
+  // node is the author's own step, which cannot wait for an approval: runnable.ts refuses a run whose call node calls a tool
+  // set to deny or ask, and a tool set to either since is refused as its call node runs (runEffect).
   const gatedTools = toolGate.extension([...nodeTools.values()].flatMap((binding) => binding.tools));
   registry.install(gatedTools);
   // A decision node's images are files of the run's work directory (pdf_pages draws them there).
@@ -256,8 +256,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     log({ t: "effect.start", ...at, input, at: new Date().toISOString() });
     try {
       // Its tool's permission now, the gate's one rule read as each call node runs (tool-gate.ts policy): a tool set to
-      // deny since the run started is refused in the gate's words, never run. Ask does not apply to the author's own step.
-      if (toolGate.policy(node.tool!) === "deny") throw new Error(deniedText(node.tool!));
+      // deny since the run started is refused in the gate's words, and one set to ask too, since a call node cannot wait
+      // for an approval. Neither runs.
+      const permission = toolGate.policy(node.tool!);
+      if (permission === "deny") throw new Error(deniedText(node.tool!));
+      if (permission === "ask") throw new Error(`This ${node.tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
       const durable = opened;
       const ledger = durable ? { call: `${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: rootRecordOf(durable.harness) } : undefined;
       const output = await effect(input, { signal, env, work: where.work, complete, ...(ledger ? { ledger } : {}) });

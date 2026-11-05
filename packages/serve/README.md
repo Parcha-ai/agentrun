@@ -682,8 +682,10 @@ where none is set; `PUT /settings/tools` takes the same map and replaces it (a c
 default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
 for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
-unknown capability or provider is `422`, and so is a `permission` (`reason: not_yet`): permissions arrive with the tool
-gate, and capabilities say `features.tool_permissions: false` until then. The settings are kept in the data directory
+unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
+tool gate holds every call to (an ask parks the run for the owner's approval); a workflow's call node, which cannot wait
+for an approval, refuses its run when its tool is set to ask or deny (`409`, `details.asks` or `details.denied`). The
+settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
 `GET /capabilities` is the one tool catalog: each of the three tools there gives the providers offered (`providers`), the
 server's (`provider`, its default where it sets none), the built-in default (`default_provider`) and `resolves`, what it
@@ -702,6 +704,10 @@ in the run's `serve.json` for the run's life (a later `PUT` changes the next run
 Parallel key gone since makes Parallel unavailable, never another provider), and hands its process the outcome as a
 description with no secret in it (`AGENTRUN_SERVE_TOOL_PLANE`); the run reads its providers there, never from a request.
 A workflow's tools are those its revision lists and those its model and call nodes name.
+
+Upgrading to the tool gate: workflows with catalog (`monid.*`) or MCP call nodes (default ask) now need that tool set to
+allow for the agent (`definition.tool_settings`, e.g. `{"monid.run": {"permission": "allow"}}`); until then their runs
+are `409` with `details.asks`.
 
 Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
 Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set

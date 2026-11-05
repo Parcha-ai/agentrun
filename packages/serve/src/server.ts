@@ -1022,7 +1022,8 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
     const denied = blockers.flatMap((b) => (b.denied ? [b.denied] : []));
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...named } });
+    const asks = blockers.flatMap((b) => (b.asks ? [b.asks] : []));
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...(asks.length ? { asks } : {}), ...named } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
