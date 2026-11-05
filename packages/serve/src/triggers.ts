@@ -66,7 +66,9 @@ const LOST_AT_SETUP = "The server stopped while setting up the run.";
 type Schedule = { kind: "schedule"; cron: string; timezone: string } | { kind: "schedule"; at: string } | { kind: "schedule"; every_s: number; start_at: string };
 /** A signed POST to /v2/hooks/{trigger_id} (server.ts): the request is the firing. A Slack trigger's: a mention of the
  *  app in one of its channels, signed by the server's Slack app (slack.ts). */
-type Source = Schedule | { kind: "webhook" } | { kind: "slack"; channels: string[] };
+/** A Slack source's `post_answer`: a completed run's line in its thread carries its final answer (default false: its
+ *  status and link only). */
+type Source = Schedule | { kind: "webhook" } | { kind: "slack"; channels: string[]; post_answer: boolean };
 export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
 type FiringStatus = (typeof FIRING_STATUSES)[number];
 type Firing = {
@@ -223,12 +225,13 @@ function sourceOf(value: unknown, now: number, issues: InputIssue[]): Source | u
     return { kind: "webhook" };
   }
   if (value.kind === "slack") {
-    issues.push(...unknownFields(value, ["kind", "channels"]).map((i) => ({ ...i, field: `source.${i.field}` })));
+    issues.push(...unknownFields(value, ["kind", "channels", "post_answer"]).map((i) => ({ ...i, field: `source.${i.field}` })));
     const channels = value.channels;
     if (!Array.isArray(channels) || channels.length < 1 || channels.length > SLACK_CHANNELS_MAX || !channels.every((c) => typeof c === "string" && SLACK_CHANNEL.test(c)) || new Set(channels).size !== channels.length) {
       return bad("channels", channels === undefined ? "missing" : "invalid", `channels lists 1 to ${SLACK_CHANNELS_MAX} distinct Slack channel ids (C... or G...): a mention of the app in one of them starts a run`), undefined;
     }
-    return { kind: "slack", channels: [...(channels as string[])] };
+    if (value.post_answer !== undefined && typeof value.post_answer !== "boolean") return bad("post_answer", "wrong_type", "post_answer is true or false: whether a completed run's line in its thread carries its final answer"), undefined;
+    return { kind: "slack", channels: [...(channels as string[])], post_answer: value.post_answer === true };
   }
   if (value.kind !== "schedule") return bad("kind", "not_an_option", `source.kind is one of ${SOURCE_KINDS.join(", ")}`), undefined;
   const forms = ["cron", "at", "every_s"].filter((field) => value[field] !== undefined);
@@ -455,9 +458,10 @@ export class Triggers {
     return { created: true, firing: firingView(firing) };
   }
 
-  /** The Slack thread a trigger started `runId` in, for its posts (slack.ts). */
-  slackThreadOf(runId: string): { channel: string; thread_ts: string } | undefined {
-    for (const trigger of this.unreadable ? [] : this.triggers) for (const t of Object.values(trigger.threads ?? {})) if (t.run_id === runId) return { channel: t.channel, thread_ts: t.thread_ts };
+  /** The Slack thread a trigger started `runId` in, for its posts (slack.ts), and whether that trigger posts a completed
+   *  run's answer (its source's post_answer, as it is now). */
+  slackThreadOf(runId: string): { channel: string; thread_ts: string; post_answer: boolean } | undefined {
+    for (const trigger of this.unreadable ? [] : this.triggers) for (const t of Object.values(trigger.threads ?? {})) if (t.run_id === runId) return { channel: t.channel, thread_ts: t.thread_ts, post_answer: trigger.source.kind === "slack" && trigger.source.post_answer === true };
     return undefined;
   }
 

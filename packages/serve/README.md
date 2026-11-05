@@ -1065,7 +1065,7 @@ never opens a completed run again for one it already has.
 ### Slack triggers
 
 Mention the server's Slack app in a channel to start a run, and reply in the thread to steer it. One Slack app a
-server: `PUT /v2/settings/slack` with `{signing_secret, bot_token, app_id?, post_answer?}` checks the bot token with
+server: `PUT /v2/settings/slack` with `{signing_secret, bot_token, app_id?}` checks the bot token with
 Slack's `auth.test`, which names the workspace and the app's bot user, and keeps both secrets sealed in `DIR/slack.json`
 under `AGENTRUN_SEAL_KEY` (`409 no_sealing_key` with none); `GET` never shows them, and `DELETE` removes them. In the
 app's settings, set Event Subscriptions' Request URL to `https://<the server's public address>/v2/hooks/slack`, subscribe to
@@ -1078,7 +1078,7 @@ HMAC-SHA256 of `v0:{X-Slack-Request-Timestamp}:{body}` under the signing secret,
 server's clock; one that fails, or a server with no Slack set, is `401`. Slack's `url_verification` is answered with its
 challenge only after that check.
 
-A trigger with `source: {kind: "slack", channels: ["C...", ...]}` and a `start_run` target owns its channels: a channel
+A trigger with `source: {kind: "slack", channels: ["C...", ...], post_answer?}` and a `start_run` target owns its channels: a channel
 another Slack trigger lists is `409 channel_taken`. A mention of the app in one of them starts a run for its thread (a
 top-level message is its own thread), and every message in that thread after it, mention or not, is a message to that
 run: a steer, a follow-up that opens a completed run again, or the answer to the run's question. Each thread is one run,
@@ -1096,8 +1096,9 @@ When the run comes to need its person, and when it ends, one line is posted in i
 "Waiting for your answer: reply in this thread", "Waiting for your approval of <tool>: approve in the console" (a tool
 call waiting on its owner's OK, which no reply in the thread approves), "Stopped: reply in this thread to go on", "Paused
 at its spend cap", "Done", "Failed" or "Cancelled", each with a link to the run when the server has a public address
-(`AGENTRUN_PUBLIC_URL`). With `post_answer: true`, a completed run's line carries its final answer, redacted, cut to 3,000
-characters and escaped, so it mentions no one and links nowhere in Slack. Lines
+(`AGENTRUN_PUBLIC_URL`). A trigger whose source sets `post_answer: true` (default false, each trigger its own) has a
+completed run's line carry its final answer, redacted, cut to 3,000 characters and escaped, so it mentions no one and
+links nowhere in Slack; the trigger is read as it is when the run ends. Lines
 wait in `DIR/slack-outbox.json` and are tried again on the webhook's schedule until Slack takes them; a post whose answer
 never came is tried again, so it can show twice. A bot token Slack refuses turns posting off until the app is set again.
 An import cuts the Slack secrets out of what it keeps, and no learning text shows them.

@@ -64,7 +64,10 @@ test("the server's Slack app is set once, checked with Slack, kept sealed and ne
   assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [["bot_token", "invalid"]]]);
   const saved = await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  assert.deepEqual(saved.body, { configured: true, team_id: SLACK_TEAM, bot_user_id: SLACK_BOT_USER, app_id: null, post_answer: false, links: true, at_rest: "sealed", disabled: null, updated_at: saved.body.updated_at });
+  assert.deepEqual(saved.body, { configured: true, team_id: SLACK_TEAM, bot_user_id: SLACK_BOT_USER, app_id: null, links: true, at_rest: "sealed", disabled: null, updated_at: saved.body.updated_at });
+  // Whether the answer is posted is each trigger's (its source's post_answer), never the server's.
+  const answered = await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN, post_answer: true });
+  assert.deepEqual([answered.status, answered.body.error.fields.map((f) => f.field)], [422, ["post_answer"]]);
   const read = await api("GET", "/settings/slack");
   assert.ok(!JSON.stringify(read.body).includes(SIGNING) && !JSON.stringify(read.body).includes(SLACK_BOT_TOKEN), "never shown");
   assert.deepEqual(await hook(verification), { status: 200, body: { challenge: "not-a-secret-challenge" } });
@@ -123,11 +126,11 @@ test("a mention in a listed channel starts one run for its thread, deduped acros
   await follow(api, other.run_id, ["completed"]);
 });
 
-test("a run that asks posts a waiting line in its thread, and a reply there answers it; with post_answer the end carries the answer; a post Slack refuses at first is tried again until taken, once", { timeout: 180_000 }, async (t) => {
+test("a run that asks posts a waiting line in its thread, and a reply there answers it; a trigger with post_answer has the end carry the answer, and on the same server one without it does not; a post Slack refuses at first is tried again until taken, once", { timeout: 180_000 }, async (t) => {
   const { api, hook, slack } = await slackServer(t);
-  assert.equal((await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN, post_answer: true })).status, 200);
+  assert.equal((await api("PUT", "/settings/slack", { signing_secret: SIGNING, bot_token: SLACK_BOT_TOKEN })).status, 200);
   await made(api, "asker", { tools: ["ask_person"] });
-  const { body } = await api("POST", "/triggers", { name: "regions", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "asker", input: { content: "Pick a region." }, max_cost_usd: 0.5 } });
+  const { body } = await api("POST", "/triggers", { name: "regions", source: { kind: "slack", channels: [LISTED], post_answer: true }, target: { kind: "start_run", agent_id: "asker", input: { content: "Pick a region." }, max_cost_usd: 0.5 } });
   // Slack is slow at first: the waiting line's first two tries fail, and it is posted on the third.
   slack.answers.push({ status: 500, body: { ok: false, error: "internal_error" } }, { status: 429, body: { ok: false, error: "ratelimited" }, headers: { "retry-after": "0" } });
   assert.equal((await hook(mention("1767226000.000100", "which region?"))).body.ok, "received");
@@ -144,6 +147,24 @@ test("a run that asks posts a waiting line in its thread, and a reply there answ
   // Escaped as Slack text: the answer's own <...> (here the trigger's payload block it echoes) mentions and links nothing.
   assert.match(answer, /<trigger-payload/);
   assert.equal(done.body.text, `Done: <${PUBLIC}/#/runs/${started.run_id}|open the run>\n\n${answer.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}`);
+  assert.equal(body.source.post_answer, true);
+  // Another trigger on the same server, in another channel, with post_answer left out (false): its end is the line alone.
+  const plain = await api("POST", "/triggers", { name: "quiet", source: { kind: "slack", channels: ["C0EXAMPLE2"] }, target: { kind: "start_run", agent_id: "asker", input: { content: "Say hello, and ask nothing." }, max_cost_usd: 0.5 } });
+  assert.deepEqual([plain.status, plain.body.source.post_answer], [201, false], JSON.stringify(plain.body));
+  assert.equal((await hook(mention("1767226100.000100", "hello", { channel: "C0EXAMPLE2" }))).body.ok, "received");
+  const [quiet] = await firings(api, plain.body.id, 1);
+  await follow(api, quiet.run_id, ["completed"]);
+  const line = await until(() => slack.posts.find((p) => p.body.thread_ts === "1767226100.000100" && p.body.text.startsWith("Done")), "the quiet end posted");
+  assert.equal(line.body.text, `Done: <${PUBLIC}/#/runs/${quiet.run_id}|open the run>`, "no answer");
+  // Turned on by an edit, it holds for the next end: the trigger is read when the run ends.
+  assert.equal((await api("PATCH", `/triggers/${plain.body.id}`, { source: { kind: "slack", channels: ["C0EXAMPLE2"], post_answer: true } })).status, 200);
+  assert.equal((await hook(mention("1767226200.000100", "hello again", { channel: "C0EXAMPLE2" }))).body.ok, "received");
+  const [loud] = await firings(api, plain.body.id, 2);
+  await follow(api, loud.run_id, ["completed"]);
+  const said = await until(() => slack.posts.find((p) => p.body.thread_ts === "1767226200.000100" && p.body.text.startsWith("Done")), "the end posted with its answer");
+  assert.match(said.body.text, /^Done: <[^>]+>\n\n\S/);
+  const wrong = await api("POST", "/triggers", { name: "odd", source: { kind: "slack", channels: ["C0EXAMPLE3"], post_answer: "yes" }, target: { kind: "start_run", agent_id: "asker", input: { content: "Hi." }, max_cost_usd: 0.5 } });
+  assert.deepEqual([wrong.status, wrong.body.error.fields.map((f) => [f.field, f.reason])], [422, [["source.post_answer", "wrong_type"]]]);
 });
 
 test("a Slack trigger is refused a channel another Slack trigger lists (409 naming it), a target other than start_run, and channels that are not Slack ids", { timeout: 60_000 }, async (t) => {

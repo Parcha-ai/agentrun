@@ -755,12 +755,13 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   slack = new Slack(data, env, (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), options.slackApiUrl, options.webhookRetryMs);
   stops.push(async () => slack!.close());
   // A run a Slack trigger started is told its thread too: its thread looked up once the triggers are read (below).
-  let slackThreadOf: (runId: string) => { channel: string; thread_ts: string } | undefined = () => undefined;
+  let slackThreadOf: (runId: string) => { channel: string; thread_ts: string; post_answer: boolean } | undefined = () => undefined;
   const tellSlack = (event: "run.needs_input" | "run.ended", run: RunNotice, marker: string) => {
     const thread = slackThreadOf(run.run_id);
     if (!thread) return;
-    void (event === "run.ended" && run.status === "completed" ? runs.get(run.run_id).then((held) => (held ? runs.view(held) : null)).then((view) => view?.result?.final_answer ?? null, () => null) : Promise.resolve(null))
-      .then((answer) => slack!.emit(event, run, marker, thread, answer))
+    // The answer only for a trigger that posts it (its source's post_answer), read as the trigger is now.
+    void (event === "run.ended" && run.status === "completed" && thread.post_answer ? runs.get(run.run_id).then((held) => (held ? runs.view(held) : null)).then((view) => view?.result?.final_answer ?? null, () => null) : Promise.resolve(null))
+      .then((answer) => slack!.emit(event, run, marker, { channel: thread.channel, thread_ts: thread.thread_ts }, answer))
       .catch((error: Error) => void process.stderr.write(`agentrun-serve: slack: ${error.message}\n`));
   };
   const uploads = new Uploads(join(data, UPLOADS_DIR));

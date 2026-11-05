@@ -20,7 +20,7 @@ export const SLACK_OUTBOX = "slack-outbox.json";
 export const SLACK_API = "https://slack.com/api";
 /** How far a request's X-Slack-Request-Timestamp may be from this server's clock, either way. */
 export const SLACK_TOLERANCE_S = 300;
-/** The most of a run's answer a thread is posted, when the settings ask for the answer (`post_answer`). */
+/** The most of a run's answer a thread is posted, when its trigger asks for the answer (its source's `post_answer`). */
 export const ANSWER_POSTED_CHARS = 3_000;
 const TIMEOUT_MS = 15_000;
 /** A ledger entry is dropped this long after it was last written: its thread is gone from the trigger by then. */
@@ -29,7 +29,7 @@ const AUTH_GONE = new Set(["invalid_auth", "not_authed", "token_revoked", "token
 const TRY_AGAIN = new Set(["ratelimited", "rate_limited", "internal_error", "fatal_error", "service_unavailable", "request_timeout"]);
 const aad = (field: string) => `slack/1|${field}`;
 
-type Settings = { team_id: string; bot_user_id: string; bot_id: string; app_id?: string; post_answer: boolean; signing_secret: string; bot_token: string; updated_at: string; disabled?: { at: string; reason: string } };
+type Settings = { team_id: string; bot_user_id: string; bot_id: string; app_id?: string; signing_secret: string; bot_token: string; updated_at: string; disabled?: { at: string; reason: string } };
 /** A message to post: a run's moment, in its thread. */
 type Post = { id: string; channel: string; thread_ts: string; text: string; attempts: number; next_at: number };
 /** What a run's thread was told: the wait it stands at and its end, by their markers (runs.ts notify). */
@@ -45,7 +45,7 @@ export const slackText = (text: string): string => text.replace(/&/g, "&amp;").r
 /** The one line a run's moment posts in its thread. Waiting, by `pending.kind`: a question is answered by a reply in the
  *  thread; an approval (a tool call waiting on its owner's OK, which names the tool) only in the console, as no reply
  *  approves; a pause at the cap by a raise; a stop by a reply that goes on; any other kind, at the run. Ended: its status,
- *  and with `answer` (the settings' post_answer) the run's final answer, escaped and cut to ANSWER_POSTED_CHARS. `base`:
+ *  and with `answer` (given when the thread's trigger posts it, its source's post_answer) the run's final answer, escaped and cut to ANSWER_POSTED_CHARS. `base`:
  *  the console's public URL, for the run's link; none, no link. */
 export function slackLine(type: "run.needs_input" | "run.ended", run: RunNotice, { base, answer }: { base: string | null; answer?: string | null }): string {
   const link = base ? `<${base}/#/runs/${encodeURIComponent(run.run_id)}|open the run>` : null;
@@ -167,23 +167,22 @@ export class Slack {
 
   // ---- settings -------------------------------------------------------------------------------------------------------
 
-  /** GET: the workspace and app, whether the answer is posted, whether lines carry a link, and why posting is off, if it
+  /** GET: the workspace and app, whether lines carry a link, and why posting is off, if it
    *  is; never a secret. */
   view() {
     const settings = this.settings();
     if (!settings) return { configured: false as const };
-    return { configured: true as const, team_id: settings.team_id, bot_user_id: settings.bot_user_id, app_id: settings.app_id ?? null, post_answer: settings.post_answer, links: this.base !== null, at_rest: this.opened(settings) ? "sealed" : "unreadable", disabled: settings.disabled ?? null, updated_at: settings.updated_at };
+    return { configured: true as const, team_id: settings.team_id, bot_user_id: settings.bot_user_id, app_id: settings.app_id ?? null, links: this.base !== null, at_rest: this.opened(settings) ? "sealed" : "unreadable", disabled: settings.disabled ?? null, updated_at: settings.updated_at };
   }
 
-  /** PUT: `{signing_secret, bot_token, app_id?, post_answer?}`, the bot token checked with Slack's auth.test (which names
+  /** PUT: `{signing_secret, bot_token, app_id?}`, the bot token checked with Slack's auth.test (which names
    *  the workspace and the app's bot user) before anything is kept. Both secrets are kept sealed; posting is on again. */
   async save(body: Json): Promise<ReturnType<Slack["view"]>> {
-    const issues = unknownFields(body, ["signing_secret", "bot_token", "app_id", "post_answer"]);
+    const issues = unknownFields(body, ["signing_secret", "bot_token", "app_id"]);
     const text = (field: string, max: number) => typeof body[field] === "string" && (body[field] as string).length >= 1 && (body[field] as string).length <= max;
     if (!text("signing_secret", 256)) issues.push({ field: "signing_secret", reason: body.signing_secret === undefined ? "missing" : "wrong_type", message: "signing_secret is the Slack app's signing secret (Basic Information)" });
     if (!text("bot_token", 512)) issues.push({ field: "bot_token", reason: body.bot_token === undefined ? "missing" : "wrong_type", message: "bot_token is the app's bot token (xoxb-...), with chat:write" });
     if (body.app_id !== undefined && !(typeof body.app_id === "string" && /^A[A-Z0-9]{2,30}$/.test(body.app_id))) issues.push({ field: "app_id", reason: "wrong_type", message: "app_id is the Slack app's id (A...)" });
-    if (body.post_answer !== undefined && typeof body.post_answer !== "boolean") issues.push({ field: "post_answer", reason: "wrong_type", message: "post_answer is true or false" });
     if (issues.length) throw invalid(issues);
     if (!this.key) throw new ApiError("no_sealing_key", `This server was handed no seal key (${SEAL_KEY_ENV}), so it keeps no Slack secrets: it never keeps one in the clear.`);
     const who = await this.call("auth.test", body.bot_token as string, {});
@@ -191,7 +190,7 @@ export class Slack {
     if (typeof who.body.team_id !== "string" || typeof who.body.user_id !== "string") throw new ApiError("upstream_failed", "Slack's auth.test named no workspace or bot user.");
     const settings: Settings = {
       team_id: who.body.team_id, bot_user_id: who.body.user_id, bot_id: typeof who.body.bot_id === "string" ? who.body.bot_id : "", ...(typeof body.app_id === "string" ? { app_id: body.app_id } : {}),
-      post_answer: body.post_answer === true, signing_secret: this.sealed("signing_secret", body.signing_secret as string), bot_token: this.sealed("bot_token", body.bot_token as string), updated_at: new Date().toISOString(),
+      signing_secret: this.sealed("signing_secret", body.signing_secret as string), bot_token: this.sealed("bot_token", body.bot_token as string), updated_at: new Date().toISOString(),
     };
     writeDurableSync(this.file, `${JSON.stringify({ v: 1, ...settings }, null, 2)}\n`);
     return this.view();
@@ -221,7 +220,7 @@ export class Slack {
 
   /** A run's moment, told by runs.ts as webhooks.ts is (`marker` names it), for a run a Slack trigger started in
    *  `thread`: one line queued for its thread, once per moment, in the same write as the ledger. `answer`: the run's
-   *  final answer, posted when the settings ask for it. */
+   *  final answer, given only when the thread's trigger posts it (its source's post_answer). */
   emit(type: "run.needs_input" | "run.ended", run: RunNotice, marker: string, thread: { channel: string; thread_ts: string }, answer?: string | null): void {
     if (this.closed || !this.settings() || this.settings()!.disabled) return;
     const told = this.told[run.run_id];
@@ -243,7 +242,7 @@ export class Slack {
   }
 
   private line(type: "run.needs_input" | "run.ended", run: RunNotice, answer?: string | null): string {
-    return slackLine(type, run, { base: this.base, answer: this.settings()?.post_answer ? answer : null });
+    return slackLine(type, run, { base: this.base, answer });
   }
 
   private schedule(post: Post, delayMs: number): void {
