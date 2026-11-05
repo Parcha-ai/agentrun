@@ -21,7 +21,7 @@ import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions, owedSubmissions } from "./harness.js";
-import { rolloutStream, summarizeRollout, THREAD_STREAM } from "./rollout.js";
+import { isRolloutPath, isSessionMeta, rolloutStream, summarizeRollout, THREAD_STREAM } from "./rollout.js";
 import { type ConfineChild, localMachine, type MachineSeed, sessionDir } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
@@ -118,6 +118,18 @@ const SKILLS_DIR = "skills";
 /** The skills as the files the session's CODEX_HOME holds (`skills/<name>/<path>`): the machine's seed. */
 function skillsSeed(skills: readonly HostSkill[]): MachineSeed {
   return { dir: "codex-home", files: Object.fromEntries(skills.flatMap((skill) => Object.entries(skill.files).map(([path, text]) => [`${SKILLS_DIR}/${skill.name}/${path}`, text]))) };
+}
+
+/**
+ * The mirrored rollout the next drive resumes Codex from, by the harness's own rule (harness.ts, `resume`: the last
+ * thread, its first line `session_meta`, its path the one the harness derives); none when it would start a new thread.
+ * The settle reads only this, so it and the next Codex agree on what Codex has. The copied harness keeps its own copy
+ * of the rule: its own patch budget has no room for a call here.
+ */
+export async function resumedRollout(journal: NativeJournal): Promise<string[]> {
+  const thread = journal.records<{ threadId: string; path: string }>(THREAD_STREAM).at(-1)?.data;
+  const restored = thread ? (await journal.read<string>(rolloutStream(thread.threadId))).map((r) => r.data) : [];
+  return thread && isSessionMeta(restored[0]) && isRolloutPath(thread.path, thread.threadId) ? restored : [];
 }
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
@@ -287,9 +299,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           // mirror, which a stopped drive adds nothing to), the rollout the next Codex is resumed from: a prompt it lacks the
           // next turn's model never saw, so carrying it never sends it twice.
           const folded = drive.state();
-          const journal = new NativeJournal(drive);
-          const thread = journal.records<{ threadId: string }>(THREAD_STREAM).at(-1)?.data;
-          const rollout = thread ? (await journal.read<string>(rolloutStream(thread.threadId))).map((r) => r.data) : [];
+          const rollout = await resumedRollout(new NativeJournal(drive));
           const unsent = owedSubmissions(folded, recoveryNote(folded)?.turn.placed ?? [], summarizeRollout(rollout).clientIds).map((s) => s.id);
           await settleTurn(drive, { unsent, ...(options.opening === undefined ? {} : { host: options.opening }) });
           state = "idle";

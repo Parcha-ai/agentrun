@@ -27,8 +27,9 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   claude-agent's transcript, Codex's rollout (Codex answers `turn/start` before it writes the message, and the Claude
   SDK writes a message to the CLI at once, so a stop can kill either before it records it). A prompt that record lacks
   the next turn's model never saw, so carrying it never sends it twice. OpenCode marks a prompt just before it sends it,
-  and a marked one is never carried. A follow-up's own prompt, named to the settle (`opening`), is withdrawn and never
-  carried.
+  and a marked one is never carried. A recovery message records which placed prompts it carries before it goes, so once
+  the CLI holds it they count as recorded, across a chain of recoveries. A follow-up's own prompt, named to the settle
+  (`opening`), is withdrawn and never carried.
 - `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
   session: every writer opened earlier for that key is fenced from then on, and its appends are refused
   (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a

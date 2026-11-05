@@ -30,9 +30,11 @@ export const SYNC_STREAM = "opencode.sync";
 /** The journal stream that holds the message id each submission was sent under. */
 export const PROMPT_STREAM = "opencode.prompt";
 
-/** The submissions a drive of the session marked as sent to OpenCode (PROMPT_STREAM, written just before each send). */
+/** The submissions a drive of the session marked as sent to OpenCode (PROMPT_STREAM, written just before each send),
+ *  with those a recovery's send carried (its `covers`). */
 export function sentSubmissions(state: SessionState): Set<string> {
-  return new Set(journalRecords<{ submission?: unknown }>(state, PROMPT_STREAM).map((r) => r.data?.submission).filter((s): s is string => typeof s === "string"));
+  const ids = journalRecords<{ submission?: unknown; covers?: unknown }>(state, PROMPT_STREAM).flatMap((r) => [r.data?.submission, ...(Array.isArray(r.data?.covers) ? r.data.covers : [])]);
+  return new Set(ids.filter((s): s is string => typeof s === "string"));
 }
 /** The session's private directories, under its own directory. */
 export const PRIVATE_DIRS = ["home", "config", "data", "cache", "state", "tmp"] as const;
@@ -226,7 +228,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
 
     const journal = new NativeJournal(ctx);
     const mirrored: SyncEvent[] = (await journal.read<unknown>(SYNC_STREAM)).map((r) => r.data).filter(isSyncEvent);
-    const prompts = (await journal.read<{ submission?: string; messageID?: string }>(PROMPT_STREAM)).map((r) => r.data);
+    const prompts = (await journal.read<{ submission?: string; messageID?: string; covers?: string[] }>(PROMPT_STREAM)).map((r) => r.data);
     let sessionID: string | undefined = mirrored[0]?.aggregate_id;
     let lastSeq = mirrored.reduce((max, e) => Math.max(max, e.seq), -1);
 
@@ -526,13 +528,15 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         await mirror();
       }
 
-      const runTurn = async (text: string, submission: string): Promise<Outcome> => {
+      const runTurn = async (text: string, submission: string, covers: readonly string[] = []): Promise<Outcome> => {
         const id = messageId(submission);
         // A stop that landed after the prompt was placed: it is never sent, and no mark says it was (the settle carries it).
         if (signal.aborted) throw signal.reason;
         // The id it is sent under, in the log first: a recovery knows whether OpenCode recorded it, and a settle that it was
         // sent (its send mark, sentSubmissions): a crash between the two reads "marked, maybe sent", never sent twice.
-        journal.append(PROMPT_STREAM, { submission, messageID: id });
+        // A recovery's send carries placed prompts' words (`covers`): marked with it, so no settle, and no later recovery
+        // once OpenCode holds it, sends them again.
+        journal.append(PROMPT_STREAM, { submission, messageID: id, ...(covers.length ? { covers: [...covers] } : {}) });
         await journal.flush();
         const ended = new Promise<Outcome>((resolve) => {
           turn = { messageID: id, busy: false, accepted: false, text: new Map(), finalText: "", end: (outcome) => resolve(outcome) };
@@ -582,7 +586,9 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
       // other copy, so they are never cut (the note's own quotes are).
       const note = recoveryNote(ctx.state());
       if (note) {
-        const sent = new Map(prompts.filter((p) => p.submission && p.messageID).map((p) => [p.submission!, p.messageID!]));
+        // Each placed prompt by the message it went in: its own, or the last recovery's that carried it (`covers`), so a
+        // recovery of a recovery maps back to the first placement.
+        const sent = new Map(prompts.filter((p) => p.submission && p.messageID).flatMap((p) => [p.submission!, ...(p.covers ?? [])].map((id) => [id, p.messageID!] as const)));
         const state = ctx.state();
         const lost = note.turn.placed
           .filter((id) => !sent.has(id) || !holdsMessage(mirrored, sent.get(id)!))
@@ -591,7 +597,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
         const text = lost.length ? `${note.text}\n\nMessages that may not have reached you before the interruption:\n${lost.map((x) => quote(x.text ?? "")).join("\n")}` : note.text;
         journal.message({ type: "message", role: "user", text, synthetic: "recovery" });
         await placeSubmissions(ctx, note.pending);
-        const outcome = await runTurn(text, `recovery:${transcriptCount(ctx.state())}`);
+        const outcome = await runTurn(text, `recovery:${transcriptCount(ctx.state())}`, [...lost.map((x) => x.id), ...note.pending.map((x) => x.id)]);
         if (interrupting) return void interrupting();
         void outcome;
       }
