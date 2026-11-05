@@ -268,7 +268,7 @@ test("a Slack trigger's thread untouched for 30 days is forgotten, so a reply in
     await rm(data, { recursive: true, force: true });
   });
   triggers.start();
-  await triggers.create({ name: "help desk", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  const { id } = await triggers.create({ name: "help desk", source: { kind: "slack", channels: [LISTED] }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } });
   const message = (ts, thread_ts, mention) => ({ team: SLACK_TEAM, channel: LISTED, ts, thread_ts, user: PERSON, text: "hello", event_id: `Ev${ts}`, mention });
   const day = (n) => new Date(Date.parse("2026-06-01T00:00:00Z") + n * 86_400_000).toISOString();
   const threadOf = (run) => triggers.slackThreadOf(run)?.thread_ts;
@@ -290,6 +290,8 @@ test("a Slack trigger's thread untouched for 30 days is forgotten, so a reply in
   for (let i = 0; i < 999; i++) {
     clock.to(new Date(Date.parse(day(35)) + (i + 1) * 1000).toISOString());
     assert.equal(triggers.receiveSlack(message(`${1780280000 + i}.000100`, `${1780280000 + i}.000100`, true))?.created, true);
+    // Each reaches its run before the next: a trigger holds at most 20 firings due.
+    while (triggers.firings(id).firings.some((f) => f.status === "due")) await sleep(1);
   }
   assert.equal(triggers.receiveSlack(message("1780290000.000100", "1780272001.000100", false)), undefined, "the oldest of 1,001 threads is gone");
   assert.equal(triggers.receiveSlack(message("1780290001.000100", "1780272000.000100", false))?.created, true, "the next oldest is kept");
