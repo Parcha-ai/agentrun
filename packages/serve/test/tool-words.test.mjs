@@ -12,9 +12,9 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG"];
 
-/** The tools the model of a run of agent `id` (granted web_fetch and the browser) was offered, by name. */
-async function offered(api, id) {
-  assert.equal((await api("POST", "/agents", agent(id, { tools: ["web_fetch", "browser"] }))).status, 201);
+/** The tools the model of a run of agent `id` (granted `tools`, on `harness`) was offered, by name. */
+async function offered(api, id, { tools = ["web_fetch", "browser"], harness } = {}) {
+  assert.equal((await api("POST", "/agents", agent(id, { tools, ...(harness ? { harness } : {}) }))).status, 201);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Open https://httpbin.org/cookies" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
@@ -45,3 +45,15 @@ test("a run handed its agent's saved sign-in: the browser says it keeps this age
   assert.ok(run.includes(SIGN_INS), run);
   assert.ok(!run.includes(COOKIES), "one sentence about what the browser keeps");
 });
+
+// claude-agent and codex take web_fetch from serve's host tools (host-tools.ts: the same registration, its description
+// as given), which their adapters serve their CLIs as they get them (claude-agent's tool server, codex's dynamicTools).
+// The browser runs on pi alone.
+for (const harness of ["claude-agent", "codex"]) {
+  test(`on ${harness}, web_fetch's description, as the harness's session is handed it, says it reads one page cold`, { timeout: 120_000 }, async (t) => {
+    withEnv(t, {}, KEYS);
+    const { api } = await serve(t, { faux: TOOLS, fauxHarness: TOOLS });
+    const tools = await offered(api, `cold-${harness}`, { tools: ["web_fetch"], harness });
+    assert.ok(tools.get("web_fetch")?.startsWith(`Read one web page from a public host, a part at a time. ${COLD}`), JSON.stringify([...tools]));
+  });
+}
