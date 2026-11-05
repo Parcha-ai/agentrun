@@ -118,7 +118,8 @@ const allowedEndpoints = {
   ],
   agentrun: [
     // The CLI's last resort for the server started on this machine: the address agentrun-serve binds by default.
-    ['lib/cli.mjs', 'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the CLI's default address of the server on this machine
+    ['lib/cli.mjs',
+      'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
