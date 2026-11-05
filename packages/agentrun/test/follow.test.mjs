@@ -9,6 +9,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { backoff } from "../lib/follow.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
@@ -50,7 +51,7 @@ function cliOf(env, seen) {
   return (args, extra = {}, heard = () => {}) =>
     new Promise((resolve) => {
       const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
-      const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+      const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
       let out = "";
       let err = "";
       child.stdout.on("data", (chunk) => heard((out += chunk)));
@@ -215,4 +216,43 @@ test("runs start --wait, runs wait and runs timeline --follow: exit by how the r
   });
 
   for (const text of seen) assert.ok(!text.includes(server.token), "no output holds the token");
+});
+
+/** A loopback server that answers the timeline's first page (a working run) and then holds every request open, never
+ *  answering; `/runs/RUN` too unless `run` is given. */
+async function stalling(t, run) {
+  const held = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://host");
+    if (url.pathname.endsWith("/timeline") && url.searchParams.get("after") === "0") {
+      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ run_id: "r1", status: "working", state: "working", reset: true, rows: [], drop: [], next_after: 5, unchanged: false, has_more: false, final: false, poll_after_ms: 0 }));
+    }
+    if (run && url.pathname.endsWith("/runs/r1")) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(run));
+    held.push(res);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => (server.closeAllConnections(), server.close()));
+  return `http://127.0.0.1:${server.address().port}/v2`;
+}
+
+test("--timeout bounds every request: a server that answers one page and then stalls ends the wait on time, exit 1", { timeout: 60_000 }, async (t) => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
+  const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
+  for (const run of [{ run_id: "r1", status: "working" }, undefined]) {
+    const base = await stalling(t, run);
+    const began = Date.now();
+    const waited = await cli(["runs", "wait", "r1", "--timeout", "1", "--base-url", base]);
+    const took = Date.now() - began;
+    assert.equal(waited.code, 1, waited.err);
+    assert.ok(took < 3_500, `the wait ended about its timeout, not ${took} ms`);
+    assert.match(waited.err, /^Run r1 is still \w+ after 1 s; it goes on: wait again with `agentrun runs wait r1`\.\n$/);
+    assert.equal(waited.out, run ? `${JSON.stringify(run)}\n` : "", "the run as it was read, when it was");
+  }
+});
+
+test("backoff: the client's own delay doubles up to its cap; the server's retry is the floor, above that cap too", () => {
+  assert.deepEqual([1, 2, 3, 4].map((tries) => backoff(tries)), [500, 1000, 2000, 4000]);
+  assert.equal(backoff(20), 30_000, "capped");
+  assert.equal(backoff(1, 3_000), 3_000, "the server's retry, above the client's delay");
+  assert.equal(backoff(20, 120_000), 120_000, "a server's retry beyond the cap is still honored");
 });
