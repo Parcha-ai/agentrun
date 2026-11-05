@@ -47,7 +47,8 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
   const [formRevision, setFormRevision] = useState<string | null>(null);
   // Whether this page is still shown: a save's answer that lands after the person left it moves nowhere.
   const shown = useRef(true);
-  useEffect(() => () => { shown.current = false; }, []);
+  // Set in the setup too: StrictMode (main.tsx) sets an effect up, cleans it up and sets it up again.
+  useEffect(() => { shown.current = true; return () => { shown.current = false; }; }, []);
   const revisionsOf = (id: string) => allPages((cursor) => v2.listRevisions(id, cursor), (p) => p.revisions);
   const load = async () => {
     if (!agentId) return;
