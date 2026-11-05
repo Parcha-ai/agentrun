@@ -246,6 +246,9 @@ async function echoServer(t) {
         const [value] = Object.values(JSON.parse(Buffer.concat(chunks).toString("utf8")).auth.headers);
         return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ url: "https://mcp.example.com/mcp", instructions: `Call with ${value}.`, tools: { [value]: { name: "lookup" } }, count: 2 }));
       }
+      // A tool's input schema may name any property, those JavaScript's objects hold for themselves among them. Written
+      // as text: an object literal's __proto__ would set its prototype, not a key.
+      if (form === "mcp-proto") return res.writeHead(200, { "content-type": "application/json" }).end('{"tools":{"t":{"input_schema":{"properties":{"__proto__":{"type":"string"},"constructor":{"type":"string"}}}}}}');
       if (form === "shape") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
       if (form === "raw") return res.writeHead(status, { "content-type": "text/plain" }).end(`refused ${secret}`);
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "input_invalid", message: `refused ${secret} ${encodeURIComponent(secret)}` }, echo: { secret } }));
@@ -336,6 +339,15 @@ test("a secret-bearing command never prints a server's error body, and cuts the 
     assert.deepEqual(Object.values(answer.tools), [{ name: "lookup" }]);
     if (secret !== ":") assert.equal(answer.url, "https://mcp.example.com/mcp", "a value the secret is not in is as it was");
   }
+
+  // Every key of the answer printed as it came, __proto__ and constructor too, each with its value.
+  Object.assign(echo.answer, { form: "mcp-proto" });
+  const proto = await cli(["mcp-servers", "preview", "--body", "-", ...base], { ...key, input: JSON.stringify({ url: "https://mcp.example.com/mcp", auth: { type: "headers", headers: { "x-api-key": `not-a-secret-${randomBytes(8).toString("hex")}` } } }) });
+  assert.equal(proto.code, 0, proto.err);
+  const properties = JSON.parse(proto.out).tools.t.input_schema.properties;
+  assert.deepEqual(Object.keys(properties), ["__proto__", "constructor"], proto.out);
+  for (const name of ["__proto__", "constructor"]) assert.deepEqual(Object.getOwnPropertyDescriptor(properties, name)?.value, { type: "string" }, `${name}: ${proto.out}`);
+  assert.equal(proto.out, '{"tools":{"t":{"input_schema":{"properties":{"__proto__":{"type":"string"},"constructor":{"type":"string"}}}}}}\n', "printed as it came");
 
   // A 200 that is not the agents list: not the server it says it is, so nothing is written.
   Object.assign(echo.answer, { form: "shape" });
