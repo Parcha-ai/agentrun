@@ -30,13 +30,14 @@ import { rowPaths } from "./workspace-paths.js";
 import { ASK_TOOL, toolingOf, workflowTools } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
 import { DECISION_KEY_FD_ENV, decisionKeysFor, providersNamed } from "./decisions.js";
-import { ApiError, unsupported } from "./errors.js";
+import { ApiError, invalid, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED } from "./cap.js";
+import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal, SPEND_CAP_REACHED, spentIn } from "./cap.js";
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, relaunchPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { APPROVAL_ENTRY, APPROVAL_ROW, NO_APPROVER_ENV, type PendingApproval, permissionOf, previewOf, RESUME_PREFIX, TURN_ORIGIN_FILE } from "./tool-gate.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -138,6 +139,12 @@ type RunMeta = {
   input?: Json;
   effort?: string;
   max_cost_usd?: number;
+  /** Each raise of its cap (PATCH /runs/{id}): from what, to what, when, and the pause it answers (pauseOf), if any. */
+  cap_raised?: { from: number; to: number; at: string; pause?: string }[];
+  /** The one follow-up that sends a run paused at its cap on once its cap is raised (resumeRaised): for which pause, by
+   *  what id, whether it went, how many tries failed and why, and which process was being let go when it was asked for
+   *  (its pid and start ticks): it goes once that process is gone, here or after a restart. */
+  cap_continue?: { pause: string; message_id: string; sent: boolean; tries: number; error?: string; paused?: string };
   error?: { code: string; message: string; details?: { reason: string } };
   /** A workflow run's output, once it completed. */
   output?: unknown;
@@ -163,9 +170,24 @@ type RunMeta = {
   /** A run whose cost was unknown when it ended: the sum of its charges whose cost is known, and how many have none
    *  (costsofar/1), as its view said then, so a list row read from the store says it too. */
   cost_so_far?: SoFar;
+  /** A person's answer to each tool call that waited for approval (tool-gate.ts), by its id: the first one wins, and
+   *  the run's process reads it here. A cancel marks one still waiting canceled. */
+  approvals?: Record<string, ApprovalAnswer>;
+  /** A cancel that waits for the run's gate to cut the approved calls it overrode (Runs.cancel): their ids, kept so an
+   *  operator (and a test) reads that it did, never how long it took. Absent on a cancel that waits on nothing. */
+  cancel_waits_for?: string[];
   /** The trigger that started it, and its firing's key (triggers.ts); absent for a run a caller started. */
   trigger?: RunTrigger;
 };
+/** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
+ *  process acted on the answer. */
+type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
+/** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
+/** `by`: "message", a deny a person's message gave while the call waited (Runs.message). */
+/** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, kept as it was given. */
+type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" } };
+/** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
+const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
@@ -224,6 +246,8 @@ export type Run = {
   rows: TimelineEvent[];
   /** The person's messages the run took, and how each one's turn ended (turns.ts): its end is read from them. */
   turns: Turns;
+  /** Its tool calls that waited for a person's approval, read from its store's entries, by id. */
+  approvals?: Map<string, Approval>;
   /** The whole text of each assistant message of its end-of-run turn, by store entry: what the turn answered, whose
    *  notes learning reads (learning-run.ts). */
   turnText?: Map<number, string>;
@@ -241,6 +265,8 @@ export type Run = {
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
+  /** The write of its end-of-run turn's origin (toLiveDoor), which a person's turn waits for before it removes it. */
+  originWrite?: Promise<unknown>;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
   users: Set<string>;
   /** The rows the live path has shown as live, by id, over every connection to the run's door. */
@@ -274,6 +300,8 @@ export type Run = {
   /** What every conversation of its store says it used, as the settle that ends it read them. */
   metrics?: RunMetrics;
   relaunches: number;
+  /** Its start's launch is next: the one a deny is told as under ask (relaunchPlane's `first`). */
+  firstLaunch?: true;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
   /** The store has it running and its serve.json holds no input: its server went down before it set the run up (whose
@@ -300,8 +328,16 @@ export type Run = {
   waited?: boolean;
   /** The pause at its cap (its mark) whose process was let go: once per pause. */
   parked?: string;
+  /** A raise of its cap being taken (raiseCap): the next one waits for it, so two at once resume it once. */
+  raising?: Promise<unknown>;
+  /** Its raise's follow-up is being sent (resumeRaised), or waits to be tried again (its time): never two at once. */
+  resuming?: "sending" | number;
   /** Its newest refusal for room's figures, from that refusal's own start mark (cap.ts RefusalFigures). */
   capRefusal?: RefusalFigures;
+  /** That refusal's own start mark (its entry): the pause a raise answers is keyed to it (pauseOf). */
+  capMark?: number;
+  /** What it has spent paused at that refusal (its row), its process gone: the store's spend (spentNow), read once. */
+  capSpent?: { mark: string; usd: number | null; at?: number };
 };
 
 const ASKED = "Asked you: ";
@@ -331,7 +367,7 @@ export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
 export function withOverCap(rows: TimelineEvent[], cap: number | undefined): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
   const usd = rows[at]?.usage?.usd;
-  if (cap === undefined || typeof usd !== "number" || usd <= cap) return rows;
+  if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
   const { usage: _, ...usage } = rows[at]!;
   const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary: `Spent $${usd.toFixed(4)}, $${(usd - cap).toFixed(4)} over the run's cap of $${cap}`, text: null };
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
@@ -347,7 +383,8 @@ function noteTurns(run: Run, entries: readonly unknown[], submissions: readonly 
     run.lastEntry = Math.max(run.lastEntry ?? 0, value.id);
     // A refusal for room's own start mark: what the cap counted as taken, and the least the request needed.
     const data = value.kind === REQUEST_STARTED && isObject(value.data) && value.data[CAP_REFUSED_FIELD] === true ? value.data : undefined;
-    if (data && typeof data.spentUsd === "number" && typeof data.needsUsd === "number") run.capRefusal = { spentUsd: data.spentUsd, needsUsd: data.needsUsd };
+    if (data) run.capMark = value.id;
+    if (data) run.capRefusal = typeof data.spentUsd === "number" && typeof data.needsUsd === "number" ? { spentUsd: data.spentUsd, needsUsd: data.needsUsd } : undefined;
     // The end-of-run turn's assistant messages, whole, by entry: what the turn answered, whose notes learning reads
     // (learning-run.ts). The ledger skips them; this is their only reader here.
     if (value.kind === "pi.assistant" && reflects(run.meta.reflect, value.id) && Array.isArray(value.model) && isObject(value.model[0])) {
@@ -366,19 +403,98 @@ const meaningful = (rows: readonly TimelineEvent[]) => rows.findLast((r) => show
 /** What a run waits on, as `pending` says it (one field for every kind; a tool call waiting on approval is another):
  *  the question a waiting run asked, read from its last meaningful row (withAsks' waiting row), the same row its
  *  status reads, never from a scan of its timeline. */
-type Pending = { kind: "question"; question: string; asked_at: string } | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; said: string; at: string } | null;
+type Pending = { kind: "question"; question: string; asked_at: string } | PendingApproval | { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; suggested_cap_usd?: number; said: string; at: string } | null;
 const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   const last = meaningful(rows);
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
+/** Notes the tool calls that wait for approval in `entries` (the run's stored entries), and those whose answer its process
+ *  acted on. */
+function noteApprovals(run: Run, entries: readonly unknown[]): void {
+  for (const value of entries) {
+    if (!isObject(value) || value.kind !== APPROVAL_ENTRY || !isObject(value.data) || typeof value.data.id !== "string") continue;
+    const data = value.data;
+    run.approvals ??= new Map();
+    const known = run.approvals.get(data.id as string);
+    if (data.phase === "requested" && !known) run.approvals.set(data.id as string, { id: data.id as string, tool: String(data.tool), call_id: String(data.call_id), args_json: "args" in data ? (JSON.stringify(data.args ?? {}) ?? "{}") : String(data.args_preview ?? ""), requested_at: String(data.requested_at), ...(typeof data.price === "number" || data.price === "not metered" ? { price: data.price } : {}) });
+    else if (data.phase === "resolved" && known) known.resolved = true;
+  }
+}
+/** The tool call that waits for a person's answer: requested in the run's store, not resolved there, not answered. */
+const waitingApproval = (run: Pick<Run, "approvals" | "meta">): Approval | undefined => [...(run.approvals?.values() ?? [])].find((a) => !a.resolved && !run.meta.approvals?.[a.id]);
+/** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
+ *  no cut leaves the head of a held key. */
+const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
+/** `entries` with the gate's resume messages (RESUME_PREFIX) redacted whole with `redact`, before the timeline cuts
+ *  them: the message carries a call's arguments and its result, which may hold a held key. */
+function redactGateMessages<T>(entries: readonly T[], redact: (text: string) => string): T[] {
+  return entries.map((entry) => {
+    const first = isObject(entry) && Array.isArray(entry.model) ? entry.model[0] : undefined;
+    if (!isObject(first) || first.role !== "user") return entry;
+    const content = first.content;
+    const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((block) => (isObject(block) && block.type === "text" ? String(block.text ?? "") : "")).join("") : "";
+    if (!text.startsWith(RESUME_PREFIX)) return entry;
+    const redacted = typeof content === "string" ? redact(content) : (content as Json[]).map((block) => (isObject(block) && block.type === "text" && typeof block.text === "string" ? { ...block, text: redact(block.text) } : block));
+    return { ...(entry as Json), model: [{ ...first, content: redacted }, ...((entry as Json).model as Json[]).slice(1)] } as T;
+  });
+}
+/** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
+const approvalOf = (run: Run, redact: (text: string) => string): PendingApproval | undefined => {
+  const waiting = waitingApproval(run);
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
+};
+/** One answered (allow or deny) whose answer the run's process has not acted on yet. */
+const actingOn = (run: Pick<Run, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
+/** The row after each tool call that waited for approval, beside its result's row. Its arguments are redacted whole
+ *  (`redact`, the Timeline's own: no held key), before any cut. */
+function withApprovals(rows: readonly TimelineEvent[], run: Pick<Run, "approvals" | "meta">, redact: (text: string) => string): TimelineEvent[] {
+  if (!run.approvals?.size) return [...rows];
+  const byCall = new Map([...run.approvals.values()].map((approval) => [approval.call_id, approval]));
+  const waiting = waitingApproval(run);
+  return rows.flatMap((row) => {
+    const approval = row.kind === "tool_result" && row.tool_use_id ? byCall.get(row.tool_use_id) : undefined;
+    if (!approval) return [row];
+    const args = shownArgs(approval, redact);
+    const said = run.meta.approvals?.[approval.id]?.decision;
+    const byMessage = run.meta.approvals?.[approval.id]?.by === "message";
+    const head = approval === waiting ? "Waiting for your approval" : byMessage ? "Declined by your message" : said === "withdrawn" ? "Withdrawn when the run was stopped" : said === "canceled" ? "Withdrawn when the run was cancelled" : "Asked your approval";
+    const summary = `${head}: ${approval.tool} ${clip(args, 400)}`;
+    // A message that would have declined the call, which a stop or a cancel overrode: its words were never sent, and
+    // the row says so (the record keeps them whole).
+    const dropped = run.meta.approvals?.[approval.id]?.superseded;
+    const text = dropped?.by === "message" && dropped.note !== undefined ? `${args}\n\nNot sent: the run was ${said === "canceled" ? "cancelled" : "stopped"}. Your message: ${redact(dropped.note)}` : args;
+    return [row, { ...row, id: `${row.id}:approval`, kind: APPROVAL_ROW, summary, text, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null }];
+  });
+}
+/** A dollar figure to a millionth, as the timeline's cost.usd is. */
+const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+/** How many tries a raised run's follow-up gets, and the waits between them, before the run fails with why. */
+const CONTINUE_TRIES = 3;
+const CONTINUE_RETRY_MS = [1_000, 3_000];
+/** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
+export const SUGGESTED_RAISE_FACTOR = 10;
+/** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
+ *  refused request's least, rounded up to a whole dollar, and always above the cap (the next dollar above it, if not),
+ *  so a PATCH with it is a raise. */
+export const suggestedCap = (cap: number, spentUsd: number, needsUsd: number): number => {
+  // A hair under, so a sum a float puts just past a whole dollar (3.0000000000000004) stays that dollar.
+  const up = Math.ceil(spentUsd + SUGGESTED_RAISE_FACTOR * needsUsd - 1e-9);
+  // Above the cap as a raise must be (by more than CAP_TOLERANCE, takeRaise), so a PATCH with it is always taken.
+  return up > cap + CAP_TOLERANCE ? up : Math.floor(cap + CAP_TOLERANCE) + 1;
+};
 /** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
- *  needs (its refusal's mark; none from a store written before it kept them), the refusal's words, and when it came (its
- *  error row's time). The figures are as the cap counts them, never rounded. */
-const budgetPending = (run: Run): Pending | undefined => {
+ *  needs (its refusal's mark; none from a store written before it kept them), the raise it is offered (suggestedCap),
+ *  the refusal's words, and when it came (its error row's time). The figures are as the cap counts them, never rounded.
+ *  What was taken is the store's spend once its process is gone (`spentNow`), when that is lower: the refusal counted
+ *  requests still answering at what it held for them, and they have settled. */
+const budgetPending = (run: Run, spentNow?: number): Pending | undefined => {
   const said = pausedAt(run);
   const cap = run.meta.max_cost_usd;
   if (said === undefined || cap === undefined) return undefined;
-  const figures = run.capRefusal ? { spent_usd: run.capRefusal.spentUsd, needs_usd: run.capRefusal.needsUsd } : {};
+  const r = run.capRefusal;
+  const spent = r && spentNow !== undefined ? Math.min(r.spentUsd, spentNow) : r?.spentUsd;
+  // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them.
+  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd) } : {};
   return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
 };
 /** The waiting row of a run paused at its cap, after the refusal's error row: "Paused at the run's $1 cap: Not sent: …". */
@@ -472,11 +588,44 @@ const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
  *  roomRefusal: what is left of its cap cannot buy the next request's least, which a higher cap would send), and nothing
  *  came since. The run then waits for its cap to be raised (input_required, `pending.kind` budget), never failed; a
  *  refusal no cap fixes (an unknown spend, no price) still fails it (decide). Undefined for any other run. */
-const pausedAt = (run: Run): string | undefined => {
+const refusedAt = (run: Run): string | undefined => {
   if (run.kind !== "agentic" || run.cancel || run.submitted > 0 || run.turns.open > 0 || stopped(run)) return undefined;
   const end = run.turns.end();
   return end?.status === "failed" ? roomRefusal(end.error) : undefined;
 };
+/** The pause a run stands at, by its refusal's own start mark (its entry), so no row shown after it moves it; a store
+ *  with no such mark keys it to the refusal's row. Undefined when it stands at no refusal for room. */
+const pauseOf = (run: Run): string | undefined => {
+  if (refusedAt(run) === undefined) return undefined;
+  if (run.capMark !== undefined) return `mark:${run.capMark}`;
+  const row = meaningful(run.rows)?.id;
+  return row === undefined ? undefined : `row:${row}`;
+};
+/** Its cap was raised since the refusal it stands at (a raise names that pause): it waits for its follow-up then, not
+ *  for a raise (input_required, idle). */
+const raisedSince = (run: Run): boolean => {
+  const pause = pauseOf(run);
+  return pause !== undefined && run.meta.cap_raised?.some((raise) => raise.pause === pause) === true;
+};
+/** The follow-up a raise of the pause it stands at asked for and that has not gone yet: one per pause. */
+const continuationOf = (run: Run): NonNullable<RunMeta["cap_continue"]> | undefined => {
+  // A run that has ended, or is ending (its follow-up's tries spent: failRaised, a cancel), sends none any more.
+  if (run.outcome || run.finishing || run.cancel) return undefined;
+  const pause = pauseOf(run);
+  const next = run.meta.cap_continue;
+  return pause !== undefined && next?.pause === pause && !next.sent ? next : undefined;
+};
+/** A process by its pid and start ticks (Linux /proc; the pid alone elsewhere): a pid used again is another process. */
+function processIdentity(pid: number | undefined): string | undefined {
+  if (pid === undefined) return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return `${pid}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
+  } catch {
+    return String(pid);
+  }
+}
+const pausedAt = (run: Run): string | undefined => (raisedSince(run) ? undefined : refusedAt(run));
 /** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
 export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
 
@@ -511,11 +660,16 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (!run.rows.length) return { status: "queued", state: "working" };
   if (stopped(run)) return { status: "input_required", state: "idle" };
   if (!users) return { status: "queued", state: "working" };
+  // A tool call parked for approval (tool-gate.ts) waits for the person; once answered, its process acts on it.
+  if (run.kind === "agentic" && run.submitted === 0 && !run.working) {
+    if (waitingApproval(run)) return { status: "input_required", state: "waiting" };
+    if (actingOn(run)) return { status: "working", state: "working" };
+  }
   // Every message's turn is over and the newest one's ended interrupted, with no stop of the person's saying so (the
   // harness ended it on its own): the run waits for the person, as after a stop, never working for good.
   if (run.kind === "agentic" && run.submitted === 0 && run.turns.end()?.status === "interrupted") return { status: "input_required", state: "idle" };
-  // Paused at its cap: it waits for the cap to be raised.
-  if (pausedAt(run) !== undefined) return { status: "input_required", state: "waiting" };
+  // Paused at its cap: it waits for the cap to be raised; raised, for a message, if the raise's own follow-up did not go.
+  if (refusedAt(run) !== undefined) return pausedAt(run) !== undefined ? { status: "input_required", state: "waiting" } : { status: "input_required", state: "idle" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -538,7 +692,7 @@ export type StartOptions = { input: Json; title: string; place: Place; effort?: 
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[]; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns };
+export type RunsOptions = { /** What a run's Docker box reaches, as the server resolved it (run-box.ts boxNetworkOf): the list, or none. Absent, none. */ dockerAllow?: readonly string[] | "none"; agents: Agents; token: string; /** The server's saved tool keys, read by name for its runs alone (secrets.ts). */ storedKeys?: StoredKeys; documents?: string; doorTokenFile: string; doorToken: string; /** The test switches a run's process gets (server.ts fauxEnvOf): empty outside tests. */ fauxEnv?: NodeJS.ProcessEnv; runBoxes?: BoxProvider; /** The server's Daytona provider, with its key: remote boxes are made, seeded, pulled and destroyed with it, here alone (box-relay.ts). */ remoteBoxes?: BoxProvider; /** Daytona's API and the same key, for what the provider does not do: a kept box's idle stop, and its wake at a start (daytona-api.ts). */ remoteApi?: DaytonaApi; /** The hosts a remote box may reach (run-box.ts boxAllowOf); `none`, or absent, for none. */ boxAllow?: readonly string[] | "none"; /** Called once, with the provider's refusal's code and words, when it cannot keep that list here: from then on each remote box is made with no network. */ onNoBoxList?: (code: string, message: string) => void; toolSettings?: () => ToolSettingsMap; /** Whether anyone can answer a tool call's approval here (accounts on); false, the run's gate refuses each ask (tool-gate.ts). */ approvers?: boolean; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; reflectTimeoutMs?: number; gradeTimeoutMs?: number; /** The grader's model (`--grade-model`), before AGENTRUN_SERVE_GRADE_MODEL and the strong tier (grade.ts gradeModelOf). */ gradeModel?: string; /** How much of what a run learned its instructions hold, in bytes (`--learning-budget`, learning.ts learnedOf). */ learningBudget?: number; log?: (event: string, fields: Record<string, string | number>) => void; notify?: RunNotify; learning?: LearningMode; /** Each agent's saved sign-ins (sign-ins.ts): absent, no run gets one. */ signIns?: SignIns; /** The secrets this server makes and keeps sealed while it runs (each webhook trigger's), read at each check, so a rotation is seen at once: what a run's learning refuses and cuts, as it does the saved keys. */ ownSecrets?: () => readonly string[] };
 /** Told of a run's moment each time it is seen (webhooks.ts' emit, which queues each one once): a wait it reached, and an
  *  end once the agent store has it. `marker` names the moment (the person's turn it waits at, the end's time), the same
  *  when another server sees it again. It says what came of it: `unsaved`, not in the outbox on disk yet. */
@@ -682,6 +836,9 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   }
 }
 
+/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went. */
+export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void } = {};
+
 export class Runs {
   private readonly runs = new Map<string, Run>();
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
@@ -739,6 +896,9 @@ export class Runs {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam (startServe's `beforeMetaSave`): awaited before a run's serve.json is written; one that throws fails
+   *  the write, as a full disk would. */
+  beforeMetaSave?: (runId: string, meta: Readonly<RunMeta>) => Promise<void> | void;
   /** A test's seam (startServe's `messageOrigin`): the origin a message sent through the messages route carries. */
   messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
 
@@ -783,6 +943,9 @@ export class Runs {
       ...(isObject(stored?.input) ? { input: stored.input } : {}),
       ...(typeof stored?.effort === "string" ? { effort: stored.effort } : {}),
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
+      // Each raise of its cap, and the follow-up a stopped server never sent, which the next sends (resumeRaised).
+      ...(Array.isArray(stored?.cap_raised) ? { cap_raised: stored.cap_raised as NonNullable<RunMeta["cap_raised"]> } : {}),
+      ...(isObject(stored?.cap_continue) ? { cap_continue: stored.cap_continue as unknown as NonNullable<RunMeta["cap_continue"]> } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
       ...(isObject(stored?.review) ? { review: stored.review as SavedReview } : {}),
@@ -793,8 +956,11 @@ export class Runs {
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
+      ...(isObject(stored?.approvals) ? { approvals: stored.approvals as Record<string, ApprovalAnswer> } : {}),
       ...(trigger ? { trigger } : {}),
     };
+    // A turn's origin a server before this one set is not known to be the turn running now: it goes.
+    await rm(join(dir, TURN_ORIGIN_FILE), { force: true }).catch(() => undefined);
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
     // follow-up (learning-run.ts onLoad).
     if (stored) await this.learning.onLoad(row, dir, meta, () => writeWhole(join(dir, RUN_META), `${JSON.stringify(meta)}\n`));
@@ -850,10 +1016,15 @@ export class Runs {
 
   /** Writes the run's serve.json as it is when its turn comes; then tells learning what it now holds (the ledger's line
    *  once the run's learning ended). */
-  private saveMeta(run: Run): Promise<void> {
+  /** Writes the run's serve.json, after any write already under way: `meta`, a copy its caller publishes to run.meta
+   *  only once this resolves (a raise, takeRaise), else run.meta, each as it stands when the write starts. */
+  private saveMeta(run: Run, meta?: () => RunMeta): Promise<void> {
     run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(async () => {
-      const { learning } = run.meta;
-      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+      // A copy is built as its write starts, from run.meta as it stands then.
+      const written = meta ? meta() : run.meta;
+      const { learning } = written;
+      await this.beforeMetaSave?.(run.id, written);
+      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(written)}\n`);
       await this.learning.onSaved(run, learning);
     });
     return run.saving;
@@ -914,13 +1085,14 @@ export class Runs {
     if (atEnd) run.metrics = runMetricsWithDecisions(read.map((r) => r.entry) as never, run.kind === "workflow" ? (run.decisions ?? []) : []);
     run.working = false;
     noteTurns(run, entries, submissions);
-    this.take(run, timelineOf(entries as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
+    noteApprovals(run, entries);
+    this.take(run, timelineOf(redactGateMessages(entries, this.redactor(run)) as never, { settled: true, path: rowPaths(run.dir), redact: this.redactor(run) }));
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
   private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
-    run.rows = withOverCap(labelled(run.meta.reflect, withAsks(rows.filter((r) => !QUIET.test(r.id)))), run.meta.max_cost_usd);
+    run.rows = withOverCap(labelled(run.meta.reflect, withApprovals(withAsks(rows.filter((r) => !QUIET.test(r.id))), run, this.redactor(run))), run.meta.max_cost_usd);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => isMessageRow(r) && !run.users.has(r.id));
@@ -929,6 +1101,14 @@ export class Runs {
     run.keep = keep;
     this.show(run);
     this.refresh(run);
+  }
+
+  /** The approval rows as the run's answers say them now (a stop or a cancel withdraws a call, an answer settles one),
+   *  shown at once: an answer takes no new rows. */
+  private restate(run: Run): void {
+    if (!run.approvals?.size) return;
+    run.rows = withApprovals(run.rows.filter((row) => row.kind !== APPROVAL_ROW), run, this.redactor(run));
+    this.show(run);
   }
 
   /** The run's rows into its log, as served: a workflow run's decisions and the run's learning row are the served view's
@@ -962,9 +1142,11 @@ export class Runs {
     if (run.cancel) return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
-    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
+    if (cap !== undefined && cost !== null && cost > cap + FIT_TOLERANCE) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, $${(cost - cap).toFixed(4)} over its cap of $${cap}.`, retryable: false } };
     if (run.submitted > 0) return undefined;
     if (run.turns.open > 0 || stopped(run)) return undefined;
+    // A tool call waits for a person's approval, or for its answer to be acted on: the run goes on after it.
+    if (waitingApproval(run) || actingOn(run)) return undefined;
     const end = run.turns.end();
     if (end?.status === "answered") return { outcome: "completed" };
     if (end?.status !== "failed") return undefined;
@@ -1086,13 +1268,44 @@ export class Runs {
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
+  /** What a run paused at its cap has spent once its process is gone: its store's spend as the cap reads it (spentIn),
+   *  read once per pause (its refusal's row). None while its process lives, nor when the store says unknown or cannot
+   *  be read: the refusal's own figure stands then. */
+  private spentNow(run: Run): number | undefined {
+    const mark = meaningful(run.rows)?.id;
+    if (mark === undefined || !run.capRefusal || this.live(run) || pausedAt(run) === undefined) return undefined;
+    // One read per pause, and a failed read again after a while, never kept until a restart.
+    if (run.capSpent?.mark !== mark || (run.capSpent.usd === null && Date.now() - (run.capSpent.at ?? 0) > 30_000)) {
+      let usd: number | null = null;
+      try {
+        usd = spentIn(this.storeFile(run));
+      } catch (error) {
+        warn(run.id, `its store's spend was not read (${(error as Error).message}); its refusal's figure stands`);
+      }
+      run.capSpent = { mark, usd, at: Date.now() };
+    }
+    return run.capSpent.usd ?? undefined;
+  }
+
+  /** The run's live process, by its pid and start ticks (processIdentity). */
+  private liveIdentity(run: Run): string | undefined {
+    return processIdentity(run.child?.pid ?? run.orphan);
+  }
+
   private refresh(run: Run): void {
     this.mark(run);
+    // A run whose cap was raised at its pause goes on once the process paused there is gone (resumeRaised): with no
+    // process, or one another launch started (a server stopped between that launch and its message: the door takes the
+    // message once, by its id). Never while one waits to be tried again.
+    const next = continuationOf(run);
+    const letting = next !== undefined && next.paused !== undefined && this.live(run) && this.liveIdentity(run) === next.paused;
+    if (next && run.resuming === undefined && !this.closing && !run.cancel && !run.finishing && !run.outcome && !letting) void this.resumeRaised(run, next);
     if (!this.live(run) || run.finishing || run.outcome) return;
     const end = this.decide(run);
     // Paused at its cap, its process is let go: it waits without one, holding no place, until its cap is raised. Once
-    // per pause (its refusal's row): SIGTERM drains and releases it, and the settle that follows leaves it waiting.
-    if (!end && pausedAt(run) !== undefined && run.parked !== waitMark(run)) {
+    // per pause (its refusal's row): SIGTERM drains and releases it, and the settle that follows leaves it waiting. A
+    // raised one's paused process is let go too (a server started again finds it so).
+    if (!end && (pausedAt(run) !== undefined || letting) && run.parked !== waitMark(run)) {
       run.parked = waitMark(run);
       this.terminate(run);
     }
@@ -1361,12 +1574,12 @@ export class Runs {
     run.waited = waiting;
     if (run.log.setState(`${status}/${state}/${run.settled}`)) run.updatedAt = new Date().toISOString();
     // What it waits on: an ask_person question (waiting), else a stopped turn, for the person's next message.
-    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : pausedAt(run) !== undefined ? "budget" : "question" });
+    if (status === "input_required") this.notice(run, "run.needs_input", waitMark(run), { kind: state !== "waiting" ? "stopped" : waitingApproval(run) ? "approval" : pausedAt(run) !== undefined ? "budget" : "question" });
   }
 
   /** Tells webhooks.ts (`notify`) of a moment of the run under `marker`: a wait it reached (mark), or an end the agent store
    *  has (settle, persistLater, reopen). What it already queued it queues no more. */
-  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "stopped" | "budget" }): Emitted | undefined {
+  private notice(run: Run, event: "run.needs_input" | "run.ended", marker: string | undefined, pending?: { kind: "question" | "approval" | "stopped" | "budget" }): Emitted | undefined {
     if (!this.options.notify || !marker) return undefined;
     try {
       return this.options.notify(event, { run_id: run.id, agent_id: run.agentId, status: statusOf(run).status, title: run.meta.title, ...(pending ? { pending } : {}) }, marker);
@@ -1448,8 +1661,11 @@ export class Runs {
         // snapshot of them on a (re)connect (pi-durable-disk's `inputs`), read as their whole state.
         const submissions = events.flatMap((e) => (e.type === "submission" && e.record !== undefined ? [e.record] : []));
         const inputs = events.find((e) => e.type === "snapshot" && Array.isArray(e.inputs))?.inputs as unknown[] | undefined;
-        noteTurns(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])), submissions, inputs);
-        reducer.apply(events as never);
+        const entries = events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : []));
+        noteTurns(run, entries, submissions, inputs);
+        noteApprovals(run, entries);
+        const redact = this.redactor(run);
+        reducer.apply(events.map((e) => (Array.isArray(e.entries) ? { ...e, entries: redactGateMessages(e.entries, redact) } : e.entry !== undefined ? { ...e, entry: redactGateMessages([e.entry], redact)[0] } : e)) as never);
         // A stopped turn is over while the run's process lives on: a request it cut is a charge with no price (costsofar/1),
         // as the settled read counts it, never one in flight.
         if (!run.working && stopped(run)) reducer.idle();
@@ -1541,9 +1757,11 @@ export class Runs {
   }
 
   /** One request to the door of a run whose process lives, never waking it (toDoor wakes no run that is finishing): again
-   *  while it opens or parks. `turnOrigin`: who sent a turn this request sends (learning-run.ts's REFLECT_ORIGIN), for
-   *  the per-tool gate to take once this server has one; nothing reads it until then. */
+   *  while it opens or parks. `turnOrigin`: who sent a turn this request sends (learning-run.ts's REFLECT_ORIGIN), kept in
+   *  the run's directory before it goes, where the tool gate reads it (tool-gate.ts's carve-out); a person's message
+   *  removes it. */
   private async toLiveDoor(run: Run, path: string, body?: Json, turnOrigin?: TurnOrigin): Promise<Json | null> {
+    if (turnOrigin) await (run.originWrite = writeWhole(join(run.dir, TURN_ORIGIN_FILE), `${JSON.stringify({ origin: turnOrigin })}\n`));
     for (const deadline = Date.now() + 30_000; ; await sleep(200)) {
       if (!this.live(run) || run.cancel) throw new Error("the run's process is gone");
       const door = this.doorOf(await this.record(run));
@@ -1659,14 +1877,23 @@ export class Runs {
     // description with no secret
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
-    const kept = run.meta.tool_plane ? keptVendor(run.meta.tool_plane) : run.tooling ? keptFromBefore(planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined })) : {};
-    const plane = recheckPlane(kept, served);
+    // A capability set to ask or deny since resolves again (a harness's own search cannot wait for a person). Its first
+    // launch, from its start, is told a deny as under ask; a later one is told it denied (relaunchPlane).
+    const settings = this.options.toolSettings?.() ?? {};
+    const capped = run.meta.max_cost_usd !== undefined;
+    const first = run.firstLaunch === true;
+    run.firstLaunch = undefined;
+    const kept = run.meta.tool_plane ? keptVendor(run.meta.tool_plane) : run.tooling ? keptFromBefore(planeFor(served, run.tooling, settings, { capped })) : {};
+    const plane = relaunchPlane(kept, served, run.tooling, settings, { capped, first });
     if (kept !== run.meta.tool_plane && Object.keys(kept).length) {
       run.meta.tool_plane = kept;
       void this.saveMeta(run).catch(() => undefined);
     }
     delete env[TOOL_PLANE_ENV];
     if (Object.keys(plane).length) env[TOOL_PLANE_ENV] = JSON.stringify(plane);
+    // No one can approve here (accounts off): the run's gate refuses an ask instead of parking it (tool-gate.ts).
+    delete env[NO_APPROVER_ENV];
+    if (this.options.approvers === false) env[NO_APPROVER_ENV] = "1";
     // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
     // out every secret): a run's process gets those it needs once on an inherited pipe, by name: its decision
     // providers' (decisionProvidersFor), and Parallel's where one of its web tools resolves to Parallel (its plane,
@@ -1809,6 +2036,10 @@ export class Runs {
     } else if (run.launching && gone) {
       run.error = { code: "run_failed", message: "The server went down while it started the run's process, which never came up; it is not started again, since starting it may be what took the server down.", retryable: false, details: { reason: LAUNCH_LOST } };
       ended = { outcome: "failed" };
+    } else if (exited && !released && code !== null && code !== 0 && (run.resuming !== undefined || continuationOf(run) !== undefined)) {
+      // A raised run's paused process held nothing (its turn had ended at the refusal): its exit without a release, at
+      // its drain's end, say, loses nothing, and the raise's follow-up goes (resumeRaised), never a failed run.
+      return this.refresh(run);
     } else if (exited && !released && code !== null && code !== 0) {
       run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await this.lastLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
@@ -1826,7 +2057,10 @@ export class Runs {
       // opened before its process went may still be live at the vendor, and would write back over another run's. One
       // that let go cleanly to wait for its person released its sessions first, so its lease goes now.
       if (gone && released && !stalled) await this.releaseSignIn(run);
-      if (!gone || !stalled || this.closing) return this.refresh(run);
+      // A raised run's follow-up, under way or still to go, opens the run's next process itself (resumeRaised): its
+      // paused process going is no process lost, and no relaunch is counted for it.
+      const continuing = run.resuming !== undefined || continuationOf(run) !== undefined || run.child !== undefined;
+      if (!gone || !stalled || this.closing || continuing) return this.refresh(run);
       // Opened again without a place, as a run already going, unless its harness never fits this host (a restart on a
       // smaller one): that run fails with why.
       const never = neverFits(run.harness, this.memory);
@@ -2070,7 +2304,7 @@ export class Runs {
     // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in the serve.json its start writes first,
     // so a launch after a crash reads them back, never the settings of that moment, and keeping them is no write of its own.
     const tooling = await toolingOf(revision);
-    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined }) : {};
+    const plane = tooling ? planeFor(withSecrets(process.env, "all", this.options.storedKeys), tooling, this.options.toolSettings?.() ?? {}, { capped: options.maxCostUsd !== undefined, run: true }) : {};
     // A run that learns: its seed read before it is made (learning-run.ts).
     const pin = await this.learning.onStart(entry.agent.id, revision);
     const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id, ...(options.origin ? { origin: options.origin } : {}) })).catch((error) => storeError(error, "revision"));
@@ -2115,6 +2349,7 @@ export class Runs {
       run.preparing = prepared.then(() => undefined, () => undefined);
       if (!(await prepared)) return run;
     }
+    run.firstLaunch = true;
     this.launch(run);
     if (revision.kind === "workflow") return run;
     // The first message names the files given to the run (run-manifest.ts), on every harness.
@@ -2199,12 +2434,141 @@ export class Runs {
     }, this.busyDelays(), this.onBusy(run.id, "its store"));
   }
 
+  /** Raises the cap of an agentic run that names one, to `cap`: above its own (by more than CAP_TOLERANCE), or the same as
+   *  its newest raise (a retry, which changes nothing). serve.json keeps it before any answer, and a raise it could not keep
+   *  is undone, so the run's next process opens under it (CAP_ENV), as does a server started again. A run paused at its
+   *  cap goes on: the raise names the pause it answers, and the pause gets one follow-up, "The cap was raised to $X;
+   *  continue the task." under an id fixed now, which refresh sends once the paused process is gone (resumeRaised), here
+   *  or after a restart; a second raise before it goes raises what it says. A run working keeps the cap its process was
+   *  opened with until its next process. Raises of one run are taken one at a time. */
+  async raiseCap(run: Run, cap: number): Promise<{ resumed: boolean; messageId?: string; note?: string }> {
+    const before = run.raising ?? Promise.resolve();
+    const taking = before.catch(() => undefined).then(() => this.takeRaise(run, cap));
+    run.raising = taking.catch(() => undefined);
+    return taking;
+  }
+
+  private async takeRaise(run: Run, cap: number): Promise<{ resumed: boolean; messageId?: string; note?: string }> {
+    if (run.imported) throw this.importedRefusal(run);
+    if (run.cancel || run.finishing || TERMINAL.has(statusOf(run).status)) throw this.finished(run);
+    const from = run.meta.max_cost_usd;
+    if (from === undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "This run has no cap to raise: a cap is named when a run starts." }]);
+    const last = run.meta.cap_raised?.at(-1);
+    const pause = pauseOf(run);
+    const next = continuationOf(run);
+    // The same raise again (a retry): what the first one did stands.
+    if (Math.abs(cap - from) <= CAP_TOLERANCE && last && Math.abs(last.to - cap) <= CAP_TOLERANCE) {
+      // Resumed, as the first answer said, unless the run has since paused anew at another refusal: no raise of that one.
+      const answered = last.pause !== undefined && run.meta.cap_continue?.pause === last.pause && (pause === undefined || pause === last.pause) ? run.meta.cap_continue : undefined;
+      return answered ? { resumed: true, messageId: answered.message_id } : { resumed: false };
+    }
+    if (!(cap > from + CAP_TOLERANCE)) throw invalid([{ field: "max_cost_usd", reason: "invalid", message: `A cap is only raised: name more than the run's ${money(from)}.` }]);
+    // Built on a copy and written first: nothing reads the raise (its cap, the pause it answers, its follow-up) before
+    // serve.json keeps it, so until then a message is still 409 budget_reached, the run reads its old cap and no
+    // follow-up goes; a raise the write fails leaves the run as it was, and a retry raises it again.
+    const raised = [...(run.meta.cap_raised ?? []), { from, to: cap, at: new Date().toISOString(), ...(pause ? { pause } : {}) }];
+    let follow = run.meta.cap_continue;
+    if (pause !== undefined && next === undefined) {
+      // The pause's one follow-up, by an id fixed now, and the process being let go then, which it waits out.
+      const paused = this.live(run) ? this.liveIdentity(run) : undefined;
+      follow = { pause, message_id: `cap-${raised.length}-${randomBytes(4).toString("hex")}`, sent: false, tries: 0, ...(paused ? { paused } : {}) };
+    } else if (next) {
+      // A raise of a pause whose follow-up has not gone: that one follow-up goes, under this cap, with its tries anew.
+      const { error: _, ...rest } = next;
+      follow = { ...rest, tries: 0 };
+    }
+    await this.saveMeta(run, () => ({ ...run.meta, max_cost_usd: cap, cap_raised: raised, ...(follow ? { cap_continue: follow } : {}) }));
+    run.meta.max_cost_usd = cap;
+    run.meta.cap_raised = raised;
+    if (next && follow) {
+      // The same follow-up object resumeRaised may hold, renewed in place.
+      next.tries = 0;
+      delete next.error;
+    } else if (follow) run.meta.cap_continue = follow;
+    if (next && typeof run.resuming === "number") run.resuming = undefined;
+    this.refresh(run);
+    const answered = pause !== undefined ? run.meta.cap_continue : undefined;
+    if (!answered) return { resumed: false, ...(this.live(run) ? { note: `The run's process keeps the ${money(from)} cap it was opened with; the ${money(cap)} cap holds from its next process.` } : {}) };
+    return { resumed: true, messageId: answered.message_id };
+  }
+
+  /** Sends a raised run its pause's follow-up, under its id (the door takes one id once), at the run's cap now: as a
+   *  follow-up to a run whose process has gone (message()), so the process it starts resumes nothing and opens under the
+   *  new cap, or to the process another launch started. Marked sent in serve.json. One that cannot be sent is tried
+   *  again (CONTINUE_RETRY_MS), and after CONTINUE_TRIES the run fails, saying why: never a pause stuck in silence. */
+  private async resumeRaised(run: Run, next: NonNullable<RunMeta["cap_continue"]>): Promise<void> {
+    run.resuming = "sending";
+    if (!this.live(run)) run.followUpOpen = true;
+    run.submitted++;
+    this.refresh(run);
+    const cap = run.meta.max_cost_usd ?? 0;
+    try {
+      // The server's line, shown as the server's (MessageOrigin), never as the person's: the model reads the same text.
+      await this.submit(run, `The cap was raised to ${money(cap)}; continue the task.`, "followUp", next.message_id, undefined, { kind: "server", reason: "cap_raised" });
+      // Marked sent once serve.json says so. Should that write fail, it went all the same (the door holds it), and its
+      // run no longer stands at the pause, so nothing sends it again.
+      await this.saveMeta(run, () => ({ ...run.meta, cap_continue: { ...next, sent: true } })).then(
+        () => void (next.sent = true),
+        (error: Error) => warn(run.id, `its raised cap's follow-up went, but is not marked sent: ${error.message}`),
+      );
+      run.resuming = undefined;
+    } catch (error) {
+      run.submitted = Math.max(0, run.submitted - 1);
+      // The try counts here whether or not serve.json can say so, so its tries stay bounded.
+      const tried = { tries: next.tries + 1, error: (error as Error).message };
+      await this.saveMeta(run, () => ({ ...run.meta, cap_continue: { ...next, ...tried } })).catch(() => undefined);
+      Object.assign(next, tried);
+      if (next.tries >= CONTINUE_TRIES) {
+        run.resuming = undefined;
+        warn(run.id, `its raised cap's follow-up was not sent in ${next.tries} tries (${next.error}); the run fails`);
+        return this.failRaised(run, cap, next.error);
+      }
+      const wait = CONTINUE_RETRY_MS[next.tries - 1] ?? CONTINUE_RETRY_MS.at(-1)!;
+      warn(run.id, `its raised cap's follow-up was not sent (${next.error}); tried again in ${wait / 1000} s`);
+      const at = Date.now() + wait;
+      run.resuming = at;
+      setTimeout(() => {
+        if (run.resuming !== at) return;
+        run.resuming = undefined;
+        this.refresh(run);
+      }, wait).unref();
+      this.refresh(run);
+    } finally {
+      run.followUpOpen = undefined;
+    }
+  }
+
+  /** Ends a raised run whose follow-up could not be sent: failed, in words a person can act on. */
+  private async failRaised(run: Run, cap: number, why: string | undefined): Promise<void> {
+    if (run.outcome || run.finishing || run.cancel) return;
+    run.error = { code: "run_failed", message: `The run's cap was raised to ${money(cap)}, but the run could not be sent on (${why ?? "no answer"}). Start it again to go on.`, retryable: false };
+    run.finishing = "failed";
+    run.endedAt = new Date().toISOString();
+    this.mark(run);
+    if (this.live(run)) this.terminate(run);
+    else await this.settle(run, null, false);
+  }
+
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). `requestId`: the message's
    *  id in the run's store, which takes one message per id (a trigger's firing key); default a new one. */
   async message(run: Run, content: string, requestId?: string, { answers = true }: { answers?: boolean } = {}): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     if (run.imported) throw this.importedRefusal(run);
     // A cancelled run takes no message, whether or not its end is written yet.
     if (run.cancel) throw this.finished(run);
+    // A message while a tool call waits for approval declines it, with the message as the reason (as Claude Code takes
+    // what is typed at its permission prompt): the gate's resume carries the refusal and their words in one turn, and
+    // nothing else is sent, so no second turn races the parked call.
+    const read = run.kind === "agentic" ? waitingApproval(run) : undefined;
+    if (read) {
+      await this.personsTurn(run);
+      // Read again after that wait, with nothing awaited from here to the decline's own write: an answer, a stop or a
+      // cancel that landed meanwhile stands (the first answer wins, and a stop's withdrawal is never replaced), and the
+      // message is then a message, under the run's state now. It declines only the call it read, which the person saw:
+      // another parked since waits for its own answer.
+      const waiting = waitingApproval(run);
+      if (waiting?.id === read.id && !run.cancel && !run.stopping) return this.declineBy(run, waiting, content);
+      if (run.cancel) throw this.finished(run);
+    }
     // Every wait first, then a last look for a stop in flight, again after any wait a stop came during: from that look
     // to the count below nothing awaits, so no stop can begin in between.
     do {
@@ -2218,6 +2582,15 @@ export class Runs {
       // before it lays the run's notes again (learning-run.ts onReopen), and a message read meanwhile would launch the run
       // before they are back.
       if (run.reopening) await run.reopening.catch(() => undefined);
+      // A raised run whose follow-up has not gone yet (its paused process still letting go, or the follow-up being sent)
+      // takes a message once it has: after it, as the next turn, never into the process being let go.
+      const following = () => continuationOf(run) !== undefined || run.resuming === "sending";
+      if (following()) {
+        await this.waitWhile(following, 100, "The run's raised cap's follow-up is still being sent");
+        // Its follow-up's turn may have ended the run meanwhile (a quick answer): its end is written first, so the message
+        // then opens it again, as one to any ended run does, never refused for an end still being written.
+        await this.waitWhile(() => run.settles > 0 || Boolean(run.finishing && !run.outcome), 100, "The run's end is still being written");
+      }
       if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     } while (run.stopping);
     const steers = this.steers(run);
@@ -2240,6 +2613,9 @@ export class Runs {
     run.submitted++;
     this.refresh(run);
     try {
+      // After every wait, and once the count above holds the run from ending (so no end-of-run turn is asked from here):
+      // one asked while this message waited for the run's end wrote its origin then, after any earlier removal.
+      await this.personsTurn(run);
       await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, answers ? this.messageOrigin?.(run.id, content) : undefined, answers);
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
@@ -2249,6 +2625,15 @@ export class Runs {
       run.followUpOpen = undefined;
     }
     return { mode, messageId };
+  }
+
+  /** A person's turn is sent next: no turn from here on is the server's own end-of-run turn (tool-gate.ts's carve-out),
+   *  so its origin goes, right before the turn is sent. */
+  private async personsTurn(run: Run): Promise<void> {
+    // A write of the origin still in flight lands first, then goes: none starts from here (learning-run.ts reflectTurn).
+    await run.originWrite?.catch(() => undefined);
+    await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
+    await runsTestHooks.personsTurn?.(run.dir);
   }
 
   /** Waits, up to a request's deadline, while `holds` (checked every `everyMs`): else 503 `unavailable`, saying `why`. */
@@ -2323,14 +2708,74 @@ export class Runs {
     // rows first, so the mark it saves (the person's last message) covers the message the turn answers; then it stops
     // the turn as it stops any working run.
     if (run.kind !== "workflow") await this.caughtUp(run);
+    // A tool call that waits for approval is withdrawn by the stop (never run, an answer after is 409); then a turn that
+    // runs meanwhile is stopped as any working run's is, and with none the run is stopped as a stop leaves one.
+    const open = run.kind === "agentic" && !run.cancel && !run.outcome && !run.finishing;
+    const withdrawn = open && waitingApproval(run) ? await this.withdraw(run) : false;
+    // An answer the run's process has not acted on yet is overridden too: a stop wins, so nothing runs and nothing resumes.
+    const superseded = open ? await this.supersede(run, "withdrawn") : false;
     const { status, state } = statusOf(run);
-    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return withdrawn || superseded ? this.stopIdle(run) : false;
     run.stopping = true;
     try {
       return await this.stopTurn(run);
     } finally {
       run.stopping = undefined;
     }
+  }
+
+  /** message()'s decline of the tool call that waits for approval: a deny with the message as its note, which the
+   *  run's gate acts on as any deny, resuming the session with the refusal and the person's words in one message. */
+  private async declineBy(run: Run, waiting: Approval, content: string): Promise<{ mode: "answer"; messageId: string }> {
+    // The person's message, whole: it is the reason the model reads. Nothing shows the note, so nothing cuts it.
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "deny", note: content, answered_at: new Date().toISOString(), args_shown: shownArgs(waiting, this.redactor(run)), by: "message" } };
+    await this.saveMeta(run);
+    this.restate(run);
+    this.refresh(run);
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its declined approval waits for its process: ${error.message}`));
+    return { mode: "answer", messageId: `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}` };
+  }
+
+  /** The answers given and not acted on yet (the run's process has not resolved them), overridden by a stop or a cancel:
+   *  `withdrawn` or `canceled`, each keeping the answer it superseded, so nothing runs and nothing resumes, and the
+   *  history shows what was given. The run's gate reads the answer again just before it acts (tool-gate.ts). */
+  private async supersede(run: Run, decision: "withdrawn" | "canceled"): Promise<boolean> {
+    const given = [...(run.approvals?.values() ?? [])].filter((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
+    if (!given.length) return false;
+    const now = new Date().toISOString();
+    const overridden = given.map((a) => {
+      const was = run.meta.approvals![a.id]!;
+      return [a.id, { decision, answered_at: now, superseded: { decision: was.decision, answered_at: was.answered_at, ...(was.note !== undefined ? { note: was.note } : {}), ...(was.by ? { by: was.by } : {}) } }] as const;
+    });
+    run.meta.approvals = { ...run.meta.approvals, ...Object.fromEntries(overridden) };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
+  }
+
+  /** Until every tool call of the run that waited for approval is resolved in its store (its process acted on its answer,
+   *  or cut it), or `ms` pass. */
+  private async untilResolved(run: Run, ms: number): Promise<void> {
+    for (const end = Date.now() + ms; [...(run.approvals?.values() ?? [])].some((approval) => !approval.resolved) && Date.now() < end; ) await sleep(50);
+  }
+
+  /** stop()'s withdrawal of the tool call that waits for approval: never run, and an answer after is 409. */
+  private async withdraw(run: Run): Promise<boolean> {
+    const waiting = waitingApproval(run)!;
+    run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "withdrawn", answered_at: new Date().toISOString() } };
+    await this.saveMeta(run);
+    this.restate(run);
+    return true;
+  }
+
+  /** stop() of a run with no turn to abort (parked on an approval it withdrew): the stop's mark, as a stop saves it. */
+  private async stopIdle(run: Run): Promise<boolean> {
+    delete run.meta.stopped_at;
+    delete run.meta.stopped_after;
+    Object.assign(run.meta, stopMark(run.rows));
+    await this.saveMeta(run);
+    this.refresh(run);
+    return true;
   }
 
   /** stop()'s mark and abort, once it took the stop. */
@@ -2355,6 +2800,23 @@ export class Runs {
     return true;
   }
 
+  /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): kept in the run's serve.json before
+   *  it returns, the first answer winning (the same one again changes nothing; another is 409, `already_answered`). The
+   *  run's process reads it there, runs or refuses the call, and resumes; a run with no process gets one. */
+  async approve(run: Run, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
+    const given = run.meta.approvals?.[id];
+    if (!given && !run.approvals?.has(id)) throw new ApiError("not_found", `The run ${run.id} has no tool call ${id} waiting for approval.`);
+    if (given) {
+      if (given.decision === decision) return;
+      throw new ApiError("not_continuable", `The tool call ${id} was already ${given.decision === "canceled" ? "canceled with its run" : given.decision === "withdrawn" ? "withdrawn when its run was stopped" : `answered: ${given.decision}`}.`, { details: { reason: "already_answered", decision: given.decision } });
+    }
+    run.meta.approvals = { ...run.meta.approvals, [id]: { decision, ...(note ? { note } : {}), answered_at: new Date().toISOString(), args_shown: shownArgs(run.approvals!.get(id)!, this.redactor(run)) } };
+    await this.saveMeta(run);
+    this.restate(run);
+    this.refresh(run);
+    if (!run.outcome && !run.finishing && !run.cancel) void this.ensureLive(run).catch((error: Error) => warn(run.id, `its answered approval waits for its process: ${error.message}`));
+  }
+
   /** Record the cancel and signal the run. An agentic run reads `cancelled` from here on (the first end a run comes to is
    *  its last: nothing its turn writes later moves it), and is carried back so once its process has exited; a workflow
    *  run reads it once it is carried back, with how its workflow stopped. */
@@ -2364,6 +2826,15 @@ export class Runs {
     // Finishing is already ending with its outcome (an answer, a failure, the cap): a run's first end is its last.
     if (run.outcome || run.finishing) return false;
     run.cancel = true;
+    // A tool call that waits for approval is canceled with its run: an answer after this one is refused.
+    const waiting = waitingApproval(run);
+    if (waiting) {
+      run.meta.approvals = { ...run.meta.approvals, [waiting.id]: { decision: "canceled", answered_at: new Date().toISOString() } };
+      await this.saveMeta(run).catch((error: Error) => warn(run.id, `its canceled approval is not saved: ${error.message}`));
+      this.restate(run);
+    }
+    // An answer its process has not acted on yet is overridden too: nothing runs and nothing resumes.
+    const superseded = await this.supersede(run, "canceled").catch((error: Error) => (warn(run.id, `its superseded approval is not saved: ${error.message}`), false));
     if (run.kind === "agentic") {
       run.finishing = "cancelled";
       run.endedAt = new Date().toISOString();
@@ -2374,6 +2845,13 @@ export class Runs {
     if (this.live(run)) {
       // The turn is aborted first, so the drain that SIGTERM starts does not wait for it.
       await this.abortTurn(run);
+      // An approved call in flight runs outside any turn: its process's gate cuts it once it reads the cancel (tool-gate.ts),
+      // which ending the process at once would forestall. A short wait for that, never a refusal.
+      if (superseded) {
+        run.meta.cancel_waits_for = [...(run.approvals?.values() ?? [])].filter((approval) => !approval.resolved).map((approval) => approval.id);
+        await this.saveMeta(run).catch((error: Error) => warn(run.id, `its cancel's wait is not saved: ${error.message}`));
+        await this.untilResolved(run, 3_000);
+      }
       this.terminate(run);
     } else await this.settle(run, null, false);
     return true;
@@ -2504,7 +2982,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (this.servedOutput(run, run.meta.output ?? null)) : null, final_answer: this.servedAnswer(run, finalAnswer) } : kept ? { output: null, final_answer: this.servedAnswer(run, kept) } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
-      pending: status === "input_required" && state === "waiting" ? (budgetPending(run) ?? pendingOf(run.rows)) : null,
+      pending: status === "input_required" && state === "waiting" ? (approvalOf(run, this.redactor(run)) ?? budgetPending(run, this.spentNow(run)) ?? pendingOf(run.rows)) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,

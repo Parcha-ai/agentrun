@@ -175,7 +175,7 @@ test("a trigger that would start an uncapped run, a workflow's run, or fire on a
     return answer.body.error.fields[0].message;
   };
   const { max_cost_usd: _, ...uncapped } = schedule("capped", { every_s: 600 }).target;
-  assert.match(await refused({ ...schedule("capped", { every_s: 600 }), target: uncapped }, "target.max_cost_usd", "missing"), /required/);
+  assert.match(await refused({ ...schedule("capped", { every_s: 600 }), target: uncapped }, "target.max_cost_usd", "missing"), /set the agent's/);
   assert.match(await refused(schedule("flow", { every_s: 600 }), "target.agent_id", "not_allowed"), /workflow/);
   await refused({ ...schedule("capped", { every_s: 600 }), source: { kind: "slack" } }, "source.kind", "not_an_option");
   await refused(schedule("capped", { every_s: 30 }), "source.every_s", "invalid");
