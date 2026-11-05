@@ -228,6 +228,8 @@ export function harnessModelKeys(harness: string, env: NodeJS.ProcessEnv, model?
 /** OpenRouter's API: its Anthropic Messages endpoint (`<base>/v1/messages`) and its Responses API (`<base>/v1/responses`)
  *  under one base, its key taken as a bearer token. The OpenRouter key goes nowhere else. */
 export const OPENROUTER_BASE = "https://openrouter.ai/api";
+/** Anthropic's own origin, where pi-ai's Anthropic provider sends (a gateway is not it). */
+export const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
 
 export { openRouterOnly };
 
@@ -302,7 +304,7 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): ClaudeP
   if (openRouterOnly("claude-agent", env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, "claude-agent", named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", id: `anthropic/${openRouterName(own)}` } };
   // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
   // takes Anthropic's key alone: OpenRouter's never goes there.
-  const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : "https://api.anthropic.com";
+  const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN;
   if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.", undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", id: own } };
 }
@@ -353,6 +355,25 @@ export function learnedRoute(harness: string, env: NodeJS.ProcessEnv, model: Mod
     // The harness refuses this run before any request: nothing is sent on this model.
   }
   return model;
+}
+
+/** Why a run on `harness` is offered no learned workflow, or undefined when it is. A learned workflow's model requests go
+ *  through the run's models (pi-ai's catalog, learnedRoute), whose Anthropic provider reaches api.anthropic.com alone:
+ *  claude-agent through the operator's own gateway (ANTHROPIC_BASE_URL) would have them go around it, with its key. So
+ *  that run gets none (fail closed), and its pin says why. codex's gateway is the run's models' own (runModels), and pi
+ *  runs on them: neither is turned off. A run its harness refuses sends nothing, so it is not this one's to say. */
+export function learnedWorkflowsOff(harness: string | undefined, env: NodeJS.ProcessEnv, ref: string | undefined): string | undefined {
+  if (harness !== "claude-agent" || env[FAUX_ENV] || env[FAUX_HARNESS_ENV]) return undefined;
+  const choice = claudeModel(env, ref);
+  if ("why" in choice) return undefined;
+  let origin: string;
+  try {
+    origin = claudeProvider(env, choice.model).origin;
+  } catch {
+    return undefined;
+  }
+  if (origin === OPENROUTER_BASE || origin === ANTHROPIC_ORIGIN) return undefined;
+  return "claude-agent sends this run's model requests to the gateway at ANTHROPIC_BASE_URL, and a learned workflow's requests could not go through it";
 }
 
 /** claude-agent's model: the revision's (or the server's default for claude-agent, hostModel) as `provider/model-id`.

@@ -1390,7 +1390,8 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   models. Its model requests are the run's, under its cap and on its timeline as side requests labelled
   `learned_workflow`: on claude-agent and codex, the harness's requests and the workflow's count against one total, and
   each holds its worst case in flight where the other's check sees it, and the workflow's go where the harness's go (on
-  OPENROUTER_API_KEY alone, through OpenRouter, by OpenRouter's name for the run's model). A call a crash cut off is answered interrupted,
+  OPENROUTER_API_KEY alone, through OpenRouter, by OpenRouter's name for the run's model; claude-agent through the
+  operator's own gateway at ANTHROPIC_BASE_URL is offered none, which its pin names in `workflows_off`). A call a crash cut off is answered interrupted,
   never run again.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of

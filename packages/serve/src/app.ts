@@ -22,7 +22,7 @@ import { codingSource } from "./coding-tools.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { decisionProvidersOf } from "./decisions.js";
 import { FOLLOW_UP_OPEN_ENV, readJson, RUN_META } from "./files.js";
-import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, learnedRoute, openRouterOnly, thinkingFor } from "./adapters.js";
+import { adapterFor, claudeModel, claudePriceModel, claudeSkillCheck, codexModel, type ConfineChild, learnedRoute, learnedWorkflowsOff, openRouterOnly, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { pinnedWorkflows, readPin, withLearned } from "./learning.js";
@@ -155,7 +155,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const ref = byTier.get((tier as Tier | undefined) ?? "default") ?? byTier.get("default");
     return ref && learnedHarness && learnedHarness !== DEFAULT_HARNESS ? learnedRoute(learnedHarness, env, ref) : ref;
   };
-  const learnedTool = flows.length && revision.kind === "agentic"
+  // A second guard beside the pin's (learning-run.ts): a run whose harness's requests go where a learned workflow's could
+  // not follow gets no tool, whatever its pin says.
+  const learnedTool = flows.length && revision.kind === "agentic" && !learnedWorkflowsOff(revision.body.harness, env, revision.body.model)
     ? learnedWorkflowTool({ workflows: flows, granted: revision.body.tools, plane: planeOf(process.env), env, work: where.work, models: models as never, modelOf: learnedModel, complete: completer(models as never, learnedModel, thinkingLevel) })
     : undefined;
   // The run's effort, as its thinking level reads it: its note on how to work follows the instructions on every harness
