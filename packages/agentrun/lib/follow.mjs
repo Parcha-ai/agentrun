@@ -36,6 +36,7 @@ export const WAIT = {
   command: ["runs", "wait"],
   pathParams: ["run_id"],
   summary: "Wait until the run ends or waits on a person, and print it",
+  route: "GET /runs/{run_id}/timeline, long-polled, then GET /runs/{run_id}",
   help: [["--timeout SECONDS", "stop waiting after this long, exit 1 (the run goes on)"]],
 };
 

@@ -1,14 +1,19 @@
 // `npx @parcha/agentrun agents list`: the server's API from the terminal. Every command is an operation of the server's
 // OpenAPI document, read from the generated table (commands.generated.mjs); nothing here is written per command. Waiting for
-// a run and following it live (runs start --wait, runs wait, runs timeline --follow) are follow.mjs's.
+// a run and following it live (runs start --wait, runs wait, runs timeline --follow) are follow.mjs's; the commands that
+// read a secret from stdin (login, logout, tool-keys set) are login.mjs's, and skill install is skill.mjs's.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "./commands.generated.mjs";
 import { FLAGS, WAIT, followTimeline, waitRun } from "./follow.mjs";
+import { SECRETS, configOf } from "./login.mjs";
+import { SKILL_INSTALL } from "./skill.mjs";
 
-export const NOUNS = new Set(["api", "help", ...COMMANDS.map((entry) => entry.command[0])]);
+/** The hand-written commands that run as they are given (`run`), beside the table's. */
+const LOCAL = [...SECRETS, SKILL_INSTALL];
+export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`";
 const GLOBAL = { "base-url": { type: "string" }, data: { type: "string" }, help: { type: "boolean", short: "h" } };
@@ -36,8 +41,7 @@ export function words(argv) {
 
 const HELP = () => {
   const groups = new Map();
-  for (const { command, summary } of COMMANDS) groups.set(command[0], command.length === 1 ? [summary] : [...(groups.get(command[0]) ?? []), command[1]]);
-  groups.set(WAIT.command[0], [...groups.get(WAIT.command[0]), WAIT.command[1]].sort());
+  for (const { command, summary } of [...COMMANDS, WAIT, ...LOCAL]) groups.set(command[0], command.length === 1 ? [summary] : [...(groups.get(command[0]) ?? []), command[1]].sort());
   const width = Math.max(...[...groups.keys()].map((noun) => noun.length));
   return [
     "Usage: npx @parcha/agentrun <command> [args] [--base-url URL] [--data DIR]",
@@ -48,7 +52,8 @@ const HELP = () => {
     "",
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
     "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
-    "else api_key in the config file, else that server's own; it is never a flag and never printed.",
+    "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
+    "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun logout removes it.",
     "Output: the response's JSON on stdout; an error's on stderr. Exit codes: 0 ok, 1 the server refused, 2 bad usage,",
     "3 the server cannot be reached, 4 no token or the token was refused. runs wait and runs start --wait print the run",
     "once it ends or waits on a person: 0 completed, 1 failed, cancelled or --timeout passed (it goes on), 8 it waits on a",
@@ -97,8 +102,7 @@ const trim = (url) => url.replace(/\/+$/, "");
  *  server's own token is never sent to another server. */
 function targetOf(values, env) {
   const data = resolve(values.data ?? join(homedir(), ".agentrun"));
-  const configFile = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "config.json");
-  const config = readJson(configFile) ?? {};
+  const config = configOf(env, (code, message) => new Exit(code, message));
   const recordFile = join(data, ".server.json");
   const record = readJson(recordFile);
   const stale = record && `The server recorded in ${recordFile} (pid ${record.pid}) is not running; ${START} or set AGENTRUN_BASE_URL.`;
@@ -288,16 +292,28 @@ async function command(entry, argv, env, io) {
   return started.code ?? waitRun(client, started.value.run_id, timeout);
 }
 
+/** A hand-written command of LOCAL: its flags and arguments checked, then its `run`. */
+async function local(entry, argv, env, io) {
+  const { values, positionals } = parse(argv, { ...GLOBAL, ...entry.options });
+  if (values.help) return io.stdout.write(`${helpOf(entry, entry.help)}\n`), 0;
+  const args = positionals.slice(entry.command.length);
+  const count = entry.pathParams.length;
+  if (args.length !== count) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
+  return entry.run({ values, args, env, io, cli: { fail: (code, message) => new Exit(code, message), targetOf, clientOf, send } });
+}
+
 async function run(argv, env, io) {
   const [noun, verb] = words(argv);
   if (noun === undefined || noun === "help") return io.stdout.write(`${HELP()}\n`), 0;
   if (noun === "api") return api(argv, env, io);
   if (noun === WAIT.command[0] && verb === WAIT.command[1]) return wait(argv, env, io);
+  const own = LOCAL.find((e) => e.command[0] === noun && (e.command.length === 1 || e.command[1] === verb));
+  if (own) return local(own, argv, env, io);
   const entries = COMMANDS.filter((entry) => entry.command[0] === noun);
-  if (!entries.length) throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
+  const listed = [...entries, ...LOCAL.filter((e) => e.command[0] === noun), ...(noun === WAIT.command[0] ? [WAIT] : [])];
+  if (!listed.length) throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
   const entry = entries.find((e) => e.command.length === 1 || e.command[1] === verb);
   if (entry) return command(entry, argv, env, io);
-  const listed = noun === WAIT.command[0] ? [...entries, WAIT] : entries;
   if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;
   throw usageError(`agentrun ${noun} has no verb ${verb}.\n\n${nounHelp(noun, listed)}`);
 }

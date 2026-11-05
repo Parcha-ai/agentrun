@@ -76,8 +76,9 @@ const allowedExtraFiles = {
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   serve: ['package/launcher/agentrun-serve'],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
-  // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs).
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/commands.generated.mjs'],
+  // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
+  // its waits (follow.mjs), the commands that read a secret from stdin (login.mjs) and its skill's installer (skill.mjs).
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/commands.generated.mjs', 'package/lib/follow.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
