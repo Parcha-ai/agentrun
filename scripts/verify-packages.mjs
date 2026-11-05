@@ -50,7 +50,8 @@ async function run(command, args, cwd = root, allowFailure = false, commandEnv =
 }
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const forbid = [
-  ['machine-specific path', /(?:\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
+  // A /home/ or /Users/ right after a path parameter's `}` is an API route template (/agents/{agent_id}/home/files/{path}).
+  ['machine-specific path', /(?:(?<!\})\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
   ['private service endpoint', /https?:\/\/(?:localhost\b|127\.\d+\.\d+\.\d+\b|10\.\d+\.\d+\.\d+\b|192\.168\.\d+\.\d+\b|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b|169\.254\.\d+\.\d+\b|[a-z0-9.-]+\.(?:internal|local|localhost)\b)/i],
   ['embedded credential value', /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*["'][A-Za-z0-9_./+=-]{24,}["']/i],
   ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
@@ -74,8 +75,9 @@ const allowedExtraFiles = {
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   serve: ['package/launcher/agentrun-serve'],
-  // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build.
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs'],
+  // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
+  // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs).
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/commands.generated.mjs'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -113,6 +115,10 @@ const allowedEndpoints = {
   'run-adapters-codex': [
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
+  ],
+  agentrun: [
+    // The CLI's last resort for the server started on this machine: the address agentrun-serve binds by default.
+    ['lib/cli.mjs', 'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the CLI's default address of the server on this machine
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
