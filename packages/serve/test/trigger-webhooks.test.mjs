@@ -95,6 +95,9 @@ test("a wrong signature, a stale or future timestamp, missing headers, an unknow
   assert.deepEqual((await api("GET", `/triggers/${id}/firings`)).body.firings, [], "nothing fired");
   const signedJustInside = await post(baseUrl, id, "{}", { secret, at: now - 290 });
   assert.equal(signedJustInside.status, 202, "within the window");
+  // Its run ends before the server closes, so nothing is still writing when the data directory goes.
+  const [fired] = await firings(api, id, 1);
+  await follow(api, fired.run_id, ["completed"]);
 });
 
 test("a rotated secret signs from then on, and the old one is refused; with no seal key no webhook trigger is made", { timeout: 120_000 }, async (t) => {
