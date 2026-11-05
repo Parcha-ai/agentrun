@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import http from "node:http";
@@ -77,6 +77,50 @@ test("args given as a function: each session's Chrome opens its DevTools socket 
     await rm(root, { recursive: true, force: true });
   }
   for (const ref of refs) assert.equal(alive(pidOf(ref)), false, "each Chrome is gone");
+});
+
+test("a guarded session: every client reaches the browser through its guard, Stagehand's locked extension copy included; a file or browser-internal page is refused there, the web is not, no /json is served, and the guard goes with the release", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
+  const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
+  const { GUARD_REFUSAL } = await import("../dist/providers/cdp-guard.js");
+  const server = http.createServer((req, res) => { res.setHeader("content-type", "text/html"); res.end("<title>Guarded Fixture</title><h1>hello</h1>"); });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => server.close());
+  const root = await scratch(t, "cdp-guarded-");
+  const told = [];
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, guard: true, args: (launch) => (told.push(launch), []) } });
+  const ref = await provider.create(spec("cdp-guarded-1"), new AbortController().signal);
+  let stagehand;
+  try {
+    assert.equal(told.length, 1);
+    assert.ok(told[0].guardPort > 0 && told[0].guardPort !== told[0].debuggingPort, "the host is told the guard's port");
+    const target = await provider.attach(ref);
+    assert.equal(Number(new URL(target.sdkCdpUrl).port), told[0].guardPort, "the attach target is the guard");
+    // The lease's extension copy: its socket policy names the guard, and it keeps no scripting permission.
+    const manifests = readdirSync(os.tmpdir(), { recursive: true }).filter((name) => String(name).endsWith(`stagehand-extension${path.sep}manifest.json`));
+    const manifest = JSON.parse(await readFile(path.join(os.tmpdir(), String(manifests.find((name) => readFileSync(path.join(os.tmpdir(), String(name)), "utf8").includes(`:${told[0].guardPort}/`)))), "utf8"));
+    assert.ok(!manifest.permissions.includes("scripting"));
+    // Stagehand drives the page through it.
+    let browser;
+    try {
+      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
+      stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
+    } catch (error) { if (skipIncapable(t, error)) return; throw error; }
+    const [page] = await browser.context.pages();
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    assert.equal(await page.title(), "Guarded Fixture");
+    await assert.rejects(page.goto("file:///etc/passwd"), (error) => String(error.message).includes(GUARD_REFUSAL));
+    // A raw client through the guard.
+    const socket = new WebSocket(target.sdkCdpUrl);
+    await new Promise((ok, fail) => (socket.addEventListener("open", ok), socket.addEventListener("error", fail)));
+    const answer = await new Promise((ok) => { socket.addEventListener("message", (event) => ok(JSON.parse(event.data))); socket.send(JSON.stringify({ id: 7, method: "Target.createTarget", params: { url: "chrome://settings" } })); });
+    socket.close();
+    assert.deepEqual([answer.id, answer.error?.message], [7, GUARD_REFUSAL]);
+    assert.equal((await fetch(`http://127.0.0.1:${told[0].guardPort}/json/version`).catch(() => ({ status: "refused" }))).status, 403);
+  } finally {
+    await stagehand?.close().catch(() => undefined);
+    await provider.release(ref);
+  }
+  await assert.rejects(fetch(`http://127.0.0.1:${told[0].guardPort}/json/version`), "the guard closed with the release");
 });
 
 test("an endpoint provider attaches to a browser the host runs and release leaves it running; a pid it did not start is never signalled", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {

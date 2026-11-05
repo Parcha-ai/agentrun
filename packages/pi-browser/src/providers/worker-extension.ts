@@ -33,11 +33,55 @@ export function connectPolicy(manifest: Record<string, unknown>, devtoolsUrl: st
 /** The id Chrome gives the unpacked extension at `copy`: the Origin the browser's socket was opened to, without its scheme. */
 export const copyId = (copy: string): string => extensionOrigin(copy).slice("chrome-extension://".length);
 
-/** Writes the policy into the copy and loads it into the running browser; answers the extension's id. */
-export async function loadConfined(copy: string, devtoolsUrl: string): Promise<string> {
+/** The permissions a locked copy's manifest drops: Stagehand's worker never uses them, and `scripting` would let code run in
+ *  the worker (a model's run code) script any tab. */
+export const LOCKED_PERMISSIONS: readonly string[] = ["scripting"];
+/** What a locked copy's worker runs first, before any of its code or code it is given: the extension APIs that would let
+ *  run code go around a DevTools guard are replaced by the few calls Stagehand's worker makes (its heartbeat, its tab
+ *  focus), each held to what it uses. Gone: opening, moving or scripting a tab or a window (on any URL, a file:// one
+ *  among them; every extension may, with no permission), driving a tab over the debugger API, moving one of its own
+ *  pages (the worker's clients), and every other API that opens or captures a page. The originals stay in this closure alone; each replaced property is fixed, so run code can
+ *  neither restore nor reach them. A lock that cannot take hold throws, and the worker does not start. */
+export const WORKER_LOCK = `/* pi-browser: run code in this worker reaches the browser through its DevTools guard alone. */
+(() => {
+  const api = globalThis.chrome;
+  const only = (keys, props) => props !== null && typeof props === "object" && Object.keys(props).every((key) => keys.includes(key));
+  const refused = (what) => Promise.reject(new Error("pi-browser: this browser's extension does not " + what));
+  const { tabs, windows } = api;
+  const debuggerApi = api.debugger;
+  const replace = {
+    tabs: Object.freeze({ query: (query) => tabs.query(query), update: (id, props) => (only(["active"], props) ? tabs.update(id, props) : refused("move or reload a tab")), onCreated: tabs.onCreated }),
+    windows: Object.freeze({ update: (id, props) => (only(["focused"], props) ? windows.update(id, props) : refused("change a window")) }),
+    debugger: Object.freeze({ getTargets: () => debuggerApi.getTargets() }),
+  };
+  for (const name of ["scripting", "sessions", "downloads", "pageCapture", "tabCapture", "desktopCapture", "tabGroups", "search", "history", "bookmarks", "readingList", "sidePanel", "action", "contextMenus", "devtools", "management", "permissions"]) replace[name] = undefined;
+  for (const [name, value] of Object.entries(replace)) {
+    Object.defineProperty(api, name, { value, writable: false, configurable: false, enumerable: true });
+    if (api[name] !== value) throw new Error("pi-browser: the extension API " + name + " could not be locked");
+  }
+  // A worker's own clients: it could move one of the extension's pages elsewhere (WindowClient.navigate).
+  Object.defineProperty(globalThis, "clients", { value: undefined, writable: false, configurable: false });
+  if (globalThis.clients !== undefined) throw new Error("pi-browser: the worker's clients could not be locked");
+})();
+`;
+
+/** Writes the policy into the copy and loads it into the running browser; answers the extension's id. `policyUrl`: the
+ *  socket the extension may connect to, when it is not the one it is loaded through (a guard in front of it, cdp-guard.ts).
+ *  `locked`: the copy also drops LOCKED_PERMISSIONS and its worker runs WORKER_LOCK first, so code run in it reaches the
+ *  browser through the guard alone. */
+export async function loadConfined(copy: string, devtoolsUrl: string, policyUrl: string = devtoolsUrl, { locked = false }: { locked?: boolean } = {}): Promise<string> {
   const file = path.join(copy, "manifest.json");
   const manifest = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
-  await writeFile(file, JSON.stringify(connectPolicy(manifest, devtoolsUrl), null, 2));
+  const confined = connectPolicy(manifest, policyUrl);
+  if (locked) {
+    confined.permissions = (Array.isArray(manifest.permissions) ? manifest.permissions : []).filter((name) => !LOCKED_PERMISSIONS.includes(String(name)));
+    const worker = (manifest.background as { service_worker?: unknown } | undefined)?.service_worker;
+    if (typeof worker !== "string" || worker !== path.basename(worker)) throw new Error("Stagehand's extension names no service worker this copy can lock");
+    const at = path.join(copy, worker);
+    const code = await readFile(at, "utf8");
+    if (!code.startsWith(WORKER_LOCK)) await writeFile(at, WORKER_LOCK + code);
+  }
+  await writeFile(file, JSON.stringify(confined, null, 2));
   const session = await cdpCall(devtoolsUrl, "Extensions.loadUnpacked", { path: copy }, LOAD_MS);
   try {
     const id = session.result?.id;

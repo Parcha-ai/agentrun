@@ -12,7 +12,8 @@ import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall } from "./cdp-call.js";
 import { chromeTail, openChromeStderr, watchChromeStderr } from "./chrome-stderr.js";
 import { claimWriter, freeWriter, noteWriter } from "./profiles.js";
-import { chromeArgs } from "./chrome-args.js";
+import { chromeArgs, extensionOrigin as originOf } from "./chrome-args.js";
+import { startCdpGuard } from "./cdp-guard.js";
 import { COPY, copyExtension, copyId, isLoaded, loadConfined } from "./worker-extension.js";
 
 export type CdpOptions =
@@ -24,9 +25,16 @@ export type CdpOptions =
   | { chrome: {
     executablePath: string; profileRoot: string; headless?: boolean;
     /** More arguments for each Chrome. A function is given the loopback port that session's DevTools socket will open on, picked
-     *  free for it before it starts (else Chrome picks one): for a host whose arguments must name it, such as a proxy fence that
-     *  lets Chrome reach its own socket and nothing else on loopback. */
-    args?: string[] | ((launch: { debuggingPort: number }) => string[]);
+     *  free for it before it starts (else Chrome picks one), and with `guard` the guard's port: for a host whose arguments must
+     *  name them, such as a proxy fence that lets Chrome reach its own socket and nothing else on loopback. */
+    args?: string[] | ((launch: { debuggingPort: number; guardPort?: number }) => string[]);
+    /** Every client of a session (the driver, Stagehand's extension in the browser, and so code a model runs there) reaches
+     *  its DevTools socket through a guard of its own (cdp-guard.ts), which refuses each command that would open a file,
+     *  a browser-internal page or any scheme but http, https and about:blank, or hand a page a file of this machine. The
+     *  attach target names the guard; the browser's own socket is this provider's alone. A host fence must let the browser
+     *  reach the guard's port (`guardPort`, given to `args`) and not the socket's. A guard lives in this process: a session
+     *  found after a restart has none, and its attach is refused (release it). */
+    guard?: boolean;
     /** Chrome's own sandbox, on unless `false`; absent, `PI_BROWSER_NO_SANDBOX=1` turns it off. Turn it off only where
      *  Chrome cannot start its sandbox (root, a container, confined user namespaces), never because a run is in CI. */
     sandbox?: boolean;
@@ -307,6 +315,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   const privateTmps = new Map<string, string>();
   /** The confined extension each lease has been given, by tag, loaded on its first attach: its id is handed to Stagehand as the attach target's extension. */
   const extensionIds = new Map<string, Promise<string | null>>();
+  /** Each guarded session's guard (`guard`), by tag, closed with its release. */
+  const guards = new Map<string, Awaited<ReturnType<typeof startCdpGuard>>>();
   /** A lease whose private TMPDIR is gone (or never made) keeps neither its map entry nor its record. */
   const forgetTmp = async (root: string, tag: string): Promise<void> => {
     privateTmps.delete(tag);
@@ -324,7 +334,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   /** The lease's confined extension, loaded from its copy on the first attach (an earlier attach, here or in a process that restarted, may have loaded it
    *  already); null when the lease was started without one. A load that fails fails the attach: Stagehand is never left to load its own, unconfined, directory
    *  (and the browser's socket is open to the copy's Origin only). */
-  const confinedExtension = (tag: string, devtoolsUrl: string): Promise<string | null> => {
+  const confinedExtension = (tag: string, devtoolsUrl: string, policyUrl: string = devtoolsUrl): Promise<string | null> => {
     if (!("chrome" in options) || options.chrome.confineExtension === false) return Promise.resolve(null);
     const { profileRoot } = options.chrome;
     const known = extensionIds.get(tag);
@@ -335,7 +345,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       const copy = tmp ? path.join(tmp, COPY) : null;
       if (!copy || !(await lstat(copy).then(() => true, () => false))) return null;
       const own = copyId(copy);
-      return (await isLoaded(devtoolsUrl, own)) ? own : await loadConfined(copy, devtoolsUrl);
+      return (await isLoaded(devtoolsUrl, own)) ? own : await loadConfined(copy, devtoolsUrl, policyUrl, { locked: options.chrome.guard === true });
     })();
     extensionIds.set(tag, loading);
     loading.catch(() => { if (extensionIds.get(tag) === loading) extensionIds.delete(tag); });
@@ -355,9 +365,20 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       // The session's port and the host's arguments, before anything is made for it: a pick or a callback that fails leaves
       // nothing behind. A port taken by something else between this pick and Chrome's start leaves Chrome without its
       // socket: the wait below finds no DevToolsActivePort and the start fails, never attaching to what holds the port.
-      const debuggingPort = typeof args === "function" ? await freeLoopbackPort() : undefined;
-      const more = typeof args === "function" ? args({ debuggingPort: debuggingPort! }) : args;
-      if (spec.profile) await prepareProfile(profileRoot, dir, spec.profile, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal, remove);
+      const guarded = options.chrome.guard === true;
+      const debuggingPort = typeof args === "function" || guarded ? await freeLoopbackPort() : undefined;
+      // The extension whose pages the guard lets the driver open: the lease's copy once it is made, else Stagehand's own.
+      let driverOrigin: string | null = null;
+      const guard = guarded ? await startCdpGuard({ upstreamPort: debuggingPort!, extension: () => driverOrigin }) : undefined;
+      let more: string[];
+      try {
+        more = typeof args === "function" ? args({ debuggingPort: debuggingPort!, ...(guard ? { guardPort: guard.port } : {}) }) : args;
+        if (spec.profile) await prepareProfile(profileRoot, dir, spec.profile, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal, remove);
+      } catch (error) {
+        await guard?.close();
+        throw error;
+      }
+      if (guard) guards.set(spec.tag, guard);
       try {
         signal?.throwIfAborted();
         await mkdir(path.join(dir, "Default"), { recursive: true });
@@ -383,11 +404,18 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
         // The copy is made before Chrome starts: its path names the extension, and so the one Origin the browser's socket is opened to.
         let copy: string | null = null;
         if (tmp && options.chrome.confineExtension !== false) {
-          try { copy = await copyExtension(tmp); } catch (error) {
+          try { copy = await copyExtension(tmp); driverOrigin = originOf(copy); } catch (error) {
             const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag), tmp], remove);
             await forgetTmp(profileRoot, spec.tag);
             throw left ? new ProfileNotRemovedError(left.dirs, left.error, error) : error;
           }
+        }
+        // A guarded session runs only on its own locked copy of the extension: Stagehand's own would let code run in it go around the guard.
+        if (guard && !copy) {
+          const refusal = new BrowserFailureError(browserFailure("browser_unavailable", "This browser's extension could not be confined here (no private temporary directory for it), so no guarded session was started."));
+          const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag), ...(tmp ? [tmp] : [])], remove);
+          await forgetTmp(profileRoot, spec.tag);
+          throw left ? new ProfileNotRemovedError(left.dirs, left.error, refusal) : refusal;
         }
         const stderrFd = openChromeStderr(tmp);
         let child: ChildProcess;
@@ -449,6 +477,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
         }
       } catch (error) {
         freeWriter(spec.tag);
+        await guards.get(spec.tag)?.close();
+        guards.delete(spec.tag);
         if (spec.profile) {
           // A reader's copy of the saved cookies stays on disk when this fails: the caller is told, with the start's own failure kept.
           const left = await removeAll([dir], remove);
@@ -478,8 +508,17 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       if (new URL(url).pathname !== own.path) throw new Error(`the browser on port ${local.port} is not the browser this lease's profile records`);
       // A Chrome this host did not start outlived the host that did: its stderr file is bounded here too.
       watchChromeStderr(privateTmps.get(local.tag) ?? await recordedTmp(options.chrome.profileRoot, local.tag) ?? await ownedTmp(profileDir(options.chrome.profileRoot, local.tag), local.tag), local.pid);
-      const extensionId = await confinedExtension(local.tag, url);
-      return { sdkCdpUrl: url, ...(extensionId ? { extensionId } : {}) };
+      // A guarded session is reached through its guard alone, the extension's socket policy naming it.
+      let sdkCdpUrl = url;
+      if (options.chrome.guard) {
+        const guard = guards.get(local.tag);
+        if (!guard) throw new BrowserFailureError(browserFailure("browser_unavailable", "This browser session's guard went with the process that started it, so it cannot be driven from here: release it, and the next call opens a fresh one."));
+        const guarded = new URL(url);
+        guarded.port = String(guard.port);
+        sdkCdpUrl = guarded.toString();
+      }
+      const extensionId = await confinedExtension(local.tag, url, sdkCdpUrl);
+      return { sdkCdpUrl, ...(extensionId ? { extensionId } : {}) };
     },
 
     async release(ref) {
@@ -526,6 +565,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       // nothing is removed.
       freeWriter(local.tag);
       extensionIds.delete(local.tag);
+      await guards.get(local.tag)?.close();
+      guards.delete(local.tag);
       if (!("endpoint" in options) && SAFE_TAG.test(local.tag)) {
         const dir = profileDir(options.chrome.profileRoot, local.tag);
         const socketDir = await singletonDir(dir);
