@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS } from "./commands.generated.mjs";
 import { FLAGS, WAIT, followTimeline, waitRun } from "./follow.mjs";
-import { SECRETS } from "./login.mjs";
+import { SECRETS, guarded } from "./login.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
 
 /** The hand-written commands that run as they are given (`run`), beside the table's. */
@@ -129,6 +129,17 @@ const alive = (pid) => {
 
 const trim = (url) => url.replace(/\/+$/, "");
 
+/** A base URL as every command takes it: http or https, with no query, fragment, user or password, which would carry
+ *  the token elsewhere or swallow the path appended to it. `where` names it in the refusal; the URL itself is never
+ *  echoed, as it may hold a password. */
+function baseOf(given, where) {
+  const url = URL.canParse(given) ? new URL(given) : undefined;
+  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
+    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the API's base, ending /v2.`);
+  }
+  return trim(given);
+}
+
 /** Where the request goes and the token it carries. A token goes only with the address it came with: the local
  *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
 function targetOf(values, env) {
@@ -144,8 +155,11 @@ function targetOf(values, env) {
     throw new Exit(4, `${recordFile} is not a server record (base_url a string, pid a positive whole number); refusing it.`);
   }
   const stale = record && `The server recorded in ${recordFile} (pid ${record.pid}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.`;
-  const local = trim(record?.base_url ?? DEFAULT_BASE_URL);
-  const base = trim(values["base-url"] ?? env.AGENTRUN_BASE_URL ?? config.base_url ?? local);
+  const local = baseOf(record?.base_url ?? DEFAULT_BASE_URL, `base_url in ${recordFile}`);
+  const base = values["base-url"] !== undefined ? baseOf(values["base-url"], "--base-url")
+    : env.AGENTRUN_BASE_URL !== undefined ? baseOf(env.AGENTRUN_BASE_URL, "AGENTRUN_BASE_URL")
+    : config.base_url !== undefined ? baseOf(config.base_url, `base_url in ${configFile}`)
+    : local;
   let token = env.AGENTRUN_API_KEY || (config.base_url && base === trim(config.base_url) ? config.api_key : undefined);
   const isLocal = base === local;
   if (isLocal && record && !alive(record.pid)) throw new Exit(3, stale);
@@ -312,7 +326,9 @@ async function api(argv, env, io) {
   // The base URL's own path counts too: --base-url .../v2/settings with PUT /tool-keys/exa reaches the secret route.
   const landed = secretAt(verb, `${target.base}${path}`);
   if (landed) refuseInline(`${verb} ${landed.path}`, values.body);
-  return send(clientOf(target, io), { method: verb, path, headers, body, type });
+  // A body bound for a secret route: an error's answer is never printed, and the body's values are cut from the rest.
+  const client = secret || landed ? guarded(clientOf, target, io, body) : clientOf(target, io);
+  return send(client, { method: verb, path, headers, body, type });
 }
 
 async function command(entry, argv, env, io) {
@@ -367,7 +383,7 @@ async function command(entry, argv, env, io) {
   const target = targetOf(values, env);
   const landed = !entry.secretBody && secretAt(entry.method, `${target.base}${path}`);
   if (landed) refuseInline(`${entry.command.join(" ")} (${landed.path} under the base URL)`, values.body);
-  const client = clientOf(target, io);
+  const client = entry.secretBody || landed ? guarded(clientOf, target, io, body) : clientOf(target, io);
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (!values.wait) return send(client, req);
@@ -386,7 +402,7 @@ async function local(entry, argv, env, io) {
   const args = positionals.slice(entry.command.length);
   const count = entry.pathParams.length;
   if (args.length !== count) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
-  const cli = { fail: (code, message) => new Exit(code, message), targetOf, clientOf, request, send, secretAt, BAD_HEADER };
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, send, secretAt, BAD_HEADER };
   return entry.run({ values, args, env, io, cli });
 }
 

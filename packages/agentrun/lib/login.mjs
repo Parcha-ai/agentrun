@@ -20,13 +20,60 @@ async function readSecret(io, fail, what, how) {
   return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
 }
 
-/** `io` with every write's copy of `secret` cut out: no answer of the server may carry it back to a terminal. */
-const scrubbed = (io, secret) => {
-  const scrub = (stream) => ({ isTTY: stream.isTTY, write: (chunk) => stream.write(secret.length >= 6 ? String(chunk).split(secret).join("[hidden]") : chunk) });
+/** The forms a server could quote a secret in: as it is, JSON-escaped and URL-encoded. */
+const formsOf = (secret) => [...new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])].sort((a, b) => b.length - a.length);
+
+/** `io` with every copy of each secret, in any of its forms and at any length, cut from every write. */
+const scrubbed = (io, secrets) => {
+  const forms = [...new Set(secrets.filter(Boolean).flatMap(formsOf))].sort((a, b) => b.length - a.length);
+  const cut = (text) => forms.reduce((at, form) => at.split(form).join("[hidden]"), text);
+  const scrub = (stream) => ({ isTTY: stream.isTTY, on: stream.on?.bind(stream), write: (chunk) => stream.write(forms.length ? cut(String(chunk)) : chunk) });
   return { ...io, stdout: scrub(io.stdout), stderr: scrub(io.stderr) };
 };
 
-const trim = (url) => url.replace(/\/+$/, "");
+/** The string values of a secret route's JSON body (none of its `type` or `url` fields), or the whole body when it is
+ *  not JSON: the secrets to cut from what is printed. */
+function secretsOf(body) {
+  const text = body === undefined ? "" : String(body);
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return [text];
+  }
+  const found = [];
+  const walk = (node, key) => {
+    if (typeof node === "string") return void (["type", "url"].includes(key) || found.push(node));
+    if (node && typeof node === "object") for (const [k, v] of Object.entries(node)) walk(v, Array.isArray(node) ? key : k);
+  };
+  walk(value);
+  return found;
+}
+
+/** A client for a request that carries a secret: a refusal prints the status, the error's code when it is one, and a
+ *  message of this CLI's own, never the server's answer, which could quote the secret; what it does print has every
+ *  copy of `secrets` cut. */
+function secretClient(clientOf, target, io, secrets) {
+  const client = clientOf(target, scrubbed(io, secrets));
+  return {
+    ...client,
+    refused(response, bytes) {
+      let code;
+      try {
+        code = JSON.parse(bytes.toString("utf8"))?.error?.code;
+      } catch {
+        code = undefined;
+      }
+      const named = typeof code === "string" && /^[a-z_]+$/.test(code) ? ` ${code}` : "";
+      client.io.stderr.write(`The server refused it: ${response.status}${named}. Its answer is not shown, since it could quote the secret sent.\n`);
+      return response.status === 401 || response.status === 403 ? 4 : 1;
+    },
+  };
+}
+
+/** cli.mjs's client for a generated command or an `api` call whose body goes to a secret route. */
+export const guarded = (clientOf, target, io, body) => secretClient(clientOf, target, io, secretsOf(body));
+
 const print = (io, value) => io.stdout.write(`${io.stdout.isTTY ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`);
 
 export const LOGIN = {
@@ -40,18 +87,30 @@ export const LOGIN = {
   ],
   options: {},
   async run({ values, env, io, cli }) {
-    const given = values["base-url"] ?? env.AGENTRUN_BASE_URL;
+    const flagged = values["base-url"] !== undefined;
+    const given = flagged ? values["base-url"] : env.AGENTRUN_BASE_URL;
     if (given === undefined) throw cli.fail(2, "agentrun login needs the server: --base-url URL (its API, ending /v2) or AGENTRUN_BASE_URL.");
-    if (!URL.canParse(given) || !/^https?:$/.test(new URL(given).protocol)) throw cli.fail(2, `--base-url takes an http or https URL, not ${given}`);
-    const base = trim(given);
+    const base = cli.baseOf(given, flagged ? "--base-url" : "AGENTRUN_BASE_URL");
     const token = (await readSecret(io, cli.fail, "The token", "agentrun login --base-url URL < FILE")).trim();
     if (!token) throw cli.fail(2, "stdin holds no token: one line, the token alone.");
     // Refused before it is sent, as every command refuses one: fetch would quote a bad header value in its error.
     if (cli.BAD_HEADER.test(token) || /\s/.test(token)) throw cli.fail(4, "The token is not a valid header value (it holds a space, a line break, a control character or a character outside Latin-1); nothing was written.");
-    const checked = await cli.request(cli.clientOf({ base, token }, scrubbed(io, token)), { method: "GET", path: "/agents?limit=1", headers: {} });
+    const client = secretClient(cli.clientOf, { base, token }, io, [token]);
+    const checked = await cli.request(client, { method: "GET", path: "/agents?limit=1", headers: {} });
     if (checked.code !== undefined) {
-      io.stderr.write(`${checked.code === 4 ? `The server at ${base} refused the token` : `The server at ${base} did not take the check`}; nothing was written.\n`);
+      client.io.stderr.write(`${checked.code === 4 ? `The server at ${base} refused the token` : `The server at ${base} did not take the check`}; nothing was written.\n`);
       return checked.code;
+    }
+    // A 200 from another route or another server would save a token nothing checked: the answer must be the agents list.
+    let list;
+    try {
+      list = JSON.parse(checked.bytes.toString("utf8"));
+    } catch {
+      list = undefined;
+    }
+    if (!Array.isArray(list?.agents) || !("next_cursor" in list)) {
+      client.io.stderr.write(`The server at ${base} answered the check with ${checked.response.status}, not an agents list; nothing was written.\n`);
+      return 1;
     }
     const file = configFileOf(env);
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -105,7 +164,7 @@ export const TOOL_KEY_SET = {
     const target = cli.targetOf(values, env);
     // Where it lands, the base URL's own path counted: the tool key route, or nothing is sent.
     if (cli.secretAt("PUT", `${target.base}${path}`)?.operationId !== "saveToolKey") throw cli.fail(2, `agentrun tool-keys set: PUT ${path} under ${target.base} is not the tool key route; nothing was sent.`);
-    return cli.send(cli.clientOf(target, scrubbed(io, value)), { method: "PUT", path, headers: {}, body: JSON.stringify({ values: { [field]: value } }), type: "application/json" });
+    return cli.send(secretClient(cli.clientOf, target, io, [value]), { method: "PUT", path, headers: {}, body: JSON.stringify({ values: { [field]: value } }), type: "application/json" });
   },
 };
 
