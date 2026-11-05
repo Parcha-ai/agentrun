@@ -9,7 +9,7 @@
 // default; an MCP server's wildcard key mcp:<server>/* is kept and applied. The reflect carve-out holds under ask,
 // never under deny. No socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -266,6 +266,46 @@ test("an ask answered after the server restarted while the run was parked still 
     assert.match(message, /They allowed it, and it ran\. Its result:\n\{"ok":true/, run.harness);
   }
   assert.deepEqual(await dialled(), [PAGE, PAGE], "each ran once, the cancelled one never");
+});
+
+test("a codex run whose process dies between the approval's commit and the parked turn's settle reopens with that turn settled: it is never run again, and the approval's result reaches the model once", { timeout: 180_000 }, async (t) => {
+  const dialled = await network(t);
+  const exited = join(await scratch(t), "exited");
+  withEnv(t, { AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER: exited });
+  const server = await serve(t, GATE);
+  const answer = await owner(server);
+  assert.equal((await server.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const seen = async (id) => {
+    const runId = await fetching(server.api, id, "codex");
+    // Its request's id from its row (the gate names a request by its call: ap_ and the call's digest): the crashed run's
+    // parked turn holds its end, so that run never reads input_required with a pending approval.
+    let row;
+    for (let i = 0; !row; i++) {
+      assert.ok(i < 600, "the call did not park");
+      row = ((await server.api("GET", `/runs/${runId}/timeline`)).body.rows ?? []).find((r) => r.kind === "tool_approval_requested");
+      if (!row) await sleep(100);
+    }
+    const approval = `ap_${createHash("sha256").update(JSON.stringify([row.tool_use_id, "web_fetch", { url: PAGE }])).digest("hex").slice(0, 16)}`;
+    assert.equal((await answer(runId, approval, { decision: "allow" })).status, 204);
+    const { rows } = await resumed(server.api, runId);
+    const resume = rows.findIndex((row) => row.kind === "user_message" && row.text?.startsWith(RESUME_PREFIX));
+    return {
+      results: rows.filter((row) => row.kind === "tool_result" && row.tool_name === "web_fetch").length,
+      resumes: rows.filter((row) => row.kind === "user_message" && row.text?.startsWith(RESUME_PREFIX)).length,
+      answers: rows.filter((row) => row.text === "Fetched once.").length,
+      // The parked turn says nothing more: the model answers once it has read the approval's result, never before.
+      answeredBeforeResult: rows.findIndex((row) => row.text === "Fetched once.") < resume,
+    };
+  };
+  // The first run's process goes by a signal after the answer's commit, before its parked turn's end (the seam marks it
+  // once); the second's does not.
+  const crashed = await seen("crashed");
+  assert.ok(existsSync(exited), "the first run's process went after the answer's commit");
+  const control = await seen("control");
+  assert.deepEqual(crashed, control, "the reopened run reads as one that never crashed: no turn run again, one resume");
+  assert.equal(crashed.resumes, 1, "the approval's result reaches the model once");
+  assert.equal(crashed.answeredBeforeResult, false, "the old turn was not run again before the result");
+  assert.deepEqual(await dialled(), [PAGE, PAGE], "each call ran once");
 });
 
 /** The owner's password session on a server that already has its owner (a restart): signed in with the same phrase. */

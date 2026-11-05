@@ -26,6 +26,7 @@
 // after it, and the turn is interrupted once its result is in, then settled as a stopped one is, its end interrupted.
 // The answer's resume is a message of its own, sent as a person's is; a turn the park ended is not resumed at the next
 // open while the call still waits.
+import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, type JsonObject, ROOT_CONVERSATION_ID, type ToolRegistration, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
@@ -443,6 +444,14 @@ export function adapterRun(
           // A turn the gate parked ends interrupted, never failed on the request its park refused.
           const why = refused ?? halted?.message ?? (failed === undefined || parked !== undefined ? undefined : `${harness}: ${failed}`);
           if (parked !== undefined && why === undefined) status = "interrupted";
+          // A test's seam, unset in a server (AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER, a file that marks it once): a parked
+          // turn holds its end until the answer's message is recorded, then the process goes by a signal, as a crash
+          // between the two would leave the run.
+          if (CRASH_SEAM && parked !== undefined && !existsSync(CRASH_SEAM)) {
+            await answerIn;
+            writeFileSync(CRASH_SEAM, "");
+            process.kill(process.pid, "SIGKILL");
+          }
           const unsent = refused !== undefined && capRefused;
           const figures = unsent ? refusedFigures : undefined;
           refusedFigures = undefined;
@@ -485,6 +494,9 @@ export function adapterRun(
 
   /** The gate's resume (tool-gate.ts): the answer as a message of its own, recorded with the gate's mark in one commit,
    *  then sent as a person's is. */
+  const CRASH_SEAM = process.env.AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER;
+  let answerRecorded: (() => void) | undefined;
+  const answerIn = new Promise<void>((resolve) => (answerRecorded = resolve));
   const resume: Resume = async (id, content, mark) => {
     await opened;
     const message: Message = { id: `approval-${id}`, content, recorded: commit(async (tx) => {
@@ -492,6 +504,7 @@ export function adapterRun(
       await mark(tx);
     }) };
     await message.recorded;
+    answerRecorded?.();
     if (turn) queue.push(message);
     else runTurns(sendOf(message));
   };
