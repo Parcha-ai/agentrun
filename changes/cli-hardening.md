@@ -10,3 +10,4 @@ The CLI's edges, each said plainly:
 - `login` writes its config through a temporary file with a random name, opened only when it is new, and a config it cannot write is exit 4 with a plain message and nothing left behind.
 - A run stopped at its spend cap prints a hint naming `agentrun runs raise-cap RUN_ID --max-cost-usd N`, N the server's `suggested_cap_usd`.
 - `api --header` keeps every header name it can send, `constructor` included, and refuses `__proto__`, which Node's fetch would drop unsent.
+- `skill install --codex`, and the default install for Codex, write `~/.agents/skills/agentrun-cli`, the user skills folder Codex reads (Cursor reads it too), not `$CODEX_HOME/skills`, which Codex marks deprecated. An older copy of the skill there is left in place, and the command prints one line naming it and the new copy. With no flag, it installs into each of `~/.claude` and `~/.agents` that exists.

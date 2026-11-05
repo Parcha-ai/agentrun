@@ -124,9 +124,22 @@ test("SKILL.md: its front matter, its size, and each recipe block run in order a
     mkdirSync(join(server.dir, ".claude"));
     const claude = cli(["skill", "install"]);
     assert.deepEqual([claude.code, claude.json().installed], [0, [join(server.dir, ".claude", "skills", "agentrun-cli")]]);
+    // Codex reads a person's skills from ~/.agents/skills; $CODEX_HOME/skills is its deprecated folder. An older copy
+    // of this skill there is named, not deleted.
+    const deprecated = join(server.dir, "codex", "skills", "agentrun-cli");
+    mkdirSync(deprecated, { recursive: true });
+    writeFileSync(join(deprecated, "SKILL.md"), "---\nname: agentrun-cli\n---\nAn older copy.\n");
+    const agents = join(server.dir, ".agents", "skills", "agentrun-cli");
     const codex = cli(["skill", "install", "--codex"], { extra: { CODEX_HOME: join(server.dir, "codex") } });
-    assert.deepEqual(codex.json().installed, [join(server.dir, "codex", "skills", "agentrun-cli")]);
-    assert.deepEqual(readdirSync(join(server.dir, "codex", "skills", "agentrun-cli")).sort(), ["SKILL.md", "references"]);
+    assert.equal(codex.code, 0, codex.err);
+    assert.deepEqual(codex.json().installed, [agents]);
+    assert.deepEqual(readdirSync(agents).sort(), ["SKILL.md", "references"]);
+    assert.equal(readFileSync(join(deprecated, "SKILL.md"), "utf8"), "---\nname: agentrun-cli\n---\nAn older copy.\n", "the deprecated copy is left");
+    assert.equal(codex.err.trim().split("\n").length, 1, codex.err);
+    assert.ok(codex.err.includes(deprecated) && codex.err.includes(agents), codex.err);
+    // With no flag: each of ~/.claude and ~/.agents that exists.
+    const both = cli(["skill", "install"]);
+    assert.deepEqual(both.json().installed, [join(server.dir, ".claude", "skills", "agentrun-cli"), agents]);
 
     const other = join(server.dir, "other");
     mkdirSync(join(other, "agentrun-cli"), { recursive: true });
