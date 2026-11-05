@@ -66,19 +66,22 @@ test("a note, a skill and a workflow draft in one answer: one grader call, one m
   assert.match(view.learning.detail, /Learned: Check units\. Also learned the skill find-policies and the workflow find-policies/);
 });
 
-test("a skill from a run whose job failed is dropped by the checks as skill_outcome, and nothing of the answer is kept", { timeout: 120_000 }, async (t) => {
+test("a skill from a run whose job failed is left out by the checks as skill_outcome, and the rest of its answer goes on to the grader", { timeout: 120_000 }, async (t) => {
   const { api, data, grades } = await server(t);
   await made(api, answering("failing", answer(), ["Fail the job."]));
   const { view } = await ended(api, await started(api, "failing"), ["failed"]);
-  assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "checker"], JSON.stringify(view.learning));
+  assert.deepEqual([view.learning?.state, view.learning?.reason], ["merged", null], JSON.stringify(view.learning));
   const saved = await savedOf(data, view.run_id);
   assert.deepEqual(saved.learning.problems.map((problem) => [problem.rule, problem.path]), [["skill_outcome", "skills/find-policies/SKILL.md"]]);
-  assert.match(view.learning.detail, /didn't pass the checks on what it learned \(a skill from a run that didn't finish its job\)/);
-  assert.equal(grades(), 0, "no grader call");
-  assert.deepEqual(mergesOf(repoOf(data, "failing"), view.run_id), []);
+  assert.match(view.learning.detail, /Not kept: it didn't pass the checks on what it learned \(a skill from a run that didn't finish its job\)/);
+  assert.equal(grades(), 1, "the rest is graded");
+  const repo = repoOf(data, "failing");
+  assert.equal(mergesOf(repo, view.run_id).length, 1);
+  const tree = git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n");
+  assert.ok(tree.includes("check-units.md") && !tree.includes("skills/find-policies/SKILL.md"), tree.join(","));
 });
 
-test("a draft may name only the agent's own tools: with read granted a draft that names it merges, and without it the checks refuse it", { timeout: 120_000 }, async (t) => {
+test("a draft may name only the agent's own tools: with read granted a draft that names it merges, and without it the checks leave the draft out and the rest merges", { timeout: 120_000 }, async (t) => {
   const { api, data } = await server(t);
   const text = answer({ json: draft(["read"]) });
   await made(api, answering("reader", text, [], { tools: ["read"] }));
@@ -86,7 +89,8 @@ test("a draft may name only the agent's own tools: with read granted a draft tha
   assert.equal(granted.view.learning?.state, "merged", JSON.stringify(granted.view.learning));
   await made(api, answering("bare", text));
   const bare = await ended(api, await started(api, "bare"));
-  assert.deepEqual([bare.view.learning?.state, bare.view.learning?.reason], ["dropped", "checker"]);
+  assert.deepEqual([bare.view.learning?.state, bare.view.learning?.reason], ["merged", null]);
+  assert.ok(!git(repoOf(data, "bare"), ["ls-tree", "-r", "--name-only", "main"]).includes("workflows/"), "the draft is not on main");
   const saved = await savedOf(data, bare.view.run_id);
   assert.deepEqual(saved.learning.problems.map((problem) => problem.rule), ["workflow"]);
   assert.match(saved.learning.problems[0].detail, /tool "read" is not one of the host's tools/);
