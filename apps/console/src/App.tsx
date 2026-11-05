@@ -302,7 +302,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     let live = true;
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
-    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), v2.listRuns(10)])
+    // An agent picked: its own latest runs, as every figure below the picker follows it.
+    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
       .then(([s, r]) => {
         if (!live) return;
         setMission(missionFrom(s, r.runs));
