@@ -15,7 +15,8 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { REPLAY } from "../dist/host-tools.js";
-import { deniedText, gateToolCall, RunGate, TURN_ORIGIN_FILE, waitingText } from "../dist/tool-gate.js";
+import { runsTestHooks } from "../dist/runs.js";
+import { deniedText, gateToolCall, RESUME_PREFIX, RunGate, TURN_ORIGIN_FILE, waitingText } from "../dist/tool-gate.js";
 import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -600,6 +601,42 @@ test("a person's message while an approval waits declines the call, with the mes
   }
   await sleep(2_000);
   assert.deepEqual(await dialled(), [], "neither call ran");
+});
+
+test("an answer or a stop that lands while a declining message is on its way stands: an allow stays allow and runs once, and a stop stays withdrawn with no resume", { timeout: 150_000 }, async (t) => {
+  const dialled = await network(t);
+  const server = await serve(t, GATE);
+  const { api } = server;
+  const answer = await owner(server);
+  t.after(() => (runsTestHooks.personsTurn = undefined));
+  for (const [lands, url] of [["allow", PAGE], ["stop", `${PAGE}notes.txt`]]) {
+    const runId = await fetching(api, `latched-${lands}`, "pi", url, { tool_settings: { web_fetch: { permission: "ask" } } });
+    const id = (await parked(api, runId)).view.pending.id;
+    // The message has read the call waiting, and is held as it sends its turn (runs.ts personsTurn).
+    let release, reached;
+    const held = new Promise((resolve) => (release = resolve));
+    const at = new Promise((resolve) => (reached = resolve));
+    runsTestHooks.personsTurn = () => (reached(), held);
+    const sent = api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
+    await at;
+    if (lands === "allow") assert.equal((await answer(runId, id, { decision: "allow" })).status, 204);
+    else assert.deepEqual(((await api("POST", `/runs/${runId}/stop`, {})).body ?? {}).stopped, true);
+    runsTestHooks.personsTurn = undefined;
+    release();
+    assert.ok([200, 202].includes((await sent).status), `${lands}: the message is taken`);
+    const { rows } = await follow(api, runId, ["completed", "input_required"], { deadlineMs: 55_000 });
+    const kept = JSON.parse(await readFile(join(server.data, "runs", runId, "serve.json"), "utf8")).approvals[id];
+    const resumes = rows.filter((row) => row.kind === "user_message" && row.text?.startsWith(RESUME_PREFIX));
+    if (lands === "allow") {
+      assert.deepEqual([kept.decision, kept.by], ["allow", undefined], "the allow stands: first answer wins");
+      await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+      assert.deepEqual((await dialled()).filter((dial) => dial === url), [url], "and its call ran once");
+    } else {
+      assert.equal(kept.decision, "withdrawn", "the stop stands");
+      assert.deepEqual(resumes, [], "nothing resumes the parked call");
+      assert.deepEqual((await dialled()).filter((dial) => dial === url), [], "and it never ran");
+    }
+  }
 });
 
 test("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {

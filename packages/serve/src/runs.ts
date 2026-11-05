@@ -740,6 +740,9 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   }
 }
 
+/** Seams for tests, each unset in a server: `personsTurn` holds a person's turn just after its origin went. */
+export const runsTestHooks: { personsTurn?: (runDir: string) => Promise<void> | void } = {};
+
 export class Runs {
   private readonly runs = new Map<string, Run>();
   /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
@@ -2235,6 +2238,7 @@ export class Runs {
     // A write of the origin still in flight lands first, then goes: none starts from here (learning-run.ts reflectTurn).
     await run.originWrite?.catch(() => undefined);
     await rm(join(run.dir, TURN_ORIGIN_FILE), { force: true }).catch((error: Error) => warn(run.id, `its turn's origin is not removed: ${error.message}`));
+    await runsTestHooks.personsTurn?.(run.dir);
   }
 
   /** Waits, up to a request's deadline, while `holds` (checked every `everyMs`): else 503 `unavailable`, saying `why`. */
