@@ -228,6 +228,15 @@ export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv): Plane {
  *  keys missing make it unavailable for that launch alone, and restored keys make the next one run. */
 export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: "browserbase" });
 
+/** A run's saved Plane as a launch reads it: a vendor's missing-key refusal an earlier server saved (noBrowserKey's exact
+ *  words, Browserbase's or Kernel's) is that vendor again, which the launch checks again as usual (recheckPlane), so
+ *  restored keys make it run. Every other saved value stays as it is: `auto` with no key at a run's first launch
+ *  (NO_BROWSER_KEY) and `chrome` stay frozen. The same Plane where nothing changes. */
+export function keptVendor(plane: Plane): Plane {
+  const vendor = (Object.keys(BROWSER_KEYS) as BrowserVendor[]).find((name) => plane.browser === noBrowserKey(name));
+  return vendor ? { ...plane, browser: vendor } : plane;
+}
+
 /** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: Kernel's where
  *  Kernel is picked or resolved, else Browserbase's, so a page links a missing key to the row it is saved on. */
 export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): "kernel" | "browserbase" => (picked === "kernel" || resolution === "kernel" ? "kernel" : "browserbase");

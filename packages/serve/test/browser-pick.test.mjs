@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CHECK_MS, checkKey, KEY_CHECKS } from "../dist/key-check.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { keptFromBefore, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
+import { keptFromBefore, keptVendor, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import { FAUX_BROWSER_ENV, TOOLS } from "../dist/tools.js";
 import { calls as kernelCalls, KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -63,6 +63,11 @@ test("a run's plane names its browser from the server's keys, set or saved; a la
   // restored later make it run.
   assert.deepEqual(recheckPlane(keptFromBefore(today), KERNEL).browser, "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
   assert.deepEqual(keptFromBefore({ web_fetch: "kernel" }), { web_fetch: "kernel" }, "no browser, none added");
+  // A vendor's missing-key refusal an earlier server saved reads as that vendor again; every other saved value as it is.
+  const saved = { browser: "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID", web_fetch: "kernel" };
+  assert.deepEqual(keptVendor(saved), { browser: "browserbase", web_fetch: "kernel" });
+  assert.deepEqual(keptVendor({ browser: "unavailable: kernel picked, no KERNEL_API_KEY" }), { browser: "kernel" });
+  for (const frozen of [{ browser: NO_BROWSER_KEY }, { browser: NO_CHROME }, { browser: "browserbase" }, { web_fetch: "kernel" }]) assert.equal(keptVendor(frozen), frozen, JSON.stringify(frozen));
 });
 
 test("the browser lists browser_downloads only on a vendor that keeps a session's downloads: Browserbase does, Kernel does not; upload is listed on both", async (t) => {
@@ -214,6 +219,28 @@ test("an older run reopened while Browserbase's keys are missing reads its brows
   assert.equal(JSON.parse(await readFile(file, "utf8")).tool_plane.browser, "browserbase", "kept as its choice, never the refusal");
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: BB })).status, 204);
   assert.equal(await launch(), "browserbase", "restored, the next launch runs on Browserbase");
+});
+
+test("a run an earlier server saved with Browserbase's missing-key refusal runs on Browserbase once its keys are restored, and keeps the vendor from then on", { timeout: 120_000 }, async (t) => {
+  const log = join(await scratch(t), "browser.jsonl");
+  withEnv(t, { ...BB, FAUX_BROWSER_LOG: log }, KEYS);
+  const first = await serve(t, { fauxBrowser: FAUX_BROWSER });
+  assert.equal((await first.api("POST", "/agents", agent("old", { instructions: "Browse.", tools: ["browser"] }))).status, 201);
+  const started = await first.api("POST", "/agents/old/runs", { input: { content: "Browse the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { after } = await follow(first.api, started.body.run_id, ["completed"]);
+  await first.close();
+  // As the server before this fix kept it, reopened while Browserbase's keys were missing.
+  const file = join(first.data, "runs", started.body.run_id, "serve.json");
+  const meta = JSON.parse(await readFile(file, "utf8"));
+  await writeFile(file, JSON.stringify({ ...meta, tool_plane: { ...meta.tool_plane, browser: "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID" } }));
+  const { api } = await serve(t, { data: first.data, fauxBrowser: FAUX_BROWSER });
+  const before = (await readFile(log, "utf8")).trim().split("\n").length;
+  assert.equal((await api("POST", `/runs/${started.body.run_id}/messages`, { content: "Browse the example page again." })).status, 202);
+  await follow(api, started.body.run_id, ["completed"], { after });
+  const vendor = (await readFile(log, "utf8")).trim().split("\n").slice(before).map((line) => JSON.parse(line)).find((op) => op.op === "vendor").vendor;
+  assert.equal(vendor, "browserbase", "its keys back, it runs on Browserbase");
+  assert.equal(JSON.parse(await readFile(file, "utf8")).tool_plane.browser, "browserbase", "the vendor saved back");
 });
 
 test("a run made before the browser was pickable keeps Browserbase when it is launched again, though the server now picks Kernel", { timeout: 90_000 }, async (t) => {

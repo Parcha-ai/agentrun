@@ -35,7 +35,7 @@ import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigu
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { handsParallel, keptFromBefore, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { handsParallel, keptFromBefore, keptVendor, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -1613,12 +1613,13 @@ export class Runs {
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
     // in the serve.json its start writes (start); resolving here is for a run made before that, whose browser stays
     // Browserbase (keptFromBefore), the vendor it had then, kept as its choice and checked again at each launch like the
-    // rest. A description with no secret
+    // rest; a vendor's missing-key refusal an earlier server saved reads as that vendor again (keptVendor), saved back. A
+    // description with no secret
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
-    const kept = run.meta.tool_plane ?? (run.tooling ? keptFromBefore(planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined })) : {});
+    const kept = run.meta.tool_plane ? keptVendor(run.meta.tool_plane) : run.tooling ? keptFromBefore(planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined })) : {};
     const plane = recheckPlane(kept, served);
-    if (!run.meta.tool_plane && Object.keys(kept).length) {
+    if (kept !== run.meta.tool_plane && Object.keys(kept).length) {
       run.meta.tool_plane = kept;
       void this.saveMeta(run).catch(() => undefined);
     }
