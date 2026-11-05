@@ -169,13 +169,16 @@ test("pi: the run's process killed while a call is parked loses nothing: the sam
   assert.equal(calls(fake, "add").length, 1, "run once");
 });
 
-test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's words; under a $1 cap it is sent and booked as a $0.05 tool cost", { timeout: 150_000 }, async (t) => {
+test("pi: a tool priced $0.05 under a $0.04 cap is refused unsent in the cap's words and the run waits on a raise; under a $1 cap it is sent and booked as a $0.05 tool cost", { timeout: 150_000 }, async (t) => {
   const { api } = await serve(t);
   const fake = await addFake(t, api, { paid: 0.05 });
   assert.equal((await allowFake(api)).status, 200);
   const tight = await started(api, "tight", ["mcp:fake/paid"], PAID, { run: { max_cost_usd: 0.04 } });
-  await follow(api, tight, ["completed", "failed"], { deadlineMs: 60_000 });
-  assert.match(await answerOf(api, tight), /^The tool said: spend_cap_reached: mcp:fake\/paid was not sent\. It could cost up to \$0\.05/);
+  await follow(api, tight, ["input_required"], { deadlineMs: 60_000 });
+  // A paid call the cap refuses pauses the run for a raise, as any paid tool's does: its price is what it needs.
+  const paused = (await api("GET", `/runs/${tight}`)).body;
+  assert.deepEqual([paused.state, paused.pending?.kind, paused.pending?.cap_usd, paused.pending?.needs_usd], ["waiting", "budget", 0.04, 0.05], JSON.stringify(paused.pending));
+  assert.match(paused.pending.said, /Not sent: the run has spent \$0 of its \$0\.04 cap, and mcp:fake\/paid could cost up to \$0\.05 \(the price its owner set for mcp:fake\/paid\)/);
   assert.equal(calls(fake).length, 0, "refused unsent");
   const roomy = await started(api, "roomy", ["mcp:fake/paid"], PAID, { run: { max_cost_usd: 1 } });
   const { rows } = await follow(api, roomy, ["completed"], { deadlineMs: 60_000 });
