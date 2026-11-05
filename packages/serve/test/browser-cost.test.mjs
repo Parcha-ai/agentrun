@@ -239,6 +239,8 @@ test("a person's time carried for a session stays held until the session's next 
   await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-2", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" }, tx), ctx);
   assert.ok(Math.abs(paidHolds() - base - 0.01) < 1e-12, "booked: that session's carried time goes, another's stays");
   assert.equal(Math.round(spent * 1e12) / 1e12, 0.02);
+  await harness.commit((tx) => spend.onCharge({ conversationId: 1, tag: "ar-run-3", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 300, usd: 0.01, final: true, state: "priced" }, tx), ctx);
+  assert.ok(Math.abs(paidHolds() - base) < 1e-12, "and the other's goes with its own charge: nothing is left held");
 });
 
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {
