@@ -26,6 +26,8 @@ export type StoreDeps = {
   providerOf(read: DocumentReader, cid: ConversationId, plane: string, context: Context): Promise<BrowserProvider>;
   emit(cid: ConversationId, label: string, record: SessionRecord, change: SessionChange): Promise<void>;
   meter(spent: SessionRecord["spent"], at: string, final?: boolean): { spent: SessionRecord["spent"] };
+  /** The release's charge (or a lost session's), written on `record` in the commit `tx` and told to the host (durable.ts). */
+  bill(tx: Tx, conversationId: ConversationId, record: SessionRecord, at: string, final: true): Promise<unknown>;
   scrubbed(error: unknown): Error;
   createDeadlineMs: number;
   handoff?: HandoffPort;
@@ -33,7 +35,7 @@ export type StoreDeps = {
   handedBack?(tag: string, fence: number): void;
 };
 
-export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, scrubbed, createDeadlineMs, handoff, handedBack }: StoreDeps) {
+export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack }: StoreDeps) {
   const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }) });
 
   /** One state change: the record and the open-session inventory move in the same commit. */
@@ -46,7 +48,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     const record = state.sessions.find((r) => r.tag === row.tag);
     if (!record) return;
     moveRecord(record, next);
-    if (next.state === "released" && record.resourceId !== null) record.spent = meter(record.spent, next.at, true).spent;
+    // A session custody gave up releasing (lost) is billed in full too, what it ran and its minimum, so a host lets go of
+    // what it held for it; a later release finds it billed and adds nothing.
+    if ((next.state === "released" || next.state === "lost") && record.resourceId !== null) await bill(tx, cidOf(row), record, next.at, true);
     if (next.notice) {
       for (const stale of [notices.kept(record.lastUrl), notices.lost(record.lastUrl)]) state.notice = state.notice?.replace(stale, "").replace(/\s+/g, " ").trim() || null;
       addNotice(state, notices[next.notice](record.lastUrl));
@@ -74,7 +78,14 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     for (const id of ids) if (["pending", "running"].includes(await provider.status({ id, tag: row.tag }, signal))) return true;
     return false;
   };
-  const releasedAll = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal) => !(await anyRunning(provider, row, await releaseAll(row, provider, signal), signal));
+  /** The ids released under `row`'s tag once none of them runs; null while one does. */
+  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal) => {
+    const ids = await releaseAll(row, provider, signal);
+    return (await anyRunning(provider, row, ids, signal)) ? null : ids;
+  };
+  /** A session found by its tag (its create's answer lost: the record has no id) is billed at its release too: the
+   *  provider ran it. A create the provider refused found nothing, and is billed nothing. */
+  const foundId = (row: InventoryRow, ids: readonly string[] | null) => (row.resourceId === null && ids?.length ? { resourceId: ids[0] } : {});
   /** Its error goes to the host's report, scrubbed, and `fallback` stands in; an abort is rethrown. */
   async function step<T>(runtime: ReleaseRuntime, run: () => Promise<T>, fallback: T): Promise<T> {
     try { return await run(); } catch (error) {
@@ -139,7 +150,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const at = iso(runtime.now());
         await emitReleased(cidOf(row), row.tag, runtime, context, at);
         await runtime.commit(async (tx) => {
-          await move(tx, row, { state: "released", at });
+          await move(tx, row, { state: "released", at, ...foundId(row, ids) });
           return { status: "terminal", outcome: { status: "completed", result: { released: ids.length } } };
         }, context);
       },
@@ -148,11 +159,11 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     // to a successor task in the same commit.
     abort: async (task, runtime, context) => {
       const { row, notBefore } = task.input;
-      let stopped = false;
+      let stopped: string[] | null = null;
       // Before the create deadline nothing found is proof of nothing: the successor keeps the delayed lookup.
-      if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedAll(provider, row, context.abortSignal)).catch(() => false);
+      if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then((provider) => releasedIds(provider, row, context.abortSignal)).catch(() => null);
       await runtime.commit(async (tx) => {
-        if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()) });
+        if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()), ...foundId(row, stopped) });
         else await tx.createTask(ReleaseTask, task.input, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });
         return { status: "terminal", outcome: { status: "aborted", reason: stopped ? "released by the abort handler" : "release handed to a successor task" } };
       }, context);
@@ -232,10 +243,12 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       try {
         const provider = await providerOf(harness, cidOf(row), row.plane, context);
         if (row.state === "lost") {
-          await ((await releasedAll(provider, row)) ? outcome("released", async (tx) => {
+          const ids = await releasedIds(provider, row);
+          await (ids ? outcome("released", async (tx) => {
             delete (await tx.doc(Inventory)).rows[row.tag];
             const record = (await tx.doc(Sessions, cidOf(row))).sessions.find((r) => r.tag === row.tag);
-            if (record && record.resourceId !== null) record.spent = meter(record.spent, at, true).spent;
+            if (record && record.resourceId === null && ids.length) record.resourceId = ids[0]!;
+            if (record && record.resourceId !== null) await bill(tx, cidOf(row), record, at, true);
           }) : outcome("lost"));
           continue;
         }

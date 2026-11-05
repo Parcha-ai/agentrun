@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunOrigin, type RunRow, type RunState, type StoredMetrics } from "@parcha/pi-durable-agent";
-import { registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { isMessageRow, type MessageOrigin, registerLabel, registerTurnEnding, REQUEST_STARTED, type RunMetrics, runMetricsWithDecisions, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { HARNESS_LOG_EVENT, harnessModelKeys, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, harnessOfBody, steersMidTurn } from "./harness.js";
 import type { RUN_EVENTS, RunNotice } from "./webhooks.js";
@@ -35,7 +35,7 @@ import { CAP_ENV, CAP_REFUSAL_PREFIX, CAP_REFUSED_FIELD, money, type RefusalFigu
 import { DEFAULT_MODEL_ENV, EFFORT_ENV, GATEWAY_KEY_ENV, hostModel, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, thinkingOf, type Tier, withoutFaux, workflowNodes } from "./model.js";
 import { llmAnswers, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
-import { handsParallel, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
+import { handsParallel, keptFromBefore, type Plane, planeFor, recheckPlane, TOOL_PLANE_ENV, type Tooling, type ToolSettingsMap } from "./tool-plane.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { TOOL_KEYS } from "./tool-keys.js";
 import { isObject, type Json } from "./validate.js";
@@ -44,6 +44,7 @@ import { REFLECT_REQUEST, Turns } from "./turns.js";
 import { DECISION_KEYS, handover, hostSecrets, secret, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, type StoredKeys, withoutSecrets, withSecrets } from "./secrets.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { keyRefusal, redacted, redactedAnswer, redactedLive, redactedOutput, runKeyOf, withoutLoopback } from "./key-refusal.js";
+import { GRAPH_CACHE_BYTES, PartCache, type PartKind, servedPart } from "./graph-served.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { BOX_KEYS } from "./boxes.js";
 import { type Place, remotePlace, storedPlace } from "./place.js";
@@ -184,6 +185,13 @@ const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMe
 /** One run as this server holds it. */
 /** A run's answer or output as a view served it: `out`, redacted from `input` over the held values whose digest is `keys`. */
 type Served = { keys: string; input: unknown; out: unknown };
+
+/** GET /runs/{id}/graph's view (graph-view.ts, loaded when a graph is first read). */
+type GraphView = Awaited<ReturnType<typeof import("./graph-view.js")["runGraph"]>>;
+
+
+/** A value's sha256, of its JSON. */
+const digestOf = (value: unknown): string => createHash("sha256").update(JSON.stringify(value) ?? "").digest("hex");
 
 export type Run = {
   id: string;
@@ -387,10 +395,11 @@ export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
-/** What a run's paid tools charged, from the same rows its cost is read from: each charge's line carries it (`usage` on a
- *  `phase` row); null when one is unknown. A call still marked, in flight or cut, is no charge here. */
-export const toolCostOf = (rows: readonly TimelineEvent[]): number | null =>
-  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
+/** What a run's paid tools charged (`tool`'s alone, when given), from the same rows its cost is read from: each charge's
+ *  line carries it (`usage` on a `phase` row); null when one is unknown. A call still marked, in flight or cut, is no
+ *  charge here. */
+export const toolCostOf = (rows: readonly TimelineEvent[], tool?: string): number | null =>
+  rows.reduce<number | null>((sum, row) => (row.kind !== "phase" || !row.usage || (tool !== undefined && row.tool_name !== tool) ? sum : sum === null || row.usage.usd === null ? null : sum + row.usage.usd), 0);
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
@@ -439,8 +448,9 @@ function answerOfRun(run: Run): string | null {
   const imported = run.imported ? importAnswerOf(run.rows) : undefined;
   return lastAnswer(run) ?? imported?.text ?? imported?.summary ?? null;
 }
-const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
-const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
+// A run's messages are its message rows (isMessageRow): a person's, and those the server wrote, the message its turn took.
+const usersOf = (rows: readonly TimelineEvent[]) => rows.filter(isMessageRow).length;
+const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast(isMessageRow)?.id;
 // A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
 // order rows across conversations and the conversation is no part of the order.
 const placeOf = (id: string) => Number(id.slice(id.lastIndexOf(":") + 1));
@@ -449,7 +459,7 @@ const placeOf = (id: string) => Number(id.slice(id.lastIndexOf(":") + 1));
 export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number }, rows: readonly TimelineEvent[]): boolean => {
   if (meta.stopped_at === undefined) return meta.stopped_after !== undefined && meta.stopped_after === usersOf(rows);
   const at = placeOf(meta.stopped_at);
-  return !rows.some((r) => r.kind === "user_message" && placeOf(r.id) > at);
+  return !rows.some((r) => isMessageRow(r) && placeOf(r.id) > at);
 };
 const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
 /** The words of the cap's refusal for room an agentic run stands paused at: its newest message's turn ended on it (cap.ts
@@ -503,6 +513,12 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
+}
+
+/** The trigger a serve.json says started its run, as read back: `{id, firing_key}`, or null. */
+function triggerOf(meta: Partial<RunMeta> | null): RunTrigger | null {
+  const trigger = meta?.trigger as unknown;
+  return isObject(trigger) && typeof trigger.id === "string" && typeof trigger.firing_key === "string" ? { id: trigger.id, firing_key: trigger.firing_key } : null;
 }
 
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
@@ -664,8 +680,9 @@ export class Runs {
   /** What decides the secrets each revision's runs are handed (needsOf), by revision id: read once, from the revision the
    *  run is pinned to, never from a request. The keys themselves are read at each launch (keysFor). */
   private readonly needs = new Map<string, RunNeeds>();
-  /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
-  private readonly graphs = new Map<string, object>();
+  /** Every run's graph as served, part by part (servedGraph), and each workflow run's last graph read whole, which a
+   *  poll that met a busy store answers, marked stale: one LRU by bytes across runs (graph-served.ts PartCache). */
+  private readonly graphCache = new PartCache(GRAPH_CACHE_BYTES);
   private readonly adopting = new Map<string, Promise<Run>>();
   /** The hosts this server's next remote box asks for: the setting's, until the provider cannot keep a list here, then none. */
   private remoteAllow: readonly string[] | "none" | undefined;
@@ -713,6 +730,8 @@ export class Runs {
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam (startServe's `beforeSubmit`): awaited by a message before it goes to the run's door. */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam (startServe's `messageOrigin`): the origin a message sent through the messages route carries. */
+  messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
 
   private get store() {
     return this.options.agents.store;
@@ -748,6 +767,7 @@ export class Runs {
   private async load(row: RunRow): Promise<Run> {
     const dir = join(this.options.agents.dir, "runs", row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
+    const trigger = triggerOf(stored);
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
       created_at: typeof stored?.created_at === "string" ? stored.created_at : row.startedAt,
@@ -764,7 +784,7 @@ export class Runs {
       ...(stored?.place ? { place: storedPlace(stored.place) } : {}),
       ...(isObject(stored?.learning) ? { learning: stored.learning as Learning } : {}),
       ...(isObject(stored?.reflect) ? { reflect: stored.reflect as Reflect } : {}),
-      ...(isObject(stored?.trigger) && typeof stored.trigger.id === "string" && typeof stored.trigger.firing_key === "string" ? { trigger: { id: stored.trigger.id, firing_key: stored.trigger.firing_key } } : {}),
+      ...(trigger ? { trigger } : {}),
     };
     // A seed copy a server went down during is taken back before anything holds the run: its relaunch, a settle, a
     // follow-up (learning-run.ts onLoad).
@@ -894,7 +914,7 @@ export class Runs {
     run.rows = withOverCap(labelled(run.meta.reflect, withAsks(rows.filter((r) => !QUIET.test(r.id)))), run.meta.max_cost_usd);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
-    const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
+    const arrived = run.rows.filter((r) => isMessageRow(r) && !run.users.has(r.id));
     for (const row of arrived) run.users.add(row.id);
     run.submitted = Math.max(0, run.submitted - arrived.length);
     run.keep = keep;
@@ -906,7 +926,8 @@ export class Runs {
    *  only, never the run's own rows, which its cost and its answer are read from. */
   private show(run: Run): void {
     // The decisions' rows are the served view's only: the run's own rows, which its cost is read from, stay its model nodes'.
-    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions);
+    // Their summary and text are redacted whole, then cut (decision-rows.ts): a provider's error can quote a held key.
+    const own = run.decisions === undefined ? run.rows : withDecisions(run.rows, run.decisions, this.decisionShown(run));
     // An error row reads as the run's error does (errorWords): a refused key in plain words, no loopback address.
     const served = own.map((row) => (row.kind === "error" ? this.servedError(run, row) : row));
     // A run paused at its cap says so after the refusal, as the row its status reads.
@@ -990,7 +1011,7 @@ export class Runs {
    *  saved or deleted changes the values' digest, and the next view redacts again. */
   private servedOnce(run: Run, slot: "answer" | "output", input: unknown, redact: (values: string[]) => unknown): unknown {
     const values = this.refusedValues(run);
-    const keys = createHash("sha256").update(JSON.stringify([...values].sort())).digest("hex");
+    const keys = digestOf([...values].sort());
     const last = run.served?.[slot];
     if (last && last.keys === keys && last.input === input) return last.out;
     const out = redact(values);
@@ -998,9 +1019,36 @@ export class Runs {
     return out;
   }
 
+  /** A workflow run's graph as serve serves it: its nodes, each decision and each call (its input, output and error) with
+   *  no held secret, by its answer's rule (redactedOutput), and only then cut: a map item's label at 200 characters, a
+   *  call's error at 2000, and a text stored cut (a decision's state past 64 KB, an error logged cut) less its last 6
+   *  times the longest held value plus 16 characters, where a value the stored cut split would sit. The view a busy
+   *  store's read keeps is the one graph-view.ts made, whole, so a key saved after it is still found. Each part is
+   *  served once per content and held value set: a console polls the graph while the run goes. */
+  private servedGraph<T extends { nodes: unknown; decisions: unknown[]; effects: unknown[] }>(run: Run, view: T): T {
+    const values = this.refusedValues(run);
+    const keys = digestOf([...values].sort());
+    const once = (kind: PartKind, value: unknown): unknown => {
+      const at = `part:${keys}:${kind}:${digestOf(value)}`;
+      const kept = this.graphCache.get(at);
+      if (kept !== undefined) return kept;
+      const out = servedPart(kind, value, values);
+      this.graphCache.set(at, out, Buffer.byteLength(JSON.stringify(out) ?? ""));
+      return out;
+    };
+    return { ...view, nodes: once("nodes", view.nodes), decisions: view.decisions.map((value) => once("decision", value)), effects: view.effects.map((value) => once("effect", value)) };
+  }
+
   /** The timeline's redaction of `run`'s error rows and of what a tool's result shows (its summary and preview), applied
    *  before a row is cut (timelineOf's `redact`), so a cut never leaves the head of a key. Every such cut is within
    *  redacted()'s SHOWN, so its window holds. */
+  /** How a run's decision rows show a text (decision-rows.ts Shown): the run's redactor, and as many characters held back
+   *  from a text stored cut as a held value takes in its widest form. */
+  private decisionShown(run: Run): { redact: (text: string) => string; hold: number } {
+    const values = this.refusedValues(run);
+    return { redact: (text) => redacted(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
+  }
+
   private redactor(run: Run): (text: string) => string {
     return (text) => redacted(text, this.refusedValues(run));
   }
@@ -1563,10 +1611,11 @@ export class Runs {
     // Its tools' providers (tool-plane.ts): resolved at its first launch from its pinned revision and this server's
     // settings, and kept in its serve.json, so a later change of the settings never changes a run's tools; at a later
     // launch only checked again (a Parallel key gone makes Parallel unavailable, never another provider). A new run's are
-    // in the serve.json its start writes (start); resolving here is for a run made before that. A description with no secret
+    // in the serve.json its start writes (start); resolving here is for a run made before that, whose browser stays
+    // Browserbase (keptFromBefore), the vendor it had then. A description with no secret
     // in it, read by the run's process, never by a request. A key saved through the settings API counts as the launcher's
     // does (secrets.ts), so a saved Parallel key makes Parallel available, and a deleted one unavailable at the next launch.
-    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }) : {};
+    const plane = run.meta.tool_plane ? recheckPlane(run.meta.tool_plane, served) : run.tooling ? keptFromBefore(planeFor(served, run.tooling, this.options.toolSettings?.() ?? {}, { capped: run.meta.max_cost_usd !== undefined }), served) : {};
     if (!run.meta.tool_plane && Object.keys(plane).length) {
       run.meta.tool_plane = plane;
       void this.saveMeta(run).catch(() => undefined);
@@ -2048,9 +2097,12 @@ export class Runs {
     return true;
   }
 
-  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
+  /** One message to the run's door. `origin`: who wrote it when the person did not (a raised cap's follow-up, an
+   *  approval's resume), carried to its user entry so the Timeline shows it as the server's (pi-durable-agent's
+   *  MessageOrigin); the model reads the same text either way. */
+  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number, origin?: MessageOrigin): Promise<void> {
     await this.beforeSubmit?.(run.id, content);
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy, ...(origin ? { origin } : {}) }, readyMs);
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
@@ -2097,7 +2149,7 @@ export class Runs {
     run.submitted++;
     this.refresh(run);
     try {
-      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId);
+      await this.submit(run, content, mode === "steer" ? "steer" : "followUp", messageId, undefined, this.messageOrigin?.(run.id, content));
     } catch (error) {
       run.submitted = Math.max(0, run.submitted - 1);
       this.refresh(run);
@@ -2267,14 +2319,14 @@ export class Runs {
     // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
     try {
       const view = await runGraph(given);
-      this.graphs.set(run.id, view);
-      return { ...view, stale: false };
+      this.graphCache.set(`view:${run.id}`, view, Buffer.byteLength(JSON.stringify(view)));
+      return this.servedGraph(run, { ...view, stale: false });
     } catch (error) {
       if (!storeBusy(error)) throw error;
       warn(run.id, "its store is busy; the graph answers its live view, stale");
-      const held = this.graphs.get(run.id);
-      if (held) return { ...held, run: given.run, stale: true };
-      return { ...(await runGraph({ ...given, liveOnly: true })), stale: true };
+      const held = this.graphCache.get(`view:${run.id}`) as GraphView | undefined;
+      if (held) return this.servedGraph(run, { ...held, run: given.run, stale: true });
+      return this.servedGraph(run, { ...(await runGraph({ ...given, liveOnly: true })), stale: true });
     }
   }
 
@@ -2373,8 +2425,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, learning: learning && shortOf(learning) };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, ...(effort ? { effort } : {}), created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning: learning && shortOf(learning) };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -2402,16 +2454,20 @@ export class Runs {
       // A run read from its row alone has ended: it waits on nothing.
       pending: null,
       imported_from: row.importedFrom ?? null,
+      trigger: triggerOf(meta),
       // Its row says it ended: what serve.json holds of its learning is as it settled.
       learning: this.learning.short(isObject(meta?.learning) ? (meta.learning as Learning) : null, true),
     };
   }
 
-  /** A key was saved on this server or deleted from it: each held run's learning row shown again, cut of the keys as
-   *  they are now (learning-run.ts shown), as its view and its lists already are from the next read on. */
+  /** A key was saved on this server or deleted from it: each held run's learning row and decision rows shown again, cut
+   *  of the keys as they are now (learning-run.ts shown, decision-rows.ts), as its view and its lists already are from
+   *  the next read on. */
   keysChanged(): void {
     this.learning.keysChanged();
-    for (const run of this.runs.values()) if (run.meta.learning) this.show(run);
+    // A run's learning row and its decision rows are shown again with the keys as they are now (show): a key saved after
+    // a workflow ended is redacted from its decisions on the next read, learning or not.
+    for (const run of this.runs.values()) if (run.meta.learning || run.decisions) this.show(run);
   }
 
   /** A held run's learning, in short (learning-run.ts heldLearning). */

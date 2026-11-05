@@ -251,6 +251,33 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
   assert.match(withRuntime.toString('utf8'), /runtime-lib/);
 });
 
+// OpenCode's per-platform binary packages publish no `license` field; their source, anomalyco/opencode at the pinned
+// release, is MIT, as `opencode-ai` itself declares. The inventory reads them as MIT by name AND version: a bumped
+// version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
+test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
+  const f = await fixture(t);
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
+    '': {},
+    ...workspaces,
+    'packages/serve': { optionalDependencies: { 'opencode-linux-x64': version } },
+    'node_modules/opencode-linux-x64': { version, optional: true },
+  } });
+  const inventory = async version => {
+    await f.write('package-lock.json', lock(version));
+    await f.run('--inventory-only');
+    return readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  };
+  const pinned = await inventory('1.19.5');
+  assert.deepEqual(
+    [/\| opencode-linux-x64 \| 1\.19\.5 \| MIT \|/.test(pinned), /opencode-linux-x64@1\.19\.5:\*\* UNKNOWN/.test(pinned)],
+    [true, false],
+    'the pinned binary reads MIT and is not flagged',
+  );
+  const bumped = await inventory('1.19.6');
+  assert.match(bumped, /opencode-linux-x64@1\.19\.6:\*\* UNKNOWN — Missing license metadata/, 'a bumped binary is read as its manifest says, and flagged until checked');
+});
+
 // An auth library names a test runner as an optional peer; the lock records the runner because the repository develops with it,
 // and the runner pulls a bundler whose CSS engine is MPL-2.0. No consumer of the library installs any of them. A workspace
 // package names the host it runs in as an optional peer, which the inventory keeps.

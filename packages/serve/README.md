@@ -599,7 +599,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
-| `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
+| `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid.discover` | Search monid's catalog of paid data endpoints in plain words: `{query, limit?, minScore?}` in, `{results: [{provider, endpoint, description, score, price}]}` out | `MONID_API_KEY` | no, no |
 | `monid.inspect` | One monid endpoint before it runs: `{provider, endpoint}` in, the JSON Schemas of its input (`pathParams`, `queryParams`, `body`), its price, notes and documentation out | `MONID_API_KEY` | no, no |
 | `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
@@ -677,14 +677,15 @@ unavailable for a workflow.
 | `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
 
-`GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}}`, the default
+`GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}, browser: {provider}}`, the default
 where none is set; `PUT /settings/tools` takes the same map and replaces it (a capability it leaves out takes its
 default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
-for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`); an
+for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
+`auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`, and so is a `permission` (`reason: not_yet`): permissions arrive with the tool
 gate, and capabilities say `features.tool_permissions: false` until then. The settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
-`GET /capabilities` is the one tool catalog: each of the two tools there gives the providers offered (`providers`), the
+`GET /capabilities` is the one tool catalog: each of the three tools there gives the providers offered (`providers`), the
 server's (`provider`, its default where it sets none), the built-in default (`default_provider`) and `resolves`, what it
 resolves to on each harness under the server's settings and default model (`native`, `kernel`, `exa-keyless`,
 `parallel`, or `unavailable: <reason>`), with `why`, keyed the same, one plain sentence for each (`Codex's own search`,
@@ -777,12 +778,36 @@ snippet of at most 3,000 characters and its date when Exa knows it, then a line 
 relies on. Keyless Exa is the default for a harness with no native search when the server holds no Parallel key; `off`
 turns `web_search` off, keyless Exa included.
 
-The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
-environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
+The `browser` tool runs hosted sessions, at Browserbase or at Kernel, never a Chrome on this machine. Which one is
+picked like `web_search`'s provider: the agent's own (`definition.tool_settings.browser.provider`) over the server's
+(`PUT /settings/tools`), one of `auto` (the default), `browserbase`, `kernel` and `chrome`. `auto` is Browserbase where
+the server holds its keys (`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`), else Kernel where it holds
+`KERNEL_API_KEY`, else unavailable, saying which keys would do. A vendor picked is that vendor alone: without its key
+it is unavailable, never the other one. `chrome`, a Chrome on the server's own host, is in the list but not set up on
+any server yet: it reads unavailable (`a local Chrome is not set up on this server`), and a run that would get it is
+`409`. Capabilities' `tools[]` give the browser's providers, the server's pick and what it resolves to; a run keeps the
+vendor its first launch resolved for its life, and one whose vendor's key is gone since is refused each browser call,
+saying why. Kernel's browsers run headless, and keep no downloads, so a run on Kernel has no `browser_downloads`. The keys come from the server's environment or Tool keys and reach the
+run's process over its pipe, as the rest do. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
 reads at once included. There is no recording and no live view. When the run is let go (its work done, or a SIGTERM)
-the sessions it still holds are released at Browserbase.
+the sessions it still holds are released at their vendor.
+
+A session's time is the run's spend, as a paid tool's charge is: each browser call books what its session ran since the
+last charge, and the release books the rest, topped up to the provider's minimum. Each is a `Tool cost` line of its own
+on the run's timeline, part of its `cost.usd`, and `/usage`'s `browser_time` meter (dollars, and seconds once the run has
+ended). Prices are by provider (pi-browser's provider name):
+
+| Provider | List price | Minimum | Its own price |
+| --- | --- | --- | --- |
+| `browserbase` | $0.12 an hour | 60 s | `AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE` |
+| `kernel` (headless) | about $0.06 an hour, by the second | none | `AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL` |
+| `cdp` (a local Chrome) | $0 | none | `AGENTRUN_BROWSER_USD_PER_HOUR_CDP` |
+
+A variable gives the provider's price in US dollars an hour (a contract rate; the minimum stays). A provider with no price,
+or a variable that is not a non-negative decimal, has no price: its time is booked as an unknown cost, and under a cap
+every browser call is refused. Under a cap the browser's time is held before it runs (see [Spend cap](#spend-cap)).
 
 `monid.discover`, `monid.inspect` and `monid.run` give an agent [monid](https://monid.ai)'s whole catalog of data
 endpoints on one key, `MONID_API_KEY`: it finds an endpoint in plain words, reads its input schemas and price, and runs
@@ -818,10 +843,10 @@ the model keys: a run's process gets it over its pipe, never in its environment.
 ## Tool keys
 
 A tool's key comes from one of two places. The server's own environment, through its launcher: `PARALLEL_API_KEY`,
-`MONID_API_KEY` and `BROWSERBASE_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by name:
+`MONID_API_KEY`, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` are among the secrets it hands the server over its pipe. Or the page, by name:
 `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
 `PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`,
-`typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
+`kernel` `KERNEL_API_KEY`, `typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
 provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
 `"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
 default model ([models](#models)); its `harnesses` are pi and the harnesses that talk to that provider's API (OpenAI's:
@@ -835,8 +860,9 @@ none of still lists, with nothing in `unlocks`. A field the server is started wi
 it is `409 key_set_by_server`. A value is text of at most 1024 bytes with no control character (`422` otherwise).
 
 A key is checked against its provider before it is kept, with one call that costs nothing, given 5 s: monid's
-discover of one result, Parallel's list of monitors, Browserbase's list of projects and TypeSafe's list of models (at
-`BROWSERBASE_BASE_URL` or `TYPESAFE_BASE_URL` when the server is started with one). A key the provider refuses (401)
+discover of one result, Parallel's list of monitors, Browserbase's list of projects, Kernel's list of browsers (at most
+one) and TypeSafe's list of models (at `BROWSERBASE_BASE_URL`, `KERNEL_BASE_URL` or `TYPESAFE_BASE_URL` when the server
+is started with one). A key the provider refuses (401)
 is `422 input_invalid`, its field's reason `refused_by_provider`, in plain words with the provider's first sentence
 (`Monid refused this key (401: Invalid API key format)`) and never any of the key, and nothing is kept: a key saved
 before stays as it was. Otherwise it is kept, and `GET` gives its row a `check`: `{state: "accepted", at}`, or
@@ -854,7 +880,7 @@ check as it was. A save whose check is still waiting when the server begins to c
 unavailable`, while its connection lasts): the check stops waiting, and the server's lock, released at close, may be
 another server's by then. Under `--faux` a key is checked only against the fake its runs are given (`fauxMonid`,
 `fauxParallel`, `fauxJev`); with none it is `not_checked`, and nothing reaches the network. A key the server starts
-with is checked under `--faux` only against a check's own fake (`fauxBrowserbase`, `fauxMonidCheck`), so the fakes the runs use see the
+with is checked under `--faux` only against a check's own fake (`fauxBrowserbase`, `fauxMonidCheck`, `fauxKernel`), so the fakes the runs use see the
 runs' calls alone; with none, its `check` stays null.
 
 A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
@@ -879,7 +905,7 @@ answers once capabilities, a save's checks and a run's checks see the change, in
 key, so a key leaves what each harness offers as it is, and the harnesses are not checked again. A run already
 running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
 `BROWSERBASE_PROJECT_ID` is on the launcher's list for this, as every field a person may save is. Capabilities name each
-tool's key (`tools[].key`, a `GET /settings/tool-keys` id, `browserbase` for `browser`), so a page can link a tool's
+tool's key (`tools[].key`, a `GET /settings/tool-keys` id, `browserbase` for `browser`, which `kernel` unlocks too), so a page can link a tool's
 missing names to where its key is saved. `agentrun-serve import` opens the saved keys in its data directory too and
 cuts each out of what it writes, as it cuts a key-shaped variable of its environment; one that does not open there is
 not known, so not cut, and the import says so.
@@ -1010,7 +1036,8 @@ change repeats fires once, at its first pass; one it skips fires at the first ti
 reckoned from the last nominal one, so a timer that wakes late does not drift. `max_cost_usd` is required: every run a
 trigger starts is capped, and a workflow agent is refused, since a workflow run's spend is not capped here. Each run's
 input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
-trigger and the firing.
+trigger and the firing, in the run's view and in the runs lists (`GET /v2/runs`, `GET /v2/agents/{id}/runs`) alike;
+a run a caller started has `trigger: null`.
 
 A firing starts its run once. Its key comes from the trigger and its nominal time, it is recorded `due` in
 `DIR/triggers.json` (written whole and synced) before its run starts, and the run is started under that key, so a firing
@@ -1063,7 +1090,7 @@ firing has left the history too, and later it is a new firing that a run the key
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, or forget it. |
-| `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search` and `web_fetch` ([search and fetch](#search-and-fetch)). |
+| `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings` | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
@@ -1668,6 +1695,26 @@ by side cannot pass the cap together. Spent so far is read from the run's store 
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).
 
+The `browser` tool's session time is held the same way, before it runs, so no browser minute passes the cap. Its next
+stretch is the most a session can run before the run can check again: the provider's minimum (what its release may top
+it up to), pi-browser's idle window before it releases a session nobody calls (180 s), and 30 s for that release to be
+confirmed at the provider; at Browserbase's price, 270 s or $0.009. Before each browser call, the call is held at what its
+session ran since its last charge plus two stretches (one for the call's own time, one for a session it opens): spent, plus
+every hold, plus that must stay within the cap. Otherwise the call is not made: the model gets the cap's words
+(`spend_cap_reached: This browser call was not sent. It could cost up to $0.018 ...`), and the run's session is released.
+A session's first charge moves one stretch of its call's hold to the session, held until its release is booked, which
+covers its idle time, its top-up and its release; each call's charge comes out of the call's hold, which goes when the
+call returns. So what the run spent plus what it holds stays within the cap through a session's create, its calls, the
+idle time between them and its release. A session a create's lost answer left to a release after the create deadline is
+held for that deadline and a stretch until its release is billed. Across a restart of the run's process, every session
+custody still tracks (kept, unreached, still releasing) is held from the reopen, at a stretch beside what it ran since
+its last charge, and one kept is released an idle window later unless a call uses it. Three
+things can still pass the cap, each by what it ran over, booked and shown: a single browser call that runs longer than a
+stretch, a release that takes longer than 30 s to be confirmed, and the time a run's process was down while it held a
+session (spent before any process could hold it). A session whose release is never confirmed is billed in full
+(what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
+last charges booked before its process exits.
+
 Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
 `spend_cap_reached`, since no cap would send it:
 
@@ -1682,14 +1729,37 @@ Under a cap, whatever cannot be priced is refused, never passed as $0, and the r
   after a cut, at the worst case the cap held, as pi does.
 
 A request you stop counts what it streamed plus up to 1,024 output tokens the provider may have produced after the last
-word we read; never more than it was held. That is its input bound and each byte it streamed (text, thinking and tool
-calls on pi; the response as it was sent on `claude-agent` and `codex`) as a token, plus 1,024 tokens of output
-(`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most the worst case the cap held for it. The cut stream's own
-usage is never read: it is not what the provider billed (the Responses API reports none until the end, and Anthropic's
-output count comes at the end). The 1,024 tokens are a stated bound, as the native search allowance is: a provider that
-went on producing for longer after the stop could bill past what is counted. A request that ended on an error after its
-response began (an overload part way, a reset), or a summary that failed, still counts at its worst case, and so does a
-request cut by a crash (its process gone mid-request).
+word we read; never more than it was held. That is its input bound and each byte of content it streamed (its text,
+thinking and tool calls on pi; on `claude-agent`, `codex` and `opencode`, the text, reasoning and tool-argument deltas
+the response sent, never the provider's framing around them, which runs to about 12 bytes a character on the Responses
+API and 24 on the Messages API) as a token, plus 1,024 tokens of output (`STOP_ALLOWANCE_TOKENS`), at the model's price, and at most
+the worst case the cap held for it. The cut stream's own usage is never read: it is not what the provider billed (the
+Responses API reports none until the end, and Anthropic's output count comes at the end). The 1,024 tokens are a stated
+bound, as the native search allowance is: a provider that went on producing for longer after the stop could bill past
+what is counted. A request that ended on an error after its response began (an overload part way, a reset), or a summary
+that failed, still counts at its worst case, and so does a request cut by a crash (its process gone mid-request). A
+request stopped before the provider's first header counts its input and the 1,024 tokens, on every harness.
+
+Reasoning the provider never streams counts too. A model whose reasoning streams only as a summary (the Responses API's
+reasoning; Claude 4-class thinking, and redacted thinking) or not at all is billed for far more than the summary's
+bytes, so a stopped request that reasons also counts the part of its reasoning budget that did not stream: input +
+streamed + 1,024 + max(0, reasoning budget - reasoning streamed), never more than the hold. Reasoning streamed is its
+thinking's bytes on pi, and on `claude-agent`, `codex` and `opencode` the bytes of the reasoning events the response
+sent (a thinking delta, a reasoning summary delta); answer text never stands in for it. The budget is its effort's or thinking
+level's (minimal 1,024, low 2,048, medium 8,192, high 16,384; on Anthropic's API, the `budget_tokens` it was sent with).
+A Claude model whose thinking is adaptive (pi-ai sends every current one `thinking: {type: "adaptive"}`, no budget) thinks
+within its output limit as it sees fit, so on pi it counts that limit less 1,024 tokens, as `claude-agent` counts
+`max_tokens`, and is sent the limit it is held at. With no effort or level given, on an API whose model then reasons at
+its own default (OpenAI's), it counts its whole output limit, the conservative side; with thinking off on Anthropic's
+API, none, unless the model thinks adaptively at any level (pi-ai's models with mid-conversation effort). On
+`claude-agent`, every request that thinks counts its budget, since Claude 4-class models stream only a summary of their
+thinking; thinking that streamed is subtracted, so a stop after a budget's worth of visible thinking counts nothing on
+top. The figure is an estimate: an effort's budget is not a limit the provider keeps, so a request can reason past it.
+It is bounded by the request's hold, and its real usage replaces it when that comes.
+
+So on a model whose thinking is adaptive (every current Claude model, on pi and on `claude-agent`), a stopped request
+counts up to its hold: the provider is given no thinking budget, and what streamed says nothing of the thinking billed.
+Under a cap with little left beside that hold, the request after the stop can be refused.
 
 On pi the figure is written on the request's start mark (`agentrun.request_started`, its worst case) and on the end mark
 of one stopped (`agentrun.request_ended`, what it counts at), as `heldUsd`; on `claude-agent` and `codex` on the
@@ -1754,8 +1824,8 @@ export default function reply(context, faux) {
 ```
 
 `startServe({ faux, fauxBrowser, fauxWeb })` (the tests', not the CLI's) also names modules whose default exports give
-the `browser` tool's `{ provider, driver }` in place of Browserbase's (pi-browser's fake backend,
-`test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
+the `browser` tool's `{ provider, driver }` in place of Browserbase's or Kernel's (pi-browser's fake backend, told the
+vendor the run's plane names: `test/fixtures/faux-browser.mjs`), `web_fetch`'s direct fetch's `{ lookup, fetchImpl }` in place of the system's resolver and
 undici (a table of names and pages, `test/fixtures/faux-web.mjs`), and, as `fauxMonid`, the fetch the monid tools send
 through in place of monid's API (`test/fixtures/faux-monid.mjs`). Each is honored only with `faux`.
 
@@ -1785,8 +1855,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   pipe.
 - `web_fetch`'s direct fetch dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
   machine, its network or a cloud's metadata address through it.
-- A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
-  network, so what the model may reach there is the operator's choice of keys and project. Its downloads and uploads stay
+- A `browser` session runs at Browserbase or Kernel, not on this machine: a page the model opens is reached from that
+  vendor's network, so what the model may reach there is the operator's choice of vendor, keys and project. Its downloads and uploads stay
   in the run's `work/`.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
   another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
@@ -1804,7 +1874,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
   pi-durable-disk's (`@parcha/pi-durable-disk/secret-name`), which an import's cut and a harness's log take too. The keys it
   needs come over its pipe. It gets none of the boxes' keys ([Boxes](#boxes)). A tool key reaches it only when its
-  revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` `browser`; a workflow's
+  revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each launch, a relaunch or a resume after a restart included.
 - A variable named like a key that is not on the launcher's list (`capabilities.secrets.names`) is left out of every
