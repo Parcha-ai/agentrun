@@ -38,7 +38,7 @@ Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 When the box image is not built yet, a line after the banner says its first build is under way (`Preparing the Docker
 box image (first start only, a few minutes); agents can be made now, and their first run waits for it.`), and another
 when it ends (`The Docker box image is ready.`, or why it failed). `npx @parcha/agentrun` prints the `Boxes:` line and
-these two after its own. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
+these two on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
 runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
 AgentRun.`); see [Boxes](#boxes).
 

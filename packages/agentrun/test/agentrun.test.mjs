@@ -50,7 +50,7 @@ function bare(t) {
   return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1", AGENTRUN_BOXES: "none" } };
 }
 
-test("demo: with no model key, the bin starts on a free loopback port and prints the address the server says to open, then its boxes line; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {
+test("demo: with no model key, the bin starts on a free loopback port and prints one line, the address the server says to open, on stdout, and its boxes line on stderr; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {
   const { home, env } = bare(t);
   const child = spawn(process.execPath, [BIN], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
@@ -59,11 +59,12 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !/^Boxes: .*\n/m.test(out); i++) {
+  for (let i = 0; !/^Boxes: .*\n/m.test(err); i++) {
     assert.ok(i < 1000, `the bin printed its lines: ${out}${err}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const match = /^AgentRun is running at (http:\/\/127\.0\.0\.1:(\d+))\/\S*\nBoxes: none is ready, so sandbox agents do not run here\. [^\n]+\n$/.exec(out);
+  const match = /^AgentRun is running at (http:\/\/127\.0\.0\.1:(\d+))\/\S*\n$/.exec(out);
+  assert.match(err, /^Boxes: none is ready, so sandbox agents do not run here\. [^\n]+$/m, "the boxes line is for the person, on stderr");
   assert.ok(match, `one line, the server's address to open, on loopback: ${JSON.stringify(out)}`);
   assert.ok(Number(match[2]) >= 7340, "the server's first free port from its default");
   const base = match[1];
@@ -76,10 +77,10 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   assert.equal(existsSync(SERVE_STORE(home)), false, "no second store");
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
-  assert.equal(out.split("\n").filter(Boolean).length, 2, "nothing more on stdout");
+  assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
 });
 
-test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on PATH), the bin says the Docker box is on by default, and says the box image's first build as it starts and as it ends", { timeout: 120_000 }, async (t) => {
+test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on PATH), the bin says on stderr that the Docker box is on by default, and the box image's first build as it starts and as it ends; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
   const { env } = bare(t);
   delete env.AGENTRUN_BOXES;
   const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-docker-"));
@@ -97,20 +98,21 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (err += chunk));
   const until = async (pattern) => {
-    for (let i = 0; !pattern.test(out); i++) {
+    for (let i = 0; !pattern.test(err); i++) {
       assert.ok(i < 1000, `the bin printed ${pattern}: ${out}${err}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
   await until(/^Preparing the Docker box image .*\n/m);
-  const lines = out.split("\n").filter(Boolean);
-  assert.match(lines[0], /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\//);
-  assert.match(lines[1], /^Boxes: docker \(on by default; set AGENTRUN_BOXES to change\)\. docker is preparing \(building the box image [^\n]*\)\./);
-  assert.equal(lines[2], "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.");
-  assert.equal(lines.length, 3, out);
+  const said = () => err.split("\n").filter((line) => start.SAID.test(line));
+  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "stdout is the one running line a script reads");
+  assert.match(said()[0], /^Boxes: docker \(on by default; set AGENTRUN_BOXES to change\)\. docker is preparing \(building the box image [^\n]*\)\./);
+  assert.equal(said()[1], "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.");
+  assert.equal(said().length, 2, err);
   rmSync(join(dir, "state", "build-hold"));
   await until(/^The Docker box image is ready\.\n/m);
-  assert.deepEqual(out.split("\n").filter(Boolean).slice(3), ["The Docker box image is ready."], "one line as the build ends, nothing else");
+  assert.deepEqual(said().slice(2), ["The Docker box image is ready."], "one line as the build ends, nothing else");
+  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "still the one line on stdout");
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
 });

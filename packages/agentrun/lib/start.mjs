@@ -143,8 +143,8 @@ export async function main(argv, env = process.env) {
     return new Promise((resolve) => spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv }).on("exit", (code) => resolve(code ?? 1)));
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
-  // server's own "Open " line, then the lines SAID names, after it. What it prints on stderr (why it did not start)
-  // comes through as it is.
+  // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
+  // What it prints on stderr (why it did not start) comes through as it is.
   const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
   // A stop this command passes on (Ctrl-C, a process manager's SIGTERM, npm gone) is a clean end, 0, even when the signal
   // itself ends the server; a server ended by a signal nobody here sent is not.
@@ -171,7 +171,7 @@ export async function main(argv, env = process.env) {
   let timer;
   let told = false;
   const held = [];
-  const tell = (line) => SAID.test(line) && (told ? console.log(line) : held.push(line));
+  const tell = (line) => SAID.test(line) && (told ? console.error(line) : held.push(line));
   const seen = [];
   const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
   clearTimeout(timer);
@@ -188,6 +188,6 @@ export async function main(argv, env = process.env) {
   // And where the API's bearer token is: the server prints it on a line this terminal doesn't show.
   console.error(env.AGENTRUN_TOKEN ? "The API token is the AGENTRUN_TOKEN this command was started with." : `The API token is in ${join(dataDir, ".token")}.`);
   told = true;
-  for (const line of held.splice(0)) console.log(line);
+  for (const line of held.splice(0)) console.error(line);
   return exited;
 }
