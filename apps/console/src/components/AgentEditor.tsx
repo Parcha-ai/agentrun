@@ -28,7 +28,7 @@ export type EditorProps = {
   revisions?: Revision[];
   caps: EditorCaps;
   /** Saves the form: a new agent, or the next revision of this one. Resolves with the server's refusal, or null. */
-  onSave?: (fields: AgentFields, note: string) => Promise<SaveProblem | null>;
+  onSave?: (fields: AgentFields, note: string, editor?: { leaveSaved: () => void }) => Promise<SaveProblem | null>;
   onMakeCurrent?: (revision: string) => void;
   onArchive?: (archive: boolean) => void;
   onReload?: () => void;
@@ -77,7 +77,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The form as saved: as it opened, or as its last save left it. A form unlike it holds unsaved changes, and leaving the
   // page asks first (lib/leaving). The revision note is not one: a note alone saves nothing.
   const [base, setBase] = useState<AgentFields>(f);
-  useLeaveGuard(!same(f, base));
+  const leaveSaved = useLeaveGuard(!same(f, base));
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -119,7 +119,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
     }
     const sent = f;
-    const p = await onSave(fields, note);
+    // `leaveSaved`: this editor's own guard, for a page that moves on once the save lands (a new agent opening its page).
+    const p = await onSave(fields, note, { leaveSaved });
     // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
     // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});

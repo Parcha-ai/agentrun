@@ -4,7 +4,6 @@ import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
-import { leaveSaved } from "@/lib/leaving";
 import type { ToolChoice } from "@/lib/toolSettings";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
@@ -46,6 +45,9 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
   const [version, setVersion] = useState(0);
   // The revision the form was loaded from: an action that finds another current revision reloads the form with it.
   const [formRevision, setFormRevision] = useState<string | null>(null);
+  // Whether this page is still shown: a save's answer that lands after the person left it moves nowhere.
+  const shown = useRef(true);
+  useEffect(() => () => { shown.current = false; }, []);
   const revisionsOf = (id: string) => allPages((cursor) => v2.listRevisions(id, cursor), (p) => p.revisions);
   const load = async () => {
     if (!agentId) return;
@@ -82,13 +84,16 @@ export function AgentEditPage({ v2, caps, choices = [], agentId, go }: { v2: Cli
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
     <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={caps} providerChoices={choices} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => void load()}
-      onSave={async (fields, note) => {
+      onSave={async (fields, note, editor) => {
         let saved;
         try {
           if (!agent) {
             const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, place: fields.place, learning: fields.learning, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
-            leaveSaved();
+            // Only while this page is still the one shown: a Create that answers after the person left moves nowhere, and
+            // lifts only its own editor's guard, never the one on the page shown now.
+            if (!shown.current) return null;
+            editor?.leaveSaved();
             go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;
           }

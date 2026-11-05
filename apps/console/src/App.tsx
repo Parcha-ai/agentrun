@@ -20,7 +20,7 @@ import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { trackHistory } from "@/lib/back";
+import { trackHistory, undoMove } from "@/lib/back";
 import { mayLeave } from "@/lib/leaving";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
@@ -217,10 +217,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     return () => { live = false; };
   }, [v2]);
   // Every move between pages is an address change, so the one guard on unsaved changes (lib/leaving) is here: a page that
-  // holds some asks first, and Cancel puts its address back (the entry the move made now reads it again) and stays.
+  // holds some asks first, and Cancel takes the move back (lib/back's undoMove: the browser steps back to the page's own
+  // entry, no entry rewritten), as react-router's blocker does. The step back is a move of its own, to the page shown:
+  // nothing to ask or route.
   useEffect(() => {
+    let undoing: string | null = null;
     const on = (e: HashChangeEvent) => {
-      if (!mayLeave()) { e.stopImmediatePropagation(); history.replaceState(history.state, "", e.oldURL); return; }
+      if (undoing !== null && location.href === undoing) { undoing = null; return; }
+      undoing = null;
+      if (!mayLeave()) { e.stopImmediatePropagation(); undoing = e.oldURL; undoMove(); return; }
       setWhere(route());
     };
     window.addEventListener("hashchange", on);
