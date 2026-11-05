@@ -1856,7 +1856,15 @@ export class Runs {
     const handed = needs ? keysFor(needs, served) : NO_TOOL_KEYS;
     // Its MCP servers: the tools it grants, pinned at its first launch in its directory (mcp-gateway.ts), and the
     // credentials of those servers alone, read now, on the same pipe.
-    const pin = this.mcpPin(run, needs?.tools);
+    let pin: McpPin | undefined;
+    try {
+      pin = this.mcpPin(run, needs?.tools);
+    } catch (error) {
+      // A granted tool that cannot be pinned refuses the launch in words, rather than a run without the tool.
+      run.error = { code: "run_failed", message: (error as Error).message, retryable: false };
+      void this.settle(run, 1, true);
+      return;
+    }
     const mcp = pin && this.options.mcpServers ? mcpCredentialsOf(pin, this.options.mcpServers) : undefined;
     // And its saved sign-in, on the same pipe after them (pinSignIn): a pointer its browser opens, never in its environment.
     const secrets = Buffer.concat([handover(handed, this.options.storedKeys), ...(mcp ? [mcpHandover(mcp)] : []), ...(run.signIn ? [handoverSignIn(run.signIn)] : [])]);

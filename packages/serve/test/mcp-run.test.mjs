@@ -127,6 +127,20 @@ test("a tool whose schema the Claude CLI would drop (a root anyOf) is refused on
   assert.equal((await api("GET", `/runs/${runId}`)).body.result?.final_answer, "The tool said: picked x");
 });
 
+test("a tool whose header declaration a refresh made unsendable refuses the run in words, naming it, and nothing is sent", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { faux: FAUX_MCP });
+  const fake = await startFakeMcp({ token: TOKEN });
+  fake.tools.tagged = { description: "Tagged.", input: { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" } } }, run: () => ({ content: [{ type: "text", text: "ok" }] }) };
+  await addFake(t, api, "fake", fake);
+  assert.equal((await api("POST", "/agents", agent("tagged", { tools: ["mcp:fake/tagged"], tool_settings: ALLOW_FAKE }))).status, 201);
+  fake.tools.tagged.input = { type: "object", properties: { region: { type: "object", "x-mcp-header": "Region" } } };
+  assert.equal((await api("POST", "/settings/mcp-servers/fake/refresh")).status, 200);
+  const refused = await api("POST", "/agents/tagged/runs", { input: { content: 'Call mcp__fake__tagged with {"region":{}}' } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.match(refused.body.error?.message ?? "", /tool tagged declares a header it cannot send: region: x-mcp-header is only allowed on a string, integer or boolean/);
+  assert.equal(calls(fake).length, 0);
+});
+
 test("a save that checks a deeply nested tool schema leaves the server answering: /health meanwhile, and a readable refusal past the bounds", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { faux: FAUX_MCP });
   const fake = await startFakeMcp({ token: TOKEN });

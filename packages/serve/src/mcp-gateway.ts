@@ -107,14 +107,17 @@ export function mcpHeaderProblem(inputSchema: unknown): string | undefined {
 }
 
 /** The pin of a run granted `names`: each MCP tool among them that its server's snapshot holds. Keyed by server name
- *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. */
+ *  with no prototype, as every map of names here is: a server named `constructor` is a server like any other. A granted
+ *  tool whose header declaration cannot be sent throws, naming it and why: the run is refused, never started without it. */
 export function mcpPinOf(names: readonly string[], source: McpServerSource): McpPin {
   const pin: McpPin = Object.create(null);
   for (const name of names) {
     const parsed = mcpNameOf(name);
     const saved = parsed && source.server(parsed.server);
     const tool = saved?.tools.find((t) => t.name === parsed!.tool);
-    if (!parsed || !saved || !tool || mcpHeaderProblem(tool.inputSchema)) continue;
+    if (!parsed || !saved || !tool) continue;
+    const declared = mcpHeaderProblem(tool.inputSchema);
+    if (declared) throw new Error(`The MCP tool ${name} declares a header it cannot send: ${declared}.`);
     if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };
     const pinned = pin[parsed.server]!;
     pinned.tools.push(tool);
@@ -163,8 +166,9 @@ export interface McpGatewayOptions {
   fetch?: typeof fetch;
   /** For tests: the bound on one call (CALL_MS) and on a server's first connection (CONNECT_MS). */
   bounds?: { callMs?: number; connectMs?: number };
-  /** The run's tool gate; none (a test), every call is let go. Its `executor` and `spill`, where it has them, run an
-   *  approved call and pass a result through. */
+  /** The run's tool gate, which every run's process passes (app.ts): each call enters it here, the only place an MCP
+   *  call is gated (pi's wrapper and the harnesses' hooks leave MCP calls to it). Only a test omits it, and then every
+   *  call is let go. Its `executor` and `spill`, where it has them, run an approved call and pass a result through. */
   gate?: Pick<Gate, "enter"> & Partial<Pick<Gate, "executor" | "spill">>;
   /** The run's commit to its store, once it is open: a parked call's request, a priced call's mark and charge, and an
    *  unpriced call's "not metered" are written on its root. None: a priced call is refused unsent, as a paid call with

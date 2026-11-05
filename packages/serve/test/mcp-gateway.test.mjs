@@ -283,7 +283,7 @@ test("a tool's x-mcp-header parameter is mirrored into its Mcp-Param header on a
   }
 });
 
-test("a declared header that cannot be sent is named, and its tool is never pinned", () => {
+test("a declared header that cannot be sent is named, and a grant of its tool refuses the pin in words", () => {
   const valid = { type: "object", properties: { region: { type: "string", "x-mcp-header": "Region" }, flag: { type: "boolean", "x-mcp-header": "Flag" } } };
   assert.equal(mcpHeaderProblem(valid), undefined);
   assert.equal(mcpHeaderProblem({ type: "object", properties: { a: { type: "string" } } }), undefined);
@@ -294,7 +294,9 @@ test("a declared header that cannot be sent is named, and its tool is never pinn
     [{ type: "object", properties: { a: { type: "string", "x-mcp-header": "Two words" } } }, /RFC 9110 token/],
   ]) assert.match(mcpHeaderProblem(schema) ?? "", said);
   const source = { server: () => ({ url: "http://127.0.0.1:9/mcp", tools: [{ name: "bad", inputSchema: { type: "object", properties: { a: { type: "object", "x-mcp-header": "A" } } } }, { name: "good", inputSchema: valid }] }), headers: () => undefined };
-  assert.deepEqual(mcpPinOf(["mcp:fake/bad", "mcp:fake/good"], source).fake.tools.map((tool) => tool.name), ["good"]);
+  assert.deepEqual(mcpPinOf(["mcp:fake/good"], source).fake.tools.map((tool) => tool.name), ["good"]);
+  // A granted tool that cannot be pinned refuses the pin in words, never a pin without it.
+  assert.throws(() => mcpPinOf(["mcp:fake/bad", "mcp:fake/good"], source), /^Error: The MCP tool mcp:fake\/bad declares a header it cannot send: a: x-mcp-header is only allowed on a string, integer or boolean\.$/);
 });
 
 /** A schema `levels` deep in additionalProperties, every level also holding a property. */
