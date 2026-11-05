@@ -807,7 +807,7 @@ test("a subagent's subagent shows under the call that spawned it", () => {
   ]);
 });
 
-test("no URL value reaches a row, whichever path wrote it; only a user's own message, its text and summary, stays as typed", () => {
+test("no URL value from what the model read reaches a row, whichever path wrote it; a user's own message and the agent's own text keep theirs whole", () => {
   const at = (id) => `https://x.example/${id}?token=SECRET${id}`;
   const entries = [
     user(`Open ${at(1)}`, 0),
@@ -838,9 +838,12 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own mes
     const [typed] = rows.filter((row) => row.kind === "user_message");
     assert.ok(typed.text.includes("SECRET1"), "the person's own text stays as typed");
     assert.ok(typed.summary.includes(`Open ${at(1)}`), `the person's own summary stays as typed: ${typed.summary}`);
-    const rest = JSON.stringify(rows.map((row) => (row === typed ? { ...row, text: null, summary: null } : row)));
+    // The agent's own words (its text before a call, its answer, a live text block) show their URLs whole.
+    const own = rows.filter((row) => row.kind === "text_block" || row.kind === "final_answer");
+    const said = JSON.stringify(own.map((row) => [row.summary, row.text]));
+    for (const id of [5, 14]) assert.ok(said.includes(at(id)), `the agent's own text keeps ${at(id)} whole: ${said}`);
+    const rest = JSON.stringify(rows.map((row) => (row === typed ? { ...row, text: null, summary: null } : own.includes(row) ? { ...row, text: null, summary: null } : row)));
     assert.deepEqual(rest.match(/SECRET\d+/g), null);
-    assert.ok(rest.includes("https://x.example/14?token=…"));
   }
   const nested = JSON.stringify(reducer.rows());
   for (const id of [17, 21]) assert.ok(nested.includes(`https://x.example/${id}?token=…`), `a nested call's ${id === 17 ? "result" : "args"} keep the URL's path`);
