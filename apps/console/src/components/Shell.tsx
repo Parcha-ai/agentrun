@@ -54,7 +54,8 @@ export function Shell({ active, settings = false, onNavigate, onSignOut, banners
         <Wordmark />
         <button type="button" className="border p-2" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-[18px]" aria-hidden /></button>
       </header>
-      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 md:flex md:h-dvh md:w-[220px]", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
+      {/* It scrolls at every width it shows at: on a short screen (a phone on its side) its foot, Sign out, stays reachable. */}
+      <aside className={cn("shrink-0 flex-col border-r bg-background px-3 pb-4 pt-6 md:flex md:h-dvh md:w-[220px] md:overflow-y-auto", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
         <div className="hidden px-3 pb-[30px] md:block"><Wordmark /></div>
         <nav aria-label="Navigation" className="flex flex-col gap-1">
           {NAV.filter((n) => n.id !== "settings" || settings).map(({ id, label, Icon }) => (
