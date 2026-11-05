@@ -6,9 +6,11 @@ import type { Cost } from "./v2";
  *  leading digits are the start time (the same for runs started within about a minute); the tail is random. */
 export const runLabel = (id: string) => id.slice(-8);
 
-export const clock =(iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+/** The console's times, every one it shows, in the viewer's own zone (the browser's): no `timeZone` is set. `clock`, the
+ *  time of day (a Timeline step); `when`, the day and the time (everything else). */
+export const clock = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 export const when = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" });
+  new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;

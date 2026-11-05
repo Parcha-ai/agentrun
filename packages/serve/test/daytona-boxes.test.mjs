@@ -1,6 +1,6 @@
 // Daytona boxes for sandbox runs, on a fake Daytona on loopback (fixtures/fake-daytona.mjs): no provider call runs. The
-// server makes a run's box with its key, closes its network, seeds it with the run's work/, pulls work/ back at each turn's
-// end and once more before the run's end is recorded, then destroys it. The run's process holds no key: its Daytona calls
+// server makes a run's box with its key, gives it its host list (or no network), seeds it with the run's work/, pulls
+// work/ back at each turn's end and once more before the run's end is recorded, then destroys it. The run's process holds no key: its Daytona calls
 // go through the server's box relay, which sends on only the calls a run's tools make of that run's own box.
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BOX_RELAY_FILE, relayFetch, startBoxRelay } from "../dist/box-relay.js";
-import { BOX_ENV, BOX_SYNC_FILE, runBox } from "../dist/run-box.js";
+import { BOX_ENV, BOX_SYNC_FILE, DEFAULT_BOX_ALLOW, runBox } from "../dist/run-box.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { daytonaSandboxes, tarOf } from "./fixtures/fake-daytona.mjs";
@@ -89,12 +89,14 @@ async function relayFor(t, fake, ids, ensure = async () => ({ id: "", made: true
 
 const fileList = async (api, runId) => (await api("GET", `/runs/${runId}/files`)).body.files.map((file) => file.path).sort();
 
-test("demo: a Daytona place runs read, write, edit and bash in the run's box: work/ seeded in, bash's out.txt in the run's files, the network closed, no key in the box, the box destroyed at the end", { timeout: 180_000 }, async (t) => {
+test("demo: a Daytona place runs read, write, edit and bash in the run's box: work/ seeded in, bash's out.txt in the run's files, its network the package registries' domain list, no key in the box, the box destroyed at the end", { timeout: 180_000 }, async (t) => {
   const fake = await daytonaSandboxes(t, { key: KEY });
   withEnv(t, { MONID_API_KEY: MONID_KEY });
   const server = await onDaytona(t, fake, { fauxMonid: FAUX_MONID });
   const { api, data } = server;
-  assert.deepEqual((await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready" });
+  const places = (await api("GET", "/capabilities")).body.places;
+  assert.deepEqual(places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "allowlist" });
+  assert.deepEqual(places.allow, ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "github.com", "codeload.github.com"]);
   const made = await api("POST", "/agents", { definition: { id: "remote", name: "remote", instructions: "Probe.", place: DAYTONA, tools: ["read", "write", "edit", "bash", "monid.discover"], tool_settings: { "monid.discover": { permission: "allow" } } } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual(made.body.warnings, []);
@@ -129,10 +131,12 @@ test("demo: a Daytona place runs read, write, edit and bash in the run's box: wo
   // The run's files: what the box wrote, pulled back; what it removed, removed.
   assert.deepEqual((await fileList(api, run.run_id)).filter((path) => !path.startsWith("evidence/")), ["note.txt", "out.txt"]);
   assert.equal((await api("GET", `/runs/${run.run_id}/files/out.txt`)).body, "hello from the box\n");
-  // The box Daytona was asked for: network blocked, the fixed environment, the run's labels; destroyed at the end.
+  // The box Daytona was asked for: the default hosts as its domain list, the fixed environment, the run's labels;
+  // destroyed at the end.
   const created = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").map((r) => JSON.parse(r.body));
   assert.equal(created.length, 1);
-  assert.equal(created[0].networkBlockAll, true);
+  assert.equal(created[0].domainAllowList, DEFAULT_BOX_ALLOW.join(","));
+  assert.equal(created[0].networkBlockAll, undefined);
   assert.deepEqual(created[0].env, BOX_ENV);
   assert.equal(created[0].labels["agentrun.run"], run.run_id);
   assert.equal(fake.sandboxes.size, 0, "the box is destroyed");
@@ -374,8 +378,8 @@ test("an agent's edit to a file the host filed and mirrored into the box comes b
   for (const name of filed) assert.equal(readFileSync(join(data, "runs", run.run_id, "work", "evidence", "monid", name), "utf8"), "edited", `the box's edit of ${name} came back`);
 });
 
-test("a Daytona that does not block a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {
-  const fake = await daytonaSandboxes(t, { key: KEY, blocks: false });
+test("a Daytona that neither keeps a domain list nor blocks a box's network gets no run's tool: the call fails naming why, and no box is left", { timeout: 120_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY, lists: false, blocks: false });
   const { api, data } = await onDaytona(t, fake);
   assert.equal((await api("POST", "/agents", { definition: { id: "open", name: "open", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
   const run = await probe(api, "open", [{ tool: "bash", args: { command: "printf x > out.txt" } }]);
@@ -385,6 +389,61 @@ test("a Daytona that does not block a box's network gets no run's tool: the call
   assert.match(said.text, /networkBlockAll/);
   assert.ok(!fake.requests.some((r) => r.path.endsWith("/process/execute") && r.body.includes("out.txt")), "no command ran");
   assert.equal(fake.sandboxes.size, 0);
+});
+
+/** The bodies of the creates Daytona was asked for. */
+const creates = (fake) => fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").map((r) => JSON.parse(r.body));
+
+for (const [daytona, options, code] of [
+  ["keeps no domain list (a tier 1 or 2 organization)", { lists: false }, "unsupported"],
+  ["refuses a domain list (403)", { refusesLists: 403 }, "unauthorized"],
+  ["refuses a domain list (400)", { refusesLists: 400 }, "invalid"],
+]) {
+  test(`a Daytona that ${daytona} gets boxes with no network, never open: the run's tool runs, and capabilities say why`, { timeout: 120_000 }, async (t) => {
+    const fake = await daytonaSandboxes(t, { key: KEY, ...options });
+    const { api, data } = await onDaytona(t, fake);
+    assert.equal((await api("POST", "/agents", { definition: { id: "closed", name: "closed", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
+    const first = await probe(api, "closed", [{ tool: "bash", args: { command: "printf x > out.txt" } }]);
+    await follow(api, first.run_id, ["completed"], { deadlineMs: 90_000 });
+    assert.deepEqual(answers(data, first.run_id).map((a) => a.error), [false]);
+    // Asked with the list, then made again blocked; no sandbox with the list is left.
+    assert.deepEqual(creates(fake).map((body) => [typeof body.domainAllowList, body.networkBlockAll]), [["string", undefined], ["undefined", true]]);
+    assert.equal(fake.sandboxes.size, 0);
+    const offer = (await api("GET", "/capabilities")).body.places.boxes.find((b) => b.id === "daytona");
+    assert.equal(offer.network, "none");
+    assert.equal(offer.available, true);
+    assert.match(offer.reason, new RegExp(`domain list \\(${code}\\).*tier 3 and 4.*AGENTRUN_BOX_ALLOW=none`));
+    // The next run's box is asked for blocked at once: the server does not try the list again until it starts again.
+    const second = await probe(api, "closed", [{ tool: "bash", args: { command: "true" } }]);
+    await follow(api, second.run_id, ["completed"], { deadlineMs: 90_000 });
+    assert.deepEqual(creates(fake).slice(2).map((body) => [typeof body.domainAllowList, body.networkBlockAll]), [["undefined", true]]);
+  });
+}
+
+test("AGENTRUN_BOX_ALLOW=none: a Daytona box is made blocked, as before the list, and capabilities say none with no reason", { timeout: 120_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  withEnv(t, { AGENTRUN_BOX_ALLOW: "none" });
+  const { api, data } = await onDaytona(t, fake);
+  const places = (await api("GET", "/capabilities")).body.places;
+  assert.deepEqual(places.boxes.find((b) => b.id === "daytona"), { id: "daytona", available: true, state: "ready", network: "none" });
+  assert.deepEqual(places.allow, []);
+  assert.equal((await api("POST", "/agents", { definition: { id: "none", name: "none", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
+  const run = await probe(api, "none", [{ tool: "bash", args: { command: "true" } }]);
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
+  assert.deepEqual(answers(data, run.run_id).map((a) => a.error), [false]);
+  assert.deepEqual(creates(fake).map((body) => [body.domainAllowList, body.networkBlockAll]), [[undefined, true]]);
+});
+
+test("AGENTRUN_BOX_ALLOW replaces the default list: a Daytona box's domain list is the setting's hosts", { timeout: 120_000 }, async (t) => {
+  const fake = await daytonaSandboxes(t, { key: KEY });
+  withEnv(t, { AGENTRUN_BOX_ALLOW: "PyPI.org, *.pythonhosted.org,pypi.org" });
+  const { api, data } = await onDaytona(t, fake);
+  assert.deepEqual((await api("GET", "/capabilities")).body.places.allow, ["pypi.org", "*.pythonhosted.org"]);
+  assert.equal((await api("POST", "/agents", { definition: { id: "py", name: "py", instructions: "Probe.", place: DAYTONA, tools: ["bash"] } })).status, 201);
+  const run = await probe(api, "py", [{ tool: "bash", args: { command: "true" } }]);
+  await follow(api, run.run_id, ["completed"], { deadlineMs: 90_000 });
+  assert.deepEqual(answers(data, run.run_id).map((a) => a.error), [false]);
+  assert.deepEqual(creates(fake).map((body) => [body.domainAllowList, body.networkBlockAll]), [["pypi.org,*.pythonhosted.org", undefined]]);
 });
 
 test("a start pulls and destroys the box of a run that ended while its box was left (its delete failed)", { timeout: 180_000 }, async (t) => {
