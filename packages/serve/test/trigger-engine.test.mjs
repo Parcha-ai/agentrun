@@ -199,3 +199,31 @@ test("a firing whose drive throws unexpectedly is driven again soon, not left du
   clock.to("2026-06-01T00:00:05Z");
   await until(() => triggers.firings(id).firings[0].status === "started", "driven again");
 });
+
+test("a message_run firing refused because its run is working is tried again every 5 s, uncounted, so it lands at most 5 s after the turn ends", async (t) => {
+  let working = 4;
+  const sent = [];
+  const { clock, triggers } = await engine(t, {
+    message: async (target, input, key) => {
+      if (working-- > 0) throw new ApiError("rate_limited", "The run is working.", { retry_after_ms: 5_000, details: { reason: "working" } });
+      sent.push(key);
+    },
+    secrets: { mint: () => "unused", remove: () => {} },
+  });
+  const { id } = await triggers.create({ ...body({ cron: "0 9 * * *" }), enabled: false, target: { kind: "message_run", run_id: "run-9", input: { content: "Hello." } } });
+  assert.equal((await triggers.fire(id, "now")).firing.status, "due");
+  // Four refusals while the run works, each followed by a try 5 s later; the fifth try finds it idle.
+  for (let n = 1; n <= 4; n++) {
+    const [firing] = triggers.firings(id).firings;
+    assert.equal(firing.status, "due", `refusal ${n}`);
+    assert.equal(firing.attempts ?? 0, 0, "a busy run's refusal is no failed try");
+    assert.equal(Date.parse(firing.retry_at) - clock.now(), 5_000, `after refusal ${n}: again in 5 s, never longer`);
+    clock.to(new Date(clock.now() + 5_000).toISOString());
+    await until(() => {
+      const [now] = triggers.firings(id).firings;
+      return now.status !== "due" || now.retry_at !== firing.retry_at;
+    }, `try ${n + 1}`);
+  }
+  await until(() => triggers.firings(id).firings[0].status === "sent", "sent once the run is idle");
+  assert.equal(sent.length, 1);
+});
