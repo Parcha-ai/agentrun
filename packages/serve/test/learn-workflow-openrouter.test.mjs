@@ -114,3 +114,8 @@ test("a learned workflow follows its harness only to an origin its requests can 
   assert.equal(await adapters.learnedWorkflowsOff("opencode", { OPENAI_API_KEY: OPENAI }, "openai/gpt-6-sol"), undefined);
   assert.equal(await adapters.learnedWorkflowsOff("opencode", { ...gateway, AGENT_MODEL_API_KEY: KEY }, "openai/gpt-6-sol"), undefined);
 });
+
+test("claude-agent through a gateway at OpenRouter's URL (ANTHROPIC_BASE_URL, the gateway's key in ANTHROPIC_API_KEY) is offered no learned workflow: its run holds no OpenRouter key, so its learned nodes could not follow the gateway", async () => {
+  const env = { ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1", ANTHROPIC_API_KEY: ANTHROPIC };
+  assert.match(await adapters.learnedWorkflowsOff("claude-agent", env, "anthropic/claude-sonnet-5.5") ?? "", /ANTHROPIC_BASE_URL/);
+});
