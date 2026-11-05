@@ -50,7 +50,7 @@ type NoteView = { file: string; name: string; description: string; type: string;
 type Retired = { at: string; by: "person" | "run" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
  *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
-type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned"; by: "person" | "run"; at: string };
+type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
 const PERSON_KINDS = ["approved", "edited", "created", "retired", "restored"] as const;
 type Change = { by: { run: string } | { user: true; via?: string }; commit: string; at: string; reason: string; files: string[] };
 /** A note on main: its text, and its blob id there, whose ETag its file's GET answers. */
@@ -231,8 +231,12 @@ type History = { at: string; last?: LastChange; retire?: LastChange; person?: La
 /** Folds one record of a LAST_FORMAT walk (newest first) into `out`, for the files it changed. */
 function foldHistory(out: Map<string, History>, head: string, files: readonly string[]): void {
   const [at = "", subject = "", runId = ""] = head.split("\x1f");
-  const change = changeOf(at, subject, runId);
+  const commit = changeOf(at, subject, runId);
+  // A person's action is the named file's alone (the subject's `learning: <kind> by a person: <file>`): any other file
+  // that commit changed is a note it superseded (an approval or a restore marks those), so it says that.
+  const named = commit?.by === "person" ? subject.slice(`learning: ${commit.kind} by a person: `.length) : undefined;
   for (const file of files) {
+    const change: LastChange | undefined = named !== undefined && file !== named ? { kind: "superseded", by: "person", at } : commit;
     const known = out.get(file);
     if (!known) out.set(file, { at, ...(change ? { last: change } : {}), ...(change?.kind === "retired" ? { retire: change } : {}), ...(change?.by === "person" ? { person: change } : {}) });
     else {
