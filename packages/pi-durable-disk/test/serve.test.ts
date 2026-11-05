@@ -97,6 +97,28 @@ describe("the HTTP front", () => {
     }
   });
 
+  it("a guarded input pi took, sent again once its conversation has parked a call, answers the same submission, not WAITING", async () => {
+    const disk = new LocalDisk("serve-park-retry");
+    const counters = newCounters();
+    const { server, run } = await served(disk, counters);
+    try {
+      const PARK = "agentrun.tool_approval";
+      const guarded = () => call(server, "POST", "/submit", { requestId: "g7", content: "hello", answers: false, asks: ["ask_person"], parks: [PARK] });
+      const first = await guarded();
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      const root = (await run.harness.root(ctx)).id;
+      await run.harness.commit((tx) => tx.appendEntry(root, { kind: PARK, data: { phase: "requested", id: "ap_7", tool: "web_fetch", call_id: "call_7" } as never }), ctx);
+      const again = await guarded();
+      assert.deepEqual([again.status, again.body.submission?.id], [200, first.body.submission.id], JSON.stringify(again.body));
+      const fresh = await call(server, "POST", "/submit", { requestId: "g8", content: "hello", answers: false, asks: ["ask_person"], parks: [PARK] });
+      assert.deepEqual([fresh.status, fresh.body.error], [409, "WAITING"], "a new one is refused");
+    } finally {
+      await run.release().catch(() => undefined);
+      await server.close().catch(() => undefined);
+      disk.remove();
+    }
+  });
+
   it("pause() refuses submissions with 503 PARKING while status still answers; whenBusy reject is 409; abort stops the conversation", async () => {
     const disk = new LocalDisk("serve-pause");
     const counters = newCounters();

@@ -255,6 +255,58 @@ describe("the door hook: admission", () => {
 });
 
 describe("the door hook: outcomes", () => {
+  it("a park written while the door reads for one (its turn then ending, the hook idle) never lets the input in: the park is read in the step that admits it", async () => {
+    await closing(async (serve) => {
+      const { hook, calls, state } = scripted();
+      const s = await serve(hook);
+      const PARK = "agentrun.tool_approval";
+      const rootId = (await s.run.harness.root(ctx)).id;
+      // A turn works, and parks its call just after the door has read the newest entries: then the turn ends.
+      state.busy = true;
+      let fired = false;
+      const harness = s.run.harness as unknown as { root: (...args: unknown[]) => Promise<object> };
+      const realRoot = harness.root.bind(harness);
+      harness.root = async (...args: unknown[]) => {
+        const conversation = await realRoot(...args);
+        return new Proxy(conversation, {
+          get(target, prop) {
+            const value = Reflect.get(target, prop) as unknown;
+            if (prop !== "entries" || typeof value !== "function") return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+            return async (...a: unknown[]) => {
+              const page = await (value as (...b: unknown[]) => Promise<unknown>).apply(target, a);
+              if (!fired) {
+                fired = true;
+                await s.run.harness.commit((tx) => tx.appendEntry(rootId, { kind: PARK, data: { phase: "requested", id: "ap_9", tool: "web_fetch", call_id: "call_9" } as never }), ctx);
+                state.busy = false;
+              }
+              return page;
+            };
+          },
+        });
+      };
+      const answer = await call(s.server, "POST", "/submit", { requestId: "event-9", content: "news", answers: false, asks: ["ask_person"], parks: [PARK] });
+      assert.equal(answer.status, 409, JSON.stringify(answer.body));
+      assert.equal(calls.submit.length, 0, "the hook never takes it");
+      assert.deepEqual(await doorEntries(s.run), [], "nothing admitted");
+    }, new LocalDisk("door-park-race"));
+  });
+
+  it("an input the door took, sent again once its run has parked a call, answers its record (ACCEPTED), not WAITING: only a new admission is refused by a park", async () => {
+    await closing(async (serve) => {
+      const { hook, calls } = scripted();
+      const s = await serve(hook);
+      const PARK = "agentrun.tool_approval";
+      const guarded = () => call(s.server, "POST", "/submit", { requestId: "event-7", content: "news", answers: false, asks: ["ask_person"], parks: [PARK] });
+      assert.deepEqual([(await guarded()).status, calls.submit.length], [200, 1]);
+      // Its answer was lost on the way; meanwhile its turn parked a call.
+      const root = (await s.run.harness.root(ctx)).id;
+      await s.run.harness.commit((tx) => tx.appendEntry(root, { kind: PARK, data: { phase: "requested", id: "ap_7", tool: "web_fetch", call_id: "call_7" } as never }), ctx);
+      const again = await guarded();
+      assert.deepEqual([again.status, again.body.status], [200, "ACCEPTED"], JSON.stringify(again.body));
+      assert.equal(calls.submit.length, 1, "not taken twice");
+    }, new LocalDisk("door-park-retry"));
+  });
+
   it("an input that may not answer is refused (409 WAITING) while a call waits in a park the caller names (an entry `{phase: \"requested\", id}` with no `resolved` after it), the hook not called; once resolved, it goes in", async () => {
     await closing(async (serve) => {
       const { hook, calls } = scripted();
